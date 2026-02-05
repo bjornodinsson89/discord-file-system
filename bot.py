@@ -1,5 +1,5 @@
 """
-Happy Jumper Discord Bot - vNext with Dashboard
+Happy Jump Discord Bot - vNext with Dashboard
 Combined service running Discord bot + FastAPI dashboard in single Railway service.
 """
 
