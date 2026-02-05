@@ -42,6 +42,15 @@ logging.basicConfig(
 )
 log = logging.getLogger("happy_jumper")
 
+
+def normalize_dashboard_url(url: str) -> str:
+    """Ensure dashboard URLs include an explicit http/https scheme."""
+    if not url:
+        return url
+    if url.startswith(("http://", "https://")):
+        return url
+    return f"https://{url}"
+
 # ============================================================================
 # BOT SETUP
 # ============================================================================
@@ -257,7 +266,7 @@ async def setup(interaction: discord.Interaction):
     # Dashboard link
     embed.add_field(
         name=f"{config.EMOJI_CHART} Dashboard",
-        value=f"Configure more settings at:\n{config.FRONTEND_URL}",
+        value=f"Configure more settings at:\n{normalize_dashboard_url(config.FRONTEND_URL)}",
         inline=False
     )
     
@@ -282,7 +291,7 @@ async def dashboard(interaction: discord.Interaction):
         title=f"{config.EMOJI_CHART} Happy Jumper Dashboard",
         description=(
             "Access the admin dashboard to manage all bot features from a beautiful web interface.\n\n"
-            f"**Dashboard URL:**\n{config.FRONTEND_URL}\n\n"
+            f"**Dashboard URL:**\n{normalize_dashboard_url(config.FRONTEND_URL)}\n\n"
             "**Features:**\n"
             f"{config.EMOJI_JUMP} Create & manage 99k jump sessions\n"
             f"{config.EMOJI_TICKET} Create & run raffles\n"
@@ -299,7 +308,7 @@ async def dashboard(interaction: discord.Interaction):
     view = discord.ui.View()
     view.add_item(discord.ui.Button(
         label="Open Dashboard",
-        url=config.FRONTEND_URL,
+        url=normalize_dashboard_url(config.FRONTEND_URL),
         style=discord.ButtonStyle.link
     ))
 

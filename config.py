@@ -63,7 +63,7 @@ LOG_IDS = {
     "cash_received": 4103,
 }
 
-API_RATE_LIMIT_PER_MINUTE = 60
+API_RATE_LIMIT_PER_MINUTE = 100
 API_RATE_LIMIT_BURST = 10
 
 # ============================================================================

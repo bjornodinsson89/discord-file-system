@@ -3,6 +3,7 @@
 import discord
 from discord import ui
 import logging
+from typing import Optional
 from datetime import datetime, timedelta
 from utils import get_database, get_security_manager, get_torn_api
 from utils.torn_api import TornAPIError, TornAPIPermissionError
@@ -700,8 +701,11 @@ class RafflePaymentView(ui.View):
 # ============================================================================
 
 class SetupView(ui.View):
-    def __init__(self):
+    """Admin setup shortcuts view."""
+
+    def __init__(self, guild_id: Optional[int] = None):
         super().__init__(timeout=300)
+        self.guild_id = guild_id
     
     @ui.button(label="Set Host Role", style=discord.ButtonStyle.primary, emoji="👥")
     async def host_role(self, interaction: discord.Interaction, button: ui.Button):
