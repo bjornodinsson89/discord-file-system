@@ -1,0 +1,229 @@
+"""
+Admin API Schemas
+Pydantic models for request validation and response serialization.
+"""
+
+from pydantic import BaseModel, Field, validator
+from typing import Optional, List, Literal
+from datetime import datetime
+import config
+
+# ============================================================================
+# SESSION SCHEMAS
+# ============================================================================
+
+class CreateSessionRequest(BaseModel):
+    """Request to create a 99k jump session."""
+    guild_id: int
+    channel_id: int
+    payment_type: Literal["xanax", "erotic_dvd"]
+    payment_amount: int = Field(ge=1, description="Amount per spot")
+    spots: int = Field(ge=config.MIN_JUMP_SPOTS, le=config.MAX_JUMP_SPOTS)
+    xanax_stack: Literal["1_xanax", "2_xanax", "3_xanax", "full_stack"]
+    start_delay_hours: int = Field(ge=0, le=config.MAX_START_DELAY_HOURS)
+
+
+class SessionResponse(BaseModel):
+    """Session data response."""
+    id: int
+    guild_id: int
+    host_discord_id: int
+    host_torn_id: int
+    max_spots: int
+    xanax_stack: str
+    payment_type: str
+    payment_amount: int
+    status: str
+    announcement_message_id: Optional[int]
+    message_url: Optional[str]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class SessionListResponse(BaseModel):
+    """List of sessions with pagination."""
+    sessions: List[SessionResponse]
+    total: int
+    page: int
+    per_page: int
+
+
+# ============================================================================
+# RAFFLE SCHEMAS
+# ============================================================================
+
+class CreateRaffleRequest(BaseModel):
+    """Request to create a raffle."""
+    guild_id: int
+    channel_id: int
+    prize: str = Field(min_length=1, max_length=500, description="Freeform prize description")
+    ticket_payment_type: Literal["xanax", "erotic_dvd"]
+    ticket_price: int = Field(ge=config.MIN_TICKET_PRICE, le=config.MAX_TICKET_PRICE)
+    tickets_available: int = Field(ge=config.MIN_RAFFLE_TICKETS, le=config.MAX_RAFFLE_TICKETS)
+    max_tickets_per_user: int = Field(ge=0, description="0 = unlimited")
+    duration_hours: int = Field(ge=config.MIN_RAFFLE_DURATION_HOURS, le=config.MAX_RAFFLE_DURATION_HOURS)
+
+
+class RaffleResponse(BaseModel):
+    """Raffle data response."""
+    raffle_id: int
+    guild_id: int
+    creator_discord_id: int
+    prize: str
+    ticket_payment_type: str
+    ticket_price: int
+    tickets_available: int
+    max_tickets_per_user: int
+    status: str
+    winner_discord_id: Optional[int]
+    end_time: datetime
+    announcement_message_id: Optional[int]
+    message_url: Optional[str]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class RaffleListResponse(BaseModel):
+    """List of raffles with pagination."""
+    raffles: List[RaffleResponse]
+    total: int
+    page: int
+    per_page: int
+
+
+# ============================================================================
+# INSURANCE SCHEMAS
+# ============================================================================
+
+class CreatePolicyRequest(BaseModel):
+    """Request to create an insurance policy (provider)."""
+    guild_id: int
+    provider_discord_id: int  # Will be current user for provider flow
+    policy_name: str = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=1, description="Coverage instructions")
+    cost_type: Literal["xanax", "erotic_dvd"]
+    cost_amount: int = Field(ge=1, description="Premium cost")
+    coverage_type: Literal["xanax_stack", "ecstasy_after_stack", "all_drugs"]
+    payout_description: str = Field(min_length=1, description="Freeform payout terms")
+    duration_hours: int = Field(ge=config.MIN_INSURANCE_DURATION_HOURS, le=config.MAX_INSURANCE_DURATION_HOURS)
+
+
+class PolicyResponse(BaseModel):
+    """Insurance policy data response."""
+    policy_id: int
+    provider_id: int
+    name: str
+    description: str
+    cost_type: str
+    cost_amount: int
+    coverage_type: str
+    payout_description: str
+    duration_hours: int
+    active: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class ProviderResponse(BaseModel):
+    """Insurance provider data response."""
+    provider_id: int
+    discord_id: int
+    torn_user_id: int
+    company_name: Optional[str]
+    approval_status: str
+    verified: bool
+    active: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class ApproveProviderRequest(BaseModel):
+    """Request to approve/reject a provider."""
+    provider_id: int
+    status: Literal["approved", "rejected", "disabled"]
+
+
+# ============================================================================
+# SETTINGS SCHEMAS
+# ============================================================================
+
+class UpdateSettingsRequest(BaseModel):
+    """Request to update guild settings."""
+    guild_id: int
+    host99k_role_id: Optional[int] = None
+    insurer_role_id: Optional[int] = None
+    admin_role_id: Optional[int] = None
+    jump_99k_channel_id: Optional[int] = None
+    insurance_channel_id: Optional[int] = None
+    raffle_channel_id: Optional[int] = None
+    reservation_timeout_minutes: Optional[int] = Field(None, ge=1, le=60)
+    auto_complete_enabled: Optional[bool] = None
+
+
+class SettingsResponse(BaseModel):
+    """Guild settings response."""
+    guild_id: int
+    host99k_role_id: Optional[int]
+    insurer_role_id: Optional[int]
+    admin_role_id: Optional[int]
+    jump_99k_channel_id: Optional[int]
+    insurance_channel_id: Optional[int]
+    raffle_channel_id: Optional[int]
+    reservation_timeout_minutes: int
+    auto_complete_enabled: bool
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+# ============================================================================
+# AUDIT SCHEMAS
+# ============================================================================
+
+class AuditLogEntry(BaseModel):
+    """Audit log entry."""
+    id: int
+    actor_discord_id: Optional[int]
+    action: str
+    target_type: Optional[str]
+    target_id: Optional[int]
+    payload: dict
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class AuditLogResponse(BaseModel):
+    """List of audit log entries."""
+    entries: List[AuditLogEntry]
+    total: int
+    page: int
+    per_page: int
+
+
+# ============================================================================
+# COMMON SCHEMAS
+# ============================================================================
+
+class SuccessResponse(BaseModel):
+    """Generic success response."""
+    success: bool = True
+    message: str
+    data: Optional[dict] = None
+
+
+class ErrorResponse(BaseModel):
+    """Generic error response."""
+    success: bool = False
+    error: str
+    detail: Optional[str] = None
