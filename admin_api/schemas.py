@@ -36,6 +36,8 @@ class SessionResponse(BaseModel):
     status: str
     announcement_message_id: Optional[int]
     message_url: Optional[str]
+    created_by_dashboard: Optional[bool] = None
+    dashboard_admin_id: Optional[int] = None
     created_at: datetime
     
     class Config:
@@ -152,6 +154,70 @@ class ApproveProviderRequest(BaseModel):
 
 
 # ============================================================================
+# GUILDS & MEMBERS
+# ============================================================================
+
+class GuildInfoResponse(BaseModel):
+    """Guild info response."""
+    id: int
+    name: str
+    icon: Optional[str]
+    member_count: Optional[int]
+
+
+class MemberSummary(BaseModel):
+    """Member summary for admin dashboard."""
+    discord_id: int
+    username: Optional[str]
+    display_name: Optional[str]
+    avatar: Optional[str]
+    torn_user_id: Optional[int]
+    has_api_key: bool
+    is_host: bool
+    is_insurer: bool
+    sessions_joined: int = 0
+    sessions_hosted: int = 0
+    created_at: Optional[datetime]
+
+
+class MemberListResponse(BaseModel):
+    """List of members with pagination."""
+    members: List[MemberSummary]
+    total: int
+    page: int
+    per_page: int
+
+
+# ============================================================================
+# BLACKLIST
+# ============================================================================
+
+class AddBlacklistRequest(BaseModel):
+    """Request to add a user to the blacklist."""
+    guild_id: int
+    discord_id: int
+    reason: Optional[str] = None
+    expires_at: Optional[datetime] = None
+
+
+class BlacklistEntry(BaseModel):
+    """Blacklist entry."""
+    guild_id: int
+    discord_id: int
+    username: Optional[str]
+    torn_user_id: Optional[int]
+    reason: Optional[str]
+    banned_by: Optional[int]
+    expires_at: Optional[datetime]
+    created_at: Optional[datetime]
+
+
+class BlacklistListResponse(BaseModel):
+    """List of blacklist entries."""
+    entries: List[BlacklistEntry]
+
+
+# ============================================================================
 # SETTINGS SCHEMAS
 # ============================================================================
 
@@ -197,6 +263,7 @@ class AuditLogEntry(BaseModel):
     target_type: Optional[str]
     target_id: Optional[int]
     payload: dict
+    source: Optional[str] = None
     created_at: datetime
     
     class Config:

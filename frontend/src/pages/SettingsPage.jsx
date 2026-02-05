@@ -7,10 +7,11 @@ import { useGuilds } from '../hooks/useGuilds';
 import { useChannels } from '../hooks/useChannels';
 import { useRoles } from '../hooks/useRoles';
 import { settings } from '../lib/api';
-import { Card, CardContent, CardHeader, CardTitle, Button } from '../components/ui';
+import { Card, CardContent, CardHeader, CardTitle, Button, useToast } from '../components/ui';
 
 export default function SettingsPage() {
   const { selectedGuildId, selectedGuild } = useGuilds();
+  const { addToast } = useToast();
   const { channels, loading: channelsLoading } = useChannels(selectedGuildId);
   const { roles, loading: rolesLoading } = useRoles(selectedGuildId);
   
@@ -49,10 +50,11 @@ export default function SettingsPage() {
       });
     } catch (err) {
       setError(err.message);
+      addToast({ title: 'Failed to load settings', description: err.message, variant: 'error' });
     } finally {
       setLoading(false);
     }
-  }, [selectedGuildId]);
+  }, [selectedGuildId, addToast]);
 
   useEffect(() => {
     loadSettings();
@@ -90,8 +92,10 @@ export default function SettingsPage() {
 
       await settings.update(updates);
       setSuccess(true);
+      addToast({ title: 'Settings saved', description: 'Guild settings updated successfully.', variant: 'success' });
     } catch (err) {
       setError(err.message);
+      addToast({ title: 'Failed to save settings', description: err.message, variant: 'error' });
     } finally {
       setSaving(false);
     }

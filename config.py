@@ -17,7 +17,8 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 # DASHBOARD CONFIGURATION
 # ============================================================================
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:8000")
-DASHBOARD_SECRET_KEY = os.getenv("DASHBOARD_SECRET_KEY", os.urandom(32).hex())
+DASHBOARD_SECRET_KEY_ENV = os.getenv("DASHBOARD_SECRET_KEY")
+DASHBOARD_SECRET_KEY = DASHBOARD_SECRET_KEY_ENV or os.urandom(32).hex()
 OAUTH_REDIRECT_URI = f"{DASHBOARD_URL}/auth/callback"
 FRONTEND_URL = os.getenv("FRONTEND_URL", DASHBOARD_URL)
 
@@ -173,6 +174,7 @@ def validate_config() -> None:
         "DISCORD_TOKEN": DISCORD_TOKEN,
         "DISCORD_CLIENT_ID": DISCORD_CLIENT_ID,
         "DISCORD_CLIENT_SECRET": DISCORD_CLIENT_SECRET,
+        "DASHBOARD_SECRET_KEY": DASHBOARD_SECRET_KEY_ENV,
         "DB_HOST": DB_HOST,
         "DB_NAME": DB_NAME,
         "DB_USER": DB_USER,

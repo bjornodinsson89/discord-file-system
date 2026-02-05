@@ -59,6 +59,7 @@ export default function AuditLogPage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [actionFilter, setActionFilter] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   
   const perPage = 25;
 
@@ -74,6 +75,7 @@ export default function AuditLogPage() {
         per_page: perPage,
       };
       if (actionFilter) params.action = actionFilter;
+      if (searchQuery) params.search = searchQuery;
       
       const data = await audit.list(params);
       setEntries(data.entries || []);
@@ -83,7 +85,7 @@ export default function AuditLogPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedGuildId, page, actionFilter]);
+  }, [selectedGuildId, page, actionFilter, searchQuery]);
 
   useEffect(() => {
     loadAuditLog();
@@ -91,7 +93,7 @@ export default function AuditLogPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [actionFilter]);
+  }, [actionFilter, searchQuery]);
 
   const totalPages = Math.ceil(total / perPage);
 
@@ -122,7 +124,7 @@ export default function AuditLogPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex items-center space-x-4">
+      <div className="flex flex-col md:flex-row md:items-center gap-4">
         <select
           value={actionFilter}
           onChange={(e) => setActionFilter(e.target.value)}
@@ -133,6 +135,13 @@ export default function AuditLogPage() {
             <option key={key} value={key}>{label}</option>
           ))}
         </select>
+        <input
+          type="text"
+          placeholder="Search by actor, target, or action..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-purple-500"
+        />
         <span className="text-gray-400 text-sm">
           {total} total entries
         </span>

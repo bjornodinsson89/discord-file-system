@@ -68,7 +68,7 @@ GUILD_ID=your_test_guild_id  # Optional: for faster command sync
 
 # Dashboard Configuration
 DASHBOARD_URL=http://localhost:8000
-DASHBOARD_SECRET_KEY=generate_a_random_32_char_string_here
+DASHBOARD_SECRET_KEY=generate_a_random_32_char_string_here  # Must remain stable across deploys
 FRONTEND_URL=http://localhost:8000
 
 # Database Configuration (Supabase)
@@ -101,6 +101,9 @@ print(secrets.token_urlsafe(32))
 cd frontend
 npm run build
 cd ..
+
+This build step is required for production deployments. Railway will run it automatically
+as part of the build command in `railway.json`.
 ```
 
 ### 5. Run Database Migrations

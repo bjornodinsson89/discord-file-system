@@ -52,6 +52,7 @@ export const auth = {
 export const guilds = {
   getChannels: (guildId) => request(`${API_BASE}/guilds/${guildId}/channels`),
   getRoles: (guildId) => request(`${API_BASE}/guilds/${guildId}/roles`),
+  getInfo: (guildId) => request(`${API_BASE}/guilds/${guildId}`),
 };
 
 // ============================================================================
@@ -139,7 +140,7 @@ export const insurance = {
   // Providers
   listProviders: (status = null) => {
     const searchParams = new URLSearchParams();
-    if (status) searchParams.append('status', status);
+    if (status) searchParams.append('approval_status', status);
     return request(`${API_BASE}/insurance/providers/list?${searchParams}`);
   },
   
@@ -160,9 +161,8 @@ export const insurance = {
     method: 'POST',
   }),
   
-  rejectClaim: (claimId, notes = '') => request(`${API_BASE}/insurance/claims/${claimId}/reject`, {
+  rejectClaim: (claimId, notes = '') => request(`${API_BASE}/insurance/claims/${claimId}/reject?notes=${encodeURIComponent(notes)}`, {
     method: 'POST',
-    body: { notes },
   }),
 };
 
@@ -189,6 +189,7 @@ export const audit = {
     if (params.guild_id) searchParams.append('guild_id', params.guild_id);
     if (params.action) searchParams.append('action', params.action);
     if (params.actor_id) searchParams.append('actor_id', params.actor_id);
+    if (params.search) searchParams.append('search', params.search);
     if (params.page) searchParams.append('page', params.page);
     if (params.per_page) searchParams.append('per_page', params.per_page);
     return request(`${API_BASE}/audit/log?${searchParams}`);
@@ -204,6 +205,42 @@ export const stats = {
 };
 
 // ============================================================================
+// Members
+// ============================================================================
+
+export const members = {
+  list: (params = {}) => {
+    const searchParams = new URLSearchParams();
+    if (params.guild_id) searchParams.append('guild_id', params.guild_id);
+    if (params.search) searchParams.append('search', params.search);
+    if (params.filter) searchParams.append('filter', params.filter);
+    if (params.page) searchParams.append('page', params.page);
+    if (params.per_page) searchParams.append('per_page', params.per_page);
+    return request(`${API_BASE}/members/list?${searchParams}`);
+  },
+};
+
+// ============================================================================
+// Blacklist
+// ============================================================================
+
+export const blacklist = {
+  list: (params = {}) => {
+    const searchParams = new URLSearchParams();
+    if (params.guild_id) searchParams.append('guild_id', params.guild_id);
+    if (params.search) searchParams.append('search', params.search);
+    return request(`${API_BASE}/blacklist/list?${searchParams}`);
+  },
+  add: (data) => request(`${API_BASE}/blacklist/add`, {
+    method: 'POST',
+    body: data,
+  }),
+  remove: (guildId, discordId) => request(`${API_BASE}/blacklist/${guildId}/${discordId}/remove`, {
+    method: 'POST',
+  }),
+};
+
+// ============================================================================
 // Default Export
 // ============================================================================
 
@@ -216,4 +253,6 @@ export default {
   settings,
   audit,
   stats,
+  members,
+  blacklist,
 };

@@ -4,37 +4,12 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useGuilds } from '../hooks/useGuilds';
-import { Card, CardContent, CardHeader, CardTitle, Badge, Button, Modal } from '../components/ui';
-
-// We'll need to add this endpoint to the API
-const API_BASE = '/api';
-
-async function request(url, options = {}) {
-  const config = {
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-    ...options,
-  };
-
-  if (options.body && typeof options.body === 'object') {
-    config.body = JSON.stringify(options.body);
-  }
-
-  const response = await fetch(url, config);
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-    throw new Error(error.detail || error.error || `HTTP ${response.status}`);
-  }
-
-  return response.json();
-}
+import { Card, CardContent, Badge, Button, useToast } from '../components/ui';
+import { members } from '../lib/api';
 
 export default function MembersPage() {
   const { selectedGuildId, selectedGuild } = useGuilds();
+  const { addToast } = useToast();
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -52,29 +27,22 @@ export default function MembersPage() {
     setError(null);
 
     try {
-      const params = new URLSearchParams({
+      const data = await members.list({
         guild_id: selectedGuildId,
         page,
         per_page: perPage,
+        search: searchQuery || undefined,
+        filter: filterType !== 'all' ? filterType : undefined,
       });
-      if (searchQuery) params.append('search', searchQuery);
-      if (filterType !== 'all') params.append('filter', filterType);
-
-      const data = await request(`${API_BASE}/members/list?${params}`);
       setMembers(data.members || []);
       setTotal(data.total || 0);
     } catch (err) {
-      // If endpoint doesn't exist yet, show placeholder data
-      if (err.message.includes('404') || err.message.includes('Not Found')) {
-        setMembers([]);
-        setTotal(0);
-      } else {
-        setError(err.message);
-      }
+      setError(err.message);
+      addToast({ title: 'Failed to load members', description: err.message, variant: 'error' });
     } finally {
       setLoading(false);
     }
-  }, [selectedGuildId, page, searchQuery, filterType]);
+  }, [selectedGuildId, page, searchQuery, filterType, addToast]);
 
   useEffect(() => {
     loadMembers();

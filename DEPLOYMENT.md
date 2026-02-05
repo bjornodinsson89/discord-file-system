@@ -67,7 +67,7 @@ FERNET_KEY=your_generated_fernet_key
 
 # Dashboard
 DASHBOARD_URL=https://your-service.up.railway.app
-DASHBOARD_SECRET_KEY=generate_a_random_string
+DASHBOARD_SECRET_KEY=generate_a_random_string  # Must remain stable across deploys
 FRONTEND_URL=https://your-service.up.railway.app
 ```
 
@@ -103,13 +103,13 @@ GUILD_ID=your_test_guild_id
 
 ### 4. Configure Build
 
-Create `railway.json` in the repo root:
+Create `railway.json` in the repo root (already included in this repo):
 ```json
 {
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
     "builder": "NIXPACKS",
-    "buildCommand": "cd frontend && npm install && npm run build && cd .."
+    "buildCommand": "pip install -r requirements.txt && cd frontend && npm ci && npm run build"
   },
   "deploy": {
     "startCommand": "python bot.py",
@@ -190,6 +190,10 @@ GET /api/health
 ### "Session expired"
 - `DASHBOARD_SECRET_KEY` must be consistent across deploys
 - Store it in Railway variables, not generated randomly
+
+### "Dashboard link points at the wrong domain"
+- Set `FRONTEND_URL` (and `DASHBOARD_URL`) to the public Railway web domain
+- Re-deploy so the `/dashboard` command uses the correct URL
 
 ## Scaling
 

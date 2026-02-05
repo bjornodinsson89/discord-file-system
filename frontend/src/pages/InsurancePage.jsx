@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useGuilds } from '../hooks/useGuilds';
 import { insurance } from '../lib/api';
-import { Card, CardContent, CardHeader, CardTitle, Badge, Button, Modal } from '../components/ui';
+import { Card, CardContent, CardHeader, CardTitle, Badge, Button, Modal, useToast } from '../components/ui';
 import { CreatePolicyForm } from '../components/forms';
 
 const COVERAGE_LABELS = {
@@ -23,6 +23,7 @@ const CLAIM_STATUS_LABELS = {
 
 export default function InsurancePage() {
   const { selectedGuildId, selectedGuild } = useGuilds();
+  const { addToast } = useToast();
   const [activeTab, setActiveTab] = useState('policies');
   const [policies, setPolicies] = useState([]);
   const [claims, setClaims] = useState([]);
@@ -39,10 +40,11 @@ export default function InsurancePage() {
       setPolicies(data.policies || []);
     } catch (err) {
       setError(err.message);
+      addToast({ title: 'Failed to load policies', description: err.message, variant: 'error' });
     } finally {
       setLoading(false);
     }
-  }, [selectedGuildId]);
+  }, [selectedGuildId, addToast]);
 
   const loadClaims = useCallback(async () => {
     setLoading(true);
@@ -51,10 +53,11 @@ export default function InsurancePage() {
       setClaims(data.claims || []);
     } catch (err) {
       setError(err.message);
+      addToast({ title: 'Failed to load claims', description: err.message, variant: 'error' });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [addToast]);
 
   const loadProviders = useCallback(async () => {
     setLoading(true);
@@ -63,10 +66,11 @@ export default function InsurancePage() {
       setProviders(data.providers || []);
     } catch (err) {
       setError(err.message);
+      addToast({ title: 'Failed to load providers', description: err.message, variant: 'error' });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [addToast]);
 
   useEffect(() => {
     if (activeTab === 'policies') loadPolicies();
@@ -74,7 +78,7 @@ export default function InsurancePage() {
     else if (activeTab === 'providers') loadProviders();
   }, [activeTab, loadPolicies, loadClaims, loadProviders]);
 
-  const handleClaimAction = async (claimId, action, notes = '') => {
+  const handleClaimAction = async (claimId, action) => {
     try {
       if (action === 'approve') {
         await insurance.approveClaim(claimId);
@@ -83,8 +87,10 @@ export default function InsurancePage() {
         await insurance.rejectClaim(claimId, reason || '');
       }
       loadClaims();
+      const statusLabel = action === 'approve' ? 'approved' : 'rejected';
+      addToast({ title: 'Claim updated', description: `Claim ${statusLabel} successfully.`, variant: 'success' });
     } catch (err) {
-      alert(`Failed to ${action} claim: ${err.message}`);
+      addToast({ title: `Failed to ${action} claim`, description: err.message, variant: 'error' });
     }
   };
 
@@ -92,8 +98,9 @@ export default function InsurancePage() {
     try {
       await insurance.approveProvider(providerId, status);
       loadProviders();
+      addToast({ title: 'Provider updated', description: `Provider ${status}.`, variant: 'success' });
     } catch (err) {
-      alert(`Failed to update provider: ${err.message}`);
+      addToast({ title: 'Failed to update provider', description: err.message, variant: 'error' });
     }
   };
 
@@ -176,6 +183,7 @@ export default function InsurancePage() {
           onSuccess={() => {
             setShowCreateModal(false);
             loadPolicies();
+            addToast({ title: 'Policy created', description: 'Insurance policy created successfully.', variant: 'success' });
           }}
           onCancel={() => setShowCreateModal(false)}
         />
