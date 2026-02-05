@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python311", "gcc", "nodejs_20"]
+
+[phases.build]
+cmds = ["cd frontend && npm install && npm run build && cd .."]
+
+[start]
+cmd = "python bot.py"
