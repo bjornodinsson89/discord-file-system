@@ -278,13 +278,32 @@ async def stats(interaction: discord.Interaction):
 @bot.tree.command(name="dashboard", description="Get a link to the web dashboard")
 async def dashboard(interaction: discord.Interaction):
     """Show dashboard link."""
-    embed = create_info_embed(
-        f"{config.EMOJI_CHART} Happy Jumper Dashboard",
-        f"Access the admin dashboard to create sessions, raffles, and manage insurance.\n\n"
-        f"**URL:** {config.DASHBOARD_URL}\n\n"
-        f"*Login with Discord to access admin features.*"
+    embed = discord.Embed(
+        title=f"{config.EMOJI_CHART} Happy Jumper Dashboard",
+        description=(
+            "Access the admin dashboard to manage all bot features from a beautiful web interface.\n\n"
+            f"**Dashboard URL:**\n{config.DASHBOARD_URL}\n\n"
+            "**Features:**\n"
+            f"{config.EMOJI_JUMP} Create & manage 99k jump sessions\n"
+            f"{config.EMOJI_TICKET} Create & run raffles\n"
+            f"{config.EMOJI_SHIELD} Insurance policies & claims\n"
+            f"{config.EMOJI_LIST} Full audit logging\n"
+            f"{config.EMOJI_USER} Member management\n\n"
+            "*Login with Discord to access admin features.*"
+        ),
+        color=config.COLOR_PRIMARY
     )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    embed.set_footer(text="Secure OAuth2 authentication via Discord")
+
+    # Add a button view for direct access
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(
+        label="Open Dashboard",
+        url=config.DASHBOARD_URL,
+        style=discord.ButtonStyle.link
+    ))
+
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 # ============================================================================

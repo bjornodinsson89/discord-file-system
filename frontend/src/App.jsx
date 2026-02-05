@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react'
+import React from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import axios from 'axios'
 
-// Pages (to be implemented)
+// Pages
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import SessionsPage from './pages/SessionsPage'
@@ -10,6 +9,8 @@ import RafflesPage from './pages/RafflesPage'
 import InsurancePage from './pages/InsurancePage'
 import SettingsPage from './pages/SettingsPage'
 import AuditLogPage from './pages/AuditLogPage'
+import MembersPage from './pages/MembersPage'
+import BlacklistPage from './pages/BlacklistPage'
 
 // Layout
 import DashboardLayout from './components/DashboardLayout'
@@ -24,8 +25,11 @@ function AppRoutes() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-950">
         <div className="text-center">
-          <div className="inline-block animate-spin w-8 h-8 border-4 border-purple-500 border-t-transparent rounded-full mb-4"></div>
-          <p className="text-white">Loading...</p>
+          <div className="relative">
+            <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-purple-600 to-pink-600 animate-pulse" />
+            <div className="absolute inset-0 w-16 h-16 rounded-xl bg-gradient-to-br from-purple-600 to-pink-600 animate-ping opacity-30" />
+          </div>
+          <p className="text-gray-400 mt-6 font-medium">Loading Dashboard...</p>
         </div>
       </div>
     )
@@ -45,6 +49,8 @@ function AppRoutes() {
           <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/raffles" element={<RafflesPage />} />
           <Route path="/insurance" element={<InsurancePage />} />
+          <Route path="/members" element={<MembersPage />} />
+          <Route path="/blacklist" element={<BlacklistPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/audit" element={<AuditLogPage />} />
         </Route>
