@@ -58,7 +58,7 @@ export default function DashboardPage() {
             </div>
             <h2 className="text-xl font-bold text-white mb-2">No Server Access</h2>
             <p className="text-gray-400">
-              You don't have admin access to any servers with Happy Jumper installed.
+              You don&apos;t have admin access to any servers with Happy Jumper installed.
               Make sure you have Administrator permission or the configured admin role.
             </p>
           </CardContent>
@@ -74,7 +74,7 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-3xl font-bold text-white">Dashboard</h1>
           <p className="text-gray-400 mt-1">
-            Welcome back! Here's what's happening with {selectedGuild?.name || 'your server'}.
+            Welcome back! Here&apos;s what&apos;s happening with {selectedGuild?.name || 'your server'}.
           </p>
         </div>
         <div className="flex gap-3">
