@@ -19,7 +19,7 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:8000")
 DASHBOARD_SECRET_KEY_ENV = os.getenv("DASHBOARD_SECRET_KEY")
 DASHBOARD_SECRET_KEY = DASHBOARD_SECRET_KEY_ENV or os.urandom(32).hex()
-OAUTH_REDIRECT_URI = f"{DASHBOARD_URL}/auth/callback"
+OAUTH_REDIRECT_URI = f"{DASHBOARD_URL}/login/auth/callback"
 FRONTEND_URL = os.getenv("FRONTEND_URL", DASHBOARD_URL)
 
 # ============================================================================
@@ -70,12 +70,12 @@ API_RATE_LIMIT_BURST = 10
 # HAPPY JUMP SETTINGS
 # ============================================================================
 DEFAULT_RESERVATION_TIMEOUT = 5
-MAX_JUMP_SPOTS = 30
+MAX_JUMP_SPOTS = 10
 MIN_JUMP_SPOTS = 1
 MAX_XANAX_STACK = 3  # Updated for new validation
 MIN_XANAX_STACK = 1
-MAX_START_DELAY_HOURS = 72
-MIN_ENERGY_REQUIREMENT = 50
+MAX_START_DELAY_HOURS = 30
+MIN_ENERGY_REQUIREMENT = 250
 
 # ============================================================================
 # INSURANCE SETTINGS
