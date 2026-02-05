@@ -73,14 +73,28 @@ frontend_build = Path(__file__).parent.parent / "frontend" / "dist"
 if frontend_build.exists():
     # Serve static assets
     app.mount("/assets", StaticFiles(directory=frontend_build / "assets"), name="assets")
-    
+
+    @app.get("/", response_class=HTMLResponse)
+    async def spa_root():
+        """Serve the SPA entrypoint at the site root.
+
+        In some FastAPI/Starlette versions, the catch-all route
+        ("/{full_path:path}") may not match an empty path reliably. Having an
+        explicit root route avoids a default 404 JSON response.
+        """
+        index_file = frontend_build / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+        return {"error": "Frontend not built"}
+
     # Serve index.html for all other routes (SPA)
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         """Serve React SPA for all non-API routes."""
+        # Let API/auth paths fall through to normal 404 handling.
         if full_path.startswith(("api/", "auth/")):
-            return {"error": "Not found"}
-        
+            return Response(content="Not Found", status_code=404)
+
         index_file = frontend_build / "index.html"
         if index_file.exists():
             return FileResponse(index_file)
@@ -112,8 +126,8 @@ async def not_found_handler(request: Request, exc):
     """Return index.html for 404s (SPA routing)."""
     if request.url.path.startswith(("/api/", "/auth/")):
         return Response(content="Not Found", status_code=404)
-    
+
     if frontend_build.exists():
         return FileResponse(frontend_build / "index.html")
-    
+
     return Response(content="Not Found", status_code=404)
