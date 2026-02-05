@@ -70,6 +70,234 @@ async def get_guild_roles(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@guild_router.get("/{guild_id}", response_model=GuildInfoResponse)
+async def get_guild_info(
+    guild_id: int,
+    user: dict = Depends(get_current_user)
+):
+    """Get basic guild info."""
+    await require_guild_admin(guild_id, user)
+
+    bot = get_bot()
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found or bot not in guild")
+
+    return GuildInfoResponse(
+        id=guild.id,
+        name=guild.name,
+        icon=guild.icon.url if guild.icon else None,
+        member_count=guild.member_count
+    )
+
+
+# ============================================================================
+# MEMBERS ROUTER
+# ============================================================================
+
+members_router = APIRouter()
+
+@members_router.get("/list", response_model=MemberListResponse)
+async def list_members(
+    guild_id: int,
+    search: Optional[str] = None,
+    filter: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    user: dict = Depends(get_current_user)
+):
+    """List members in a guild with dashboard metadata."""
+    await require_guild_admin(guild_id, user)
+
+    bot = get_bot()
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found or bot not in guild")
+
+    members = list(guild.members)
+    if not members and not guild.chunked:
+        try:
+            await guild.chunk()
+            members = list(guild.members)
+        except Exception:
+            pass
+
+    if not members:
+        try:
+            members = [m async for m in guild.fetch_members(limit=None)]
+        except Exception:
+            members = []
+
+    discord_ids = [m.id for m in members]
+    db = get_database()
+    api_keys = await db.get_user_api_keys_by_ids(discord_ids)
+    reputations = await db.get_host_reputation_by_ids(discord_ids)
+    providers = await db.get_providers_by_discord_ids(discord_ids)
+    activity_stats = await db.get_member_activity_stats(guild_id, discord_ids)
+
+    api_map = {row["discord_id"]: row for row in api_keys}
+    reputation_map = {row["discord_id"]: row for row in reputations}
+    provider_map = {row["discord_id"]: row for row in providers}
+
+    entries: List[MemberSummary] = []
+    for member in members:
+        api_key = api_map.get(member.id)
+        reputation = reputation_map.get(member.id)
+        provider = provider_map.get(member.id)
+        stats = activity_stats.get(member.id, {"sessions_joined": 0, "sessions_hosted": 0})
+
+        entry = MemberSummary(
+            discord_id=member.id,
+            username=member.name,
+            display_name=member.display_name,
+            avatar=member.display_avatar.url if member.display_avatar else None,
+            torn_user_id=api_key["torn_user_id"] if api_key else None,
+            has_api_key=api_key is not None,
+            is_host=reputation is not None,
+            is_insurer=provider is not None and provider.get("approval_status") == "approved",
+            sessions_joined=stats.get("sessions_joined", 0),
+            sessions_hosted=stats.get("sessions_hosted", 0),
+            created_at=api_key["created_at"] if api_key else None
+        )
+        entries.append(entry)
+
+    if search:
+        lowered = search.lower()
+        def matches(entry: MemberSummary) -> bool:
+            if lowered in str(entry.discord_id):
+                return True
+            if entry.torn_user_id and lowered in str(entry.torn_user_id):
+                return True
+            if entry.username and lowered in entry.username.lower():
+                return True
+            if entry.display_name and lowered in entry.display_name.lower():
+                return True
+            return False
+        entries = [entry for entry in entries if matches(entry)]
+
+    if filter == "with_key":
+        entries = [entry for entry in entries if entry.has_api_key]
+    elif filter == "hosts":
+        entries = [entry for entry in entries if entry.is_host]
+    elif filter == "insurers":
+        entries = [entry for entry in entries if entry.is_insurer]
+
+    entries.sort(key=lambda e: (e.username or "").lower())
+    total = len(entries)
+    start = (page - 1) * per_page
+    end = start + per_page
+
+    return MemberListResponse(
+        members=entries[start:end],
+        total=total,
+        page=page,
+        per_page=per_page
+    )
+
+
+# ============================================================================
+# BLACKLIST ROUTER
+# ============================================================================
+
+blacklist_router = APIRouter()
+
+@blacklist_router.get("/list", response_model=BlacklistListResponse)
+async def list_blacklist(
+    guild_id: int,
+    search: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """List blacklisted users for a guild."""
+    await require_guild_admin(guild_id, user)
+
+    db = get_database()
+    entries = await db.get_blacklist(guild_id)
+    discord_ids = [entry["discord_id"] for entry in entries]
+    api_keys = await db.get_user_api_keys_by_ids(discord_ids)
+    api_map = {row["discord_id"]: row for row in api_keys}
+
+    bot = get_bot()
+    guild = bot.get_guild(guild_id)
+    member_map = {}
+    if guild:
+        member_map = {member.id: member for member in guild.members}
+
+    results: List[BlacklistEntry] = []
+    for entry in entries:
+        member = member_map.get(entry["discord_id"])
+        api_key = api_map.get(entry["discord_id"])
+        results.append(BlacklistEntry(
+            guild_id=entry["guild_id"],
+            discord_id=entry["discord_id"],
+            username=member.name if member else None,
+            torn_user_id=api_key["torn_user_id"] if api_key else None,
+            reason=entry.get("reason"),
+            banned_by=entry.get("banned_by"),
+            expires_at=entry.get("expires_at"),
+            created_at=entry.get("created_at")
+        ))
+
+    if search:
+        lowered = search.lower()
+        def matches(entry: BlacklistEntry) -> bool:
+            if lowered in str(entry.discord_id):
+                return True
+            if entry.torn_user_id and lowered in str(entry.torn_user_id):
+                return True
+            if entry.reason and lowered in entry.reason.lower():
+                return True
+            if entry.username and lowered in entry.username.lower():
+                return True
+            return False
+        results = [entry for entry in results if matches(entry)]
+
+    return BlacklistListResponse(entries=results)
+
+
+@blacklist_router.post("/add", response_model=SuccessResponse)
+async def add_blacklist_entry(
+    request: AddBlacklistRequest,
+    user: dict = Depends(get_current_user)
+):
+    """Add a user to the blacklist."""
+    await require_guild_admin(request.guild_id, user)
+
+    db = get_database()
+    await db.add_to_blacklist(
+        request.guild_id,
+        request.discord_id,
+        request.reason or "No reason provided",
+        int(user["id"]),
+        request.expires_at
+    )
+    await db.log_audit(
+        int(user["id"]), "blacklist_added", "member", request.discord_id,
+        {"reason": request.reason, "expires_at": request.expires_at.isoformat() if request.expires_at else None},
+        guild_id=request.guild_id, source='dashboard'
+    )
+
+    return SuccessResponse(message="User added to blacklist")
+
+
+@blacklist_router.post("/{guild_id}/{discord_id}/remove", response_model=SuccessResponse)
+async def remove_blacklist_entry(
+    guild_id: int,
+    discord_id: int,
+    user: dict = Depends(get_current_user)
+):
+    """Remove a user from the blacklist."""
+    await require_guild_admin(guild_id, user)
+
+    db = get_database()
+    await db.remove_from_blacklist(guild_id, discord_id)
+    await db.log_audit(
+        int(user["id"]), "blacklist_removed", "member", discord_id,
+        guild_id=guild_id, source='dashboard'
+    )
+
+    return SuccessResponse(message="User removed from blacklist")
+
+
 # ============================================================================
 # SESSIONS ROUTER
 # ============================================================================
@@ -539,6 +767,7 @@ async def get_audit_log(
     guild_id: int,
     action: Optional[str] = None,
     actor_id: Optional[int] = None,
+    search: Optional[str] = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
     user: dict = Depends(get_current_user)
@@ -553,13 +782,15 @@ async def get_audit_log(
         limit=per_page,
         page=page,
         actor_discord_id=actor_id,
-        action=action
+        action=action,
+        search=search
     )
     
     total = await db.get_audit_log_count(
         guild_id=guild_id,
         actor_discord_id=actor_id,
-        action=action
+        action=action,
+        search=search
     )
     
     return AuditLogResponse(

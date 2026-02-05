@@ -90,6 +90,17 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM user_api_keys")
             return [dict(row) for row in rows]
+
+    async def get_user_api_keys_by_ids(self, discord_ids: List[int]) -> List[Dict]:
+        """Get API key records for a list of Discord IDs."""
+        if not discord_ids:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM user_api_keys WHERE discord_id = ANY($1::bigint[])",
+                discord_ids
+            )
+            return [dict(row) for row in rows]
     
     # ========================================================================
     # GUILD SETTINGS
@@ -161,7 +172,8 @@ class DatabaseManager:
         page: int = 1,
         actor_discord_id: Optional[int] = None,
         action: Optional[str] = None,
-        target_type: Optional[str] = None
+        target_type: Optional[str] = None,
+        search: Optional[str] = None
     ) -> List[Dict]:
         """Get audit logs with filtering and pagination."""
         query = "SELECT * FROM audit_log WHERE 1=1"
@@ -187,6 +199,11 @@ class DatabaseManager:
             query += f" AND target_type = ${idx}"
             values.append(target_type)
             idx += 1
+
+        if search:
+            query += f" AND (action ILIKE ${idx} OR target_type ILIKE ${idx} OR CAST(target_id AS TEXT) ILIKE ${idx} OR CAST(actor_discord_id AS TEXT) ILIKE ${idx})"
+            values.append(f"%{search}%")
+            idx += 1
         
         offset = (page - 1) * limit
         query += f" ORDER BY created_at DESC LIMIT ${idx} OFFSET ${idx + 1}"
@@ -200,7 +217,8 @@ class DatabaseManager:
         self,
         guild_id: Optional[int] = None,
         actor_discord_id: Optional[int] = None,
-        action: Optional[str] = None
+        action: Optional[str] = None,
+        search: Optional[str] = None
     ) -> int:
         """Get total count of audit logs matching filters."""
         query = "SELECT COUNT(*) FROM audit_log WHERE 1=1"
@@ -220,6 +238,11 @@ class DatabaseManager:
         if action:
             query += f" AND action = ${idx}"
             values.append(action)
+            idx += 1
+
+        if search:
+            query += f" AND (action ILIKE ${idx} OR target_type ILIKE ${idx} OR CAST(target_id AS TEXT) ILIKE ${idx} OR CAST(actor_discord_id AS TEXT) ILIKE ${idx})"
+            values.append(f"%{search}%")
             idx += 1
         
         async with self.pool.acquire() as conn:
@@ -642,6 +665,17 @@ class DatabaseManager:
                 SELECT * FROM host_reputation WHERE discord_id = $1
             """, discord_id)
             return dict(row) if row else None
+
+    async def get_host_reputation_by_ids(self, discord_ids: List[int]) -> List[Dict]:
+        """Get host reputation entries for a list of Discord IDs."""
+        if not discord_ids:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM host_reputation WHERE discord_id = ANY($1::bigint[])",
+                discord_ids
+            )
+            return [dict(row) for row in rows]
     
     async def update_host_reputation(self, discord_id: int, torn_id: int, completed: bool):
         """Update host reputation after session."""
@@ -778,6 +812,49 @@ class DatabaseManager:
                 SELECT * FROM insurance_providers WHERE provider_id = $1
             """, provider_id)
             return dict(row) if row else None
+
+    async def get_providers_by_discord_ids(self, discord_ids: List[int]) -> List[Dict]:
+        """Get insurance providers for a list of Discord IDs."""
+        if not discord_ids:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM insurance_providers WHERE discord_id = ANY($1::bigint[])",
+                discord_ids
+            )
+            return [dict(row) for row in rows]
+
+    async def get_member_activity_stats(self, guild_id: int, discord_ids: List[int]) -> Dict[int, Dict[str, int]]:
+        """Get per-member activity stats for a guild."""
+        if not discord_ids:
+            return {}
+
+        async with self.pool.acquire() as conn:
+            joined_rows = await conn.fetch("""
+                SELECT s.discord_id, COUNT(*)::int AS sessions_joined
+                FROM happy_jump_signups s
+                JOIN happy_jump_sessions hs ON hs.id = s.session_id
+                WHERE hs.guild_id = $1 AND s.discord_id = ANY($2::bigint[])
+                GROUP BY s.discord_id
+            """, guild_id, discord_ids)
+
+            hosted_rows = await conn.fetch("""
+                SELECT host_discord_id AS discord_id, COUNT(*)::int AS sessions_hosted
+                FROM happy_jump_sessions
+                WHERE guild_id = $1 AND host_discord_id = ANY($2::bigint[])
+                GROUP BY host_discord_id
+            """, guild_id, discord_ids)
+
+        stats: Dict[int, Dict[str, int]] = {}
+        for row in joined_rows:
+            stats[int(row["discord_id"])] = {"sessions_joined": row["sessions_joined"], "sessions_hosted": 0}
+        for row in hosted_rows:
+            discord_id = int(row["discord_id"])
+            if discord_id not in stats:
+                stats[discord_id] = {"sessions_joined": 0, "sessions_hosted": row["sessions_hosted"]}
+            else:
+                stats[discord_id]["sessions_hosted"] = row["sessions_hosted"]
+        return stats
     
     async def approve_provider(self, provider_id: int, approved_by: int):
         """Approve a provider."""

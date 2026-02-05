@@ -44,8 +44,11 @@ async def login(request: Request):
 
 
 @router.get("/callback")
-async def callback(request: Request, code: str, state: str):
+async def callback(request: Request, code: Optional[str] = None, state: Optional[str] = None):
     """Handle OAuth callback from Discord."""
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state parameter")
+
     # Verify state to prevent CSRF
     session_state = request.session.get("oauth_state")
     if not session_state or session_state != state:

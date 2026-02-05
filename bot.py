@@ -257,7 +257,7 @@ async def setup(interaction: discord.Interaction):
     # Dashboard link
     embed.add_field(
         name=f"{config.EMOJI_CHART} Dashboard",
-        value=f"Configure more settings at:\n{config.DASHBOARD_URL}",
+        value=f"Configure more settings at:\n{config.FRONTEND_URL}",
         inline=False
     )
     
@@ -282,7 +282,7 @@ async def dashboard(interaction: discord.Interaction):
         title=f"{config.EMOJI_CHART} Happy Jumper Dashboard",
         description=(
             "Access the admin dashboard to manage all bot features from a beautiful web interface.\n\n"
-            f"**Dashboard URL:**\n{config.DASHBOARD_URL}\n\n"
+            f"**Dashboard URL:**\n{config.FRONTEND_URL}\n\n"
             "**Features:**\n"
             f"{config.EMOJI_JUMP} Create & manage 99k jump sessions\n"
             f"{config.EMOJI_TICKET} Create & run raffles\n"
@@ -299,7 +299,7 @@ async def dashboard(interaction: discord.Interaction):
     view = discord.ui.View()
     view.add_item(discord.ui.Button(
         label="Open Dashboard",
-        url=config.DASHBOARD_URL,
+        url=config.FRONTEND_URL,
         style=discord.ButtonStyle.link
     ))
 

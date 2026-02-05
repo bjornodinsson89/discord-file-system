@@ -17,6 +17,7 @@ import DashboardLayout from './components/DashboardLayout'
 
 // Context
 import { AuthProvider, useAuth } from './hooks/useAuth'
+import { ToastProvider } from './components/ui'
 
 function AppRoutes() {
   const { user, loading, isAuthenticated } = useAuth()
@@ -64,9 +65,11 @@ function AppRoutes() {
 function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
+      <ToastProvider>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </ToastProvider>
     </BrowserRouter>
   )
 }

@@ -63,6 +63,8 @@ app.include_router(admin_routes.insurance_router, prefix="/api/insurance", tags=
 app.include_router(admin_routes.settings_router, prefix="/api/settings", tags=["Settings"])
 app.include_router(admin_routes.audit_router, prefix="/api/audit", tags=["Audit"])
 app.include_router(admin_routes.stats_router, prefix="/api/stats", tags=["Statistics"])
+app.include_router(admin_routes.members_router, prefix="/api/members", tags=["Members"])
+app.include_router(admin_routes.blacklist_router, prefix="/api/blacklist", tags=["Blacklist"])
 
 # ============================================================================
 # STATIC FILES & SPA

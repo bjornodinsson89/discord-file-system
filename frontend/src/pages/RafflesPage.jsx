@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useGuilds } from '../hooks/useGuilds';
 import { raffles } from '../lib/api';
-import { Card, CardContent, Badge, Button, Modal } from '../components/ui';
+import { Card, CardContent, Badge, Button, Modal, useToast } from '../components/ui';
 import { CreateRaffleForm } from '../components/forms';
 
 const STATUS_LABELS = {
@@ -17,6 +17,7 @@ const STATUS_LABELS = {
 
 export default function RafflesPage() {
   const { selectedGuildId, selectedGuild } = useGuilds();
+  const { addToast } = useToast();
   const [raffleList, setRaffleList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -36,10 +37,11 @@ export default function RafflesPage() {
       setRaffleList(data.raffles || []);
     } catch (err) {
       setError(err.message);
+      addToast({ title: 'Failed to load raffles', description: err.message, variant: 'error' });
     } finally {
       setLoading(false);
     }
-  }, [selectedGuildId, statusFilter]);
+  }, [selectedGuildId, statusFilter, addToast]);
 
   useEffect(() => {
     loadRaffles();
@@ -48,6 +50,7 @@ export default function RafflesPage() {
   const handleCreateSuccess = () => {
     setShowCreateModal(false);
     loadRaffles();
+    addToast({ title: 'Raffle created', description: 'Your raffle was created successfully.', variant: 'success' });
   };
 
   const handleRaffleAction = async (raffleId, action) => {
@@ -61,7 +64,7 @@ export default function RafflesPage() {
       }
       loadRaffles();
     } catch (err) {
-      alert(`Failed to ${action} raffle: ${err.message}`);
+      addToast({ title: `Failed to ${action} raffle`, description: err.message, variant: 'error' });
     }
   };
 

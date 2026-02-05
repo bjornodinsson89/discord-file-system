@@ -4,36 +4,12 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useGuilds } from '../hooks/useGuilds';
-import { Card, CardContent, CardHeader, CardTitle, Badge, Button, Modal } from '../components/ui';
-
-const API_BASE = '/api';
-
-async function request(url, options = {}) {
-  const config = {
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-    ...options,
-  };
-
-  if (options.body && typeof options.body === 'object') {
-    config.body = JSON.stringify(options.body);
-  }
-
-  const response = await fetch(url, config);
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-    throw new Error(error.detail || error.error || `HTTP ${response.status}`);
-  }
-
-  return response.json();
-}
+import { Card, CardContent, Badge, Button, Modal, useToast } from '../components/ui';
+import { blacklist } from '../lib/api';
 
 export default function BlacklistPage() {
   const { selectedGuildId, selectedGuild } = useGuilds();
+  const { addToast } = useToast();
   const [blacklist, setBlacklist] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -47,21 +23,18 @@ export default function BlacklistPage() {
     setError(null);
 
     try {
-      const params = new URLSearchParams({ guild_id: selectedGuildId });
-      if (searchQuery) params.append('search', searchQuery);
-
-      const data = await request(`${API_BASE}/blacklist/list?${params}`);
+      const data = await blacklist.list({
+        guild_id: selectedGuildId,
+        search: searchQuery || undefined,
+      });
       setBlacklist(data.entries || []);
     } catch (err) {
-      if (err.message.includes('404') || err.message.includes('Not Found')) {
-        setBlacklist([]);
-      } else {
-        setError(err.message);
-      }
+      setError(err.message);
+      addToast({ title: 'Failed to load blacklist', description: err.message, variant: 'error' });
     } finally {
       setLoading(false);
     }
-  }, [selectedGuildId, searchQuery]);
+  }, [selectedGuildId, searchQuery, addToast]);
 
   useEffect(() => {
     loadBlacklist();
@@ -71,10 +44,11 @@ export default function BlacklistPage() {
     if (!confirm('Are you sure you want to remove this user from the blacklist?')) return;
 
     try {
-      await request(`${API_BASE}/blacklist/${entryId}/remove`, { method: 'POST' });
+      await blacklist.remove(selectedGuildId, entryId);
       loadBlacklist();
+      addToast({ title: 'Blacklist updated', description: 'User removed from blacklist.', variant: 'success' });
     } catch (err) {
-      alert(`Failed to remove: ${err.message}`);
+      addToast({ title: 'Failed to remove', description: err.message, variant: 'error' });
     }
   };
 
@@ -197,9 +171,9 @@ export default function BlacklistPage() {
                 <tbody>
                   {filteredBlacklist.map((entry) => (
                     <BlacklistRow
-                      key={entry.id || entry.discord_id}
+                      key={entry.discord_id}
                       entry={entry}
-                      onRemove={() => handleRemove(entry.id)}
+                      onRemove={() => handleRemove(entry.discord_id)}
                     />
                   ))}
                 </tbody>
@@ -287,6 +261,7 @@ function BlacklistRow({ entry, onRemove }) {
 }
 
 function AddBlacklistForm({ guildId, onSuccess, onCancel }) {
+  const { addToast } = useToast();
   const [formData, setFormData] = useState({
     discord_id: '',
     reason: '',
@@ -304,7 +279,7 @@ function AddBlacklistForm({ guildId, onSuccess, onCancel }) {
     try {
       const payload = {
         guild_id: parseInt(guildId, 10),
-        discord_id: formData.discord_id,
+        discord_id: parseInt(formData.discord_id, 10),
         reason: formData.reason || 'No reason provided',
       };
 
@@ -316,14 +291,13 @@ function AddBlacklistForm({ guildId, onSuccess, onCancel }) {
         payload.expires_at = expires.toISOString();
       }
 
-      await request(`${API_BASE}/blacklist/add`, {
-        method: 'POST',
-        body: payload,
-      });
+      await blacklist.add(payload);
 
       onSuccess();
+      addToast({ title: 'User blacklisted', description: 'Blacklist entry created successfully.', variant: 'success' });
     } catch (err) {
       setError(err.message);
+      addToast({ title: 'Failed to add to blacklist', description: err.message, variant: 'error' });
     } finally {
       setSubmitting(false);
     }

@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useGuilds } from '../hooks/useGuilds';
 import { sessions } from '../lib/api';
-import { Card, CardContent, Badge, Button, Modal } from '../components/ui';
+import { Card, CardContent, Badge, Button, Modal, useToast } from '../components/ui';
 import { CreateSessionForm } from '../components/forms';
 
 const STATUS_LABELS = {
@@ -17,6 +17,7 @@ const STATUS_LABELS = {
 
 export default function SessionsPage() {
   const { selectedGuildId, selectedGuild } = useGuilds();
+  const { addToast } = useToast();
   const [sessionList, setSessionList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -36,10 +37,11 @@ export default function SessionsPage() {
       setSessionList(data.sessions || []);
     } catch (err) {
       setError(err.message);
+      addToast({ title: 'Failed to load sessions', description: err.message, variant: 'error' });
     } finally {
       setLoading(false);
     }
-  }, [selectedGuildId, statusFilter]);
+  }, [selectedGuildId, statusFilter, addToast]);
 
   useEffect(() => {
     loadSessions();
@@ -48,6 +50,7 @@ export default function SessionsPage() {
   const handleCreateSuccess = (newSession) => {
     setShowCreateModal(false);
     loadSessions();
+    addToast({ title: 'Session created', description: `Session #${newSession?.id ?? ''} created successfully.`, variant: 'success' });
   };
 
   const handleSessionAction = async (sessionId, action) => {
@@ -57,7 +60,7 @@ export default function SessionsPage() {
       else if (action === 'complete') await sessions.complete(sessionId);
       loadSessions();
     } catch (err) {
-      alert(`Failed to ${action} session: ${err.message}`);
+      addToast({ title: `Failed to ${action} session`, description: err.message, variant: 'error' });
     }
   };
 
