@@ -391,7 +391,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     -- Action details
     action VARCHAR(100) NOT NULL,
     target_type VARCHAR(50),              -- 'session', 'raffle', 'policy', 'provider', 'user', 'settings'
-    target_id INTEGER,
+    target_id BIGINT,
     -- Payload
     payload JSONB,
     -- Source tracking

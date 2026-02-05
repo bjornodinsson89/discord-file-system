@@ -23,32 +23,42 @@ class TornAPIPermissionError(TornAPIError):
 
 
 class RateLimiter:
-    def __init__(self, max_per_minute: int = 60, burst: int = 10):
+    """Async rate limiter enforcing a rolling per-minute cap with burst control."""
+
+    def __init__(self, max_per_minute: int = 100, burst: int = 10):
         self.max_per_minute = max_per_minute
         self.burst = burst
         self.requests = deque()
         self.lock = asyncio.Lock()
     
     async def acquire(self):
-        async with self.lock:
-            now = time.time()
-            while self.requests and self.requests[0] < now - 60:
-                self.requests.popleft()
-            recent = sum(1 for t in self.requests if t > now - 1)
-            if recent >= self.burst:
-                await asyncio.sleep(1)
-                return await self.acquire()
-            if len(self.requests) >= self.max_per_minute:
-                sleep_time = 60 - (now - self.requests[0])
-                if sleep_time > 0:
-                    await asyncio.sleep(sleep_time)
-                return await self.acquire()
-            self.requests.append(now)
+        """Wait for an available slot before allowing a Torn API request."""
+        while True:
+            async with self.lock:
+                now = time.time()
+                while self.requests and self.requests[0] < now - 60:
+                    self.requests.popleft()
+                recent = sum(1 for t in self.requests if t > now - 1)
+                if recent >= self.burst:
+                    sleep_time = 1
+                elif len(self.requests) >= self.max_per_minute:
+                    sleep_time = 60 - (now - self.requests[0])
+                    if sleep_time < 0:
+                        sleep_time = 0
+                else:
+                    self.requests.append(now)
+                    return
+            await asyncio.sleep(sleep_time)
 
 
 class TornAPIClient:
+    """Torn API client with global rate limiting and shared session management."""
+
     def __init__(self):
-        self.rate_limiter = RateLimiter(config.API_RATE_LIMIT_PER_MINUTE, config.API_RATE_LIMIT_BURST)
+        self.rate_limiter = RateLimiter(
+            config.API_RATE_LIMIT_PER_MINUTE,
+            config.API_RATE_LIMIT_BURST
+        )
         self.session: Optional[aiohttp.ClientSession] = None
     
     async def _ensure_session(self):

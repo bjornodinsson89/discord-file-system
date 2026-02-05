@@ -37,23 +37,40 @@ def get_bot():
     return _get_bot()
 
 
-def check_user_has_role(guild_id: int, user_id: int, role_id: int) -> bool:
+async def check_user_has_role(guild_id: int, user_id: int, role_id: int) -> bool:
     """Check if user has a specific role in a guild using the bot."""
     try:
         bot = get_bot()
         guild = bot.get_guild(guild_id)
-        
+
         if not guild:
-            return False
-        
-        member = guild.get_member(user_id)
+            guild = await bot.fetch_guild(guild_id)
+
+        member = None
+        if hasattr(guild, "get_member"):
+            member = guild.get_member(user_id)
+        if not member:
+            try:
+                member = await guild.fetch_member(user_id)
+            except Exception:
+                member = None
+
         if not member:
             return False
-        
-        role = guild.get_role(role_id)
+
+        role = None
+        if hasattr(guild, "get_role"):
+            role = guild.get_role(role_id)
+        if not role and hasattr(guild, "fetch_roles"):
+            try:
+                roles = await guild.fetch_roles()
+                role = next((r for r in roles if r.id == role_id), None)
+            except Exception:
+                role = None
+
         if not role:
             return False
-        
+
         return role in member.roles
     except Exception as e:
         log.error(f"Error checking role: {e}")
@@ -110,7 +127,7 @@ async def require_guild_admin(
     admin_role_id = settings.get("admin_role_id")
     
     if admin_role_id:
-        if check_user_has_role(guild_id, user_id, admin_role_id):
+        if await check_user_has_role(guild_id, user_id, admin_role_id):
             log.debug(f"User {user_id} granted access via admin_role_id {admin_role_id}")
             return user
     
@@ -141,7 +158,7 @@ async def get_user_guilds(user: Dict = Depends(get_current_user)) -> list:
             settings = await db.get_guild_settings(guild_id)
             admin_role_id = settings.get("admin_role_id")
             
-            if admin_role_id and check_user_has_role(guild_id, user_id, admin_role_id):
+            if admin_role_id and await check_user_has_role(guild_id, user_id, admin_role_id):
                 admin_guilds.append(guild)
         except Exception:
             # Skip guilds where we can't check settings

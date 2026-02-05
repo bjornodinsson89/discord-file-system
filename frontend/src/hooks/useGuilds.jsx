@@ -9,26 +9,26 @@ import { useAuth } from './useAuth';
 const GuildContext = createContext(null);
 
 export function GuildProvider({ children }) {
-  const { user, getAdminGuilds } = useAuth();
+  const { user, getAdminGuilds, adminGuilds } = useAuth();
   const [selectedGuildId, setSelectedGuildId] = useState(null);
   const [guilds, setGuilds] = useState([]);
 
   useEffect(() => {
     if (user) {
-      const adminGuilds = getAdminGuilds();
-      setGuilds(adminGuilds);
+      const resolvedGuilds = adminGuilds.length > 0 ? adminGuilds : getAdminGuilds();
+      setGuilds(resolvedGuilds);
       
       // Auto-select first guild if none selected
-      if (!selectedGuildId && adminGuilds.length > 0) {
+      if (!selectedGuildId && resolvedGuilds.length > 0) {
         const savedGuild = localStorage.getItem('selectedGuildId');
-        if (savedGuild && adminGuilds.find(g => g.id === savedGuild)) {
+        if (savedGuild && resolvedGuilds.find(g => g.id === savedGuild)) {
           setSelectedGuildId(savedGuild);
         } else {
-          setSelectedGuildId(adminGuilds[0].id);
+          setSelectedGuildId(resolvedGuilds[0].id);
         }
       }
     }
-  }, [user, getAdminGuilds]);
+  }, [user, getAdminGuilds, adminGuilds, selectedGuildId]);
 
   const selectGuild = useCallback((guildId) => {
     setSelectedGuildId(guildId);

@@ -228,7 +228,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     actor_discord_id BIGINT,
     action VARCHAR(100) NOT NULL,
     target_type VARCHAR(50),
-    target_id INTEGER,
+    target_id BIGINT,
     payload JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );

@@ -53,6 +53,7 @@ export const guilds = {
   getChannels: (guildId) => request(`${API_BASE}/guilds/${guildId}/channels`),
   getRoles: (guildId) => request(`${API_BASE}/guilds/${guildId}/roles`),
   getInfo: (guildId) => request(`${API_BASE}/guilds/${guildId}`),
+  getAdminGuilds: () => request(`${API_BASE}/guilds/admin`),
 };
 
 // ============================================================================

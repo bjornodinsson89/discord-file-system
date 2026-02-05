@@ -381,7 +381,7 @@ CREATE TABLE audit_log (
     actor_torn_id INTEGER,
     action VARCHAR(100) NOT NULL,
     target_type VARCHAR(50),
-    target_id INTEGER,
+    target_id BIGINT,
     payload JSONB,
     ip_address VARCHAR(45),
     user_agent TEXT,
