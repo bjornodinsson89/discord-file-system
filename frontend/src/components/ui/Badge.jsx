@@ -22,19 +22,16 @@ const STATUS_VARIANTS = {
   locked: 'warning',
   completed: 'info',
   cancelled: 'error',
-  
+
   // Raffles
   active: 'success',
   drawing: 'warning',
-  
-  // Claims
+
+  // Claims & Providers (same keys)
   pending: 'warning',
   approved: 'success',
   rejected: 'error',
   paid: 'info',
-  
-  // Providers
-  approved: 'success',
   disabled: 'error',
 };
 
