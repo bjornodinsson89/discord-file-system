@@ -5,12 +5,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useGuilds } from '../hooks/useGuilds';
 import { Card, CardContent, Badge, Button, Modal, useToast } from '../components/ui';
-import { blacklist } from '../lib/api';
+import { blacklist as blacklistApi } from '../lib/api';
 
 export default function BlacklistPage() {
   const { selectedGuildId, selectedGuild } = useGuilds();
   const { addToast } = useToast();
-  const [blacklist, setBlacklist] = useState([]);
+  const [blacklistEntries, setBlacklistEntries] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -23,11 +23,11 @@ export default function BlacklistPage() {
     setError(null);
 
     try {
-      const data = await blacklist.list({
+      const data = await blacklistApi.list({
         guild_id: selectedGuildId,
         search: searchQuery || undefined,
       });
-      setBlacklist(data.entries || []);
+      setBlacklistEntries(data.entries || []);
     } catch (err) {
       setError(err.message);
       addToast({ title: 'Failed to load blacklist', description: err.message, variant: 'error' });
@@ -44,7 +44,7 @@ export default function BlacklistPage() {
     if (!confirm('Are you sure you want to remove this user from the blacklist?')) return;
 
     try {
-      await blacklist.remove(selectedGuildId, entryId);
+      await blacklistApi.remove(selectedGuildId, entryId);
       loadBlacklist();
       addToast({ title: 'Blacklist updated', description: 'User removed from blacklist.', variant: 'success' });
     } catch (err) {
@@ -52,7 +52,7 @@ export default function BlacklistPage() {
     }
   };
 
-  const filteredBlacklist = blacklist.filter(entry => {
+  const filteredBlacklist = blacklistEntries.filter(entry => {
     if (!searchQuery) return true;
     const query = searchQuery.toLowerCase();
     return (
@@ -89,7 +89,7 @@ export default function BlacklistPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-400">Total Blacklisted</p>
-              <p className="text-3xl font-bold text-white mt-1">{blacklist.length}</p>
+              <p className="text-3xl font-bold text-white mt-1">{blacklistEntries.length}</p>
             </div>
             <span className="text-3xl">🚫</span>
           </div>
@@ -99,7 +99,7 @@ export default function BlacklistPage() {
             <div>
               <p className="text-sm text-gray-400">Temporary Bans</p>
               <p className="text-3xl font-bold text-white mt-1">
-                {blacklist.filter(e => e.expires_at).length}
+                {blacklistEntries.filter(e => e.expires_at).length}
               </p>
             </div>
             <span className="text-3xl">⏰</span>
@@ -110,7 +110,7 @@ export default function BlacklistPage() {
             <div>
               <p className="text-sm text-gray-400">Permanent Bans</p>
               <p className="text-3xl font-bold text-white mt-1">
-                {blacklist.filter(e => !e.expires_at).length}
+                {blacklistEntries.filter(e => !e.expires_at).length}
               </p>
             </div>
             <span className="text-3xl">❌</span>
@@ -291,7 +291,7 @@ function AddBlacklistForm({ guildId, onSuccess, onCancel }) {
         payload.expires_at = expires.toISOString();
       }
 
-      await blacklist.add(payload);
+      await blacklistApi.add(payload);
 
       onSuccess();
       addToast({ title: 'User blacklisted', description: 'Blacklist entry created successfully.', variant: 'success' });
@@ -331,7 +331,7 @@ function AddBlacklistForm({ guildId, onSuccess, onCancel }) {
           className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-red-500"
         />
         <p className="text-xs text-gray-500 mt-1">
-          Right-click the user in Discord and select "Copy User ID"
+          Right-click the user in Discord and select &quot;Copy User ID&quot;
         </p>
       </div>
 

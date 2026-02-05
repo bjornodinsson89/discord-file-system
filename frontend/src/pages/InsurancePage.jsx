@@ -154,23 +154,20 @@ export default function InsurancePage() {
       ) : (
         <>
           {activeTab === 'policies' && (
-            <PoliciesList 
-              policies={policies} 
-              onRefresh={loadPolicies}
+            <PoliciesList
+              policies={policies}
             />
           )}
           {activeTab === 'claims' && (
-            <ClaimsList 
-              claims={claims} 
+            <ClaimsList
+              claims={claims}
               onAction={handleClaimAction}
-              onRefresh={loadClaims}
             />
           )}
           {activeTab === 'providers' && (
-            <ProvidersList 
+            <ProvidersList
               providers={providers}
               onAction={handleProviderAction}
-              onRefresh={loadProviders}
             />
           )}
         </>
@@ -192,7 +189,7 @@ export default function InsurancePage() {
   );
 }
 
-function PoliciesList({ policies, onRefresh }) {
+function PoliciesList({ policies }) {
   if (policies.length === 0) {
     return (
       <Card>
@@ -251,7 +248,7 @@ function PoliciesList({ policies, onRefresh }) {
   );
 }
 
-function ClaimsList({ claims, onAction, onRefresh }) {
+function ClaimsList({ claims, onAction }) {
   const pendingClaims = claims.filter(c => c.status === 'pending');
   const resolvedClaims = claims.filter(c => c.status !== 'pending');
 
@@ -355,7 +352,7 @@ function ClaimCard({ claim, onAction }) {
   );
 }
 
-function ProvidersList({ providers, onAction, onRefresh }) {
+function ProvidersList({ providers, onAction }) {
   if (providers.length === 0) {
     return (
       <Card>

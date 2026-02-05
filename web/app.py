@@ -37,6 +37,7 @@ app.add_middleware(
     secret_key=config.DASHBOARD_SECRET_KEY,
     max_age=86400 * 7,  # 7 days
     https_only=config.DASHBOARD_URL.startswith("https"),
+    same_site="none" if config.DASHBOARD_URL.startswith("https") else "lax",
 )
 
 # CORS for development

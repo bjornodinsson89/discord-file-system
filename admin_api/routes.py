@@ -6,7 +6,9 @@ FastAPI route definitions for all admin endpoints.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, List
 
-from web.permissions import get_current_user, require_guild_admin
+import discord
+
+from web.permissions import get_current_user, require_guild_admin, get_user_guilds
 from admin_api.schemas import *
 from admin_api.handlers import *
 from utils import get_database
@@ -17,6 +19,50 @@ from utils import get_database
 
 guild_router = APIRouter()
 
+async def _resolve_guild(bot: discord.Client, guild_id: int) -> discord.Guild:
+    guild = bot.get_guild(guild_id)
+    if guild:
+        return guild
+
+    try:
+        return await bot.fetch_guild(guild_id)
+    except discord.NotFound:
+        raise HTTPException(status_code=404, detail="Guild not found or bot not in guild")
+    except discord.Forbidden:
+        raise HTTPException(status_code=403, detail="Bot lacks access to this guild")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _resolve_bot_member(guild: discord.Guild, bot: discord.Client) -> Optional[discord.Member]:
+    if hasattr(guild, "me") and guild.me:
+        return guild.me
+
+    if not bot.user:
+        return None
+
+    member = None
+    if hasattr(guild, "get_member"):
+        member = guild.get_member(bot.user.id)
+    if not member and hasattr(guild, "fetch_member"):
+        try:
+            member = await guild.fetch_member(bot.user.id)
+        except Exception:
+            return None
+    return member
+
+
+@guild_router.get("/admin")
+async def list_admin_guilds(
+    user: dict = Depends(get_current_user)
+):
+    """List guilds the user can administer."""
+    guilds = await get_user_guilds(user)
+    return {"guilds": guilds}
+
+
 @guild_router.get("/{guild_id}/channels")
 async def get_guild_channels(
     guild_id: int,
@@ -25,22 +71,25 @@ async def get_guild_channels(
     """Get list of text channels in guild."""
     await require_guild_admin(guild_id, user)
     
-    try:
-        bot = get_bot()
-        guild = bot.get_guild(guild_id)
-        
-        if not guild:
-            raise HTTPException(status_code=404, detail="Guild not found or bot not in guild")
-        
-        channels = [
-            {"id": str(c.id), "name": c.name, "type": "text"}
-            for c in guild.text_channels
-            if c.permissions_for(guild.me).send_messages
-        ]
-        
-        return {"channels": channels}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    bot = get_bot()
+    guild = await _resolve_guild(bot, guild_id)
+    bot_member = await _resolve_bot_member(guild, bot)
+
+    channels = []
+    channel_list = []
+    if getattr(guild, "text_channels", None):
+        channel_list = guild.text_channels
+    elif hasattr(guild, "fetch_channels"):
+        channel_list = await guild.fetch_channels()
+
+    for channel in channel_list:
+        if channel.type != discord.ChannelType.text:
+            continue
+        if bot_member and not channel.permissions_for(bot_member).send_messages:
+            continue
+        channels.append({"id": str(channel.id), "name": channel.name, "type": "text"})
+
+    return {"channels": channels}
 
 
 @guild_router.get("/{guild_id}/roles")
@@ -51,23 +100,24 @@ async def get_guild_roles(
     """Get list of roles in guild."""
     await require_guild_admin(guild_id, user)
     
-    try:
-        bot = get_bot()
-        guild = bot.get_guild(guild_id)
-        
-        if not guild:
-            raise HTTPException(status_code=404, detail="Guild not found or bot not in guild")
-        
-        # Get roles excluding @everyone and bot roles
-        roles = [
-            {"id": str(r.id), "name": r.name, "color": str(r.color)}
-            for r in guild.roles
-            if r.name != "@everyone" and not r.is_bot_managed()
-        ]
-        
-        return {"roles": sorted(roles, key=lambda r: r['name'])}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    bot = get_bot()
+    guild = await _resolve_guild(bot, guild_id)
+
+    roles = []
+    role_list = []
+    if getattr(guild, "roles", None):
+        role_list = guild.roles
+    elif hasattr(guild, "fetch_roles"):
+        role_list = await guild.fetch_roles()
+
+    for role in role_list:
+        if role.name == "@everyone":
+            continue
+        if hasattr(role, "is_bot_managed") and role.is_bot_managed():
+            continue
+        roles.append({"id": str(role.id), "name": role.name, "color": str(role.color)})
+
+    return {"roles": sorted(roles, key=lambda r: r["name"])}
 
 
 @guild_router.get("/{guild_id}", response_model=GuildInfoResponse)
@@ -79,9 +129,7 @@ async def get_guild_info(
     await require_guild_admin(guild_id, user)
 
     bot = get_bot()
-    guild = bot.get_guild(guild_id)
-    if not guild:
-        raise HTTPException(status_code=404, detail="Guild not found or bot not in guild")
+    guild = await _resolve_guild(bot, guild_id)
 
     return GuildInfoResponse(
         id=guild.id,

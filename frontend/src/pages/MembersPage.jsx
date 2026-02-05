@@ -5,12 +5,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useGuilds } from '../hooks/useGuilds';
 import { Card, CardContent, Badge, Button, useToast } from '../components/ui';
-import { members } from '../lib/api';
+import { members as membersApi } from '../lib/api';
 
 export default function MembersPage() {
   const { selectedGuildId, selectedGuild } = useGuilds();
   const { addToast } = useToast();
-  const [members, setMembers] = useState([]);
+  const [membersList, setMembersList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -27,14 +27,14 @@ export default function MembersPage() {
     setError(null);
 
     try {
-      const data = await members.list({
+      const data = await membersApi.list({
         guild_id: selectedGuildId,
         page,
         per_page: perPage,
         search: searchQuery || undefined,
         filter: filterType !== 'all' ? filterType : undefined,
       });
-      setMembers(data.members || []);
+      setMembersList(data.members || []);
       setTotal(data.total || 0);
     } catch (err) {
       setError(err.message);
@@ -75,13 +75,13 @@ export default function MembersPage() {
         />
         <StatCard
           title="With API Keys"
-          value={members.filter(m => m.has_api_key).length || 0}
+          value={membersList.filter(m => m.has_api_key).length || 0}
           icon="🔑"
           color="green"
         />
         <StatCard
           title="Active Hosts"
-          value={members.filter(m => m.is_host).length || 0}
+          value={membersList.filter(m => m.is_host).length || 0}
           icon="⭐"
           color="yellow"
         />
@@ -127,7 +127,7 @@ export default function MembersPage() {
       )}
 
       {/* Members List */}
-      {members.length === 0 ? (
+      {membersList.length === 0 ? (
         <Card>
           <CardContent className="text-center py-12">
             <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-700 flex items-center justify-center">
@@ -156,7 +156,7 @@ export default function MembersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {members.map((member) => (
+                  {membersList.map((member) => (
                     <MemberRow key={member.discord_id} member={member} />
                   ))}
                 </tbody>
