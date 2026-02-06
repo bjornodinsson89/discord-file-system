@@ -152,20 +152,22 @@ async def on_guild_join(guild: discord.Guild):
 @bot.tree.command(name="set_api_key", description="Register your Torn API key for bot features")
 async def set_api_key(interaction: discord.Interaction):
     """Register or update user's Torn API key."""
+    await interaction.response.defer(ephemeral=True)
     embed = create_api_key_guide_embed()
     view = ApiKeyIntroView()
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="remove_api_key", description="Delete your stored Torn API key")
 async def remove_api_key(interaction: discord.Interaction):
     """Remove user's stored API key."""
+    await interaction.response.defer(ephemeral=True)
     db = get_database()
     existing = await db.get_user_api_key(interaction.user.id)
     
     if not existing:
         embed = create_error_embed("No API Key", "You don't have an API key registered.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     view = ConfirmRemoveKeyView(interaction.user.id)
@@ -173,12 +175,13 @@ async def remove_api_key(interaction: discord.Interaction):
         "Remove API Key?",
         "Are you sure you want to remove your API key? You will need to re-register to use bot features."
     )
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="my_sessions", description="View your active jump sessions and waitlist positions")
 async def my_sessions(interaction: discord.Interaction):
     """Show user's current sessions and waitlist entries."""
+    await interaction.response.defer(ephemeral=True)
     db = get_database()
     
     # Get all active sessions in this guild
@@ -229,7 +232,7 @@ async def my_sessions(interaction: discord.Interaction):
     if not (hosted_sessions or user_signups or user_waitlist):
         embed.description = "You're not currently in any active sessions or waitlists."
     
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # ============================================================================
@@ -240,6 +243,7 @@ async def my_sessions(interaction: discord.Interaction):
 @app_commands.default_permissions(administrator=True)
 async def setup(interaction: discord.Interaction):
     """Server setup command for administrators."""
+    await interaction.response.defer(ephemeral=True)
     db = get_database()
     settings = await db.get_guild_settings(interaction.guild_id)
     
@@ -294,22 +298,24 @@ async def setup(interaction: discord.Interaction):
     )
     
     view = SetupView(interaction.guild_id)
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="stats", description="View server statistics")
 async def stats(interaction: discord.Interaction):
     """Show server statistics."""
+    await interaction.response.defer(ephemeral=True)
     db = get_database()
     stats = await db.get_guild_statistics(interaction.guild_id)
     
     embed = create_statistics_embed(stats, f"Statistics for {interaction.guild.name}")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="dashboard", description="Get a link to the web dashboard")
 async def dashboard(interaction: discord.Interaction):
     """Show dashboard link."""
+    await interaction.response.defer(ephemeral=True)
     embed = discord.Embed(
         title=f"{config.EMOJI_CHART} Happy Jumper Dashboard",
         description=(
@@ -335,7 +341,7 @@ async def dashboard(interaction: discord.Interaction):
         style=discord.ButtonStyle.link
     ))
 
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 # ============================================================================
@@ -373,9 +379,9 @@ async def session_create(
     xanax_stack: app_commands.Choice[str],
     start_delay_hours: int
 ):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         request = CreateSessionRequest(
             guild_id=interaction.guild_id,
@@ -414,9 +420,9 @@ async def session_list(
     page: int = 1,
     per_page: int = 10
 ):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         data = await admin_handlers.list_sessions_handler(
             interaction.guild_id,
@@ -443,9 +449,9 @@ async def session_list(
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(session_id="Session ID to lock")
 async def session_lock(interaction: discord.Interaction, session_id: int):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         response = await admin_handlers.lock_session_handler(session_id, interaction.user.id, source="discord")
         await interaction.followup.send(embed=create_success_embed("Session Locked", response.message), ephemeral=True)
@@ -458,9 +464,9 @@ async def session_lock(interaction: discord.Interaction, session_id: int):
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(session_id="Session ID to cancel", reason="Optional cancellation reason")
 async def session_cancel(interaction: discord.Interaction, session_id: int, reason: str = None):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         response = await admin_handlers.cancel_session_handler(
             session_id, interaction.user.id, reason=reason, source="discord"
@@ -475,9 +481,9 @@ async def session_cancel(interaction: discord.Interaction, session_id: int, reas
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(session_id="Session ID to complete")
 async def session_complete(interaction: discord.Interaction, session_id: int):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         response = await admin_handlers.complete_session_handler(
             session_id, interaction.user.id, source="discord"
@@ -515,9 +521,9 @@ async def raffle_create(
     max_tickets_per_user: int,
     duration_hours: int
 ):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         request = CreateRaffleRequest(
             guild_id=interaction.guild_id,
@@ -556,9 +562,9 @@ async def raffle_list(
     page: int = 1,
     per_page: int = 10
 ):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         data = await admin_handlers.list_raffles_handler(
             interaction.guild_id,
@@ -585,9 +591,9 @@ async def raffle_list(
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(raffle_id="Raffle ID to draw")
 async def raffle_draw(interaction: discord.Interaction, raffle_id: int):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         response = await admin_handlers.draw_raffle_handler(raffle_id, interaction.user.id, source="discord")
         await interaction.followup.send(embed=create_success_embed("Raffle Drawn", response.message), ephemeral=True)
@@ -600,9 +606,9 @@ async def raffle_draw(interaction: discord.Interaction, raffle_id: int):
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(raffle_id="Raffle ID to cancel")
 async def raffle_cancel(interaction: discord.Interaction, raffle_id: int):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         response = await admin_handlers.cancel_raffle_handler(raffle_id, interaction.user.id, source="discord")
         await interaction.followup.send(embed=create_success_embed("Raffle Cancelled", response.message), ephemeral=True)
@@ -645,9 +651,9 @@ async def policy_create(
     payout_description: str,
     duration_hours: int
 ):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         request = CreatePolicyRequest(
             guild_id=interaction.guild_id,
@@ -683,9 +689,9 @@ async def provider_approve(
     provider_id: int,
     status: app_commands.Choice[str]
 ):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         response = await admin_handlers.approve_provider_handler(
             provider_id,
@@ -703,9 +709,9 @@ async def provider_approve(
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(claim_id="Claim ID to approve")
 async def claim_approve(interaction: discord.Interaction, claim_id: int):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         response = await admin_handlers.approve_claim_handler(claim_id, interaction.user.id, source="discord")
         await interaction.followup.send(embed=create_success_embed("Claim Approved", response.message), ephemeral=True)
@@ -718,9 +724,9 @@ async def claim_approve(interaction: discord.Interaction, claim_id: int):
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(claim_id="Claim ID to reject", notes="Optional rejection notes")
 async def claim_reject(interaction: discord.Interaction, claim_id: int, notes: str = None):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         response = await admin_handlers.reject_claim_handler(
             claim_id,
@@ -747,9 +753,9 @@ async def blacklist_add(
     reason: str = None,
     expires_in_hours: int = None
 ):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         expires_at = None
         if expires_in_hours:
@@ -772,9 +778,9 @@ async def blacklist_add(
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(member="Member to remove from blacklist")
 async def blacklist_remove(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         response = await admin_handlers.remove_blacklist_handler(
             interaction.guild_id,
@@ -792,9 +798,9 @@ async def blacklist_remove(interaction: discord.Interaction, member: discord.Mem
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(search="Search by reason or ID")
 async def blacklist_list(interaction: discord.Interaction, search: str = None):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         db = get_database()
         entries = await db.get_blacklist(interaction.guild_id)
@@ -822,9 +828,9 @@ async def blacklist_list(interaction: discord.Interaction, search: str = None):
 @bot.tree.command(name="settings_show", description="Show current guild settings (Admin only)")
 @app_commands.default_permissions(administrator=True)
 async def settings_show(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         db = get_database()
         settings = await db.get_guild_settings(interaction.guild_id)
@@ -864,9 +870,9 @@ async def settings_update(
     reservation_timeout_minutes: int = None,
     auto_complete_enabled: bool = None
 ):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         request = UpdateSettingsRequest(
             guild_id=interaction.guild_id,
@@ -899,9 +905,9 @@ async def settings_update(
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(limit="Number of entries to show (max 20)")
 async def audit_log(interaction: discord.Interaction, limit: int = 10):
+    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
     try:
         db = get_database()
         entries = await db.get_audit_logs(guild_id=interaction.guild_id, limit=min(limit, 20))
