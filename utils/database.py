@@ -10,7 +10,6 @@ import random
 from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta
 import json
-from pathlib import Path
 import config
 
 log = logging.getLogger("happy_jumper.database")
@@ -1659,68 +1658,6 @@ class DatabaseManager:
                 'active_policies': active_policies,
                 'pending_claims': pending_claims
             }
-
-    # ========================================================================
-    # SCHEMA MAINTENANCE (ADMIN-ONLY)
-    # ========================================================================
-
-    async def wipe_schema(self) -> None:
-        """Drop all tables and schema helpers."""
-        if not self.pool:
-            raise RuntimeError("Database pool not initialized")
-
-        tables = [
-            'dashboard_sessions', 'audit_log', 'raffle_entries', 'raffles',
-            'insurance_claims', 'insurance_coverage', 'insurance_policies',
-            'insurance_providers', 'blacklist', 'host_ratings', 'host_reputation',
-            'happy_jump_readiness', 'happy_jump_waitlist', 'happy_jump_signups',
-            'happy_jump_sessions', 'guild_settings', 'user_api_keys', 'schema_migrations'
-        ]
-
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                for table in tables:
-                    await conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
-                await conn.execute("DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE")
-
-    async def rebuild_schema(self) -> None:
-        """Recreate schema objects from the canonical SQL spec."""
-        if not self.pool:
-            raise RuntimeError("Database pool not initialized")
-
-        from migrations.migration_runner import MigrationRunner
-
-        runner = MigrationRunner(self.pool)
-        success = await runner.run_fresh_install()
-        if not success:
-            raise RuntimeError("Schema rebuild failed")
-
-    async def reset_schema(self) -> None:
-        """Atomically wipe and rebuild the database schema."""
-        if not self.pool:
-            raise RuntimeError("Database pool not initialized")
-
-        migrations_dir = Path(__file__).resolve().parent.parent / "migrations"
-        full_schema = migrations_dir / "000_full_schema.sql"
-        if not full_schema.exists():
-            raise RuntimeError("000_full_schema.sql not found for rebuild")
-
-        sql = full_schema.read_text()
-        tables = [
-            'dashboard_sessions', 'audit_log', 'raffle_entries', 'raffles',
-            'insurance_claims', 'insurance_coverage', 'insurance_policies',
-            'insurance_providers', 'blacklist', 'host_ratings', 'host_reputation',
-            'happy_jump_readiness', 'happy_jump_waitlist', 'happy_jump_signups',
-            'happy_jump_sessions', 'guild_settings', 'user_api_keys', 'schema_migrations'
-        ]
-
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                for table in tables:
-                    await conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
-                await conn.execute("DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE")
-                await conn.execute(sql)
-
 
 # ============================================================================
 # MODULE-LEVEL SINGLETON
