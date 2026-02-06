@@ -29,7 +29,7 @@ DASHBOARD_SECRET_KEY = DASHBOARD_SECRET_KEY_ENV or os.urandom(32).hex()
 # If not provided, fall back to the expected mounted auth router location.
 OAUTH_REDIRECT_URI = os.getenv(
     "OAUTH_REDIRECT_URI",
-    f"{DASHBOARD_URL}/login/auth/callback"
+    f"{DASHBOARD_URL}/auth/callback"
 )
 
 # ============================================================================
