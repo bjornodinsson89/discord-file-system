@@ -21,13 +21,18 @@ router = APIRouter()
 # DISCORD OAuth2 CONFIGURATION
 # ============================================================================
 
+from urllib.parse import quote
+
 DISCORD_API_BASE = "https://discord.com/api/v10"
 OAUTH_SCOPES = ["identify", "guilds"]
+
+ENCODED_REDIRECT_URI = quote(config.OAUTH_REDIRECT_URI, safe="")
+
 OAUTH_URL = (
-    f"https://discord.com/oauth2/authorize"
+    "https://discord.com/oauth2/authorize"
     f"?client_id={config.DISCORD_CLIENT_ID}"
-    f"&redirect_uri={config.OAUTH_REDIRECT_URI}"
-    f"&response_type=code"
+    f"&redirect_uri={ENCODED_REDIRECT_URI}"
+    "&response_type=code"
     f"&scope={'%20'.join(OAUTH_SCOPES)}"
 )
 
