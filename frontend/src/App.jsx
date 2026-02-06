@@ -21,6 +21,7 @@ import { ToastProvider } from './components/ui'
 
 function AppRoutes() {
   const { user, loading, isAuthenticated } = useAuth()
+  const dashboardRoute = '/dashboard'
 
   if (loading) {
     return (
@@ -39,21 +40,24 @@ function AppRoutes() {
   return (
     <Routes>
       {/* Public routes */}
+      <Route path="/" element={
+        isAuthenticated ? <Navigate to={dashboardRoute} replace /> : <LoginPage />
+      } />
       <Route path="/login" element={
-        isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />
+        isAuthenticated ? <Navigate to={dashboardRoute} replace /> : <LoginPage />
       } />
 
       {/* Protected routes */}
       {isAuthenticated ? (
-        <Route element={<DashboardLayout user={user} />}>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/sessions" element={<SessionsPage />} />
-          <Route path="/raffles" element={<RafflesPage />} />
-          <Route path="/insurance" element={<InsurancePage />} />
-          <Route path="/members" element={<MembersPage />} />
-          <Route path="/blacklist" element={<BlacklistPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/audit" element={<AuditLogPage />} />
+        <Route path={dashboardRoute} element={<DashboardLayout user={user} />}>
+          <Route index element={<DashboardPage />} />
+          <Route path="sessions" element={<SessionsPage />} />
+          <Route path="raffles" element={<RafflesPage />} />
+          <Route path="insurance" element={<InsurancePage />} />
+          <Route path="members" element={<MembersPage />} />
+          <Route path="blacklist" element={<BlacklistPage />} />
+          <Route path="settings" element={<SettingsPage />} />
+          <Route path="audit" element={<AuditLogPage />} />
         </Route>
       ) : (
         <Route path="*" element={<Navigate to="/login" replace />} />

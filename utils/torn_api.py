@@ -70,6 +70,10 @@ class TornAPIClient:
             await self.session.close()
     
     async def _request(self, path: str, params: Dict) -> Dict:
+        if path.startswith("/v1") or "/v1" in path:
+            raise TornAPIError("Torn API v1 endpoints are not allowed")
+        if path.startswith("/v2"):
+            raise TornAPIError("Torn API v2 base URL is already configured; remove '/v2' from paths")
         await self.rate_limiter.acquire()
         await self._ensure_session()
         
@@ -95,22 +99,22 @@ class TornAPIClient:
             raise TornAPIError("Request timed out")
     
     async def validate_api_key(self, api_key: str) -> Tuple[int, int, set]:
-        info = await self._request("/key/", {"selections": "info", "key": api_key})
+        info = await self._request("/key", {"selections": "info", "key": api_key})
         perms = set(info.get("selections", {}).get("user", []) or [])
         if not config.REQUIRED_PERMISSIONS.issubset(perms):
             missing = config.REQUIRED_PERMISSIONS - perms
             raise TornAPIPermissionError(f"Missing permissions: {', '.join(missing)}")
         
-        user = await self._request("/v2/user", {"selections": "basic,discord", "key": api_key})
+        user = await self._request("/user", {"selections": "basic,discord", "key": api_key})
         discord_id = int(user["discord"]["discord_id"])
         torn_id = int(user["profile"]["id"])
         return discord_id, torn_id, perms
     
     async def get_user_data(self, api_key: str) -> Dict:
-        return await self._request("/v2/user", {"selections": "basic,discord,bars,cooldowns", "key": api_key})
+        return await self._request("/user", {"selections": "basic,discord,bars,cooldowns", "key": api_key})
     
     async def get_user_log(self, api_key: str, limit: int = 200) -> List[Dict]:
-        data = await self._request("/v2/user", {"selections": "log", "key": api_key})
+        data = await self._request("/user", {"selections": "log", "key": api_key})
         if isinstance(data, dict):
             if "log" in data:
                 log_data = data["log"]
@@ -124,8 +128,7 @@ class TornAPIClient:
         return []
     
     async def get_torn_timestamp(self, api_key: str) -> int:
-        data = await self._request("/v2/user/timestamp", {"key": api_key})
-        return int(data["timestamp"])
+        return await self.get_torn_time()
     
     async def verify_payment(self, api_key: str, recipient_torn_id: int,
                              payment_type: str, amount: int,
@@ -186,7 +189,7 @@ class TornAPIClient:
     
     async def get_user_bars(self, api_key: str) -> Dict:
         """Get user's energy, nerve, happy, life bars."""
-        data = await self._request("/v2/user", {"selections": "bars", "key": api_key})
+        data = await self._request("/user", {"selections": "bars", "key": api_key})
         bars = data.get("bars", data.get("bars_info", {}))
         return {
             "energy": bars.get("energy", {}).get("current", 0),
@@ -198,7 +201,7 @@ class TornAPIClient:
     
     async def get_drug_cooldown(self, api_key: str) -> int:
         """Get remaining drug cooldown in seconds."""
-        data = await self._request("/v2/user", {"selections": "cooldowns", "key": api_key})
+        data = await self._request("/user", {"selections": "cooldowns", "key": api_key})
         cooldowns = data.get("cooldowns", {})
         return int(cooldowns.get("drug", 0))
     

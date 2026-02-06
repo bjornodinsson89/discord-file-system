@@ -32,18 +32,18 @@ function DashboardLayoutContent({ user }) {
   }
 
   const navigation = [
-    { name: 'Overview', href: '/', icon: ChartIcon, color: 'purple' },
-    { name: 'Sessions', href: '/sessions', icon: SessionIcon, color: 'purple' },
-    { name: 'Raffles', href: '/raffles', icon: RaffleIcon, color: 'pink' },
-    { name: 'Insurance', href: '/insurance', icon: ShieldIcon, color: 'cyan' },
-    { name: 'Members', href: '/members', icon: UsersIcon, color: 'blue' },
-    { name: 'Blacklist', href: '/blacklist', icon: BanIcon, color: 'red' },
-    { name: 'Settings', href: '/settings', icon: SettingsIcon, color: 'gray' },
-    { name: 'Audit Log', href: '/audit', icon: ClipboardIcon, color: 'gray' },
+    { name: 'Overview', href: '/dashboard', icon: ChartIcon, color: 'purple' },
+    { name: 'Sessions', href: '/dashboard/sessions', icon: SessionIcon, color: 'purple' },
+    { name: 'Raffles', href: '/dashboard/raffles', icon: RaffleIcon, color: 'pink' },
+    { name: 'Insurance', href: '/dashboard/insurance', icon: ShieldIcon, color: 'cyan' },
+    { name: 'Members', href: '/dashboard/members', icon: UsersIcon, color: 'blue' },
+    { name: 'Blacklist', href: '/dashboard/blacklist', icon: BanIcon, color: 'red' },
+    { name: 'Settings', href: '/dashboard/settings', icon: SettingsIcon, color: 'gray' },
+    { name: 'Audit Log', href: '/dashboard/audit', icon: ClipboardIcon, color: 'gray' },
   ]
 
   const isActive = (href) => {
-    if (href === '/') return location.pathname === '/'
+    if (href === '/dashboard') return location.pathname === '/dashboard'
     return location.pathname.startsWith(href)
   }
 

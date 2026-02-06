@@ -44,6 +44,9 @@ export function AuthProvider({ children }) {
         const fallbackGuilds = getAdminGuildsFromUser(response.user);
         setAdminGuilds(fallbackGuilds);
         await loadAdminGuilds(fallbackGuilds);
+      } else {
+        setUser(null);
+        setAdminGuilds([]);
       }
     } catch (err) {
       console.error('Auth check failed:', err);

@@ -25,12 +25,18 @@ from utils.embeds import (
 from views import (
     ApiKeyIntroView, ConfirmRemoveKeyView, JumpSessionView, HostControlView,
     SetupView, AdminDashboardView, BlacklistView, InsurancePolicyView,
-    ProviderClaimsView, RaffleView
+    ProviderClaimsView, RaffleView, ConfirmDatabaseActionView
 )
 
 # Import web app
 from web.app import app as fastapi_app
 from admin_api import handlers as admin_handlers
+from admin_api.schemas import (
+    CreateSessionRequest,
+    CreateRaffleRequest,
+    CreatePolicyRequest,
+    UpdateSettingsRequest
+)
 
 # ============================================================================
 # LOGGING SETUP
@@ -51,6 +57,18 @@ def normalize_dashboard_url(url: str) -> str:
         return url
     return f"https://{url}"
 
+
+async def ensure_admin(interaction: discord.Interaction) -> bool:
+    """Ensure the invoking user has administrator permissions."""
+    if not interaction.guild or not interaction.user.guild_permissions.administrator:
+        embed = create_error_embed("Not Authorized", "Administrator permission required.")
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        return False
+    return True
+
 # ============================================================================
 # BOT SETUP
 # ============================================================================
@@ -59,6 +77,7 @@ intents.members = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+bot.synced = False
 
 # ============================================================================
 # BOT EVENTS
@@ -88,18 +107,22 @@ async def on_ready():
     await init_security()
     log.info("Security initialized")
     
-    # Sync commands
-    try:
-        if config.GUILD_ID:
-            guild = discord.Object(id=config.GUILD_ID)
-            bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
-            log.info(f"Commands synced to guild {config.GUILD_ID}: {len(synced)} commands")
-        else:
-            synced = await bot.tree.sync()
-            log.info(f"Commands synced globally: {len(synced)} commands")
-    except Exception as e:
-        log.error(f"Failed to sync commands: {e}")
+    # Sync commands once per process lifecycle
+    if not bot.synced:
+        try:
+            if config.GUILD_ID:
+                guild = discord.Object(id=config.GUILD_ID)
+                bot.tree.copy_global_to(guild=guild)
+                synced = await bot.tree.sync(guild=guild)
+                log.info(f"Commands synced to guild {config.GUILD_ID}: {len(synced)} commands")
+            else:
+                synced = await bot.tree.sync()
+                log.info(f"Commands synced globally: {len(synced)} commands")
+            bot.synced = True
+        except Exception as e:
+            log.error(f"Failed to sync commands: {e}")
+    else:
+        log.info("Command sync skipped (already synced).")
     
     # Start background workers
     if not cleanup_worker.is_running():
@@ -312,6 +335,651 @@ async def dashboard(interaction: discord.Interaction):
         style=discord.ButtonStyle.link
     ))
 
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+# ============================================================================
+# SLASH COMMANDS - ADMIN ACTIONS
+# ============================================================================
+
+@bot.tree.command(name="session_create", description="Create a 99k jump session (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    channel="Channel to post the session announcement",
+    payment_type="Payment type per spot",
+    payment_amount="Amount per spot",
+    spots="Number of spots",
+    xanax_stack="Xanax stack size",
+    start_delay_hours="Delay before start in hours"
+)
+@app_commands.choices(
+    payment_type=[
+        app_commands.Choice(name="Xanax", value="xanax"),
+        app_commands.Choice(name="Erotic DVD", value="erotic_dvd"),
+    ],
+    xanax_stack=[
+        app_commands.Choice(name="1 Xanax", value="1_xanax"),
+        app_commands.Choice(name="2 Xanax", value="2_xanax"),
+        app_commands.Choice(name="3 Xanax", value="3_xanax"),
+        app_commands.Choice(name="Full Stack", value="full_stack"),
+    ]
+)
+async def session_create(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    payment_type: app_commands.Choice[str],
+    payment_amount: int,
+    spots: int,
+    xanax_stack: app_commands.Choice[str],
+    start_delay_hours: int
+):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        request = CreateSessionRequest(
+            guild_id=interaction.guild_id,
+            channel_id=channel.id,
+            payment_type=payment_type.value,
+            payment_amount=payment_amount,
+            spots=spots,
+            xanax_stack=xanax_stack.value,
+            start_delay_hours=start_delay_hours
+        )
+        response = await admin_handlers.create_session_handler(request, interaction.user.id)
+        embed = create_success_embed(
+            "Session Created",
+            f"Session #{response.id} created.\n{response.message_url or 'Announcement posted.'}"
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        log.exception(f"Session create failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Session Create Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="session_list", description="List jump sessions (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(status="Filter by status", page="Page number", per_page="Sessions per page")
+@app_commands.choices(
+    status=[
+        app_commands.Choice(name="Open", value="open"),
+        app_commands.Choice(name="Locked", value="locked"),
+        app_commands.Choice(name="Completed", value="completed"),
+        app_commands.Choice(name="Cancelled", value="cancelled"),
+    ]
+)
+async def session_list(
+    interaction: discord.Interaction,
+    status: app_commands.Choice[str] = None,
+    page: int = 1,
+    per_page: int = 10
+):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        data = await admin_handlers.list_sessions_handler(
+            interaction.guild_id,
+            status.value if status else None,
+            page,
+            per_page
+        )
+        if not data.sessions:
+            await interaction.followup.send(embed=create_info_embed("Sessions", "No sessions found."), ephemeral=True)
+            return
+        lines = []
+        for session in data.sessions:
+            lines.append(
+                f"#{session.id} • {session.status} • {session.xanax_stack} • {session.max_spots} spots"
+            )
+        embed = create_info_embed("Sessions", "\n".join(lines))
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        log.exception(f"Session list failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Session List Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="session_lock", description="Lock a jump session (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(session_id="Session ID to lock")
+async def session_lock(interaction: discord.Interaction, session_id: int):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        response = await admin_handlers.lock_session_handler(session_id, interaction.user.id, source="discord")
+        await interaction.followup.send(embed=create_success_embed("Session Locked", response.message), ephemeral=True)
+    except Exception as e:
+        log.exception(f"Session lock failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Session Lock Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="session_cancel", description="Cancel a jump session (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(session_id="Session ID to cancel", reason="Optional cancellation reason")
+async def session_cancel(interaction: discord.Interaction, session_id: int, reason: str = None):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        response = await admin_handlers.cancel_session_handler(
+            session_id, interaction.user.id, reason=reason, source="discord"
+        )
+        await interaction.followup.send(embed=create_success_embed("Session Cancelled", response.message), ephemeral=True)
+    except Exception as e:
+        log.exception(f"Session cancel failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Session Cancel Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="session_complete", description="Complete a jump session (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(session_id="Session ID to complete")
+async def session_complete(interaction: discord.Interaction, session_id: int):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        response = await admin_handlers.complete_session_handler(
+            session_id, interaction.user.id, source="discord"
+        )
+        await interaction.followup.send(embed=create_success_embed("Session Completed", response.message), ephemeral=True)
+    except Exception as e:
+        log.exception(f"Session complete failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Session Complete Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="raffle_create", description="Create a raffle (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    channel="Channel to post the raffle announcement",
+    prize="Prize description",
+    ticket_payment_type="Ticket payment type",
+    ticket_price="Ticket price",
+    tickets_available="Total tickets available",
+    max_tickets_per_user="Max tickets per user (0 = unlimited)",
+    duration_hours="Raffle duration in hours"
+)
+@app_commands.choices(
+    ticket_payment_type=[
+        app_commands.Choice(name="Xanax", value="xanax"),
+        app_commands.Choice(name="Erotic DVD", value="erotic_dvd"),
+    ]
+)
+async def raffle_create(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    prize: str,
+    ticket_payment_type: app_commands.Choice[str],
+    ticket_price: int,
+    tickets_available: int,
+    max_tickets_per_user: int,
+    duration_hours: int
+):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        request = CreateRaffleRequest(
+            guild_id=interaction.guild_id,
+            channel_id=channel.id,
+            prize=prize,
+            ticket_payment_type=ticket_payment_type.value,
+            ticket_price=ticket_price,
+            tickets_available=tickets_available,
+            max_tickets_per_user=max_tickets_per_user,
+            duration_hours=duration_hours
+        )
+        response = await admin_handlers.create_raffle_handler(request, interaction.user.id)
+        embed = create_success_embed(
+            "Raffle Created",
+            f"Raffle #{response.raffle_id} created.\n{response.message_url or 'Announcement posted.'}"
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        log.exception(f"Raffle create failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Raffle Create Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="raffle_list", description="List raffles (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(status="Filter by status", page="Page number", per_page="Raffles per page")
+@app_commands.choices(
+    status=[
+        app_commands.Choice(name="Active", value="active"),
+        app_commands.Choice(name="Completed", value="completed"),
+        app_commands.Choice(name="Cancelled", value="cancelled"),
+    ]
+)
+async def raffle_list(
+    interaction: discord.Interaction,
+    status: app_commands.Choice[str] = None,
+    page: int = 1,
+    per_page: int = 10
+):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        data = await admin_handlers.list_raffles_handler(
+            interaction.guild_id,
+            status.value if status else None,
+            page,
+            per_page
+        )
+        if not data.raffles:
+            await interaction.followup.send(embed=create_info_embed("Raffles", "No raffles found."), ephemeral=True)
+            return
+        lines = []
+        for raffle in data.raffles:
+            lines.append(
+                f"#{raffle.raffle_id} • {raffle.status} • {raffle.prize}"
+            )
+        embed = create_info_embed("Raffles", "\n".join(lines))
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        log.exception(f"Raffle list failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Raffle List Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="raffle_draw", description="Draw a raffle winner (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(raffle_id="Raffle ID to draw")
+async def raffle_draw(interaction: discord.Interaction, raffle_id: int):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        response = await admin_handlers.draw_raffle_handler(raffle_id, interaction.user.id, source="discord")
+        await interaction.followup.send(embed=create_success_embed("Raffle Drawn", response.message), ephemeral=True)
+    except Exception as e:
+        log.exception(f"Raffle draw failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Raffle Draw Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="raffle_cancel", description="Cancel a raffle (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(raffle_id="Raffle ID to cancel")
+async def raffle_cancel(interaction: discord.Interaction, raffle_id: int):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        response = await admin_handlers.cancel_raffle_handler(raffle_id, interaction.user.id, source="discord")
+        await interaction.followup.send(embed=create_success_embed("Raffle Cancelled", response.message), ephemeral=True)
+    except Exception as e:
+        log.exception(f"Raffle cancel failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Raffle Cancel Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="policy_create", description="Create an insurance policy (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    provider="Provider Discord user",
+    policy_name="Policy name",
+    description="Policy description",
+    cost_type="Premium payment type",
+    cost_amount="Premium amount",
+    coverage_type="Coverage type",
+    payout_description="Payout terms",
+    duration_hours="Policy duration in hours"
+)
+@app_commands.choices(
+    cost_type=[
+        app_commands.Choice(name="Xanax", value="xanax"),
+        app_commands.Choice(name="Erotic DVD", value="erotic_dvd"),
+    ],
+    coverage_type=[
+        app_commands.Choice(name="Xanax Stack", value="xanax_stack"),
+        app_commands.Choice(name="Ecstasy After Stack", value="ecstasy_after_stack"),
+        app_commands.Choice(name="All Drugs", value="all_drugs"),
+    ]
+)
+async def policy_create(
+    interaction: discord.Interaction,
+    provider: discord.Member,
+    policy_name: str,
+    description: str,
+    cost_type: app_commands.Choice[str],
+    cost_amount: int,
+    coverage_type: app_commands.Choice[str],
+    payout_description: str,
+    duration_hours: int
+):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        request = CreatePolicyRequest(
+            guild_id=interaction.guild_id,
+            provider_discord_id=provider.id,
+            policy_name=policy_name,
+            description=description,
+            cost_type=cost_type.value,
+            cost_amount=cost_amount,
+            coverage_type=coverage_type.value,
+            payout_description=payout_description,
+            duration_hours=duration_hours
+        )
+        response = await admin_handlers.create_policy_handler(request, provider.id)
+        embed = create_success_embed("Policy Created", f"Policy #{response.policy_id} created.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        log.exception(f"Policy create failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Policy Create Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="provider_approve", description="Approve or reject an insurance provider (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(provider_id="Provider ID", status="Approval status")
+@app_commands.choices(
+    status=[
+        app_commands.Choice(name="Approved", value="approved"),
+        app_commands.Choice(name="Rejected", value="rejected"),
+        app_commands.Choice(name="Disabled", value="disabled"),
+    ]
+)
+async def provider_approve(
+    interaction: discord.Interaction,
+    provider_id: int,
+    status: app_commands.Choice[str]
+):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        response = await admin_handlers.approve_provider_handler(
+            provider_id,
+            status.value,
+            interaction.user.id,
+            source="discord"
+        )
+        await interaction.followup.send(embed=create_success_embed("Provider Updated", response.message), ephemeral=True)
+    except Exception as e:
+        log.exception(f"Provider approval failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Provider Update Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="claim_approve", description="Approve an insurance claim (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(claim_id="Claim ID to approve")
+async def claim_approve(interaction: discord.Interaction, claim_id: int):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        response = await admin_handlers.approve_claim_handler(claim_id, interaction.user.id, source="discord")
+        await interaction.followup.send(embed=create_success_embed("Claim Approved", response.message), ephemeral=True)
+    except Exception as e:
+        log.exception(f"Claim approve failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Claim Approve Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="claim_reject", description="Reject an insurance claim (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(claim_id="Claim ID to reject", notes="Optional rejection notes")
+async def claim_reject(interaction: discord.Interaction, claim_id: int, notes: str = None):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        response = await admin_handlers.reject_claim_handler(
+            claim_id,
+            interaction.user.id,
+            notes=notes,
+            source="discord"
+        )
+        await interaction.followup.send(embed=create_success_embed("Claim Rejected", response.message), ephemeral=True)
+    except Exception as e:
+        log.exception(f"Claim reject failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Claim Reject Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="blacklist_add", description="Add a user to the blacklist (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    member="Member to blacklist",
+    reason="Reason for blacklist",
+    expires_in_hours="Optional expiration in hours"
+)
+async def blacklist_add(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str = None,
+    expires_in_hours: int = None
+):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        expires_at = None
+        if expires_in_hours:
+            expires_at = datetime.utcnow() + timedelta(hours=expires_in_hours)
+        response = await admin_handlers.add_blacklist_handler(
+            interaction.guild_id,
+            member.id,
+            reason,
+            interaction.user.id,
+            expires_at=expires_at,
+            source="discord"
+        )
+        await interaction.followup.send(embed=create_success_embed("Blacklist Updated", response.message), ephemeral=True)
+    except Exception as e:
+        log.exception(f"Blacklist add failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Blacklist Add Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="blacklist_remove", description="Remove a user from the blacklist (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(member="Member to remove from blacklist")
+async def blacklist_remove(interaction: discord.Interaction, member: discord.Member):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        response = await admin_handlers.remove_blacklist_handler(
+            interaction.guild_id,
+            member.id,
+            interaction.user.id,
+            source="discord"
+        )
+        await interaction.followup.send(embed=create_success_embed("Blacklist Updated", response.message), ephemeral=True)
+    except Exception as e:
+        log.exception(f"Blacklist remove failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Blacklist Remove Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="blacklist_list", description="List blacklisted users (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(search="Search by reason or ID")
+async def blacklist_list(interaction: discord.Interaction, search: str = None):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        db = get_database()
+        entries = await db.get_blacklist(interaction.guild_id)
+        if search:
+            lowered = search.lower()
+            entries = [
+                e for e in entries
+                if lowered in str(e.get("discord_id"))
+                or lowered in (e.get("reason") or "").lower()
+            ]
+        if not entries:
+            await interaction.followup.send(embed=create_info_embed("Blacklist", "No blacklist entries found."), ephemeral=True)
+            return
+        lines = [
+            f"<@{entry['discord_id']}> • {entry.get('reason', 'No reason')}"
+            for entry in entries[:20]
+        ]
+        embed = create_info_embed("Blacklist", "\n".join(lines))
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        log.exception(f"Blacklist list failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Blacklist List Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="settings_show", description="Show current guild settings (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def settings_show(interaction: discord.Interaction):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        db = get_database()
+        settings = await db.get_guild_settings(interaction.guild_id)
+        embed = create_info_embed(
+            "Guild Settings",
+            (
+                f"Reservation Timeout: {settings.get('reservation_timeout_minutes')} minutes\n"
+                f"Auto Complete: {'Enabled' if settings.get('auto_complete_enabled') else 'Disabled'}"
+            )
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        log.exception(f"Settings show failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Settings Show Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="settings_update", description="Update guild settings (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    host_role="Role for 99k hosts",
+    insurer_role="Role for insurers",
+    admin_role="Role for dashboard admins",
+    jump_channel="Channel for 99k jumps",
+    insurance_channel="Channel for insurance",
+    raffle_channel="Channel for raffles",
+    reservation_timeout_minutes="Reservation timeout in minutes",
+    auto_complete_enabled="Auto-complete sessions"
+)
+async def settings_update(
+    interaction: discord.Interaction,
+    host_role: discord.Role = None,
+    insurer_role: discord.Role = None,
+    admin_role: discord.Role = None,
+    jump_channel: discord.TextChannel = None,
+    insurance_channel: discord.TextChannel = None,
+    raffle_channel: discord.TextChannel = None,
+    reservation_timeout_minutes: int = None,
+    auto_complete_enabled: bool = None
+):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        request = UpdateSettingsRequest(
+            guild_id=interaction.guild_id,
+            host99k_role_id=host_role.id if host_role else None,
+            insurer_role_id=insurer_role.id if insurer_role else None,
+            admin_role_id=admin_role.id if admin_role else None,
+            jump_99k_channel_id=jump_channel.id if jump_channel else None,
+            insurance_channel_id=insurance_channel.id if insurance_channel else None,
+            raffle_channel_id=raffle_channel.id if raffle_channel else None,
+            reservation_timeout_minutes=reservation_timeout_minutes,
+            auto_complete_enabled=auto_complete_enabled
+        )
+        updated = await admin_handlers.update_settings_handler(
+            request,
+            interaction.user.id,
+            source="discord"
+        )
+        embed = create_success_embed(
+            "Settings Updated",
+            f"Reservation Timeout: {updated.reservation_timeout_minutes} minutes\n"
+            f"Auto Complete: {'Enabled' if updated.auto_complete_enabled else 'Disabled'}"
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        log.exception(f"Settings update failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Settings Update Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="audit_log", description="View recent audit log entries (Admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(limit="Number of entries to show (max 20)")
+async def audit_log(interaction: discord.Interaction, limit: int = 10):
+    if not await ensure_admin(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        db = get_database()
+        entries = await db.get_audit_logs(guild_id=interaction.guild_id, limit=min(limit, 20))
+        if not entries:
+            await interaction.followup.send(embed=create_info_embed("Audit Log", "No audit entries found."), ephemeral=True)
+            return
+        lines = []
+        for entry in entries:
+            lines.append(
+                f"{entry['action']} • actor {entry.get('actor_discord_id')} • target {entry.get('target_id')}"
+            )
+        embed = create_info_embed("Audit Log", "\n".join(lines))
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        log.exception(f"Audit log failed: {e}")
+        await interaction.followup.send(embed=create_error_embed("Audit Log Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="db_wipe", description="Drop all database tables (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def db_wipe(interaction: discord.Interaction):
+    if not await ensure_admin(interaction):
+        return
+    db = get_database()
+
+    async def _wipe():
+        await db.log_audit(interaction.user.id, "db_wipe_started", "database", None, source="discord")
+        await db.wipe_schema()
+        log.warning(f"Database wiped by {interaction.user.id}")
+        return "Database tables dropped."
+
+    view = ConfirmDatabaseActionView(interaction.user.id, "Database Wipe", _wipe)
+    embed = create_warning_embed(
+        "Confirm Database Wipe",
+        "This will DROP ALL TABLES and cannot be undone."
+    )
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+@bot.tree.command(name="db_rebuild", description="Rebuild database schema (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def db_rebuild(interaction: discord.Interaction):
+    if not await ensure_admin(interaction):
+        return
+    db = get_database()
+
+    async def _rebuild():
+        await db.rebuild_schema()
+        await db.log_audit(interaction.user.id, "db_rebuild_completed", "database", None, source="discord")
+        log.warning(f"Database schema rebuilt by {interaction.user.id}")
+        return "Schema rebuilt from canonical spec."
+
+    view = ConfirmDatabaseActionView(interaction.user.id, "Database Rebuild", _rebuild)
+    embed = create_warning_embed(
+        "Confirm Database Rebuild",
+        "This will reapply the schema specification."
+    )
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+@bot.tree.command(name="db_reset", description="Atomic wipe + rebuild of the database (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def db_reset(interaction: discord.Interaction):
+    if not await ensure_admin(interaction):
+        return
+    db = get_database()
+
+    async def _reset():
+        await db.reset_schema()
+        await db.log_audit(interaction.user.id, "db_reset_completed", "database", None, source="discord")
+        log.warning(f"Database reset by {interaction.user.id}")
+        return "Database wiped and rebuilt."
+
+    view = ConfirmDatabaseActionView(interaction.user.id, "Database Reset", _reset)
+    embed = create_warning_embed(
+        "Confirm Database Reset",
+        "This will DROP ALL TABLES and rebuild the schema."
+    )
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
