@@ -16,12 +16,21 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 # ============================================================================
 # DASHBOARD CONFIGURATION
 # ============================================================================
-DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:8000")
-if not DASHBOARD_SECRET_KEY_ENV:
-    raise RuntimeError("DASHBOARD_SECRET_KEY must be set in environment")
-DASHBOARD_SECRET_KEY = DASHBOARD_SECRET_KEY_ENV
-OAUTH_REDIRECT_URI = os.getenv("OAUTH_REDIRECT_URI", "http://localhost:8000/login/auth/callback")
-FRONTEND_URL = os.getenv("FRONTEND_URL", DASHBOARD_URL)
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:8000").rstrip("/")
+FRONTEND_URL = os.getenv("FRONTEND_URL", DASHBOARD_URL).rstrip("/")
+
+# IMPORTANT:
+# - Always define this before using it anywhere else (prevents NameError).
+# - In production you MUST set DASHBOARD_SECRET_KEY (validate_config enforces it).
+DASHBOARD_SECRET_KEY_ENV = os.getenv("DASHBOARD_SECRET_KEY")
+DASHBOARD_SECRET_KEY = DASHBOARD_SECRET_KEY_ENV or os.urandom(32).hex()
+
+# OAuth redirect URI should ideally be explicit via env to avoid path mismatches.
+# If not provided, fall back to the expected mounted auth router location.
+OAUTH_REDIRECT_URI = os.getenv(
+    "OAUTH_REDIRECT_URI",
+    f"{DASHBOARD_URL}/login/auth/callback"
+)
 
 # ============================================================================
 # DATABASE CONFIGURATION
@@ -41,6 +50,9 @@ FERNET_KEY = os.getenv("FERNET_KEY")
 # ============================================================================
 # TORN API
 # ============================================================================
+# NOTE: Keeping this as-is to avoid breaking your current Torn client until we confirm
+# the actual request paths it uses. If your client is v2-ready, we will switch to
+# https://api.torn.com/v2 after verifying the code.
 TORN_BASE_URL = "https://api.torn.com"
 REQUIRED_PERMISSIONS = {"basic", "discord", "bars", "cooldowns", "log"}
 TORN_API_KEY_LINK = (
@@ -73,7 +85,7 @@ API_RATE_LIMIT_BURST = 10
 DEFAULT_RESERVATION_TIMEOUT = 5
 MAX_JUMP_SPOTS = 10
 MIN_JUMP_SPOTS = 1
-MAX_XANAX_STACK = 3  # Updated for new validation
+MAX_XANAX_STACK = 3
 MIN_XANAX_STACK = 1
 MAX_START_DELAY_HOURS = 30
 MIN_ENERGY_REQUIREMENT = 250
@@ -88,7 +100,6 @@ MAX_COVERAGE_XANAX = 1000
 MIN_COVERAGE_XANAX = 1
 INSURANCE_RESERVATION_TIMEOUT = 10
 
-# Insurance Coverage Types
 COVERAGE_TYPES = {
     "xanax_stack": "Xanax Stack Only",
     "ecstasy_after_stack": "Ecstasy After Stack",
@@ -182,8 +193,8 @@ def validate_config() -> None:
         "DB_PASSWORD": DB_PASSWORD,
         "FERNET_KEY": FERNET_KEY,
     }
-    
+
     missing = [name for name, value in required.items() if not value]
-    
+
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
