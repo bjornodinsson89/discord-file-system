@@ -34,6 +34,7 @@ OAUTH_URL = (
     f"&redirect_uri={ENCODED_REDIRECT_URI}"
     "&response_type=code"
     f"&scope={'%20'.join(OAUTH_SCOPES)}"
+    "&prompt=consent"
 )
 
 # ============================================================================
