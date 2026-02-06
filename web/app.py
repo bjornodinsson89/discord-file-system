@@ -43,7 +43,7 @@ app.add_middleware(
 # CORS for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[config.FRONTEND_URL, config.DASHBOARD_URL],
+    allow_origins=list({config.FRONTEND_URL, config.DASHBOARD_URL, "http://localhost:5173", "http://127.0.0.1:5173"}),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -95,7 +95,7 @@ if frontend_build.exists():
     async def serve_spa(full_path: str):
         """Serve React SPA for all non-API routes."""
         # Let API/auth paths fall through to normal 404 handling.
-        if full_path.startswith(("api/", "auth/")):
+        if full_path.startswith(("api/", "auth/", "login/auth/")):
             return Response(content="Not Found", status_code=404)
 
         index_file = frontend_build / "index.html"
@@ -127,7 +127,7 @@ async def health_check():
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc):
     """Return index.html for 404s (SPA routing)."""
-    if request.url.path.startswith(("/api/", "/auth/")):
+    if request.url.path.startswith(("/api/", "/auth/", "/login/auth/")):
         return Response(content="Not Found", status_code=404)
 
     if frontend_build.exists():

@@ -67,21 +67,24 @@ def _env_to_bool(value: str | None, default: bool) -> bool:
 
 
 if SESSION_COOKIE_SAMESITE is None:
-    SESSION_COOKIE_SAMESITE = "none" if _is_https_url(FRONTEND_URL) else "lax"
+    SESSION_COOKIE_SAMESITE = "none" if _is_https_url(DASHBOARD_URL) else "lax"
 else:
     SESSION_COOKIE_SAMESITE = SESSION_COOKIE_SAMESITE.strip().lower()
 
 SESSION_COOKIE_SECURE = _env_to_bool(
     SESSION_COOKIE_SECURE_ENV,
-    _is_https_url(FRONTEND_URL)
+    _is_https_url(DASHBOARD_URL)
 )
+
+# Browsers reject SameSite=None cookies unless Secure is enabled.
+if SESSION_COOKIE_SAMESITE == "none":
+    SESSION_COOKIE_SECURE = True
 
 # ============================================================================
 # TORN API
 # ============================================================================
 # Torn API v2 base URL (v1 endpoints are not permitted).
 TORN_BASE_URL = "https://api.torn.com/v2"
-REQUIRED_PERMISSIONS = {"basic", "discord", "bars", "cooldowns", "log"}
 TORN_API_KEY_LINK = (
     "https://www.torn.com/preferences.php#tab=api"
     "?step=addNewKey&user=basic,discord,bars,cooldowns,log"

@@ -159,7 +159,7 @@ class JumpSessionView(ui.View):
             reserved_until = datetime.utcnow() + timedelta(minutes=timeout)
             
             await db.create_signup(self.session_id, interaction.user.id, key_data['torn_user_id'], reserved_until)
-            await db.update_participant_readiness(self.session_id, interaction.user.id, current_energy, max_energy, drug_cd, "ready")
+            await db.update_readiness(self.session_id, interaction.user.id, current_energy, max_energy, drug_cd, "ready")
             await db.log_audit(interaction.user.id, "jump_signup", "session", self.session_id)
             
             await update_jump_embed(self.session_id, interaction.message)
@@ -336,7 +336,7 @@ class HostControlView(ui.View):
         if session['host_discord_id'] != interaction.user.id and not interaction.user.guild_permissions.administrator:
             await interaction.followup.send(embed=create_error_embed("Not Authorized"), ephemeral=True)
             return
-        await db.complete_session(self.session_id, True)
+        await db.complete_session(self.session_id)
         await db.log_audit(interaction.user.id, "session_completed", "session", self.session_id)
         await interaction.followup.send(embed=create_success_embed("Session Completed"), view=RatingRequestView(self.session_id), ephemeral=True)
     
@@ -389,7 +389,7 @@ class RatingButton(ui.Button):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
         session = await db.get_jump_session(self.session_id)
-        await db.record_host_rating(session['host_discord_id'], interaction.user.id, self.session_id, self.rating)
+        await db.add_host_rating(session['host_discord_id'], interaction.user.id, self.session_id, self.rating)
         await interaction.followup.send(embed=create_success_embed("Rating Submitted", f"You rated the host {self.rating}/5 stars"), ephemeral=True)
 
 
@@ -441,7 +441,7 @@ class PurchaseCoverageModal(ui.Modal, title="Purchase Insurance Coverage"):
             payout = xanax * policy['payout_per_xanax']
             expires_at = datetime.utcnow() + timedelta(hours=policy['duration_hours'])
             
-            coverage_id = await db.create_insurance_coverage(
+            coverage_id = await db.create_coverage(
                 self.policy_id, interaction.user.id, key_data['torn_user_id'],
                 xanax, premium, payout, expires_at
             )
@@ -533,7 +533,7 @@ class ClaimManageView(ui.View):
     async def approve(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        await db.approve_claim(self.claim_id)
+        await db.approve_claim(self.claim_id, interaction.user.id)
         await db.log_audit(interaction.user.id, "claim_approved", "claim", self.claim_id)
         
         claim = await db.get_claim(self.claim_id)
@@ -558,7 +558,7 @@ class DenyClaimModal(ui.Modal, title="Deny Claim"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        await db.deny_claim(self.claim_id, self.reason.value)
+        await db.reject_claim(self.claim_id, interaction.user.id, self.reason.value)
         await db.log_audit(interaction.user.id, "claim_denied", "claim", self.claim_id, {"reason": self.reason.value})
         await interaction.followup.send(embed=create_success_embed("Claim Denied"), ephemeral=True)
 
@@ -580,13 +580,13 @@ class RaffleView(ui.View):
     async def info(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        entry = await db.get_user_raffle_entry(self.raffle_id, interaction.user.id)
+        entry = await db.get_raffle_entry(self.raffle_id, interaction.user.id)
         if not entry:
             await interaction.followup.send(embed=create_info_embed("No Tickets", "You haven't entered this raffle"), ephemeral=True)
             return
         
         status = entry['status']
-        info = f"**Tickets:** {entry['tickets']}\n**Status:** {status.title()}"
+        info = f"**Tickets:** {entry['num_tickets']}\n**Status:** {status.title()}"
         if status == 'reserved' and entry['reserved_until']:
             info += f"\n**Expires:** <t:{int(entry['reserved_until'].timestamp())}:R>"
         
@@ -615,16 +615,16 @@ class BuyTicketsModal(ui.Modal, title="Buy Raffle Tickets"):
                 return
             
             # Check user's current tickets
-            entry = await db.get_user_raffle_entry(self.raffle_id, interaction.user.id)
-            current = entry['tickets'] if entry else 0
+            entry = await db.get_raffle_entry(self.raffle_id, interaction.user.id)
+            current = entry['num_tickets'] if entry else 0
             if current + tickets > raffle['max_tickets_per_user']:
                 await interaction.followup.send(embed=create_error_embed("Exceeds Limit", f"Max {raffle['max_tickets_per_user']} per user"), ephemeral=True)
                 return
             
             # Check total tickets
             sold = await db.get_raffle_ticket_count(self.raffle_id)
-            if sold + tickets > raffle['max_tickets']:
-                await interaction.followup.send(embed=create_error_embed("Not Enough Tickets", f"Only {raffle['max_tickets'] - sold} available"), ephemeral=True)
+            if sold + tickets > raffle['tickets_available']:
+                await interaction.followup.send(embed=create_error_embed("Not Enough Tickets", f"Only {raffle['tickets_available'] - sold} available"), ephemeral=True)
                 return
             
             key_data = await db.get_user_api_key(interaction.user.id)
@@ -635,7 +635,7 @@ class BuyTicketsModal(ui.Modal, title="Buy Raffle Tickets"):
             reserved_until = datetime.utcnow() + timedelta(minutes=config.RAFFLE_RESERVATION_TIMEOUT)
             await db.create_raffle_entry(self.raffle_id, interaction.user.id, key_data['torn_user_id'], tickets, reserved_until)
             
-            total_xanax = tickets * raffle['ticket_price_xanax']
+            total_xanax = tickets * raffle['ticket_price']
             await interaction.followup.send(embed=create_info_embed(
                 "Tickets Reserved",
                 f"**Tickets:** {tickets}\n"
@@ -660,7 +660,7 @@ class RafflePaymentView(ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             db = get_database()
-            entry = await db.get_user_raffle_entry(self.raffle_id, interaction.user.id)
+            entry = await db.get_raffle_entry(self.raffle_id, interaction.user.id)
             if not entry or entry['status'] == 'paid':
                 await interaction.followup.send(embed=create_error_embed("Entry Unavailable"), ephemeral=True)
                 return
@@ -671,7 +671,7 @@ class RafflePaymentView(ui.View):
             api_key = security.decrypt(key_data['encrypted_key'])
             
             torn_api = get_torn_api()
-            total_xanax = entry['tickets'] * raffle['ticket_price_xanax']
+            total_xanax = entry['num_tickets'] * raffle['ticket_price']
             
             payment = await torn_api.verify_xanax_payment(api_key, raffle['admin_torn_id'], total_xanax)
             
@@ -679,12 +679,12 @@ class RafflePaymentView(ui.View):
                 await interaction.followup.send(embed=create_error_embed("Payment Not Found", "Send Xanax and try again"), ephemeral=True)
                 return
             
-            await db.verify_raffle_entry(self.raffle_id, interaction.user.id)
+            await db.verify_raffle_payment(self.raffle_id, interaction.user.id)
             await db.log_audit(interaction.user.id, "raffle_entry_verified", "raffle", self.raffle_id)
             
             await interaction.followup.send(embed=create_success_embed(
                 "Entry Confirmed!",
-                f"You have {entry['tickets']} tickets in the raffle. Good luck!"
+                f"You have {entry['num_tickets']} tickets in the raffle. Good luck!"
             ), ephemeral=True)
             
             # Update raffle embed
@@ -794,7 +794,7 @@ class BlacklistView(ui.View):
     async def view(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        blacklist = await db.get_guild_blacklist(interaction.guild.id)
+        blacklist = await db.get_blacklist(interaction.guild.id)
         await interaction.followup.send(embed=create_blacklist_embed(blacklist), ephemeral=True)
 
 
@@ -877,7 +877,7 @@ async def refresh_session_readiness(session_id: int):
                 
                 status = "ready" if energy.get('current', 0) >= config.MIN_ENERGY_REQUIREMENT and drug_cd == 0 else "not_ready"
                 
-                await db.update_participant_readiness(
+                await db.update_readiness(
                     session_id, signup['discord_id'],
                     energy.get('current', 0), energy.get('maximum', 150),
                     drug_cd, status
