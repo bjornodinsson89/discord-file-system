@@ -49,7 +49,7 @@ class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
         try:
             api_key = self.api_key.value.strip()
             torn_api = get_torn_api()
-            discord_id_api, torn_id, perms = await torn_api.validate_api_key(api_key)
+            discord_id_api, torn_id, _perms = await torn_api.validate_api_key(api_key)
             
             if discord_id_api != interaction.user.id:
                 await interaction.followup.send(embed=create_error_embed(
@@ -64,7 +64,7 @@ class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
             await db.log_audit(interaction.user.id, "api_key_registered", "user", interaction.user.id, {"torn_id": torn_id})
             
             await interaction.followup.send(embed=create_success_embed(
-                "API Key Registered", f"Torn ID: `{torn_id}`\nPermissions: `{', '.join(sorted(perms))}`"), ephemeral=True)
+                "API Key Registered", f"Torn ID: `{torn_id}`"), ephemeral=True)
         except TornAPIPermissionError as e:
             await interaction.followup.send(embed=create_error_embed("Insufficient Permissions", str(e)), ephemeral=True)
         except TornAPIError as e:

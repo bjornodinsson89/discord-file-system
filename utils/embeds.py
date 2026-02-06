@@ -198,9 +198,12 @@ def create_statistics_embed(stats: Dict, title: str = "Statistics") -> discord.E
 def create_api_key_guide_embed() -> discord.Embed:
     embed = create_info_embed("Set Up Your Torn API Key",
                               "Register your API key to use Happy Jumper features.")
-    embed.add_field(name="Required Permissions",
-                    value="• `basic` - Profile info\n• `discord` - Verification\n• `bars` - Energy/cooldowns\n• `cooldowns` - Drug cooldowns\n• `log` - Payment verification",
-                    inline=False)
+    embed.add_field(
+        name="Get an API Key",
+        value=f"Create a custom key here: {config.TORN_API_KEY_LINK}\n"
+              "Or use a full access key if you already have one.",
+        inline=False,
+    )
     embed.add_field(name=f"{config.EMOJI_LOCK} Security",
                     value="Your API key is encrypted and stored securely. We only use it for eligibility and verification.",
                     inline=False)

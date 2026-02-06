@@ -97,18 +97,12 @@ class TornAPIClient:
             raise TornAPIError(f"Network error: {e}")
         except asyncio.TimeoutError:
             raise TornAPIError("Request timed out")
-    
+
     async def validate_api_key(self, api_key: str) -> Tuple[int, int, set]:
-        info = await self._request("/key", {"selections": "info", "key": api_key})
-        perms = set(info.get("selections", {}).get("user", []) or [])
-        if not config.REQUIRED_PERMISSIONS.issubset(perms):
-            missing = config.REQUIRED_PERMISSIONS - perms
-            raise TornAPIPermissionError(f"Missing permissions: {', '.join(missing)}")
-        
         user = await self._request("/user", {"selections": "basic,discord", "key": api_key})
         discord_id = int(user["discord"]["discord_id"])
         torn_id = int(user["profile"]["id"])
-        return discord_id, torn_id, perms
+        return discord_id, torn_id, set()
     
     async def get_user_data(self, api_key: str) -> Dict:
         return await self._request("/user", {"selections": "basic,discord,bars,cooldowns", "key": api_key})
