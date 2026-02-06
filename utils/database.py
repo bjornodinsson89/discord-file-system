@@ -21,7 +21,7 @@ class DatabaseManager:
     def __init__(self):
         self.pool: Optional[asyncpg.Pool] = None
     
-    async def init_pool(self, run_migrations: bool = True) -> asyncpg.Pool:
+    async def init_pool(self, run_migrations: bool = False) -> asyncpg.Pool:
         """Initialize connection pool with PgBouncer-safe settings."""
         ssl_mode = config.DB_SSL if config.DB_SSL != 'disable' else None
         
@@ -1670,7 +1670,7 @@ async def init_database() -> DatabaseManager:
     """Initialize the database manager singleton."""
     global _db_manager
     _db_manager = DatabaseManager()
-    await _db_manager.init_pool()
+    await _db_manager.init_pool(run_migrations=config.RUN_MIGRATIONS_ON_STARTUP)
     return _db_manager
 
 
