@@ -122,14 +122,14 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
     }
     
     # Redirect to authenticated dashboard route
-    return RedirectResponse(url=f"{config.FRONTEND_URL}/dashboard")
+    return RedirectResponse(url="/dashboard")
 
 
 @router.get("/logout")
 async def logout(request: Request):
     """Clear user session."""
     request.session.clear()
-    return RedirectResponse(url=f"{config.FRONTEND_URL}/login")
+    return RedirectResponse(url="/login")
 
 
 @router.get("/me")

@@ -630,7 +630,7 @@ async def update_settings_handler(
     db = get_database()
 
     updates = {}
-    for key, value in request.dict().items():
+    for key, value in request.model_dump().items():
         if key != "guild_id" and value is not None:
             updates[key] = value
 

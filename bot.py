@@ -170,7 +170,7 @@ async def remove_api_key(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
-    view = ConfirmRemoveKeyView(interaction.user.id)
+    view = ConfirmRemoveKeyView()
     embed = create_warning_embed(
         "Remove API Key?",
         "Are you sure you want to remove your API key? You will need to re-register to use bot features."

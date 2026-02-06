@@ -755,15 +755,15 @@ class DatabaseManager:
                 DELETE FROM blacklist WHERE guild_id = $1 AND discord_id = $2
             """, guild_id, discord_id)
     
-    async def is_blacklisted(self, guild_id: int, discord_id: int) -> bool:
-        """Check if user is blacklisted."""
+    async def is_blacklisted(self, guild_id: int, discord_id: int) -> Optional[Dict]:
+        """Check if user is blacklisted and return active entry."""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 SELECT * FROM blacklist
                 WHERE guild_id = $1 AND discord_id = $2
                   AND (expires_at IS NULL OR expires_at > NOW())
             """, guild_id, discord_id)
-            return row is not None
+            return dict(row) if row else None
     
     async def get_blacklist(self, guild_id: int) -> List[Dict]:
         """Get all blacklisted users for a guild."""
@@ -1492,18 +1492,6 @@ class DatabaseManager:
             deleted = int(result.split()[-1])
             if deleted > 0:
                 log.info(f"Cleaned up {deleted} expired raffle entry reservations")
-            return deleted
-    
-    async def cleanup_expired_coverage_reservations(self) -> int:
-        """Clean up expired coverage reservations."""
-        async with self.pool.acquire() as conn:
-            result = await conn.execute("""
-                DELETE FROM insurance_coverage
-                WHERE status = 'pending' AND created_at < NOW() - INTERVAL '15 minutes'
-            """)
-            deleted = int(result.split()[-1])
-            if deleted > 0:
-                log.info(f"Cleaned up {deleted} expired coverage reservations")
             return deleted
     
     async def draw_raffle_winner(self, raffle_id: int) -> Optional[Dict]:
