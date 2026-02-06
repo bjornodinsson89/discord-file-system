@@ -97,6 +97,31 @@ class TornAPIClient:
             raise TornAPIError(f"Network error: {e}")
         except asyncio.TimeoutError:
             raise TornAPIError("Request timed out")
+
+    async def _request_key_info(self, params: Dict) -> Dict:
+        await self.rate_limiter.acquire()
+        await self._ensure_session()
+
+        try:
+            async with self.session.get(
+                "https://api.torn.com/key",
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                data = await resp.json()
+                if isinstance(data, dict) and "error" in data:
+                    error = data["error"]
+                    msg = str(error.get("error", error)) if isinstance(error, dict) else str(error)
+                    if "rate limit" in msg.lower():
+                        raise TornAPIRateLimitError(msg)
+                    elif "permission" in msg.lower() or "access" in msg.lower():
+                        raise TornAPIPermissionError(msg)
+                    raise TornAPIError(msg)
+                return data
+        except aiohttp.ClientError as e:
+            raise TornAPIError(f"Network error: {e}")
+        except asyncio.TimeoutError:
+            raise TornAPIError("Request timed out")
     
     async def validate_api_key(self, api_key: str) -> Tuple[int, int, set]:
         info = await self._request("/key", {"selections": "info", "key": api_key})
