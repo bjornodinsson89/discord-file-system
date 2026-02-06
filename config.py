@@ -19,7 +19,7 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:8000")
 DASHBOARD_SECRET_KEY_ENV = os.getenv("DASHBOARD_SECRET_KEY")
 DASHBOARD_SECRET_KEY = DASHBOARD_SECRET_KEY_ENV or os.urandom(32).hex()
-OAUTH_REDIRECT_URI = f"{DASHBOARD_URL}/login/auth/callback"
+OAUTH_REDIRECT_URI = os.getenv("OAUTH_REDIRECT_URI", "http://localhost:8000/login/auth/callback")
 FRONTEND_URL = os.getenv("FRONTEND_URL", DASHBOARD_URL)
 
 # ============================================================================
