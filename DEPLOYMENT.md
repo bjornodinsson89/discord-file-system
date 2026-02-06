@@ -149,7 +149,9 @@ https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=27
 
 ## Database Setup
 
-The migration runner automatically runs on startup. For fresh installs:
+Migrations are disabled by default on startup. Enable them in deploy/CI contexts by
+setting `RUN_MIGRATIONS_ON_STARTUP=true`. For fresh installs you can still run them
+manually:
 
 ```bash
 # Local testing
