@@ -82,7 +82,7 @@ export default function DashboardPage() {
             <RefreshIcon className="w-4 h-4 mr-2" />
             {loading ? 'Refreshing...' : 'Refresh'}
           </Button>
-          <Link to="/sessions">
+          <Link to="/dashboard/sessions">
             <Button>
               <PlusIcon className="w-4 h-4 mr-2" />
               New Session
@@ -110,7 +110,7 @@ export default function DashboardPage() {
             trend={dashboardStats.sessions_today}
             trendLabel="today"
             color="purple"
-            link="/sessions"
+            link="/dashboard/sessions"
           />
           <StatCard
             title="Active Raffles"
@@ -119,7 +119,7 @@ export default function DashboardPage() {
             trend={dashboardStats.raffles_this_week}
             trendLabel="this week"
             color="pink"
-            link="/raffles"
+            link="/dashboard/raffles"
           />
           <StatCard
             title="Active Policies"
@@ -128,7 +128,7 @@ export default function DashboardPage() {
             trend={dashboardStats.coverage_active}
             trendLabel="users covered"
             color="cyan"
-            link="/insurance"
+            link="/dashboard/insurance"
           />
           <StatCard
             title="Pending Claims"
@@ -136,7 +136,7 @@ export default function DashboardPage() {
             icon={<ClaimIcon />}
             alert={dashboardStats.pending_claims > 0}
             color="yellow"
-            link="/insurance"
+            link="/dashboard/insurance"
           />
         </div>
       )}
@@ -161,7 +161,7 @@ export default function DashboardPage() {
                 <ActivityIcon className="w-5 h-5 text-purple-400" />
                 Recent Activity
               </CardTitle>
-              <Link to="/audit" className="text-sm text-purple-400 hover:text-purple-300">
+              <Link to="/dashboard/audit" className="text-sm text-purple-400 hover:text-purple-300">
                 View all
               </Link>
             </CardHeader>
@@ -192,28 +192,28 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <QuickAction
-                to="/sessions"
+                to="/dashboard/sessions"
                 icon={<SessionIcon />}
                 title="Create 99k Session"
                 description="Host a new jump"
                 color="purple"
               />
               <QuickAction
-                to="/raffles"
+                to="/dashboard/raffles"
                 icon={<RaffleIcon />}
                 title="Create Raffle"
                 description="Start a prize raffle"
                 color="pink"
               />
               <QuickAction
-                to="/insurance"
+                to="/dashboard/insurance"
                 icon={<InsuranceIcon />}
                 title="Manage Insurance"
                 description="Policies & claims"
                 color="cyan"
               />
               <QuickAction
-                to="/settings"
+                to="/dashboard/settings"
                 icon={<SettingsIcon />}
                 title="Settings"
                 description="Configure channels"
@@ -227,7 +227,7 @@ export default function DashboardPage() {
             <Card>
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-sm">Active Sessions</CardTitle>
-                <Link to="/sessions" className="text-xs text-purple-400 hover:text-purple-300">
+                <Link to="/dashboard/sessions" className="text-xs text-purple-400 hover:text-purple-300">
                   View all
                 </Link>
               </CardHeader>
@@ -260,7 +260,7 @@ export default function DashboardPage() {
               <RaffleIcon className="w-5 h-5 text-pink-400" />
               Active Raffles
             </CardTitle>
-            <Link to="/raffles" className="text-sm text-pink-400 hover:text-pink-300">
+            <Link to="/dashboard/raffles" className="text-sm text-pink-400 hover:text-pink-300">
               View all
             </Link>
           </CardHeader>

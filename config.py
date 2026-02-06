@@ -50,10 +50,8 @@ FERNET_KEY = os.getenv("FERNET_KEY")
 # ============================================================================
 # TORN API
 # ============================================================================
-# NOTE: Keeping this as-is to avoid breaking your current Torn client until we confirm
-# the actual request paths it uses. If your client is v2-ready, we will switch to
-# https://api.torn.com/v2 after verifying the code.
-TORN_BASE_URL = "https://api.torn.com"
+# Torn API v2 base URL (v1 endpoints are not permitted).
+TORN_BASE_URL = "https://api.torn.com/v2"
 REQUIRED_PERMISSIONS = {"basic", "discord", "bars", "cooldowns", "log"}
 TORN_API_KEY_LINK = (
     "https://www.torn.com/preferences.php#tab=api"

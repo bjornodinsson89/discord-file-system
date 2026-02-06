@@ -121,8 +121,8 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
         ]
     }
     
-    # Redirect to dashboard
-    return RedirectResponse(url=f"{config.FRONTEND_URL}/")
+    # Redirect to authenticated dashboard route
+    return RedirectResponse(url=f"{config.FRONTEND_URL}/dashboard")
 
 
 @router.get("/logout")

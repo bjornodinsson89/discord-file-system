@@ -309,22 +309,19 @@ async def add_blacklist_entry(
 ):
     """Add a user to the blacklist."""
     await require_guild_admin(request.guild_id, user)
-
-    db = get_database()
-    await db.add_to_blacklist(
-        request.guild_id,
-        request.discord_id,
-        request.reason or "No reason provided",
-        int(user["id"]),
-        request.expires_at
-    )
-    await db.log_audit(
-        int(user["id"]), "blacklist_added", "member", request.discord_id,
-        {"reason": request.reason, "expires_at": request.expires_at.isoformat() if request.expires_at else None},
-        guild_id=request.guild_id, source='dashboard'
-    )
-
-    return SuccessResponse(message="User added to blacklist")
+    try:
+        return await add_blacklist_handler(
+            request.guild_id,
+            request.discord_id,
+            request.reason,
+            int(user["id"]),
+            request.expires_at,
+            source="dashboard"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @blacklist_router.post("/{guild_id}/{discord_id}/remove", response_model=SuccessResponse)
@@ -335,15 +332,17 @@ async def remove_blacklist_entry(
 ):
     """Remove a user from the blacklist."""
     await require_guild_admin(guild_id, user)
-
-    db = get_database()
-    await db.remove_from_blacklist(guild_id, discord_id)
-    await db.log_audit(
-        int(user["id"]), "blacklist_removed", "member", discord_id,
-        guild_id=guild_id, source='dashboard'
-    )
-
-    return SuccessResponse(message="User removed from blacklist")
+    try:
+        return await remove_blacklist_handler(
+            guild_id,
+            discord_id,
+            int(user["id"]),
+            source="dashboard"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
@@ -407,25 +406,18 @@ async def lock_session(
     """Lock a session to prevent new signups."""
     db = get_database()
     session = await db.get_jump_session(session_id)
-    
+
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     await require_guild_admin(session['guild_id'], user)
-    
-    if session['status'] not in ('open',):
-        raise HTTPException(status_code=400, detail="Session cannot be locked")
-    
-    await db.lock_session(session_id)
-    await db.log_audit(
-        int(user["id"]), "session_locked", "session", session_id,
-        guild_id=session['guild_id'], source='dashboard'
-    )
-    
-    # Update Discord message
-    await update_session_message(session_id)
-    
-    return SuccessResponse(message="Session locked")
+
+    try:
+        return await lock_session_handler(session_id, int(user["id"]), source="dashboard")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @sessions_router.post("/{session_id}/cancel")
@@ -437,25 +429,20 @@ async def cancel_session(
     """Cancel a session."""
     db = get_database()
     session = await db.get_jump_session(session_id)
-    
+
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     await require_guild_admin(session['guild_id'], user)
-    
-    if session['status'] in ('completed', 'cancelled'):
-        raise HTTPException(status_code=400, detail="Session already ended")
-    
-    await db.cancel_session(session_id)
-    await db.log_audit(
-        int(user["id"]), "session_cancelled", "session", session_id,
-        {"reason": reason}, guild_id=session['guild_id'], source='dashboard'
-    )
-    
-    # Update Discord message
-    await update_session_message(session_id)
-    
-    return SuccessResponse(message="Session cancelled")
+
+    try:
+        return await cancel_session_handler(
+            session_id, int(user["id"]), reason=reason, source="dashboard"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @sessions_router.post("/{session_id}/complete")
@@ -466,30 +453,18 @@ async def complete_session(
     """Mark a session as completed."""
     db = get_database()
     session = await db.get_jump_session(session_id)
-    
+
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     await require_guild_admin(session['guild_id'], user)
-    
-    if session['status'] not in ('open', 'locked'):
-        raise HTTPException(status_code=400, detail="Session cannot be completed")
-    
-    await db.complete_session(session_id)
-    await db.log_audit(
-        int(user["id"]), "session_completed", "session", session_id,
-        guild_id=session['guild_id'], source='dashboard'
-    )
-    
-    # Update host reputation
-    await db.update_host_reputation(
-        session['host_discord_id'], session['host_torn_id'], completed=True
-    )
-    
-    # Update Discord message
-    await update_session_message(session_id)
-    
-    return SuccessResponse(message="Session completed")
+
+    try:
+        return await complete_session_handler(session_id, int(user["id"]), source="dashboard")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
@@ -553,33 +528,18 @@ async def draw_raffle(
     """Draw a winner for a raffle."""
     db = get_database()
     raffle = await db.get_raffle(raffle_id)
-    
+
     if not raffle:
         raise HTTPException(status_code=404, detail="Raffle not found")
-    
+
     await require_guild_admin(raffle['guild_id'], user)
-    
-    if raffle['status'] != 'active':
-        raise HTTPException(status_code=400, detail="Raffle is not active")
-    
-    # Draw winner
-    winner = await db.draw_raffle_winner(raffle_id)
-    
-    await db.log_audit(
-        int(user["id"]), "raffle_drawn", "raffle", raffle_id,
-        {"winner_discord_id": winner['discord_id'] if winner else None},
-        guild_id=raffle['guild_id'], source='dashboard'
-    )
-    
-    # Update Discord message
-    await update_raffle_message(raffle_id, winner)
-    
-    if winner:
-        return SuccessResponse(
-            message=f"Winner drawn: <@{winner['discord_id']}> (Ticket #{winner['ticket_number']})"
-        )
-    else:
-        return SuccessResponse(message="Raffle completed with no entries")
+
+    try:
+        return await draw_raffle_handler(raffle_id, int(user["id"]), source="dashboard")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @raffles_router.post("/{raffle_id}/cancel")
@@ -590,25 +550,18 @@ async def cancel_raffle(
     """Cancel a raffle."""
     db = get_database()
     raffle = await db.get_raffle(raffle_id)
-    
+
     if not raffle:
         raise HTTPException(status_code=404, detail="Raffle not found")
-    
+
     await require_guild_admin(raffle['guild_id'], user)
-    
-    if raffle['status'] != 'active':
-        raise HTTPException(status_code=400, detail="Raffle is not active")
-    
-    await db.cancel_raffle(raffle_id)
-    await db.log_audit(
-        int(user["id"]), "raffle_cancelled", "raffle", raffle_id,
-        guild_id=raffle['guild_id'], source='dashboard'
-    )
-    
-    # Update Discord message
-    await update_raffle_message(raffle_id)
-    
-    return SuccessResponse(message="Raffle cancelled")
+
+    try:
+        return await cancel_raffle_handler(raffle_id, int(user["id"]), source="dashboard")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
@@ -671,25 +624,17 @@ async def approve_provider(
     user: dict = Depends(get_current_user)
 ):
     """Approve or reject an insurance provider."""
-    db = get_database()
-    provider = await db.get_provider_by_id(request.provider_id)
-    
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    
-    if request.status == "approved":
-        await db.approve_provider(request.provider_id, int(user["id"]))
-    elif request.status == "rejected":
-        await db.reject_provider(request.provider_id, int(user["id"]))
-    else:
-        raise HTTPException(status_code=400, detail="Invalid status")
-    
-    await db.log_audit(
-        int(user["id"]), "provider_approval_updated", "provider", request.provider_id,
-        {"status": request.status}, source='dashboard'
-    )
-    
-    return SuccessResponse(message=f"Provider {request.status}")
+    try:
+        return await approve_provider_handler(
+            request.provider_id,
+            request.status,
+            int(user["id"]),
+            source="dashboard"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @insurance_router.get("/claims/list")
@@ -715,21 +660,12 @@ async def approve_claim(
     user: dict = Depends(get_current_user)
 ):
     """Approve an insurance claim."""
-    db = get_database()
-    claim = await db.get_claim(claim_id)
-    
-    if not claim:
-        raise HTTPException(status_code=404, detail="Claim not found")
-    
-    if claim['status'] != 'pending':
-        raise HTTPException(status_code=400, detail="Claim is not pending")
-    
-    await db.approve_claim(claim_id, int(user["id"]))
-    await db.log_audit(
-        int(user["id"]), "claim_approved", "claim", claim_id, source='dashboard'
-    )
-    
-    return SuccessResponse(message="Claim approved")
+    try:
+        return await approve_claim_handler(claim_id, int(user["id"]), source="dashboard")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @insurance_router.post("/claims/{claim_id}/reject")
@@ -739,22 +675,17 @@ async def reject_claim(
     user: dict = Depends(get_current_user)
 ):
     """Reject an insurance claim."""
-    db = get_database()
-    claim = await db.get_claim(claim_id)
-    
-    if not claim:
-        raise HTTPException(status_code=404, detail="Claim not found")
-    
-    if claim['status'] != 'pending':
-        raise HTTPException(status_code=400, detail="Claim is not pending")
-    
-    await db.reject_claim(claim_id, int(user["id"]), notes)
-    await db.log_audit(
-        int(user["id"]), "claim_rejected", "claim", claim_id,
-        {"notes": notes}, source='dashboard'
-    )
-    
-    return SuccessResponse(message="Claim rejected")
+    try:
+        return await reject_claim_handler(
+            claim_id,
+            int(user["id"]),
+            notes=notes,
+            source="dashboard"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
@@ -784,24 +715,12 @@ async def update_settings(
 ):
     """Update guild settings."""
     await require_guild_admin(request.guild_id, user)
-    
-    db = get_database()
-    
-    # Build update dict, excluding None values
-    updates = {}
-    for key, value in request.dict().items():
-        if key != "guild_id" and value is not None:
-            updates[key] = value
-    
-    if updates:
-        await db.update_guild_settings(request.guild_id, **updates)
-        await db.log_audit(
-            int(user["id"]), "settings_updated", "guild", request.guild_id,
-            updates, guild_id=request.guild_id, source='dashboard'
-        )
-    
-    settings = await db.get_guild_settings(request.guild_id)
-    return SettingsResponse(**settings)
+    try:
+        return await update_settings_handler(request, int(user["id"]), source="dashboard")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================

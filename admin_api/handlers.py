@@ -188,6 +188,78 @@ async def list_sessions_handler(
     )
 
 
+async def lock_session_handler(session_id: int, actor_discord_id: int, source: str = "dashboard") -> SuccessResponse:
+    """Lock a session to prevent new signups."""
+    db = get_database()
+    session = await db.get_jump_session(session_id)
+
+    if not session:
+        raise ValueError("Session not found")
+    if session['status'] not in ('open',):
+        raise ValueError("Session cannot be locked")
+
+    await db.lock_session(session_id)
+    await db.log_audit(
+        actor_discord_id, "session_locked", "session", session_id,
+        guild_id=session['guild_id'], source=source
+    )
+    await update_session_message(session_id)
+
+    return SuccessResponse(message="Session locked")
+
+
+async def cancel_session_handler(
+    session_id: int,
+    actor_discord_id: int,
+    reason: Optional[str] = None,
+    source: str = "dashboard"
+) -> SuccessResponse:
+    """Cancel a session."""
+    db = get_database()
+    session = await db.get_jump_session(session_id)
+
+    if not session:
+        raise ValueError("Session not found")
+    if session['status'] in ('completed', 'cancelled'):
+        raise ValueError("Session already ended")
+
+    await db.cancel_session(session_id)
+    await db.log_audit(
+        actor_discord_id, "session_cancelled", "session", session_id,
+        {"reason": reason}, guild_id=session['guild_id'], source=source
+    )
+    await update_session_message(session_id)
+
+    return SuccessResponse(message="Session cancelled")
+
+
+async def complete_session_handler(
+    session_id: int,
+    actor_discord_id: int,
+    source: str = "dashboard"
+) -> SuccessResponse:
+    """Mark a session as completed."""
+    db = get_database()
+    session = await db.get_jump_session(session_id)
+
+    if not session:
+        raise ValueError("Session not found")
+    if session['status'] not in ('open', 'locked'):
+        raise ValueError("Session cannot be completed")
+
+    await db.complete_session(session_id)
+    await db.log_audit(
+        actor_discord_id, "session_completed", "session", session_id,
+        guild_id=session['guild_id'], source=source
+    )
+    await db.update_host_reputation(
+        session['host_discord_id'], session['host_torn_id'], completed=True
+    )
+    await update_session_message(session_id)
+
+    return SuccessResponse(message="Session completed")
+
+
 # ============================================================================
 # RAFFLE HANDLERS
 # ============================================================================
@@ -311,6 +383,59 @@ async def list_raffles_handler(
     )
 
 
+async def draw_raffle_handler(
+    raffle_id: int,
+    actor_discord_id: int,
+    source: str = "dashboard"
+) -> SuccessResponse:
+    """Draw a winner for a raffle."""
+    db = get_database()
+    raffle = await db.get_raffle(raffle_id)
+
+    if not raffle:
+        raise ValueError("Raffle not found")
+    if raffle['status'] != 'active':
+        raise ValueError("Raffle is not active")
+
+    winner = await db.draw_raffle_winner(raffle_id)
+    await db.log_audit(
+        actor_discord_id, "raffle_drawn", "raffle", raffle_id,
+        {"winner_discord_id": winner['discord_id'] if winner else None},
+        guild_id=raffle['guild_id'], source=source
+    )
+    await update_raffle_message(raffle_id, winner)
+
+    if winner:
+        return SuccessResponse(
+            message=f"Winner drawn: <@{winner['discord_id']}> (Ticket #{winner['ticket_number']})"
+        )
+    return SuccessResponse(message="Raffle completed with no entries")
+
+
+async def cancel_raffle_handler(
+    raffle_id: int,
+    actor_discord_id: int,
+    source: str = "dashboard"
+) -> SuccessResponse:
+    """Cancel a raffle."""
+    db = get_database()
+    raffle = await db.get_raffle(raffle_id)
+
+    if not raffle:
+        raise ValueError("Raffle not found")
+    if raffle['status'] != 'active':
+        raise ValueError("Raffle is not active")
+
+    await db.cancel_raffle(raffle_id)
+    await db.log_audit(
+        actor_discord_id, "raffle_cancelled", "raffle", raffle_id,
+        guild_id=raffle['guild_id'], source=source
+    )
+    await update_raffle_message(raffle_id)
+
+    return SuccessResponse(message="Raffle cancelled")
+
+
 # ============================================================================
 # INSURANCE HANDLERS
 # ============================================================================
@@ -375,6 +500,149 @@ async def create_policy_handler(
     # Return response
     policy_data = await _get_policy(policy_id)
     return PolicyResponse(**policy_data)
+
+
+async def approve_provider_handler(
+    provider_id: int,
+    status: str,
+    actor_discord_id: int,
+    source: str = "dashboard"
+) -> SuccessResponse:
+    """Approve, reject, or disable an insurance provider."""
+    db = get_database()
+    provider = await db.get_provider_by_id(provider_id)
+
+    if not provider:
+        raise ValueError("Provider not found")
+
+    if status == "approved":
+        await db.approve_provider(provider_id, actor_discord_id)
+    elif status == "rejected":
+        await db.reject_provider(provider_id, actor_discord_id)
+    elif status == "disabled":
+        await db.set_provider_active(provider_id, False)
+    else:
+        raise ValueError("Invalid status")
+
+    await db.log_audit(
+        actor_discord_id, "provider_approval_updated", "provider", provider_id,
+        {"status": status}, source=source
+    )
+
+    return SuccessResponse(message=f"Provider {status}")
+
+
+async def approve_claim_handler(
+    claim_id: int,
+    actor_discord_id: int,
+    source: str = "dashboard"
+) -> SuccessResponse:
+    """Approve an insurance claim."""
+    db = get_database()
+    claim = await db.get_claim(claim_id)
+
+    if not claim:
+        raise ValueError("Claim not found")
+    if claim['status'] != 'pending':
+        raise ValueError("Claim is not pending")
+
+    await db.approve_claim(claim_id, actor_discord_id)
+    await db.log_audit(
+        actor_discord_id, "claim_approved", "claim", claim_id, source=source
+    )
+
+    return SuccessResponse(message="Claim approved")
+
+
+async def reject_claim_handler(
+    claim_id: int,
+    actor_discord_id: int,
+    notes: Optional[str] = None,
+    source: str = "dashboard"
+) -> SuccessResponse:
+    """Reject an insurance claim."""
+    db = get_database()
+    claim = await db.get_claim(claim_id)
+
+    if not claim:
+        raise ValueError("Claim not found")
+    if claim['status'] != 'pending':
+        raise ValueError("Claim is not pending")
+
+    await db.reject_claim(claim_id, actor_discord_id, notes)
+    await db.log_audit(
+        actor_discord_id, "claim_rejected", "claim", claim_id,
+        {"notes": notes}, source=source
+    )
+
+    return SuccessResponse(message="Claim rejected")
+
+
+async def add_blacklist_handler(
+    guild_id: int,
+    discord_id: int,
+    reason: Optional[str],
+    actor_discord_id: int,
+    expires_at: Optional[datetime] = None,
+    source: str = "dashboard"
+) -> SuccessResponse:
+    """Add a user to the blacklist."""
+    db = get_database()
+    await db.add_to_blacklist(
+        guild_id,
+        discord_id,
+        reason or "No reason provided",
+        actor_discord_id,
+        expires_at
+    )
+    await db.log_audit(
+        actor_discord_id, "blacklist_added", "member", discord_id,
+        {"reason": reason, "expires_at": expires_at.isoformat() if expires_at else None},
+        guild_id=guild_id, source=source
+    )
+
+    return SuccessResponse(message="User added to blacklist")
+
+
+async def remove_blacklist_handler(
+    guild_id: int,
+    discord_id: int,
+    actor_discord_id: int,
+    source: str = "dashboard"
+) -> SuccessResponse:
+    """Remove a user from the blacklist."""
+    db = get_database()
+    await db.remove_from_blacklist(guild_id, discord_id)
+    await db.log_audit(
+        actor_discord_id, "blacklist_removed", "member", discord_id,
+        guild_id=guild_id, source=source
+    )
+
+    return SuccessResponse(message="User removed from blacklist")
+
+
+async def update_settings_handler(
+    request: UpdateSettingsRequest,
+    actor_discord_id: int,
+    source: str = "dashboard"
+) -> SettingsResponse:
+    """Update guild settings and return refreshed settings."""
+    db = get_database()
+
+    updates = {}
+    for key, value in request.dict().items():
+        if key != "guild_id" and value is not None:
+            updates[key] = value
+
+    if updates:
+        await db.update_guild_settings(request.guild_id, **updates)
+        await db.log_audit(
+            actor_discord_id, "settings_updated", "guild", request.guild_id,
+            updates, guild_id=request.guild_id, source=source
+        )
+
+    settings = await db.get_guild_settings(request.guild_id)
+    return SettingsResponse(**settings)
 
 
 # ============================================================================
