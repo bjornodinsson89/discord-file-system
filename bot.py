@@ -929,7 +929,6 @@ async def audit_log(interaction: discord.Interaction, limit: int = 10):
 @bot.tree.command(name="db_wipe", description="Drop all database tables (Admin only)")
 @app_commands.default_permissions(administrator=True)
 async def db_wipe(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
     db = get_database()
@@ -945,13 +944,12 @@ async def db_wipe(interaction: discord.Interaction):
         "Confirm Database Wipe",
         "This will DROP ALL TABLES and cannot be undone."
     )
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="db_rebuild", description="Rebuild database schema (Admin only)")
 @app_commands.default_permissions(administrator=True)
 async def db_rebuild(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
     db = get_database()
@@ -967,13 +965,12 @@ async def db_rebuild(interaction: discord.Interaction):
         "Confirm Database Rebuild",
         "This will reapply the schema specification."
     )
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="db_reset", description="Atomic wipe + rebuild of the database (Admin only)")
 @app_commands.default_permissions(administrator=True)
 async def db_reset(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
     db = get_database()
@@ -989,7 +986,7 @@ async def db_reset(interaction: discord.Interaction):
         "Confirm Database Reset",
         "This will DROP ALL TABLES and rebuild the schema."
     )
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 # ============================================================================
