@@ -3,7 +3,7 @@
 import discord
 from discord import ui
 import logging
-from typing import Optional, Awaitable, Callable
+from typing import Optional
 from datetime import datetime, timedelta
 from utils import get_database, get_security_manager, get_torn_api
 from utils.torn_api import TornAPIError, TornAPIPermissionError
@@ -87,49 +87,6 @@ class ConfirmRemoveKeyView(ui.View):
         await interaction.followup.send(embed=create_success_embed("API Key Removed"), ephemeral=True)
         self.stop()
     
-    @ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_message("Cancelled.", ephemeral=True)
-        self.stop()
-
-
-class ConfirmDatabaseActionView(ui.View):
-    def __init__(
-        self,
-        actor_id: int,
-        action_label: str,
-        on_confirm: Callable[[], Awaitable[str]]
-    ):
-        super().__init__(timeout=60)
-        self.actor_id = actor_id
-        self.action_label = action_label
-        self.on_confirm = on_confirm
-
-    @ui.button(label="Confirm", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.actor_id:
-            await interaction.response.send_message(
-                embed=create_error_embed("Not Authorized", "Only the initiating admin can confirm."),
-                ephemeral=True
-            )
-            return
-
-        await interaction.response.defer(ephemeral=True)
-        try:
-            message = await self.on_confirm()
-            await interaction.followup.send(
-                embed=create_success_embed(self.action_label, message),
-                ephemeral=True
-            )
-        except Exception as e:
-            log.exception(f"Database action failed: {e}")
-            await interaction.followup.send(
-                embed=create_error_embed("Database Action Failed", str(e)),
-                ephemeral=True
-            )
-        finally:
-            self.stop()
-
     @ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_message("Cancelled.", ephemeral=True)
