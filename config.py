@@ -46,6 +46,29 @@ DB_SSL = os.getenv("DB_SSL", "require")
 # SECURITY
 # ============================================================================
 FERNET_KEY = os.getenv("FERNET_KEY")
+SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE")
+SESSION_COOKIE_SECURE_ENV = os.getenv("SESSION_COOKIE_SECURE")
+
+
+def _is_https_url(url: str) -> bool:
+    return url.lower().startswith("https://")
+
+
+def _env_to_bool(value: str | None, default: bool) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+if SESSION_COOKIE_SAMESITE is None:
+    SESSION_COOKIE_SAMESITE = "none" if _is_https_url(FRONTEND_URL) else "lax"
+else:
+    SESSION_COOKIE_SAMESITE = SESSION_COOKIE_SAMESITE.strip().lower()
+
+SESSION_COOKIE_SECURE = _env_to_bool(
+    SESSION_COOKIE_SECURE_ENV,
+    _is_https_url(FRONTEND_URL)
+)
 
 # ============================================================================
 # TORN API
