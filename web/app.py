@@ -36,8 +36,8 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=config.DASHBOARD_SECRET_KEY,
     max_age=86400 * 7,  # 7 days
-    https_only=config.DASHBOARD_URL.startswith("https"),
-    same_site="none" if config.DASHBOARD_URL.startswith("https") else "lax",
+    https_only=config.SESSION_COOKIE_SECURE,
+    same_site=config.SESSION_COOKIE_SAMESITE,
 )
 
 # CORS for development
