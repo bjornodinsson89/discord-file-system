@@ -25,7 +25,7 @@ from utils.embeds import (
 from views import (
     ApiKeyIntroView, ConfirmRemoveKeyView, JumpSessionView, HostControlView,
     SetupView, AdminDashboardView, BlacklistView, InsurancePolicyView,
-    ProviderClaimsView, RaffleView, ConfirmDatabaseActionView
+    ProviderClaimsView, RaffleView
 )
 
 # Import web app
@@ -918,69 +918,6 @@ async def audit_log(interaction: discord.Interaction, limit: int = 10):
     except Exception as e:
         log.exception(f"Audit log failed: {e}")
         await interaction.followup.send(embed=create_error_embed("Audit Log Failed", str(e)), ephemeral=True)
-
-
-@bot.tree.command(name="db_wipe", description="Drop all database tables (Admin only)")
-@app_commands.default_permissions(administrator=True)
-async def db_wipe(interaction: discord.Interaction):
-    if not await ensure_admin(interaction):
-        return
-    db = get_database()
-
-    async def _wipe():
-        await db.log_audit(interaction.user.id, "db_wipe_started", "database", None, source="discord")
-        await db.wipe_schema()
-        log.warning(f"Database wiped by {interaction.user.id}")
-        return "Database tables dropped."
-
-    view = ConfirmDatabaseActionView(interaction.user.id, "Database Wipe", _wipe)
-    embed = create_warning_embed(
-        "Confirm Database Wipe",
-        "This will DROP ALL TABLES and cannot be undone."
-    )
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-
-@bot.tree.command(name="db_rebuild", description="Rebuild database schema (Admin only)")
-@app_commands.default_permissions(administrator=True)
-async def db_rebuild(interaction: discord.Interaction):
-    if not await ensure_admin(interaction):
-        return
-    db = get_database()
-
-    async def _rebuild():
-        await db.rebuild_schema()
-        await db.log_audit(interaction.user.id, "db_rebuild_completed", "database", None, source="discord")
-        log.warning(f"Database schema rebuilt by {interaction.user.id}")
-        return "Schema rebuilt from canonical spec."
-
-    view = ConfirmDatabaseActionView(interaction.user.id, "Database Rebuild", _rebuild)
-    embed = create_warning_embed(
-        "Confirm Database Rebuild",
-        "This will reapply the schema specification."
-    )
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-
-@bot.tree.command(name="db_reset", description="Atomic wipe + rebuild of the database (Admin only)")
-@app_commands.default_permissions(administrator=True)
-async def db_reset(interaction: discord.Interaction):
-    if not await ensure_admin(interaction):
-        return
-    db = get_database()
-
-    async def _reset():
-        await db.reset_schema()
-        await db.log_audit(interaction.user.id, "db_reset_completed", "database", None, source="discord")
-        log.warning(f"Database reset by {interaction.user.id}")
-        return "Database wiped and rebuilt."
-
-    view = ConfirmDatabaseActionView(interaction.user.id, "Database Reset", _reset)
-    embed = create_warning_embed(
-        "Confirm Database Reset",
-        "This will DROP ALL TABLES and rebuild the schema."
-    )
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 # ============================================================================
