@@ -100,7 +100,8 @@ class TornAPIClient:
     
     async def validate_api_key(self, api_key: str) -> Tuple[int, int, set]:
         info = await self._request("/key", {"selections": "info", "key": api_key})
-        perms = set(info.get("selections", {}).get("user", []) or [])
+        key_info = info.get("key", info) if isinstance(info, dict) else info
+        perms = self._extract_permissions(key_info)
         if not config.REQUIRED_PERMISSIONS.issubset(perms):
             missing = config.REQUIRED_PERMISSIONS - perms
             raise TornAPIPermissionError(f"Missing permissions: {', '.join(missing)}")
@@ -109,6 +110,37 @@ class TornAPIClient:
         discord_id = int(user["discord"]["discord_id"])
         torn_id = int(user["profile"]["id"])
         return discord_id, torn_id, perms
+
+    def _extract_permissions(self, key_info: Dict) -> set:
+        selections = key_info.get("selections") if isinstance(key_info, dict) else None
+        perms: set = set()
+
+        if isinstance(selections, dict):
+            user_selections = selections.get("user")
+            if isinstance(user_selections, list):
+                perms.update(user_selections)
+            elif isinstance(user_selections, str):
+                perms.update({s.strip() for s in user_selections.split(",") if s.strip()})
+            elif isinstance(user_selections, dict):
+                for field in ("selections", "permissions", "allowed"):
+                    values = user_selections.get(field)
+                    if isinstance(values, list):
+                        perms.update(values)
+                        break
+                    if isinstance(values, str):
+                        perms.update({s.strip() for s in values.split(",") if s.strip()})
+                        break
+        elif isinstance(selections, list):
+            perms.update(selections)
+        elif isinstance(selections, str):
+            perms.update({s.strip() for s in selections.split(",") if s.strip()})
+
+        access_type = str(key_info.get("access_type", "")).lower() if isinstance(key_info, dict) else ""
+        access_level = key_info.get("access_level") if isinstance(key_info, dict) else None
+        if not perms and (access_type == "full" or (isinstance(access_level, int) and access_level >= 3)):
+            perms = set(config.REQUIRED_PERMISSIONS)
+
+        return perms
     
     async def get_user_data(self, api_key: str) -> Dict:
         return await self._request("/user", {"selections": "basic,discord,bars,cooldowns", "key": api_key})
