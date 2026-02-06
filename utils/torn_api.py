@@ -124,6 +124,7 @@ class TornAPIClient:
             raise TornAPIError("Request timed out")
     
     async def validate_api_key(self, api_key: str) -> Tuple[int, int, set]:
+        # Key verification is v1-only; keep it separate from v2 requests.
         info = await self._request_key_info({"selections": "info", "key": api_key})
         key_info = info.get("key", info) if isinstance(info, dict) else info
         perms = self._extract_permissions(key_info)
