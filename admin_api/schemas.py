@@ -34,8 +34,8 @@ class SessionResponse(BaseModel):
     payment_type: str
     payment_amount: int
     status: str
-    announcement_message_id: Optional[int]
-    message_url: Optional[str]
+    announcement_message_id: Optional[int] = None
+    message_url: Optional[str] = None
     created_by_dashboard: Optional[bool] = None
     dashboard_admin_id: Optional[int] = None
     created_at: datetime
@@ -81,8 +81,8 @@ class RaffleResponse(BaseModel):
     status: str
     winner_discord_id: Optional[int]
     end_time: datetime
-    announcement_message_id: Optional[int]
-    message_url: Optional[str]
+    announcement_message_id: Optional[int] = None
+    message_url: Optional[str] = None
     created_at: datetime
     
     class Config:
@@ -137,7 +137,7 @@ class ProviderResponse(BaseModel):
     provider_id: int
     discord_id: int
     torn_user_id: int
-    company_name: Optional[str]
+    company_name: Optional[str] = None
     approval_status: str
     verified: bool
     active: bool
@@ -161,23 +161,23 @@ class GuildInfoResponse(BaseModel):
     """Guild info response."""
     id: int
     name: str
-    icon: Optional[str]
-    member_count: Optional[int]
+    icon: Optional[str] = None
+    member_count: Optional[int] = None
 
 
 class MemberSummary(BaseModel):
     """Member summary for admin dashboard."""
     discord_id: int
-    username: Optional[str]
-    display_name: Optional[str]
-    avatar: Optional[str]
-    torn_user_id: Optional[int]
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+    avatar: Optional[str] = None
+    torn_user_id: Optional[int] = None
     has_api_key: bool
     is_host: bool
     is_insurer: bool
     sessions_joined: int = 0
     sessions_hosted: int = 0
-    created_at: Optional[datetime]
+    created_at: Optional[datetime] = None
 
 
 class MemberListResponse(BaseModel):
@@ -204,12 +204,12 @@ class BlacklistEntry(BaseModel):
     """Blacklist entry."""
     guild_id: int
     discord_id: int
-    username: Optional[str]
-    torn_user_id: Optional[int]
-    reason: Optional[str]
-    banned_by: Optional[int]
-    expires_at: Optional[datetime]
-    created_at: Optional[datetime]
+    username: Optional[str] = None
+    torn_user_id: Optional[int] = None
+    reason: Optional[str] = None
+    banned_by: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
 
 
 class BlacklistListResponse(BaseModel):
@@ -237,12 +237,12 @@ class UpdateSettingsRequest(BaseModel):
 class SettingsResponse(BaseModel):
     """Guild settings response."""
     guild_id: int
-    host99k_role_id: Optional[int]
-    insurer_role_id: Optional[int]
-    admin_role_id: Optional[int]
-    jump_99k_channel_id: Optional[int]
-    insurance_channel_id: Optional[int]
-    raffle_channel_id: Optional[int]
+    host99k_role_id: Optional[int] = None
+    insurer_role_id: Optional[int] = None
+    admin_role_id: Optional[int] = None
+    jump_99k_channel_id: Optional[int] = None
+    insurance_channel_id: Optional[int] = None
+    raffle_channel_id: Optional[int] = None
     reservation_timeout_minutes: int
     auto_complete_enabled: bool
     updated_at: datetime
@@ -258,10 +258,10 @@ class SettingsResponse(BaseModel):
 class AuditLogEntry(BaseModel):
     """Audit log entry."""
     id: int
-    actor_discord_id: Optional[int]
+    actor_discord_id: Optional[int] = None
     action: str
-    target_type: Optional[str]
-    target_id: Optional[int]
+    target_type: Optional[str] = None
+    target_id: Optional[int] = None
     payload: dict
     source: Optional[str] = None
     created_at: datetime
@@ -294,3 +294,4 @@ class ErrorResponse(BaseModel):
     success: bool = False
     error: str
     detail: Optional[str] = None
+
