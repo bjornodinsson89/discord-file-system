@@ -1737,4 +1737,11 @@ async def init_database() -> DatabaseManager:
     global _db_manager
     _db_manager = DatabaseManager()
     await _db_manager.init_pool(run_migrations=config.RUN_MIGRATIONS_ON_STARTUP)
- ‌‍
+    return _db_manager
+
+
+def get_database() -> DatabaseManager:
+    """Get the database manager singleton."""
+    if _db_manager is None:
+        raise RuntimeError("Database not initialized. Call init_database() first.")
+    return _db_manager
