@@ -1,22 +1,8 @@
-"""
-Web Module
-FastAPI app, OAuth, and permissions.
+"""Web package for Happy Jumper.
+
+Keep package imports side-effect free to avoid circular import chains.
+Import concrete modules directly (for example ``web.app`` or ``web.auth``)
+from callers.
 """
 
-from web.app import app
-from web.auth import router as auth_router
-from web.permissions import (
-    get_current_user,
-    require_guild_admin,
-    get_user_guilds,
-    verify_guild_access,
-)
-
-__all__ = [
-    'app',
-    'auth_router',
-    'get_current_user',
-    'require_guild_admin',
-    'get_user_guilds',
-    'verify_guild_access',
-]
+__all__: list[str] = []

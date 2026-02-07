@@ -3,17 +3,28 @@ Happy Jumper Web Dashboard - Main Application
 FastAPI app serving both dashboard UI and Admin API.
 """
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 import logging
 from pathlib import Path
 
 import config
-from web import auth, permissions
-from admin_api import routes as admin_routes
+from web.auth import router as auth_router
+from admin_api.routes import (
+    guild_router,
+    sessions_router,
+    raffles_router,
+    insurance_router,
+    settings_router,
+    audit_router,
+    stats_router,
+    members_router,
+    blacklist_router,
+)
+from utils import init_database, get_database, init_security, init_torn_api
 
 log = logging.getLogger("happy_jumper.web")
 
@@ -26,6 +37,30 @@ app = FastAPI(
     description="Admin & Creation Panel for Happy Jumper Discord Bot",
     version="2.0.0"
 )
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize process-scoped services for API workers."""
+    if not config.RUN_WEB:
+        log.info("RUN_WEB is disabled; API process will still answer health checks")
+        return
+
+    config.validate_config()
+    await init_database()
+    init_torn_api()
+    await init_security()
+    log.info("Web process dependencies initialized")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Close shared resources on process shutdown."""
+    try:
+        db = get_database()
+    except RuntimeError:
+        return
+    await db.close()
 
 # ============================================================================
 # MIDDLEWARE
@@ -54,18 +89,18 @@ app.add_middleware(
 # ============================================================================
 
 # Auth routes
-app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 
 # Admin API routes
-app.include_router(admin_routes.guild_router, prefix="/api/guilds", tags=["Guilds"])
-app.include_router(admin_routes.sessions_router, prefix="/api/sessions", tags=["Sessions"])
-app.include_router(admin_routes.raffles_router, prefix="/api/raffles", tags=["Raffles"])
-app.include_router(admin_routes.insurance_router, prefix="/api/insurance", tags=["Insurance"])
-app.include_router(admin_routes.settings_router, prefix="/api/settings", tags=["Settings"])
-app.include_router(admin_routes.audit_router, prefix="/api/audit", tags=["Audit"])
-app.include_router(admin_routes.stats_router, prefix="/api/stats", tags=["Statistics"])
-app.include_router(admin_routes.members_router, prefix="/api/members", tags=["Members"])
-app.include_router(admin_routes.blacklist_router, prefix="/api/blacklist", tags=["Blacklist"])
+app.include_router(guild_router, prefix="/api/guilds", tags=["Guilds"])
+app.include_router(sessions_router, prefix="/api/sessions", tags=["Sessions"])
+app.include_router(raffles_router, prefix="/api/raffles", tags=["Raffles"])
+app.include_router(insurance_router, prefix="/api/insurance", tags=["Insurance"])
+app.include_router(settings_router, prefix="/api/settings", tags=["Settings"])
+app.include_router(audit_router, prefix="/api/audit", tags=["Audit"])
+app.include_router(stats_router, prefix="/api/stats", tags=["Statistics"])
+app.include_router(members_router, prefix="/api/members", tags=["Members"])
+app.include_router(blacklist_router, prefix="/api/blacklist", tags=["Blacklist"])
 
 # ============================================================================
 # STATIC FILES & SPA
@@ -134,3 +169,27 @@ async def not_found_handler(request: Request, exc):
         return FileResponse(frontend_build / "index.html")
 
     return Response(content="Not Found", status_code=404)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Consistent JSON error payload for API routes."""
+    if request.url.path.startswith("/api/"):
+        message = "Internal server error" if exc.status_code >= 500 else str(exc.detail)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"message": message, "status": exc.status_code}}
+        )
+    return Response(content="Not Found", status_code=exc.status_code)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Fallback exception mapping with server-side traceback logging."""
+    log.exception("Unhandled API exception on %s: %s", request.url.path, exc)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": "Internal server error", "status": 500}}
+        )
+    return Response(content="Internal server error", status_code=500)

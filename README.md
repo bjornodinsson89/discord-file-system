@@ -1,5 +1,7 @@
 # Happy Jumper vNext - Complete Refactored System
 
+> Deployment note: see `DEPLOYMENT.md` for Railway split-service commands and per-service env vars.
+
 **Version 2.0.0** - Dashboard-First Admin & Creation Panel
 
 This is the complete refactored version of Happy Jumper Bot with integrated web dashboard, following the specification document requirements.

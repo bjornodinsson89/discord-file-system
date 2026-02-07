@@ -61,7 +61,10 @@ class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
             
             db = get_database()
             await db.set_user_api_key(interaction.user.id, torn_id, encrypted)
-            await db.log_audit(interaction.user.id, "api_key_registered", "user", interaction.user.id, {"torn_id": torn_id})
+            try:
+                await db.log_audit(interaction.user.id, "api_key_registered", "user", interaction.user.id, {"torn_id": torn_id})
+            except Exception:
+                log.exception("Failed to write api_key_registered audit log")
             
             await interaction.followup.send(embed=create_success_embed(
                 "API Key Registered", f"Torn ID: `{torn_id}`"), ephemeral=True)
