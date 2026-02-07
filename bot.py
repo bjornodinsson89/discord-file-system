@@ -11,9 +11,6 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 import sys
-import uvicorn
-from threading import Thread
-import os
 
 import config
 from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager
@@ -28,8 +25,6 @@ from views import (
     ProviderClaimsView, RaffleView
 )
 
-# Import web app
-from web.app import app as fastapi_app
 from admin_api import handlers as admin_handlers
 from admin_api.schemas import (
     CreateSessionRequest,
@@ -79,6 +74,45 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 bot.synced = False
 
+
+async def _send_interaction_error(interaction: discord.Interaction, message: str):
+    """Best-effort user-facing interaction error response."""
+    embed = create_error_embed("Error", message)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    except Exception:
+        log.exception("Failed to send interaction error response")
+
+
+async def _global_view_error(self, interaction: discord.Interaction, error: Exception, item):
+    log.exception("Unhandled UI interaction error (item=%s): %s", getattr(item, "custom_id", None), error)
+    await _send_interaction_error(interaction, "An unexpected error occurred. Please try again.")
+
+
+async def _global_modal_error(self, interaction: discord.Interaction, error: Exception):
+    log.exception("Unhandled modal interaction error: %s", error)
+    await _send_interaction_error(interaction, "An unexpected error occurred. Please try again.")
+
+
+discord.ui.View.on_error = _global_view_error
+discord.ui.Modal.on_error = _global_modal_error
+
+
+async def setup_hook():
+    """Initialize process-scoped dependencies once per bot lifecycle."""
+    config.validate_config()
+    await init_database()
+    init_torn_api()
+    await init_security()
+    admin_handlers.set_bot_instance(bot)
+    log.info("Process dependencies initialized")
+
+
+bot.setup_hook = setup_hook
+
 # ============================================================================
 # BOT EVENTS
 # ============================================================================
@@ -90,22 +124,6 @@ async def on_ready():
     log.info(f"Bot ID: {bot.user.id}")
     log.info(f"Discord.py version: {discord.__version__}")
     log.info(f"Guilds: {len(bot.guilds)}")
-    
-    # Register bot instance with admin API
-    admin_handlers.set_bot_instance(bot)
-    log.info("Bot instance registered with admin API")
-    
-    # Initialize database
-    db = await init_database()
-    log.info("Database initialized")
-    
-    # Initialize Torn API
-    init_torn_api()
-    log.info("Torn API initialized")
-    
-    # Initialize security
-    await init_security()
-    log.info("Security initialized")
     
     # Sync commands once per process lifecycle
     if not bot.synced:
@@ -143,6 +161,13 @@ async def on_guild_join(guild: discord.Guild):
     log.info(f"Joined guild: {guild.name} ({guild.id})")
     db = get_database()
     await db.get_guild_settings(guild.id)  # Create default settings
+
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    """Global slash command error handler."""
+    log.exception("Unhandled slash command error: %s", error)
+    await _send_interaction_error(interaction, "An unexpected error occurred. Please try again.")
 
 
 # ============================================================================
@@ -1304,44 +1329,12 @@ async def _draw_raffle_winner(raffle: dict):
         raise
 
 
-# ============================================================================
-# WEB SERVER
-# ============================================================================
-
-def run_fastapi():
-    """Run FastAPI server in separate thread."""
-    port = 8000
-    if config.DASHBOARD_URL and ":" in config.DASHBOARD_URL:
-        try:
-            port = int(config.DASHBOARD_URL.split(":")[-1].split("/")[0])
-        except ValueError:
-            pass
-    
-    # Use PORT env var if set (Railway provides this)
-    port = int(os.getenv("PORT", port))
-    
-    uvicorn.run(
-        fastapi_app,
-        host="0.0.0.0",
-        port=port,
-        log_level="info"
-    )
-
-
-# ============================================================================
-# MAIN
-# ============================================================================
-
 async def main():
-    """Main entry point - runs both bot and web server."""
-    config.validate_config()
-    
-    # Start FastAPI in background thread
-    web_thread = Thread(target=run_fastapi, daemon=True)
-    web_thread.start()
-    log.info("FastAPI web server started")
-    
-    # Start bot
+    """Main entry point - runs Discord bot only."""
+    if not config.RUN_BOT:
+        log.info("RUN_BOT is disabled; bot process exiting")
+        return
+
     async with bot:
         await bot.start(config.DISCORD_TOKEN)
 
