@@ -7,6 +7,7 @@ PgBouncer/Supabase pooler compatible.
 import asyncpg
 import logging
 import random
+import asyncio
 from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta
 import json
@@ -23,6 +24,8 @@ class DatabaseManager:
     
     async def init_pool(self, run_migrations: bool = False) -> asyncpg.Pool:
         """Initialize connection pool with PgBouncer-safe settings."""
+        if self.pool and not self.pool._closed:
+            return self.pool
         ssl_mode = config.DB_SSL if config.DB_SSL != 'disable' else None
         
         self.pool = await asyncpg.create_pool(
@@ -54,18 +57,7 @@ class DatabaseManager:
     async def apply_emergency_schema_fixes(self):
         """Apply emergency schema fixes for missing columns (PgBouncer-safe)."""
         try:
-            # Force PgBouncer to clear prepared statement cache
-            # by creating a fresh connection
-            conn = await asyncpg.connect(
-                host=config.DB_HOST,
-                port=config.DB_PORT,
-                database=config.DB_NAME,
-                user=config.DB_USER,
-                password=config.DB_PASSWORD,
-                ssl=config.DB_SSL if config.DB_SSL != 'disable' else None,
-                statement_cache_size=0,
-            )
-            try:
+            async with self.pool.acquire() as conn:
                 # Fix 1: Add audit_log.source column
                 await conn.execute("""
                     DO $$
@@ -107,8 +99,42 @@ class DatabaseManager:
                     END $$;
                 """)
                 log.info("✅ insurance_coverage.last_log_timestamp column verified")
+
+                # Fix 4: Add happy_jump_signups.reserved_until column
+                await conn.execute("""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_name = 'happy_jump_signups'
+                        ) AND NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = 'happy_jump_signups' AND column_name = 'reserved_until'
+                        ) THEN
+                            ALTER TABLE happy_jump_signups ADD COLUMN reserved_until TIMESTAMPTZ;
+                        END IF;
+                    END $$;
+                """)
+                log.info("✅ happy_jump_signups.reserved_until column verified")
+
+                # Fix 5: Add raffle_entries.reserved_until column
+                await conn.execute("""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_name = 'raffle_entries'
+                        ) AND NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = 'raffle_entries' AND column_name = 'reserved_until'
+                        ) THEN
+                            ALTER TABLE raffle_entries ADD COLUMN reserved_until TIMESTAMPTZ;
+                        END IF;
+                    END $$;
+                """)
+                log.info("✅ raffle_entries.reserved_until column verified")
                 
-                # Fix 4: Fix raffle status constraint
+                # Fix 6: Fix raffle status constraint
                 await conn.execute("""
                     DO $$
                     BEGIN
@@ -123,8 +149,6 @@ class DatabaseManager:
                 log.info("✅ raffles status constraint fixed")
                 
                 log.info("🎉 All emergency schema fixes applied!")
-            finally:
-                await conn.close()
                 
         except Exception as e:
             log.error(f"❌ Emergency schema fix failed: {e}")
@@ -1734,14 +1758,30 @@ class DatabaseManager:
 # ============================================================================
 
 _db_manager: Optional[DatabaseManager] = None
+_db_loop: Optional[asyncio.AbstractEventLoop] = None
+_db_lock = asyncio.Lock()
 
 
 async def init_database() -> DatabaseManager:
     """Initialize the database manager singleton."""
-    global _db_manager
-    _db_manager = DatabaseManager()
-    await _db_manager.init_pool(run_migrations=config.RUN_MIGRATIONS_ON_STARTUP)
-    return _db_manager
+    global _db_manager, _db_loop
+    current_loop = asyncio.get_running_loop()
+
+    async with _db_lock:
+        if _db_manager and _db_loop is current_loop:
+            return _db_manager
+
+        if _db_manager and _db_loop is not current_loop:
+            log.warning("Database manager initialized on a different event loop; recreating pool")
+            try:
+                await _db_manager.close()
+            except Exception:
+                log.exception("Failed closing previous database pool")
+
+        _db_manager = DatabaseManager()
+        await _db_manager.init_pool(run_migrations=config.RUN_MIGRATIONS_ON_STARTUP)
+        _db_loop = current_loop
+        return _db_manager
 
 
 def get_database() -> DatabaseManager:
@@ -1749,4 +1789,3 @@ def get_database() -> DatabaseManager:
     if _db_manager is None:
         raise RuntimeError("Database not initialized. Call init_database() first.")
     return _db_manager
-

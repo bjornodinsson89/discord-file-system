@@ -5,6 +5,13 @@ Extended with Dashboard, OAuth, and Admin API settings.
 
 import os
 
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 # ============================================================================
 # DISCORD CONFIGURATION
 # ============================================================================
@@ -12,6 +19,8 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
+RUN_WEB = _env_flag("RUN_WEB", True)
+RUN_BOT = _env_flag("RUN_BOT", True)
 
 # ============================================================================
 # DASHBOARD CONFIGURATION
