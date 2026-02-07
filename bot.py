@@ -1,6 +1,6 @@
 """
 Happy Jump Discord Bot - vNext with Dashboard
-Combined service running Discord bot + FastAPI dashboard in single Railway service.
+Discord bot process entrypoint (no embedded web server).
 """
 
 import discord

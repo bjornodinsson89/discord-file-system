@@ -77,18 +77,18 @@ app.add_middleware(
 # ============================================================================
 
 # Auth routes
-app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 
 # Admin API routes
-app.include_router(admin_routes.guild_router, prefix="/api/guilds", tags=["Guilds"])
-app.include_router(admin_routes.sessions_router, prefix="/api/sessions", tags=["Sessions"])
-app.include_router(admin_routes.raffles_router, prefix="/api/raffles", tags=["Raffles"])
-app.include_router(admin_routes.insurance_router, prefix="/api/insurance", tags=["Insurance"])
-app.include_router(admin_routes.settings_router, prefix="/api/settings", tags=["Settings"])
-app.include_router(admin_routes.audit_router, prefix="/api/audit", tags=["Audit"])
-app.include_router(admin_routes.stats_router, prefix="/api/stats", tags=["Statistics"])
-app.include_router(admin_routes.members_router, prefix="/api/members", tags=["Members"])
-app.include_router(admin_routes.blacklist_router, prefix="/api/blacklist", tags=["Blacklist"])
+app.include_router(guild_router, prefix="/api/guilds", tags=["Guilds"])
+app.include_router(sessions_router, prefix="/api/sessions", tags=["Sessions"])
+app.include_router(raffles_router, prefix="/api/raffles", tags=["Raffles"])
+app.include_router(insurance_router, prefix="/api/insurance", tags=["Insurance"])
+app.include_router(settings_router, prefix="/api/settings", tags=["Settings"])
+app.include_router(audit_router, prefix="/api/audit", tags=["Audit"])
+app.include_router(stats_router, prefix="/api/stats", tags=["Statistics"])
+app.include_router(members_router, prefix="/api/members", tags=["Members"])
+app.include_router(blacklist_router, prefix="/api/blacklist", tags=["Blacklist"])
 
 # ============================================================================
 # STATIC FILES & SPA

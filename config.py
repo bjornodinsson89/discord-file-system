@@ -220,20 +220,42 @@ PAYMENT_TYPES = {
 # VALIDATION
 # ============================================================================
 def validate_config() -> None:
-    """Validate required environment variables."""
-    required = {
-        "DISCORD_TOKEN": DISCORD_TOKEN,
-        "DISCORD_CLIENT_ID": DISCORD_CLIENT_ID,
-        "DISCORD_CLIENT_SECRET": DISCORD_CLIENT_SECRET,
-        "DASHBOARD_SECRET_KEY": DASHBOARD_SECRET_KEY_ENV,
+    """Validate required environment variables for split web/bot processes."""
+    missing: list[str] = []
+
+    # Shared requirements used by both bot and web processes.
+    shared_required = {
         "DB_HOST": DB_HOST,
+        "DB_PORT": DB_PORT,
         "DB_NAME": DB_NAME,
         "DB_USER": DB_USER,
         "DB_PASSWORD": DB_PASSWORD,
+        "DB_SSL": DB_SSL,
         "FERNET_KEY": FERNET_KEY,
     }
+    missing.extend(name for name, value in shared_required.items() if not value)
 
-    missing = [name for name, value in required.items() if not value]
+    if RUN_BOT:
+        bot_required = {
+            "DISCORD_TOKEN": DISCORD_TOKEN,
+        }
+        missing.extend(name for name, value in bot_required.items() if not value)
 
-    if missing:
-        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+    if RUN_WEB:
+        web_required = {
+            "DISCORD_CLIENT_ID": DISCORD_CLIENT_ID,
+            "DISCORD_CLIENT_SECRET": DISCORD_CLIENT_SECRET,
+            "DASHBOARD_SECRET_KEY": DASHBOARD_SECRET_KEY_ENV,
+            "DASHBOARD_URL": DASHBOARD_URL,
+            "FRONTEND_URL": FRONTEND_URL,
+            "OAUTH_REDIRECT_URI": OAUTH_REDIRECT_URI,
+        }
+        missing.extend(name for name, value in web_required.items() if not value)
+
+    # De-duplicate while preserving order.
+    deduped_missing = list(dict.fromkeys(missing))
+
+    if deduped_missing:
+        raise RuntimeError(
+            f"Missing required environment variables: {', '.join(deduped_missing)}"
+        )
