@@ -54,7 +54,8 @@ class DatabaseManager:
     async def apply_emergency_schema_fixes(self):
         """Apply emergency schema fixes for missing columns (PgBouncer-safe)."""
         try:
-            # Use direct connection to bypass PgBouncer prepared statement cache
+            # Force PgBouncer to clear prepared statement cache
+            # by creating a fresh connection
             conn = await asyncpg.connect(
                 host=config.DB_HOST,
                 port=config.DB_PORT,
@@ -111,7 +112,10 @@ class DatabaseManager:
                 await conn.execute("""
                     DO $$
                     BEGIN
+                        -- Drop old constraint if exists
                         ALTER TABLE raffles DROP CONSTRAINT IF EXISTS chk_raffle_status;
+                        
+                        -- Add new constraint with 'drawing' status
                         ALTER TABLE raffles ADD CONSTRAINT chk_raffle_status 
                         CHECK (status IN ('active', 'drawing', 'completed', 'cancelled'));
                     END $$;
@@ -1745,3 +1749,4 @@ def get_database() -> DatabaseManager:
     if _db_manager is None:
         raise RuntimeError("Database not initialized. Call init_database() first.")
     return _db_manager
+
