@@ -6,9 +6,8 @@ FastAPI route definitions for all admin endpoints.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, List
 
-import discord
-
 from web.permissions import get_current_user, require_guild_admin, get_user_guilds
+from web.discord_api import get_guild, get_guild_channels as fetch_guild_channels, get_guild_roles as fetch_guild_roles
 from admin_api.schemas import *
 from admin_api.handlers import *
 from utils import get_database
@@ -18,40 +17,6 @@ from utils import get_database
 # ============================================================================
 
 guild_router = APIRouter()
-
-async def _resolve_guild(bot: discord.Client, guild_id: int) -> discord.Guild:
-    guild = bot.get_guild(guild_id)
-    if guild:
-        return guild
-
-    try:
-        return await bot.fetch_guild(guild_id)
-    except discord.NotFound:
-        raise HTTPException(status_code=404, detail="Guild not found or bot not in guild")
-    except discord.Forbidden:
-        raise HTTPException(status_code=403, detail="Bot lacks access to this guild")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-async def _resolve_bot_member(guild: discord.Guild, bot: discord.Client) -> Optional[discord.Member]:
-    if hasattr(guild, "me") and guild.me:
-        return guild.me
-
-    if not bot.user:
-        return None
-
-    member = None
-    if hasattr(guild, "get_member"):
-        member = guild.get_member(bot.user.id)
-    if not member and hasattr(guild, "fetch_member"):
-        try:
-            member = await guild.fetch_member(bot.user.id)
-        except Exception:
-            return None
-    return member
 
 
 @guild_router.get("/admin")
@@ -68,27 +33,9 @@ async def get_guild_channels(
     guild_id: int,
     user: dict = Depends(get_current_user)
 ):
-    """Get list of text channels in guild."""
+    """Get list of text channels in guild via Discord REST."""
     await require_guild_admin(guild_id, user)
-    
-    bot = get_bot()
-    guild = await _resolve_guild(bot, guild_id)
-    bot_member = await _resolve_bot_member(guild, bot)
-
-    channels = []
-    channel_list = []
-    if getattr(guild, "text_channels", None):
-        channel_list = guild.text_channels
-    elif hasattr(guild, "fetch_channels"):
-        channel_list = await guild.fetch_channels()
-
-    for channel in channel_list:
-        if channel.type != discord.ChannelType.text:
-            continue
-        if bot_member and not channel.permissions_for(bot_member).send_messages:
-            continue
-        channels.append({"id": str(channel.id), "name": channel.name, "type": "text"})
-
+    channels = await fetch_guild_channels(guild_id)
     return {"channels": channels}
 
 
@@ -97,27 +44,10 @@ async def get_guild_roles(
     guild_id: int,
     user: dict = Depends(get_current_user)
 ):
-    """Get list of roles in guild."""
+    """Get list of roles in guild via Discord REST."""
     await require_guild_admin(guild_id, user)
-    
-    bot = get_bot()
-    guild = await _resolve_guild(bot, guild_id)
-
-    roles = []
-    role_list = []
-    if getattr(guild, "roles", None):
-        role_list = guild.roles
-    elif hasattr(guild, "fetch_roles"):
-        role_list = await guild.fetch_roles()
-
-    for role in role_list:
-        if role.name == "@everyone":
-            continue
-        if hasattr(role, "is_bot_managed") and role.is_bot_managed():
-            continue
-        roles.append({"id": str(role.id), "name": role.name, "color": str(role.color)})
-
-    return {"roles": sorted(roles, key=lambda r: r["name"])}
+    roles = await fetch_guild_roles(guild_id)
+    return {"roles": roles}
 
 
 @guild_router.get("/{guild_id}", response_model=GuildInfoResponse)
@@ -128,14 +58,15 @@ async def get_guild_info(
     """Get basic guild info."""
     await require_guild_admin(guild_id, user)
 
-    bot = get_bot()
-    guild = await _resolve_guild(bot, guild_id)
+    guild = await get_guild(guild_id)
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found or bot not in guild")
 
     return GuildInfoResponse(
-        id=guild.id,
-        name=guild.name,
-        icon=guild.icon.url if guild.icon else None,
-        member_count=guild.member_count
+        id=int(guild["id"]),
+        name=guild.get("name", "Unknown Server"),
+        icon=(f"https://cdn.discordapp.com/icons/{guild['id']}/{guild['icon']}.png" if guild.get("icon") else None),
+        member_count=guild.get("approximate_member_count")
     )
 
 
@@ -154,58 +85,28 @@ async def list_members(
     per_page: int = Query(20, ge=1, le=100),
     user: dict = Depends(get_current_user)
 ):
-    """List members in a guild with dashboard metadata."""
+    """List registered users in a guild with dashboard metadata."""
     await require_guild_admin(guild_id, user)
 
-    bot = get_bot()
-    guild = bot.get_guild(guild_id)
-    if not guild:
-        raise HTTPException(status_code=404, detail="Guild not found or bot not in guild")
-
-    members = list(guild.members)
-    if not members and not guild.chunked:
-        try:
-            await guild.chunk()
-            members = list(guild.members)
-        except Exception:
-            pass
-
-    if not members:
-        try:
-            members = [m async for m in guild.fetch_members(limit=None)]
-        except Exception:
-            members = []
-
-    discord_ids = [m.id for m in members]
     db = get_database()
-    api_keys = await db.get_user_api_keys_by_ids(discord_ids)
-    reputations = await db.get_host_reputation_by_ids(discord_ids)
-    providers = await db.get_providers_by_discord_ids(discord_ids)
-    activity_stats = await db.get_member_activity_stats(guild_id, discord_ids)
-
-    api_map = {row["discord_id"]: row for row in api_keys}
-    reputation_map = {row["discord_id"]: row for row in reputations}
-    provider_map = {row["discord_id"]: row for row in providers}
+    rows = await db.get_registered_users_for_guild(guild_id)
 
     entries: List[MemberSummary] = []
-    for member in members:
-        api_key = api_map.get(member.id)
-        reputation = reputation_map.get(member.id)
-        provider = provider_map.get(member.id)
-        stats = activity_stats.get(member.id, {"sessions_joined": 0, "sessions_hosted": 0})
-
+    for row in rows:
+        discord_id = int(row["discord_id"])
+        username = row.get("username") or f"User {discord_id}"
         entry = MemberSummary(
-            discord_id=member.id,
-            username=member.name,
-            display_name=member.display_name,
-            avatar=member.display_avatar.url if member.display_avatar else None,
-            torn_user_id=api_key["torn_user_id"] if api_key else None,
-            has_api_key=api_key is not None,
-            is_host=reputation is not None,
-            is_insurer=provider is not None and provider.get("approval_status") == "approved",
-            sessions_joined=stats.get("sessions_joined", 0),
-            sessions_hosted=stats.get("sessions_hosted", 0),
-            created_at=api_key["created_at"] if api_key else None
+            discord_id=discord_id,
+            username=username,
+            display_name=row.get("display_name") or username,
+            avatar=row.get("avatar"),
+            torn_user_id=row.get("torn_user_id"),
+            has_api_key=bool(row.get("has_api_key")),
+            is_host=bool(row.get("is_host")),
+            is_insurer=bool(row.get("is_insurer")),
+            sessions_joined=row.get("sessions_joined", 0),
+            sessions_hosted=row.get("sessions_hosted", 0),
+            created_at=row.get("created_at"),
         )
         entries.append(entry)
 
@@ -264,20 +165,13 @@ async def list_blacklist(
     api_keys = await db.get_user_api_keys_by_ids(discord_ids)
     api_map = {row["discord_id"]: row for row in api_keys}
 
-    bot = get_bot()
-    guild = bot.get_guild(guild_id)
-    member_map = {}
-    if guild:
-        member_map = {member.id: member for member in guild.members}
-
     results: List[BlacklistEntry] = []
     for entry in entries:
-        member = member_map.get(entry["discord_id"])
         api_key = api_map.get(entry["discord_id"])
         results.append(BlacklistEntry(
             guild_id=entry["guild_id"],
             discord_id=entry["discord_id"],
-            username=member.name if member else None,
+            username=None,
             torn_user_id=api_key["torn_user_id"] if api_key else None,
             reason=entry.get("reason"),
             banned_by=entry.get("banned_by"),

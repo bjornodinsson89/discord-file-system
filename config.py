@@ -245,6 +245,7 @@ def validate_config() -> None:
         web_required = {
             "DISCORD_CLIENT_ID": DISCORD_CLIENT_ID,
             "DISCORD_CLIENT_SECRET": DISCORD_CLIENT_SECRET,
+            "DISCORD_TOKEN": DISCORD_TOKEN,
             "DASHBOARD_SECRET_KEY": DASHBOARD_SECRET_KEY_ENV,
             "DASHBOARD_URL": DASHBOARD_URL,
             "FRONTEND_URL": FRONTEND_URL,

@@ -962,6 +962,50 @@ class DatabaseManager:
                 stats[discord_id]["sessions_hosted"] = row["sessions_hosted"]
         return stats
     
+
+    async def get_registered_users_for_guild(self, guild_id: int) -> List[Dict]:
+        """Get registered users for a guild based on DB activity and API key registration."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                WITH relevant_users AS (
+                    SELECT host_discord_id AS discord_id
+                    FROM happy_jump_sessions
+                    WHERE guild_id = $1
+                    UNION
+                    SELECT s.discord_id
+                    FROM happy_jump_signups s
+                    JOIN happy_jump_sessions hs ON hs.id = s.session_id
+                    WHERE hs.guild_id = $1
+                )
+                SELECT
+                    ru.discord_id,
+                    uak.torn_user_id,
+                    (uak.discord_id IS NOT NULL) AS has_api_key,
+                    (hr.discord_id IS NOT NULL) AS is_host,
+                    (ip.discord_id IS NOT NULL AND ip.approval_status = 'approved') AS is_insurer,
+                    COALESCE(joined.sessions_joined, 0)::int AS sessions_joined,
+                    COALESCE(hosted.sessions_hosted, 0)::int AS sessions_hosted,
+                    uak.created_at
+                FROM relevant_users ru
+                LEFT JOIN user_api_keys uak ON uak.discord_id = ru.discord_id
+                LEFT JOIN host_reputation hr ON hr.discord_id = ru.discord_id
+                LEFT JOIN insurance_providers ip ON ip.discord_id = ru.discord_id
+                LEFT JOIN (
+                    SELECT s.discord_id, COUNT(*)::int AS sessions_joined
+                    FROM happy_jump_signups s
+                    JOIN happy_jump_sessions hs ON hs.id = s.session_id
+                    WHERE hs.guild_id = $1
+                    GROUP BY s.discord_id
+                ) joined ON joined.discord_id = ru.discord_id
+                LEFT JOIN (
+                    SELECT host_discord_id AS discord_id, COUNT(*)::int AS sessions_hosted
+                    FROM happy_jump_sessions
+                    WHERE guild_id = $1
+                    GROUP BY host_discord_id
+                ) hosted ON hosted.discord_id = ru.discord_id
+                ORDER BY ru.discord_id
+            """, guild_id)
+            return [dict(row) for row in rows]
     async def approve_provider(self, provider_id: int, approved_by: int):
         """Approve a provider."""
         async with self.pool.acquire() as conn:

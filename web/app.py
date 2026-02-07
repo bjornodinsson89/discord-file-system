@@ -101,6 +101,15 @@ app.include_router(members_router, prefix="/api/members", tags=["Members"])
 app.include_router(blacklist_router, prefix="/api/blacklist", tags=["Blacklist"])
 
 # ============================================================================
+# HEALTH CHECK
+# ============================================================================
+
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint for Railway."""
+    return {"status": "healthy", "service": "happy-jumper"}
+
+# ============================================================================
 # STATIC FILES & SPA
 # ============================================================================
 
@@ -129,7 +138,7 @@ if frontend_build.exists():
         """Serve React SPA for all non-API routes."""
         # Let API/auth paths fall through to normal 404 handling.
         if full_path.startswith(("api/", "auth/", "login/auth/")):
-            return Response(content="Not Found", status_code=404)
+            return JSONResponse(status_code=404, content={"detail": "Not Found", "code": "not_found"})
 
         index_file = frontend_build / "index.html"
         if index_file.exists():
@@ -145,23 +154,17 @@ else:
         }
 
 # ============================================================================
-# HEALTH CHECK
-# ============================================================================
-
-@app.get("/api/health")
-async def health_check():
-    """Health check endpoint for Railway."""
-    return {"status": "healthy", "service": "happy-jumper"}
-
-# ============================================================================
 # ERROR HANDLERS
 # ============================================================================
 
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc):
-    """Return index.html for 404s (SPA routing)."""
+    """Return index.html for SPA routes and JSON errors for API routes."""
     if request.url.path.startswith(("/api/", "/auth/", "/login/auth/")):
-        return Response(content="Not Found", status_code=404)
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Not Found", "code": "not_found"},
+        )
 
     if frontend_build.exists():
         return FileResponse(frontend_build / "index.html")
@@ -174,9 +177,10 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     """Consistent JSON error payload for API routes."""
     if request.url.path.startswith("/api/"):
         message = "Internal server error" if exc.status_code >= 500 else str(exc.detail)
+        code = "internal_error" if exc.status_code >= 500 else "http_error"
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": {"message": message, "status": exc.status_code}}
+            content={"detail": message, "code": code},
         )
     return Response(content="Not Found", status_code=exc.status_code)
 
@@ -188,6 +192,6 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     if request.url.path.startswith("/api/"):
         return JSONResponse(
             status_code=500,
-            content={"error": {"message": "Internal server error", "status": 500}}
+            content={"detail": "Internal server error", "code": "internal_error"},
         )
     return Response(content="Internal server error", status_code=500)
