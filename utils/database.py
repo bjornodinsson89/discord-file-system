@@ -40,6 +40,9 @@ class DatabaseManager:
         )
         log.info("Database pool initialized with PgBouncer-safe settings")
         
+        # Apply emergency schema fixes for missing columns
+        await self.apply_emergency_schema_fixes()
+        
         if run_migrations:
             from migrations.migration_runner import run_migrations
             applied_count = await run_migrations(self.pool)
@@ -47,6 +50,72 @@ class DatabaseManager:
                 log.info(f"Applied {applied_count} database migrations")
         
         return self.pool
+    
+    async def apply_emergency_schema_fixes(self):
+        """Apply emergency schema fixes for missing columns (PgBouncer-safe)."""
+        try:
+            async with self.pool.acquire() as conn:
+                # Fix 1: Add audit_log.source column
+                await conn.execute("""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_name = 'audit_log' AND column_name = 'source'
+                        ) THEN
+                            ALTER TABLE audit_log ADD COLUMN source VARCHAR(20) DEFAULT 'discord';
+                        END IF;
+                    END $$;
+                """)
+                log.info("✅ audit_log.source column verified")
+                
+                # Fix 2: Add insurance_coverage.reserved_until column
+                await conn.execute("""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_name = 'insurance_coverage' AND column_name = 'reserved_until'
+                        ) THEN
+                            ALTER TABLE insurance_coverage ADD COLUMN reserved_until TIMESTAMPTZ;
+                        END IF;
+                    END $$;
+                """)
+                log.info("✅ insurance_coverage.reserved_until column verified")
+                
+                # Fix 3: Add insurance_coverage.last_log_timestamp column
+                await conn.execute("""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_name = 'insurance_coverage' AND column_name = 'last_log_timestamp'
+                        ) THEN
+                            ALTER TABLE insurance_coverage ADD COLUMN last_log_timestamp BIGINT;
+                        END IF;
+                    END $$;
+                """)
+                log.info("✅ insurance_coverage.last_log_timestamp column verified")
+                
+                # Fix 4: Fix raffle status constraint
+                await conn.execute("""
+                    DO $$
+                    BEGIN
+                        -- Drop old constraint if exists
+                        ALTER TABLE raffles DROP CONSTRAINT IF EXISTS chk_raffle_status;
+                        
+                        -- Add new constraint with 'drawing' status
+                        ALTER TABLE raffles ADD CONSTRAINT chk_raffle_status 
+                        CHECK (status IN ('active', 'drawing', 'completed', 'cancelled'));
+                    END $$;
+                """)
+                log.info("✅ raffles status constraint fixed")
+                
+                log.info("🎉 All emergency schema fixes applied!")
+                
+        except Exception as e:
+            log.error(f"❌ Emergency schema fix failed: {e}")
+            # Don't re-raise - let the bot continue
     
     async def close(self):
         """Close connection pool."""
@@ -1667,3 +1736,4 @@ def get_database() -> DatabaseManager:
     if _db_manager is None:
         raise RuntimeError("Database not initialized. Call init_database() first.")
     return _db_manager
+
