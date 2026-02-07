@@ -55,7 +55,7 @@ export default function MembersPage() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-white">Members</h1>
+          <h1 className="text-3xl font-bold text-white">Registered Users</h1>
           <p className="text-gray-400 mt-1">
             Registered users in {selectedGuild?.name || 'your server'}
           </p>
@@ -94,7 +94,7 @@ export default function MembersPage() {
             <div className="flex-1">
               <input
                 type="text"
-                placeholder="Search by Discord ID or Torn ID..."
+                placeholder="Search registered users by Discord ID or Torn ID..."
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
@@ -111,7 +111,7 @@ export default function MembersPage() {
               }}
               className="px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-purple-500"
             >
-              <option value="all">All Members</option>
+              <option value="all">All Registered Users</option>
               <option value="with_key">With API Key</option>
               <option value="hosts">Hosts</option>
               <option value="insurers">Insurance Providers</option>
@@ -133,11 +133,11 @@ export default function MembersPage() {
             <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-700 flex items-center justify-center">
               <span className="text-3xl">👥</span>
             </div>
-            <h3 className="text-lg font-medium text-white mb-2">No Members Found</h3>
+            <h3 className="text-lg font-medium text-white mb-2">No Registered Users Found</h3>
             <p className="text-gray-400">
               {searchQuery
                 ? 'No members match your search criteria.'
-                : 'No registered members yet. Users can register by using the /set_api_key command.'}
+                : 'No registered users yet. Users can register by using the /set_api_key command.'}
             </p>
           </CardContent>
         </Card>

@@ -63,7 +63,7 @@ Create a `.env` file:
 
 ```env
 # Discord Configuration
-DISCORD_TOKEN=your_bot_token_here
+DISCORD_TOKEN=your_bot_token_here  # Required by both bot and web for guild/bot-presence checks
 DISCORD_CLIENT_ID=your_client_id_here
 DISCORD_CLIENT_SECRET=your_client_secret_here
 GUILD_ID=your_test_guild_id  # Optional: for faster command sync
@@ -142,6 +142,16 @@ python bot.py
 
 # Terminal 3: web/api service
 uvicorn web.app:app --host 0.0.0.0 --port 8000
+```
+
+
+### Quick local checks
+
+```bash
+python -m py_compile web/app.py web/permissions.py web/discord_api.py admin_api/routes.py utils/database.py
+uvicorn web.app:app --host 0.0.0.0 --port 8000
+curl -s http://127.0.0.1:8000/api/health
+python bot.py
 ```
 
 ### 7. Access Dashboard

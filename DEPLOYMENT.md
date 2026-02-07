@@ -24,6 +24,7 @@ For local development, defaults are backwards-compatible (`RUN_WEB=true`, `RUN_B
 - `DB_PASSWORD`
 - `DB_SSL`
 - `FERNET_KEY`
+- `DISCORD_TOKEN` (web uses this for bot-presence checks via Discord REST)
 
 ### Web/API-only variables
 
@@ -36,7 +37,6 @@ For local development, defaults are backwards-compatible (`RUN_WEB=true`, `RUN_B
 
 ### Bot-only variables
 
-- `DISCORD_TOKEN`
 - `GUILD_ID` (optional; only for faster test-guild slash command sync)
 
 ## Procfile
@@ -51,3 +51,13 @@ bot: python bot.py
 - Prevents bot/API event-loop cross-talk and thread-loop issues.
 - Avoids circular imports caused by package-level side effects.
 - Allows each service to validate only the env vars it actually needs.
+
+
+## Quick local validation commands
+
+```bash
+python -m py_compile web/app.py web/permissions.py web/discord_api.py admin_api/routes.py utils/database.py
+uvicorn web.app:app --host 0.0.0.0 --port 8000
+curl -s http://127.0.0.1:8000/api/health
+python bot.py
+```
