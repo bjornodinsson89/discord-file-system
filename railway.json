@@ -5,7 +5,7 @@
     "buildCommand": "cd frontend && npm ci && npm run build"
   },
   "deploy": {
-    "startCommand": "python bot.py",
+    "startCommand": "bash -lc \"${START_COMMAND:-python bot.py}\"",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
