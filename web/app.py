@@ -12,18 +12,8 @@ import logging
 from pathlib import Path
 
 import config
-from web.auth import router as auth_router
-from admin_api.routes import (
-    guild_router,
-    sessions_router,
-    raffles_router,
-    insurance_router,
-    settings_router,
-    audit_router,
-    stats_router,
-    members_router,
-    blacklist_router,
-)
+from web import auth, permissions
+from admin_api import routes as admin_routes
 from utils import init_database, get_database, init_security, init_torn_api
 
 log = logging.getLogger("happy_jumper.web")
@@ -45,8 +35,6 @@ async def startup_event():
     if not config.RUN_WEB:
         log.info("RUN_WEB is disabled; API process will still answer health checks")
         return
-
-    config.validate_config()
     await init_database()
     init_torn_api()
     await init_security()

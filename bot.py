@@ -25,7 +25,7 @@ from views import (
     ProviderClaimsView, RaffleView
 )
 
-import admin_api.handlers as admin_handlers
+from admin_api import handlers as admin_handlers
 from admin_api.schemas import (
     CreateSessionRequest,
     CreateRaffleRequest,
