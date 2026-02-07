@@ -9,7 +9,7 @@ This is the complete refactored version of Happy Jumper Bot with integrated web 
 ## 🎯 What's New
 
 ### Architecture Changes
-- **Single Railway Service**: Bot + Web Dashboard + Admin API run in one unified service
+- **Split Railway Services**: Web/API and Discord bot run as separate process types/services
 - **Migrations System**: Versioned SQL migrations for safe schema evolution
 - **FastAPI Backend**: Modern async Python web framework for dashboard API
 - **React Frontend**: Beautiful SaaS-style dashboard with Tailwind CSS + shadcn/ui
@@ -134,16 +134,15 @@ async def main():
 asyncio.run(main())
 ```
 
-### 6. Start the Service
+### 6. Start Services (Local)
 
 ```bash
+# Terminal 2: bot service
 python bot.py
-```
 
-This starts:
-- Discord bot on port specified
-- FastAPI web dashboard on port 8000
-- Background workers for all automated tasks
+# Terminal 3: web/api service
+uvicorn web.app:app --host 0.0.0.0 --port 8000
+```
 
 ### 7. Access Dashboard
 
@@ -156,7 +155,7 @@ This starts:
 
 ```
 happy-jumper-refactored/
-├── bot.py                    # Main entry point (bot + web server)
+├── bot.py                    # Bot process entry point
 ├── config.py                 # Configuration with OAuth settings
 ├── requirements.txt          # Python dependencies
 ├── Procfile                  # Railway deployment config
@@ -251,7 +250,8 @@ python bot.py
 ### Procfile
 
 ```
-web: python bot.py
+web: uvicorn web.app:app --host 0.0.0.0 --port $PORT
+bot: python bot.py
 ```
 
 ### Railway.json (Optional)
@@ -264,7 +264,7 @@ web: python bot.py
     "buildCommand": "pip install -r requirements.txt && cd frontend && npm install && npm run build"
   },
   "deploy": {
-    "startCommand": "python bot.py",
+    "startCommand": "uvicorn web.app:app --host 0.0.0.0 --port $PORT",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
