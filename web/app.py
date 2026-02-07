@@ -12,8 +12,18 @@ import logging
 from pathlib import Path
 
 import config
-from web import auth, permissions
-from admin_api import routes as admin_routes
+from web.auth import router as auth_router
+from admin_api.routes import (
+    guild_router,
+    sessions_router,
+    raffles_router,
+    insurance_router,
+    settings_router,
+    audit_router,
+    stats_router,
+    members_router,
+    blacklist_router,
+)
 from utils import init_database, get_database, init_security, init_torn_api
 
 log = logging.getLogger("happy_jumper.web")
