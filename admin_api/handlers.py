@@ -7,6 +7,7 @@ import logging
 from typing import Optional, Dict
 from datetime import datetime, timedelta
 import discord
+from fastapi import HTTPException
 
 from utils import get_database, get_torn_api
 from utils.embeds import *
@@ -513,7 +514,7 @@ async def approve_provider_handler(
     provider = await db.get_provider_by_id(provider_id)
 
     if not provider:
-        raise ValueError("Provider not found")
+        raise HTTPException(status_code=404, detail="Provider not found")
 
     if status == "approved":
         await db.approve_provider(provider_id, actor_discord_id)
@@ -522,7 +523,7 @@ async def approve_provider_handler(
     elif status == "disabled":
         await db.set_provider_active(provider_id, False)
     else:
-        raise ValueError("Invalid status")
+        raise HTTPException(status_code=400, detail="Invalid status. Must be 'approved', 'rejected', or 'disabled'")
 
     await db.log_audit(
         actor_discord_id, "provider_approval_updated", "provider", provider_id,
@@ -542,9 +543,9 @@ async def approve_claim_handler(
     claim = await db.get_claim(claim_id)
 
     if not claim:
-        raise ValueError("Claim not found")
+        raise HTTPException(status_code=404, detail="Claim not found")
     if claim['status'] != 'pending':
-        raise ValueError("Claim is not pending")
+        raise HTTPException(status_code=400, detail="Claim is not pending")
 
     await db.approve_claim(claim_id, actor_discord_id)
     await db.log_audit(
@@ -786,3 +787,4 @@ async def update_raffle_message(raffle_id: int, winner: Optional[Dict] = None):
             
     except Exception as e:
         log.error(f"Error updating raffle message: {e}")
+
