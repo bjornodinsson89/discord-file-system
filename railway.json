@@ -5,7 +5,7 @@
     "buildCommand": "cd frontend && npm ci && npm run build"
   },
   "deploy": {
-    "startCommand": "bash -lc \"${START_COMMAND:-python bot.py}\"",
+    "startCommand": "bash -lc 'echo \"START_COMMAND=$START_COMMAND\"; if [ -z \"$START_COMMAND\" ]; then echo \"No START_COMMAND set; using default\"; python bot.py; else eval \"$START_COMMAND\"; fi'",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
