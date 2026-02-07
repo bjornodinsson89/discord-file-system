@@ -54,7 +54,17 @@ class DatabaseManager:
     async def apply_emergency_schema_fixes(self):
         """Apply emergency schema fixes for missing columns (PgBouncer-safe)."""
         try:
-            async with self.pool.acquire() as conn:
+            # Use direct connection to bypass PgBouncer prepared statement cache
+            conn = await asyncpg.connect(
+                host=config.DB_HOST,
+                port=config.DB_PORT,
+                database=config.DB_NAME,
+                user=config.DB_USER,
+                password=config.DB_PASSWORD,
+                ssl=config.DB_SSL if config.DB_SSL != 'disable' else None,
+                statement_cache_size=0,
+            )
+            try:
                 # Fix 1: Add audit_log.source column
                 await conn.execute("""
                     DO $$
@@ -101,10 +111,7 @@ class DatabaseManager:
                 await conn.execute("""
                     DO $$
                     BEGIN
-                        -- Drop old constraint if exists
                         ALTER TABLE raffles DROP CONSTRAINT IF EXISTS chk_raffle_status;
-                        
-                        -- Add new constraint with 'drawing' status
                         ALTER TABLE raffles ADD CONSTRAINT chk_raffle_status 
                         CHECK (status IN ('active', 'drawing', 'completed', 'cancelled'));
                     END $$;
@@ -112,6 +119,8 @@ class DatabaseManager:
                 log.info("✅ raffles status constraint fixed")
                 
                 log.info("🎉 All emergency schema fixes applied!")
+            finally:
+                await conn.close()
                 
         except Exception as e:
             log.error(f"❌ Emergency schema fix failed: {e}")
@@ -1728,12 +1737,4 @@ async def init_database() -> DatabaseManager:
     global _db_manager
     _db_manager = DatabaseManager()
     await _db_manager.init_pool(run_migrations=config.RUN_MIGRATIONS_ON_STARTUP)
-    return _db_manager
-
-
-def get_database() -> DatabaseManager:
-    """Get the database manager singleton."""
-    if _db_manager is None:
-        raise RuntimeError("Database not initialized. Call init_database() first.")
-    return _db_manager
-
+ ‌‍
