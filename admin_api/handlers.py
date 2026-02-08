@@ -30,9 +30,19 @@ def set_bot_instance(bot: discord.Client):
 
 
 def get_bot() -> discord.Client:
-    """Get the bot instance."""
+    """Get the bot instance when running in BOT mode.
+
+    WEB deployments may serve admin APIs without an in-memory discord.py client.
+    In that case, endpoints that require gateway-only actions should return 503.
+    """
     if _bot_instance is None:
-        raise RuntimeError("Bot instance not initialized")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Bot runtime is unavailable for this action. "
+                "Run the BOT service or use an endpoint backed by Discord REST."
+            ),
+        )
     return _bot_instance
 
 
@@ -725,7 +735,7 @@ async def update_session_message(session_id: int):
         except discord.NotFound:
             log.warning(f"Session message {session['announcement_message_id']} not found")
         except discord.Forbidden:
-            log.warning(f"Cannot edit session message - missing permissions")
+            log.warning("Cannot edit session message - missing permissions")
             
     except Exception as e:
         log.error(f"Error updating session message: {e}")
@@ -785,7 +795,7 @@ async def update_raffle_message(raffle_id: int, winner: Optional[Dict] = None):
         except discord.NotFound:
             log.warning(f"Raffle message {raffle['announcement_message_id']} not found")
         except discord.Forbidden:
-            log.warning(f"Cannot edit raffle message - missing permissions")
+            log.warning("Cannot edit raffle message - missing permissions")
             
     except Exception as e:
         log.error(f"Error updating raffle message: {e}")

@@ -220,6 +220,8 @@ async def add_blacklist_entry(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -241,6 +243,8 @@ async def remove_blacklist_entry(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -263,6 +267,8 @@ async def create_session(
         return await create_session_handler(request, int(user["id"]))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -316,6 +322,8 @@ async def lock_session(
         return await lock_session_handler(session_id, int(user["id"]), source="dashboard")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -341,6 +349,8 @@ async def cancel_session(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -363,6 +373,8 @@ async def complete_session(
         return await complete_session_handler(session_id, int(user["id"]), source="dashboard")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -385,6 +397,8 @@ async def create_raffle(
         return await create_raffle_handler(request, int(user["id"]))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -438,6 +452,8 @@ async def draw_raffle(
         return await draw_raffle_handler(raffle_id, int(user["id"]), source="dashboard")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -460,6 +476,8 @@ async def cancel_raffle(
         return await cancel_raffle_handler(raffle_id, int(user["id"]), source="dashboard")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -483,6 +501,8 @@ async def create_policy(
         return await create_policy_handler(request, int(user["id"]))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -533,6 +553,8 @@ async def approve_provider(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -564,6 +586,8 @@ async def approve_claim(
         return await approve_claim_handler(claim_id, int(user["id"]), source="dashboard")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -584,6 +608,8 @@ async def reject_claim(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -619,6 +645,8 @@ async def update_settings(
         return await update_settings_handler(request, int(user["id"]), source="dashboard")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

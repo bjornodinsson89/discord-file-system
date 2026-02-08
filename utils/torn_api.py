@@ -205,7 +205,7 @@ class TornAPIClient:
         """Get user logs, optionally filtered by log type."""
         logs = await self.get_user_log(api_key, limit)
         if log_types:
-            logs = [l for l in logs if l.get("log_type") in log_types or l.get("log") in log_types]
+            logs = [entry for entry in logs if entry.get("log_type") in log_types or entry.get("log") in log_types]
         return logs
     
     async def get_torn_time(self) -> int:

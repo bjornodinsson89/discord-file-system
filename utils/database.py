@@ -21,10 +21,31 @@ class DatabaseManager:
     
     def __init__(self):
         self.pool: Optional[asyncpg.Pool] = None
+
+    @staticmethod
+    def _pool_is_open(pool: Optional[asyncpg.Pool]) -> bool:
+        """Return True when a pool exists and appears open.
+
+        Uses public-ish API where possible and avoids relying on private
+        implementation details like ``pool._closed``.
+        """
+        if pool is None:
+            return False
+
+        is_closing = getattr(pool, "is_closing", None)
+        if callable(is_closing):
+            return not bool(is_closing())
+
+        # Fallback for unexpected asyncpg variants.
+        closed = getattr(pool, "_closed", None)
+        if closed is not None:
+            return not bool(closed)
+
+        return True
     
     async def init_pool(self, run_migrations: bool = False) -> asyncpg.Pool:
         """Initialize connection pool with PgBouncer-safe settings."""
-        if self.pool and not self.pool._closed:
+        if self._pool_is_open(self.pool):
             return self.pool
         ssl_mode = config.get_db_ssl_config()
         log.info("Initializing DB pool (ssl_mode=%s)", (config.DB_SSL or "disable").strip().lower())

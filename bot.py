@@ -9,20 +9,17 @@ from discord.ext import commands, tasks
 import logging
 import asyncio
 import json
-from datetime import datetime
 import sys
 
 import config
 from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager
 from utils.embeds import (
     create_success_embed, create_error_embed, create_warning_embed, create_info_embed,
-    create_jump_session_embed, create_api_key_guide_embed, create_statistics_embed,
+    create_api_key_guide_embed, create_statistics_embed,
     create_raffle_embed, create_raffle_winner_embed, create_claim_notification_embed
 )
 from views import (
-    ApiKeyIntroView, ConfirmRemoveKeyView, JumpSessionView, HostControlView,
-    SetupView, AdminDashboardView, InsurancePolicyView,
-    ProviderClaimsView, RaffleView
+    ApiKeyIntroView, ConfirmRemoveKeyView, SetupView
 )
 
 from admin_api import handlers as admin_handlers
@@ -1160,7 +1157,7 @@ async def insurance_monitor():
                 
                 # Update last check timestamp
                 if drug_logs:
-                    latest_ts = max(l.get('timestamp', 0) for l in drug_logs)
+                    latest_ts = max(log_entry.get('timestamp', 0) for log_entry in drug_logs)
                     if latest_ts > last_check:
                         await db.update_coverage_last_check(coverage['coverage_id'], latest_ts)
                 
