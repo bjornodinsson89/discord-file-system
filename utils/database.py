@@ -148,6 +148,24 @@ class DatabaseManager:
                 """)
                 log.info("✅ raffles status constraint fixed")
                 
+
+                # Fix 7: Add user_api_keys.guild_id column
+                await conn.execute("""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_name = 'user_api_keys'
+                        ) AND NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = 'user_api_keys' AND column_name = 'guild_id'
+                        ) THEN
+                            ALTER TABLE user_api_keys ADD COLUMN guild_id BIGINT;
+                        END IF;
+                    END $$;
+                """)
+                log.info("✅ user_api_keys.guild_id column verified")
+                
                 log.info("🎉 All emergency schema fixes applied!")
                 
         except Exception as e:
@@ -172,17 +190,18 @@ class DatabaseManager:
             )
             return dict(row) if row else None
     
-    async def set_user_api_key(self, discord_id: int, torn_user_id: int, encrypted_key: str):
+    async def set_user_api_key(self, discord_id: int, torn_user_id: int, encrypted_key: str, guild_id: Optional[int] = None):
         """Store or update user's encrypted API key."""
         async with self.pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO user_api_keys (discord_id, torn_user_id, encrypted_key)
-                VALUES ($1, $2, $3)
+                INSERT INTO user_api_keys (discord_id, torn_user_id, encrypted_key, guild_id)
+                VALUES ($1, $2, $3, $4)
                 ON CONFLICT (discord_id) DO UPDATE SET
                     torn_user_id = EXCLUDED.torn_user_id,
                     encrypted_key = EXCLUDED.encrypted_key,
+                    guild_id = COALESCE(EXCLUDED.guild_id, user_api_keys.guild_id),
                     updated_at = NOW()
-            """, discord_id, torn_user_id, encrypted_key)
+            """, discord_id, torn_user_id, encrypted_key, guild_id)
     
     async def delete_user_api_key(self, discord_id: int):
         """Delete user's API key."""
@@ -976,6 +995,10 @@ class DatabaseManager:
                     FROM happy_jump_signups s
                     JOIN happy_jump_sessions hs ON hs.id = s.session_id
                     WHERE hs.guild_id = $1
+                    UNION
+                    SELECT uak.discord_id
+                    FROM user_api_keys uak
+                    WHERE uak.guild_id = $1
                 )
                 SELECT
                     ru.discord_id,

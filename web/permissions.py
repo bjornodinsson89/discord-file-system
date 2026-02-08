@@ -7,7 +7,7 @@ from fastapi import HTTPException, Request, Depends
 from typing import Dict
 import logging
 
-from web.discord_api import is_bot_in_guild
+from web.internal_bot_client import bot_internal_client
 
 log = logging.getLogger("happy_jumper.permissions")
 
@@ -44,7 +44,7 @@ async def get_user_guilds(user: Dict = Depends(get_current_user)) -> list:
         if not guild_id:
             continue
 
-        if await is_bot_in_guild(guild_id):
+        if await bot_internal_client.guild_presence(guild_id):
             eligible_guilds.append(guild)
 
     return eligible_guilds

@@ -116,7 +116,7 @@ def create_claim_embed(claim: Dict) -> discord.Embed:
 
 
 def create_raffle_embed(raffle: Dict, entries: List[Dict]) -> discord.Embed:
-    status_emoji = {'open': config.EMOJI_TICKET, 'drawing': config.EMOJI_DICE,
+    status_emoji = {'active': config.EMOJI_TICKET, 'drawing': config.EMOJI_DICE,
                     'completed': config.EMOJI_TROPHY, 'cancelled': config.EMOJI_CROSS}.get(raffle['status'], '')
     
     embed = create_base_embed(f"{status_emoji} Raffle #{raffle['raffle_id']} - {raffle['status'].title()}",
@@ -129,7 +129,7 @@ def create_raffle_embed(raffle: Dict, entries: List[Dict]) -> discord.Embed:
     embed.add_field(name=f"{config.EMOJI_PILL} Ticket Price", value=f"{raffle['ticket_price_xanax']} Xanax", inline=True)
     embed.add_field(name=f"{config.EMOJI_CLOCK} Ends", value=f"<t:{int(raffle['ends_at'].timestamp())}:R>", inline=True)
     embed.add_field(name="Participants", value=f"{len(paid_entries)} users", inline=True)
-    embed.add_field(name="Max Per User", value=f"{raffle['max_tickets_per_user']} tickets", inline=True)
+    embed.add_field(name="Max Per User", value=(f"{raffle['max_tickets_per_user']} tickets" if raffle.get('max_tickets_per_user') else "Unlimited"), inline=True)
     
     if raffle['status'] == 'completed' and raffle.get('winner_discord_id'):
         embed.add_field(name=f"{config.EMOJI_TROPHY} Winner",

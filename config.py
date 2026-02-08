@@ -19,6 +19,10 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
+BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://localhost:8081").rstrip("/")
+BOT_INTERNAL_SECRET = os.getenv("BOT_INTERNAL_SECRET")
+BOT_INTERNAL_HOST = os.getenv("BOT_INTERNAL_HOST", "0.0.0.0")
+BOT_INTERNAL_PORT = int(os.getenv("BOT_INTERNAL_PORT", "8081"))
 RUN_WEB = _env_flag("RUN_WEB", True)
 RUN_BOT = _env_flag("RUN_BOT", True)
 
@@ -238,6 +242,7 @@ def validate_config() -> None:
     if RUN_BOT:
         bot_required = {
             "DISCORD_TOKEN": DISCORD_TOKEN,
+            "BOT_INTERNAL_SECRET": BOT_INTERNAL_SECRET,
         }
         missing.extend(name for name, value in bot_required.items() if not value)
 
@@ -245,7 +250,8 @@ def validate_config() -> None:
         web_required = {
             "DISCORD_CLIENT_ID": DISCORD_CLIENT_ID,
             "DISCORD_CLIENT_SECRET": DISCORD_CLIENT_SECRET,
-            "DISCORD_TOKEN": DISCORD_TOKEN,
+            "BOT_SERVICE_URL": BOT_SERVICE_URL,
+            "BOT_INTERNAL_SECRET": BOT_INTERNAL_SECRET,
             "DASHBOARD_SECRET_KEY": DASHBOARD_SECRET_KEY_ENV,
             "DASHBOARD_URL": DASHBOARD_URL,
             "FRONTEND_URL": FRONTEND_URL,

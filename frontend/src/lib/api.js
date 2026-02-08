@@ -10,9 +10,13 @@ function extractErrorMessage(payload, fallback) {
   if (!payload) return fallback;
   if (typeof payload === 'string') return payload;
   if (typeof payload.detail === 'string') return payload.detail;
+  if (payload.detail) {
+    try { return JSON.stringify(payload.detail); } catch (_) {}
+  }
+  if (typeof payload.message === 'string') return payload.message;
   if (payload.error && typeof payload.error === 'string') return payload.error;
   if (payload.error && typeof payload.error.message === 'string') return payload.error.message;
-  return fallback;
+  try { return JSON.stringify(payload); } catch (_) { return String(payload); }
 }
 
 // ============================================================================

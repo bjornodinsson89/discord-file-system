@@ -60,7 +60,7 @@ class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
             encrypted = security.encrypt(api_key)
             
             db = get_database()
-            await db.set_user_api_key(interaction.user.id, torn_id, encrypted)
+            await db.set_user_api_key(interaction.user.id, torn_id, encrypted, guild_id=interaction.guild_id)
             try:
                 await db.log_audit(interaction.user.id, "api_key_registered", "user", interaction.user.id, {"torn_id": torn_id})
             except Exception:
@@ -613,15 +613,16 @@ class BuyTicketsModal(ui.Modal, title="Buy Raffle Tickets"):
             
             db = get_database()
             raffle = await db.get_raffle(self.raffle_id)
-            if not raffle or raffle['status'] != 'open':
+            if not raffle or raffle['status'] != 'active':
                 await interaction.followup.send(embed=create_error_embed("Raffle Unavailable"), ephemeral=True)
                 return
             
             # Check user's current tickets
             entry = await db.get_raffle_entry(self.raffle_id, interaction.user.id)
             current = entry['num_tickets'] if entry else 0
-            if current + tickets > raffle['max_tickets_per_user']:
-                await interaction.followup.send(embed=create_error_embed("Exceeds Limit", f"Max {raffle['max_tickets_per_user']} per user"), ephemeral=True)
+            max_per_user = raffle.get('max_tickets_per_user')
+            if max_per_user is not None and max_per_user > 0 and current + tickets > max_per_user:
+                await interaction.followup.send(embed=create_error_embed("Exceeds Limit", f"Max {max_per_user} per user"), ephemeral=True)
                 return
             
             # Check total tickets
