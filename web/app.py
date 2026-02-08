@@ -5,7 +5,7 @@ FastAPI app serving both dashboard UI and Admin API.
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
@@ -15,6 +15,7 @@ from pathlib import Path
 
 import config
 from web.auth import router as auth_router
+from web.csrf import enforce_csrf, get_or_create_csrf_token
 from admin_api.routes import (
     guild_router,
     sessions_router,
@@ -91,13 +92,37 @@ app.add_middleware(
 )
 
 # CORS for development
+cors_origins = [
+    config.FRONTEND_URL,
+    config.DASHBOARD_URL,
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+allow_origins = sorted({origin.strip() for origin in cors_origins if origin and origin.strip()})
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list({config.FRONTEND_URL, config.DASHBOARD_URL, "http://localhost:5173", "http://127.0.0.1:5173"}),
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def ensure_csrf_cookie(request: Request, call_next):
+    """Ensure an explicit CSRF token cookie exists for authenticated browser sessions."""
+    response = await call_next(request)
+    if request.session.get("user"):
+        token = get_or_create_csrf_token(request)
+        response.set_cookie(
+            "csrf_token",
+            token,
+            secure=config.SESSION_COOKIE_SECURE,
+            httponly=False,
+            samesite=config.SESSION_COOKIE_SAMESITE,
+        )
+    return response
 
 # ============================================================================
 # ROUTES
@@ -107,15 +132,16 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 
 # Admin API routes
-app.include_router(guild_router, prefix="/api/guilds", tags=["Guilds"])
-app.include_router(sessions_router, prefix="/api/sessions", tags=["Sessions"])
-app.include_router(raffles_router, prefix="/api/raffles", tags=["Raffles"])
-app.include_router(insurance_router, prefix="/api/insurance", tags=["Insurance"])
-app.include_router(settings_router, prefix="/api/settings", tags=["Settings"])
-app.include_router(audit_router, prefix="/api/audit", tags=["Audit"])
-app.include_router(stats_router, prefix="/api/stats", tags=["Statistics"])
-app.include_router(members_router, prefix="/api/members", tags=["Members"])
-app.include_router(blacklist_router, prefix="/api/blacklist", tags=["Blacklist"])
+api_dependencies = [Depends(enforce_csrf)]
+app.include_router(guild_router, prefix="/api/guilds", tags=["Guilds"], dependencies=api_dependencies)
+app.include_router(sessions_router, prefix="/api/sessions", tags=["Sessions"], dependencies=api_dependencies)
+app.include_router(raffles_router, prefix="/api/raffles", tags=["Raffles"], dependencies=api_dependencies)
+app.include_router(insurance_router, prefix="/api/insurance", tags=["Insurance"], dependencies=api_dependencies)
+app.include_router(settings_router, prefix="/api/settings", tags=["Settings"], dependencies=api_dependencies)
+app.include_router(audit_router, prefix="/api/audit", tags=["Audit"], dependencies=api_dependencies)
+app.include_router(stats_router, prefix="/api/stats", tags=["Statistics"], dependencies=api_dependencies)
+app.include_router(members_router, prefix="/api/members", tags=["Members"], dependencies=api_dependencies)
+app.include_router(blacklist_router, prefix="/api/blacklist", tags=["Blacklist"], dependencies=api_dependencies)
 
 # ============================================================================
 # HEALTH CHECK
@@ -209,7 +235,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             status_code=exc.status_code,
             content={"detail": message, "code": code, "route": route},
         )
-    return Response(content="Not Found", status_code=exc.status_code)
+    return Response(content=str(exc.detail), status_code=exc.status_code)
 
 
 @app.exception_handler(Exception)

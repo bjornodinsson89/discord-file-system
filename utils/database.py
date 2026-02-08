@@ -26,7 +26,7 @@ class DatabaseManager:
         """Initialize connection pool with PgBouncer-safe settings."""
         if self.pool and not self.pool._closed:
             return self.pool
-        ssl_mode = config.DB_SSL if config.DB_SSL != 'disable' else None
+        ssl_mode = config.get_db_ssl_config()
         
         self.pool = await asyncpg.create_pool(
             host=config.DB_HOST,
@@ -43,8 +43,11 @@ class DatabaseManager:
         )
         log.info("Database pool initialized with PgBouncer-safe settings")
         
-        # Apply emergency schema fixes for missing columns
-        await self.apply_emergency_schema_fixes()
+        # Apply emergency schema fixes only when explicitly enabled.
+        if config.RUN_EMERGENCY_SCHEMA_FIXES:
+            await self.apply_emergency_schema_fixes()
+        else:
+            log.info("Skipping emergency schema fixes (RUN_EMERGENCY_SCHEMA_FIXES is disabled)")
         
         log.info(
             "Migration gate: SERVICE_MODE=%s RUN_MIGRATIONS=%s run_migrations=%s",
@@ -54,9 +57,9 @@ class DatabaseManager:
         )
 
         if run_migrations:
-            from migrations.migration_runner import run_migrations
+            from migrations.migration_runner import run_migrations as run_pending_migrations
             try:
-                applied_count = await run_migrations(self.pool)
+                applied_count = await run_pending_migrations(self.pool)
                 if applied_count > 0:
                     log.info(f"Applied {applied_count} database migrations")
                 else:

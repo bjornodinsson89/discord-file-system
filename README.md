@@ -20,6 +20,8 @@ Do **not** use legacy `RUN_WEB` / `RUN_BOT` flags. Use `SERVICE_MODE` only.
 - `DB_USER`
 - `DB_PASSWORD`
 - `DB_SSL`
+- `RUN_MIGRATIONS` *(optional; run pending migrations at startup when set to `1`)*
+- `RUN_EMERGENCY_SCHEMA_FIXES` *(optional; runs legacy emergency DDL only when explicitly set to `1`)*
 - `FERNET_KEY`
 - `DISCORD_TOKEN`
 
@@ -30,6 +32,12 @@ Do **not** use legacy `RUN_WEB` / `RUN_BOT` flags. Use `SERVICE_MODE` only.
 - `DASHBOARD_SECRET_KEY`
 - `OAUTH_REDIRECT_URI`
 - `FRONTEND_URL`
+
+`DB_SSL` must be one of: `disable`, `require`, `verify-ca`, `verify-full`.
+
+## CSRF protection
+
+State-changing dashboard API routes (`POST`/`PUT`/`PATCH`/`DELETE` under `/api`) require an `X-CSRF-Token` header that matches the session token cookie. The bundled frontend client sends this automatically.
 
 ### Bot-only
 - `SERVICE_MODE=BOT`

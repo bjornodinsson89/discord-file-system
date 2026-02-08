@@ -11,12 +11,21 @@ function extractErrorMessage(payload, fallback) {
   if (typeof payload === 'string') return payload;
   if (typeof payload.detail === 'string') return payload.detail;
   if (payload.detail) {
-    try { return JSON.stringify(payload.detail); } catch (_) {}
+    try { return JSON.stringify(payload.detail); } catch (_) { return fallback; }
   }
   if (typeof payload.message === 'string') return payload.message;
   if (payload.error && typeof payload.error === 'string') return payload.error;
   if (payload.error && typeof payload.error.message === 'string') return payload.error.message;
   try { return JSON.stringify(payload); } catch (_) { return String(payload); }
+}
+
+function getCookie(name) {
+  const prefix = `${name}=`;
+  const found = document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
+  return found ? decodeURIComponent(found.slice(prefix.length)) : null;
 }
 
 // ============================================================================
@@ -32,6 +41,14 @@ async function request(url, options = {}) {
     },
     ...options,
   };
+
+  const method = (config.method || 'GET').toUpperCase();
+  if (!['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(method)) {
+    const csrfToken = getCookie('csrf_token');
+    if (csrfToken) {
+      config.headers['X-CSRF-Token'] = csrfToken;
+    }
+  }
 
   if (options.body && typeof options.body === 'object') {
     config.body = JSON.stringify(options.body);
