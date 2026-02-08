@@ -11,8 +11,10 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 import sys
+import uvicorn
 
 import config
+from bot_internal.app import app as internal_api_app
 from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager
 from utils.embeds import (
     create_success_embed, create_error_embed, create_warning_embed, create_info_embed,
@@ -99,6 +101,21 @@ async def _global_modal_error(self, interaction: discord.Interaction, error: Exc
 
 discord.ui.View.on_error = _global_view_error
 discord.ui.Modal.on_error = _global_modal_error
+
+
+async def start_internal_api_server() -> uvicorn.Server:
+    """Start internal bot API server in-process."""
+    uvicorn_config = uvicorn.Config(
+        internal_api_app,
+        host=config.BOT_INTERNAL_HOST,
+        port=config.BOT_INTERNAL_PORT,
+        log_level="info",
+        access_log=False,
+    )
+    server = uvicorn.Server(uvicorn_config)
+    asyncio.create_task(server.serve())
+    await asyncio.sleep(0.1)
+    return server
 
 
 async def setup_hook():
@@ -1330,13 +1347,19 @@ async def _draw_raffle_winner(raffle: dict):
 
 
 async def main():
-    """Main entry point - runs Discord bot only."""
+    """Main entry point - runs Discord bot and internal API."""
     if not config.RUN_BOT:
         log.info("RUN_BOT is disabled; bot process exiting")
         return
 
-    async with bot:
-        await bot.start(config.DISCORD_TOKEN)
+    internal_server = await start_internal_api_server()
+    log.info("Internal API listening on %s:%s", config.BOT_INTERNAL_HOST, config.BOT_INTERNAL_PORT)
+
+    try:
+        async with bot:
+            await bot.start(config.DISCORD_TOKEN)
+    finally:
+        internal_server.should_exit = True
 
 
 if __name__ == "__main__":

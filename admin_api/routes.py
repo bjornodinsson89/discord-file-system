@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, List
 
 from web.permissions import get_current_user, require_guild_admin, get_user_guilds
-from web.discord_api import get_guild, get_guild_channels as fetch_guild_channels, get_guild_roles as fetch_guild_roles
+from web.internal_bot_client import bot_internal_client
 from admin_api.schemas import *
 from admin_api.handlers import *
 from utils import get_database
@@ -35,7 +35,7 @@ async def get_guild_channels(
 ):
     """Get list of text channels in guild via Discord REST."""
     await require_guild_admin(guild_id, user)
-    channels = await fetch_guild_channels(guild_id)
+    channels = await bot_internal_client.guild_channels(guild_id)
     return {"channels": channels}
 
 
@@ -46,7 +46,7 @@ async def get_guild_roles(
 ):
     """Get list of roles in guild via Discord REST."""
     await require_guild_admin(guild_id, user)
-    roles = await fetch_guild_roles(guild_id)
+    roles = await bot_internal_client.guild_roles(guild_id)
     return {"roles": roles}
 
 
@@ -58,15 +58,15 @@ async def get_guild_info(
     """Get basic guild info."""
     await require_guild_admin(guild_id, user)
 
-    guild = await get_guild(guild_id)
+    guild = next((g for g in user.get("guilds", []) if int(g.get("id", 0)) == guild_id), None)
     if not guild:
-        raise HTTPException(status_code=404, detail="Guild not found or bot not in guild")
+        raise HTTPException(status_code=404, detail="Guild not found in OAuth guild list")
 
     return GuildInfoResponse(
         id=int(guild["id"]),
         name=guild.get("name", "Unknown Server"),
         icon=(f"https://cdn.discordapp.com/icons/{guild['id']}/{guild['icon']}.png" if guild.get("icon") else None),
-        member_count=guild.get("approximate_member_count")
+        member_count=None,
     )
 
 
