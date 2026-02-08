@@ -786,42 +786,6 @@ class SessionSelectMenu(ui.Select):
         await interaction.response.send_message(f"Managing Session #{session_id}", view=HostControlView(session_id), ephemeral=True)
 
 
-class BlacklistView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=300)
-    
-    @ui.button(label="Add to Blacklist", style=discord.ButtonStyle.danger, emoji=config.EMOJI_CROSS)
-    async def add(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(AddBlacklistModal())
-    
-    @ui.button(label="View Blacklist", style=discord.ButtonStyle.secondary, emoji=config.EMOJI_LIST)
-    async def view(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        db = get_database()
-        blacklist = await db.get_blacklist(interaction.guild.id)
-        await interaction.followup.send(embed=create_blacklist_embed(blacklist), ephemeral=True)
-
-
-class AddBlacklistModal(ui.Modal, title="Add to Blacklist"):
-    user_id = ui.TextInput(label="Discord User ID", placeholder="Enter Discord user ID")
-    reason = ui.TextInput(label="Reason", placeholder="Why are they being blacklisted?", style=discord.TextStyle.paragraph)
-    duration = ui.TextInput(label="Duration (hours, 0=permanent)", placeholder="0", default="0")
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            discord_id = int(self.user_id.value)
-            hours = int(self.duration.value)
-            expires_at = datetime.utcnow() + timedelta(hours=hours) if hours > 0 else None
-            
-            db = get_database()
-            await db.add_to_blacklist(interaction.guild.id, discord_id, self.reason.value, interaction.user.id, expires_at)
-            await db.log_audit(interaction.user.id, "blacklist_add", "user", discord_id, {"reason": self.reason.value})
-            
-            await interaction.followup.send(embed=create_success_embed("User Blacklisted", f"<@{discord_id}> has been blacklisted"), ephemeral=True)
-        except ValueError:
-            await interaction.followup.send(embed=create_error_embed("Invalid Input"), ephemeral=True)
-
 
 # ============================================================================
 # HELPER FUNCTIONS

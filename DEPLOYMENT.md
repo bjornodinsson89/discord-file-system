@@ -1,72 +1,82 @@
-# Railway Deployment (2 Services)
+# Railway Deployment (2 Services Only)
 
-This repository now deploys as **2 Railway services**:
+## Architecture
 
-1. **WEB**: FastAPI dashboard + Discord OAuth + dashboard API.
-2. **BOT**: Discord gateway bot process (slash commands + workers + welcome messages).
+Deploy from the same repository into exactly two services:
 
-`bot_internal/` remains in the repo for legacy compatibility but is **not required** by current code paths.
+- **Web** (`SERVICE_MODE=WEB`)
+  - Start: `uvicorn web.app:app --host 0.0.0.0 --port $PORT`
+- **Bot** (`SERVICE_MODE=BOT`)
+  - Start: `python bot.py`
 
-## Start commands
+Legacy `bot_internal` service is retired and must not be deployed.
 
-- **WEB service**
-  - `SERVICE_MODE=WEB`
-  - `START_COMMAND=uvicorn api.main:app --host 0.0.0.0 --port $PORT`
-- **BOT service**
-  - `SERVICE_MODE=BOT`
-  - `START_COMMAND=python bot.py`
+---
 
-## Environment variables
+## Service setup steps
 
-### Shared (both services)
+1. Create Railway project and attach your database.
+2. Create **Web** service from repo.
+3. Create **Bot** service from same repo.
+4. Set start commands exactly as above.
+5. Set env vars per service.
 
-- `DISCORD_TOKEN`
+### Shared env vars (set in both services)
 - `DB_HOST`
 - `DB_PORT`
 - `DB_NAME`
 - `DB_USER`
 - `DB_PASSWORD`
-- `DB_SSL` (recommended: `require`)
+- `DB_SSL`
 - `FERNET_KEY`
-- `RUN_MIGRATIONS` (recommended: `true` for WEB only; can be unset on BOT)
-- `GUILD_ID` (optional dev guild command sync target)
+- `DISCORD_TOKEN`
 
-### WEB-only
-
-- `DASHBOARD_URL`
-- `FRONTEND_URL`
+### Web-only env vars
+- `SERVICE_MODE=WEB`
 - `DISCORD_CLIENT_ID`
 - `DISCORD_CLIENT_SECRET`
 - `DASHBOARD_SECRET_KEY`
-- `OAUTH_REDIRECT_URI` (optional override)
-- `SESSION_COOKIE_SAMESITE` (optional)
-- `SESSION_COOKIE_SECURE` (optional)
+- `OAUTH_REDIRECT_URI`
+- `FRONTEND_URL`
 
-### BOT-only
+### Bot-only env vars
+- `SERVICE_MODE=BOT`
+- `GUILD_ID` (optional)
+- `ADMIN_ROLE_NAME` (optional)
+- `CLEAN_COMMANDS` (optional)
 
-No additional required variables beyond shared.
+---
 
-### Legacy / not required in 2-service mode
+## Remove duplicate slash commands
 
-- `BOT_SERVICE_URL`
-- `BOT_INTERNAL_SECRET`
-- `BOT_INTERNAL_HOST`
-- `BOT_INTERNAL_PORT`
-- `RUN_BOT_INTERNAL`
+### Global-only production mode
+- Ensure `GUILD_ID` is **unset**.
+- Set `CLEAN_COMMANDS=1`.
+- Restart bot once.
+- Wait for sync to complete.
+- Remove/set `CLEAN_COMMANDS=0`.
+- Restart bot again.
 
-## Command sync / duplicate command cleanup
+### Guild-only development mode
+- Set `GUILD_ID=<dev guild id>`.
+- Set `CLEAN_COMMANDS=1`.
+- Restart bot once.
+- Remove/set `CLEAN_COMMANDS=0`.
+- Restart bot again.
 
-The bot now uses a single command sync path. For guild-scoped dev (`GUILD_ID` set), startup performs a one-time clear+sync to remove stale guild commands before syncing current commands.
+Bot startup logs now print which scope is syncing (`global` vs `guild:<id>`).
 
-## Troubleshooting
+---
 
-- **Missing env var at boot**: startup now fails fast with an explicit list.
-- **Slash commands duplicated**:
-  1. Ensure only one BOT Railway service is running.
-  2. Keep `GUILD_ID` set in development so clear+sync runs on startup.
-- **Dashboard guild dropdown empty**:
-  - User must have `Administrator` or `Manage Server`.
-  - Bot must still be present in that guild.
-- **Welcome messages not sent**:
-  - Configure `welcome_channel_id` + `welcome_enabled` in dashboard settings.
-  - Confirm bot has `View Channel` + `Send Messages` in that channel.
+## Railway screenshots checklist
+
+Capture and store screenshots for your runbook:
+
+1. **Service list** showing only 2 services (Web + Bot).
+2. **Web service settings** showing start command.
+3. **Bot service settings** showing start command.
+4. **Web env vars** panel.
+5. **Bot env vars** panel (showing `GUILD_ID`/`CLEAN_COMMANDS` usage when cleaning).
+6. **Bot logs** showing command sync scope + cleanup.
+7. **Web `/health` response** in browser.
+
