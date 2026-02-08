@@ -140,8 +140,8 @@ asyncio.run(main())
 # Terminal 2: bot service
 python bot.py
 
-# Terminal 3: web/api service
-uvicorn web.app:app --host 0.0.0.0 --port 8000
+# Terminal 3: web/api service (FastAPI only)
+uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
 
@@ -149,7 +149,7 @@ uvicorn web.app:app --host 0.0.0.0 --port 8000
 
 ```bash
 python -m py_compile web/app.py web/permissions.py web/discord_api.py admin_api/routes.py utils/database.py
-uvicorn web.app:app --host 0.0.0.0 --port 8000
+uvicorn api.main:app --host 0.0.0.0 --port 8000
 curl -s http://127.0.0.1:8000/api/health
 python bot.py
 ```
@@ -160,6 +160,15 @@ python bot.py
 2. Click "Login with Discord"
 3. Authorize the application
 4. You'll be redirected to the dashboard
+
+## 🚆 Railway split-service startup
+
+Run **two Railway services** from the same repo:
+
+- **API service**: `SERVICE_MODE=API` and start command `uvicorn api.main:app --host 0.0.0.0 --port $PORT`
+- **BOT service**: `SERVICE_MODE=BOT` and start command `python bot.py`
+
+`railway.json` now defaults to API mode when `SERVICE_MODE` is unset, and switches to bot mode when `SERVICE_MODE=BOT`.
 
 ## 📂 Project Structure
 
