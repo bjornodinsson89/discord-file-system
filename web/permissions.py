@@ -1,6 +1,6 @@
 """
 Permission checking for dashboard routes.
-Requires Discord Administrator and bot presence for guild access.
+Requires Discord Owner/Admin/Manage Server and bot presence for guild access.
 """
 
 from fastapi import HTTPException, Request, Depends
@@ -12,13 +12,16 @@ from web.discord_api import is_bot_in_guild
 log = logging.getLogger("happy_jumper.permissions")
 
 ADMINISTRATOR_PERMISSION = 0x0000000000000008
+MANAGE_GUILD_PERMISSION = 0x0000000000000020
 
 
 def has_required_guild_admin_permission(permissions_str: str) -> bool:
-    """Check for Administrator permission only."""
+    """Check for Administrator or Manage Server permission."""
     try:
         permissions = int(permissions_str)
-        return (permissions & ADMINISTRATOR_PERMISSION) == ADMINISTRATOR_PERMISSION
+        has_administrator = (permissions & ADMINISTRATOR_PERMISSION) == ADMINISTRATOR_PERMISSION
+        has_manage_guild = (permissions & MANAGE_GUILD_PERMISSION) == MANAGE_GUILD_PERMISSION
+        return has_administrator or has_manage_guild
     except (ValueError, TypeError):
         return False
 
@@ -38,7 +41,7 @@ async def get_user_guilds(user: Dict = Depends(get_current_user)) -> list:
     for guild in user.get("guilds", []):
         is_admin = guild.get("owner", False) or has_required_guild_admin_permission(guild.get("permissions", "0"))
         if not is_admin:
-            log.debug("Guild %s filtered out: user lacks Administrator", guild.get("id"))
+            log.debug("Guild %s filtered out: user lacks Owner/Administrator/Manage Server", guild.get("id"))
             continue
 
         guild_id = int(guild.get("id", 0))
@@ -54,14 +57,14 @@ async def get_user_guilds(user: Dict = Depends(get_current_user)) -> list:
 
 
 async def require_guild_admin(guild_id: int, user: Dict) -> Dict:
-    """Verify user has access to guild in the filtered admin+bot-present guild list."""
+    """Verify user has access to guild in the filtered allowed+bot-present guild list."""
     allowed_guilds = await get_user_guilds(user)
     if any(int(g["id"]) == guild_id for g in allowed_guilds):
         return user
 
     raise HTTPException(
         status_code=403,
-        detail="You need Administrator permission in a server where the bot is present",
+        detail="You need Owner, Administrator, or Manage Server permission in a server where the bot is present",
     )
 
 

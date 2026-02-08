@@ -118,6 +118,7 @@ async def ensure_csrf_cookie(request: Request, call_next):
         response.set_cookie(
             "csrf_token",
             token,
+            path="/",
             secure=config.SESSION_COOKIE_SECURE,
             httponly=False,
             samesite=config.SESSION_COOKIE_SAMESITE,

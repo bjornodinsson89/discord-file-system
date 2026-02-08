@@ -7,6 +7,7 @@ const API_BASE = '/api';
 const AUTH_BASE = '/auth';
 
 let inMemoryCsrfToken = null;
+let csrfBootstrapPromise = null;
 
 export function setCsrfToken(token) {
   inMemoryCsrfToken = typeof token === 'string' && token.trim() ? token : null;
@@ -38,6 +39,28 @@ function getCookie(name) {
   return found ? decodeURIComponent(found.slice(prefix.length)) : null;
 }
 
+async function bootstrapCsrfToken() {
+  if (getCsrfToken()) return getCsrfToken();
+  if (!csrfBootstrapPromise) {
+    csrfBootstrapPromise = fetch(`${AUTH_BASE}/status`, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (response.ok && payload && typeof payload.csrf_token === 'string') {
+          setCsrfToken(payload.csrf_token);
+        }
+        return getCsrfToken();
+      })
+      .finally(() => {
+        csrfBootstrapPromise = null;
+      });
+  }
+  return csrfBootstrapPromise;
+}
+
 // ============================================================================
 // HTTP Client Wrapper
 // ============================================================================
@@ -54,7 +77,10 @@ async function request(url, options = {}) {
 
   const method = (config.method || 'GET').toUpperCase();
   if (!['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(method)) {
-    const csrfToken = getCsrfToken() || getCookie('csrf_token');
+    let csrfToken = getCsrfToken() || getCookie('csrf_token');
+    if (!csrfToken) {
+      csrfToken = await bootstrapCsrfToken();
+    }
     if (csrfToken) config.headers['X-CSRF-Token'] = csrfToken;
   }
 
