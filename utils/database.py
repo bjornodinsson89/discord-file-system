@@ -1272,12 +1272,19 @@ class DatabaseManager:
             """, coverage_id, log_timestamp)
     
     async def cleanup_expired_coverage_reservations(self) -> int:
-        """Clean up unpaid coverage reservations."""
+        """Clean up unpaid coverage reservations without crashing workers."""
         async with self.pool.acquire() as conn:
-            result = await conn.execute("""
-                DELETE FROM insurance_coverage
-                WHERE status = 'pending' AND reserved_until < NOW()
-            """)
+            try:
+                result = await conn.execute("""
+                    DELETE FROM insurance_coverage
+                    WHERE status = 'pending' AND reserved_until < NOW()
+                """)
+            except asyncpg.UndefinedColumnError:
+                log.warning(
+                    "Skipping coverage reservation cleanup because reserved_until does not exist yet"
+                )
+                return 0
+
             deleted = int(result.split()[-1])
             if deleted > 0:
                 log.info(f"Cleaned up {deleted} expired coverage reservations")
@@ -1826,13 +1833,16 @@ class DatabaseManager:
 
 _db_manager: Optional[DatabaseManager] = None
 _db_loop: Optional[asyncio.AbstractEventLoop] = None
-_db_lock = asyncio.Lock()
+_db_lock: Optional[asyncio.Lock] = None
 
 
 async def init_database() -> DatabaseManager:
     """Initialize the database manager singleton."""
-    global _db_manager, _db_loop
+    global _db_manager, _db_loop, _db_lock
     current_loop = asyncio.get_running_loop()
+
+    if _db_lock is None:
+        _db_lock = asyncio.Lock()
 
     async with _db_lock:
         if _db_manager and _db_loop is current_loop:
