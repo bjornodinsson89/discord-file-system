@@ -42,19 +42,6 @@ async def lifespan(app: FastAPI):
     app.state.torn_api = None
     app.state.security = None
 
-    log.info(
-        "Boot config: SERVICE_MODE=%s RUN_WEB=%s RUN_BOT=%s RUN_MIGRATIONS=%s",
-        config.SERVICE_MODE or "(unset)",
-        config.RUN_WEB,
-        config.RUN_BOT,
-        config.RUN_MIGRATIONS,
-    )
-
-    if config.SERVICE_MODE and config.SERVICE_MODE != "API":
-        log.info("API disabled: SERVICE_MODE=%s", config.SERVICE_MODE)
-        yield
-        return
-
     log.info("Starting process mode=API")
     if not config.RUN_WEB:
         log.info("RUN_WEB is disabled; API process will only answer health checks")

@@ -1331,22 +1331,9 @@ async def _draw_raffle_winner(raffle: dict):
 
 async def main():
     """Main entry point for the Discord bot process."""
-    log.info(
-        "Boot config: SERVICE_MODE=%s RUN_BOT=%s RUN_WEB=%s RUN_MIGRATIONS=%s",
-        config.SERVICE_MODE or "(unset)",
-        config.RUN_BOT,
-        config.RUN_WEB,
-        config.RUN_MIGRATIONS,
-    )
-
-    if config.SERVICE_MODE and config.SERVICE_MODE != "BOT":
-        log.info("Bot disabled: SERVICE_MODE=%s", config.SERVICE_MODE)
-        return
-
     if not config.RUN_BOT:
         log.info("Bot disabled: RUN_BOT is false")
         return
-
     log.info("Starting process mode=BOT")
 
     async with bot:
