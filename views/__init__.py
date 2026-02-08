@@ -305,7 +305,7 @@ class PaymentView(ui.View):
                     if channel:
                         message = await channel.fetch_message(session['announcement_message_id'])
                         await update_jump_embed(self.session_id, message)
-                except:
+                except Exception:
                     pass
             
             await interaction.followup.send(embed=create_success_embed("Payment Verified!", "You're all set for the jump!"), ephemeral=True)

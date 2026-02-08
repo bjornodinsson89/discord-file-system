@@ -3,7 +3,7 @@ Admin API Schemas
 Pydantic models for request validation and response serialization.
 """
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 from typing import Optional, List, Literal
 from datetime import datetime
 import config

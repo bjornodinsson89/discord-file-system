@@ -233,7 +233,7 @@ def create_session_announcement_embed(session: Dict, guild) -> discord.Embed:
     
     embed = create_base_embed(
         f"{config.EMOJI_JUMP} New 99k Jump Session",
-        f"A new jump session has been created!",
+        "A new jump session has been created!",
         config.COLOR_PRIMARY
     )
     
@@ -453,7 +453,7 @@ def create_claim_notification_embed(claim: Dict, coverage: Dict) -> discord.Embe
     """Create embed for notifying provider of a new claim."""
     embed = create_base_embed(
         f"{config.EMOJI_WARNING} New Insurance Claim",
-        f"A claim has been filed that requires your review.",
+        "A claim has been filed that requires your review.",
         config.COLOR_WARNING
     )
     
