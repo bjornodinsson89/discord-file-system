@@ -25,6 +25,8 @@ cd ..
 
 ### 3. Set Up Environment
 
+Railway DB SSL modes: use `DB_SSL=require` for Railway-managed Postgres unless you explicitly configure CA verification.
+
 ```bash
 # Copy template
 cp .env.example .env
@@ -84,6 +86,8 @@ DB_NAME=postgres
 DB_USER=postgres
 DB_PASSWORD=your_db_password
 DB_SSL=require
+# Optional for strict verification modes only:
+# DB_SSL_CA_FILE=/etc/ssl/certs/ca-certificates.crt
 FERNET_KEY=generated_key
 DASHBOARD_SECRET_KEY=generated_secret
 ```

@@ -32,6 +32,7 @@ Do **not** use legacy `RUN_WEB` / `RUN_BOT` flags. Use `SERVICE_MODE` only.
 - `DB_SSL`
 - `FERNET_KEY`
 - `DISCORD_TOKEN`
+- `DB_SSL_CA_FILE` (optional; only for `verify-ca`/`verify-full`)
 
 ### Web-only env vars
 - `SERVICE_MODE=WEB`
@@ -46,6 +47,21 @@ Do **not** use legacy `RUN_WEB` / `RUN_BOT` flags. Use `SERVICE_MODE` only.
 - `GUILD_ID` (optional)
 - `ADMIN_ROLE_NAME` (optional)
 - `CLEAN_COMMANDS` (optional)
+
+---
+
+### Database SSL (`DB_SSL`)
+
+`asyncpg` expects either `ssl=None` or a configured `SSLContext`. Set `DB_SSL` using one of:
+
+- `disable`: no TLS (`ssl=None`).
+- `require` / `prefer` / `allow`: TLS enabled, but certificate chain is **not** verified (Postgres `sslmode=require` behavior).
+- `verify-ca`: TLS with certificate-chain verification, hostname check disabled.
+- `verify-full`: TLS with certificate-chain and hostname verification.
+
+Optional: set `DB_SSL_CA_FILE` to a CA bundle path when using `verify-ca`/`verify-full`. If set but unreadable, startup fails fast with a clear error.
+
+**Recommended Railway value:** `DB_SSL=require` (encrypted transport without certificate verification, compatible with self-signed chains).
 
 ---
 
