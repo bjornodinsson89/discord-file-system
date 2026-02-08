@@ -7,18 +7,21 @@ from fastapi import HTTPException, Request, Depends
 from typing import Dict
 import logging
 
-from web.internal_bot_client import bot_internal_client
+from web.discord_api import is_bot_in_guild
 
 log = logging.getLogger("happy_jumper.permissions")
 
 ADMINISTRATOR_PERMISSION = 0x0000000000000008
+MANAGE_GUILD_PERMISSION = 0x0000000000000020
 
 
-def has_administrator_permission(permissions_str: str) -> bool:
-    """Check if permissions string contains Administrator permission."""
+def has_required_guild_admin_permission(permissions_str: str) -> bool:
+    """Check for Administrator OR Manage Guild permissions."""
     try:
         permissions = int(permissions_str)
-        return (permissions & ADMINISTRATOR_PERMISSION) == ADMINISTRATOR_PERMISSION
+        has_admin = (permissions & ADMINISTRATOR_PERMISSION) == ADMINISTRATOR_PERMISSION
+        has_manage_guild = (permissions & MANAGE_GUILD_PERMISSION) == MANAGE_GUILD_PERMISSION
+        return has_admin or has_manage_guild
     except (ValueError, TypeError):
         return False
 
@@ -36,16 +39,19 @@ async def get_user_guilds(user: Dict = Depends(get_current_user)) -> list:
     eligible_guilds = []
 
     for guild in user.get("guilds", []):
-        is_admin = guild.get("owner", False) or has_administrator_permission(guild.get("permissions", "0"))
+        is_admin = guild.get("owner", False) or has_required_guild_admin_permission(guild.get("permissions", "0"))
         if not is_admin:
+            log.debug("Guild %s filtered out: user lacks admin/manage_guild", guild.get("id"))
             continue
 
         guild_id = int(guild.get("id", 0))
         if not guild_id:
             continue
 
-        if await bot_internal_client.guild_presence(guild_id):
+        if await is_bot_in_guild(guild_id):
             eligible_guilds.append(guild)
+        else:
+            log.debug("Guild %s filtered out: bot not present", guild_id)
 
     return eligible_guilds
 
@@ -58,7 +64,7 @@ async def require_guild_admin(guild_id: int, user: Dict) -> Dict:
 
     raise HTTPException(
         status_code=403,
-        detail="You need Administrator permission in a server where the bot is present",
+        detail="You need Administrator or Manage Server permission in a server where the bot is present",
     )
 
 

@@ -230,6 +230,9 @@ class UpdateSettingsRequest(BaseModel):
     jump_99k_channel_id: Optional[int] = None
     insurance_channel_id: Optional[int] = None
     raffle_channel_id: Optional[int] = None
+    welcome_channel_id: Optional[int] = None
+    welcome_message_template: Optional[str] = Field(None, min_length=1, max_length=1500)
+    welcome_enabled: Optional[bool] = None
     reservation_timeout_minutes: Optional[int] = Field(None, ge=1, le=60)
     auto_complete_enabled: Optional[bool] = None
 
@@ -243,6 +246,9 @@ class SettingsResponse(BaseModel):
     jump_99k_channel_id: Optional[int] = None
     insurance_channel_id: Optional[int] = None
     raffle_channel_id: Optional[int] = None
+    welcome_channel_id: Optional[int] = None
+    welcome_message_template: Optional[str] = None
+    welcome_enabled: bool
     reservation_timeout_minutes: int
     auto_complete_enabled: bool
     updated_at: datetime

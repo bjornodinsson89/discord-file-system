@@ -226,23 +226,26 @@ def validate_config() -> None:
     missing: list[str] = []
     mode = SERVICE_MODE or "WEB"
 
+    shared_required = {
+        "DB_HOST": DB_HOST,
+        "DB_PORT": DB_PORT,
+        "DB_NAME": DB_NAME,
+        "DB_USER": DB_USER,
+        "DB_PASSWORD": DB_PASSWORD,
+        "FERNET_KEY": FERNET_KEY,
+    }
+    missing.extend(name for name, value in shared_required.items() if not value)
+
     if mode == "WEB" or RUN_WEB:
         web_required = {
             "DASHBOARD_URL": DASHBOARD_URL,
+            "FRONTEND_URL": FRONTEND_URL,
             "DISCORD_CLIENT_ID": DISCORD_CLIENT_ID,
             "DISCORD_CLIENT_SECRET": DISCORD_CLIENT_SECRET,
             "DASHBOARD_SECRET_KEY": DASHBOARD_SECRET_KEY_ENV,
-            "BOT_SERVICE_URL": BOT_SERVICE_URL,
-            "BOT_INTERNAL_SECRET": BOT_INTERNAL_SECRET,
+            "DISCORD_TOKEN": DISCORD_TOKEN,
         }
         missing.extend(name for name, value in web_required.items() if not value)
-
-    if mode == "BOT_INTERNAL" or RUN_BOT_INTERNAL:
-        internal_required = {
-            "DISCORD_TOKEN": DISCORD_TOKEN,
-            "BOT_INTERNAL_SECRET": BOT_INTERNAL_SECRET,
-        }
-        missing.extend(name for name, value in internal_required.items() if not value)
 
     if mode == "BOT" or RUN_BOT:
         bot_required = {

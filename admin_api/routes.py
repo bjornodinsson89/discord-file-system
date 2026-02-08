@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, List
 
 from web.permissions import get_current_user, require_guild_admin, get_user_guilds
-from web.internal_bot_client import bot_internal_client
+from web.discord_api import get_guild_channels as discord_get_guild_channels, get_guild_roles as discord_get_guild_roles
 from admin_api.schemas import *
 from admin_api.handlers import *
 from utils import get_database
@@ -35,7 +35,7 @@ async def get_guild_channels(
 ):
     """Get list of text channels in guild via Discord REST."""
     await require_guild_admin(guild_id, user)
-    channels = await bot_internal_client.guild_channels(guild_id)
+    channels = await discord_get_guild_channels(guild_id)
     return {"channels": channels}
 
 
@@ -46,7 +46,7 @@ async def get_guild_roles(
 ):
     """Get list of roles in guild via Discord REST."""
     await require_guild_admin(guild_id, user)
-    roles = await bot_internal_client.guild_roles(guild_id)
+    roles = await discord_get_guild_roles(guild_id)
     return {"roles": roles}
 
 

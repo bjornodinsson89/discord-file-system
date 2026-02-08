@@ -1,81 +1,72 @@
-# Railway Deployment: 3 Services (WEB, BOT, BOT-INTERNAL)
+# Railway Deployment (2 Services)
 
-Deploy this repository as **three Railway services** from the same repo:
+This repository now deploys as **2 Railway services**:
 
-1. **WEB** (dashboard + admin API)
-2. **BOT** (Discord gateway bot only)
-3. **BOT-INTERNAL** (FastAPI internal bridge to Discord REST)
+1. **WEB**: FastAPI dashboard + Discord OAuth + dashboard API.
+2. **BOT**: Discord gateway bot process (slash commands + workers + welcome messages).
 
-## Railway project setup
+`bot_internal/` remains in the repo for legacy compatibility but is **not required** by current code paths.
 
-- Keep one repo, create 3 services in Railway from it.
-- Set each service's `START_COMMAND` separately.
-- `railway.json` uses `START_COMMAND` so each service can boot independently.
+## Start commands
 
-### Service start commands
-
-- **WEB**
-  - `START_COMMAND=uvicorn web.app:app --host 0.0.0.0 --port $PORT`
+- **WEB service**
   - `SERVICE_MODE=WEB`
-- **BOT**
-  - `START_COMMAND=python bot.py`
+  - `START_COMMAND=uvicorn api.main:app --host 0.0.0.0 --port $PORT`
+- **BOT service**
   - `SERVICE_MODE=BOT`
-- **BOT-INTERNAL**
-  - `START_COMMAND=uvicorn bot_internal.app:app --host 0.0.0.0 --port $PORT`
-  - `SERVICE_MODE=BOT_INTERNAL`
+  - `START_COMMAND=python bot.py`
 
-## Exact environment variables by service
+## Environment variables
 
-## WEB
+### Shared (both services)
 
-Required:
-- `SERVICE_MODE=WEB`
+- `DISCORD_TOKEN`
+- `DB_HOST`
+- `DB_PORT`
+- `DB_NAME`
+- `DB_USER`
+- `DB_PASSWORD`
+- `DB_SSL` (recommended: `require`)
+- `FERNET_KEY`
+- `RUN_MIGRATIONS` (recommended: `true` for WEB only; can be unset on BOT)
+- `GUILD_ID` (optional dev guild command sync target)
+
+### WEB-only
+
 - `DASHBOARD_URL`
+- `FRONTEND_URL`
 - `DISCORD_CLIENT_ID`
 - `DISCORD_CLIENT_SECRET`
 - `DASHBOARD_SECRET_KEY`
-- `BOT_SERVICE_URL` (URL of BOT-INTERNAL service)
-- `BOT_INTERNAL_SECRET` (shared secret)
+- `OAUTH_REDIRECT_URI` (optional override)
+- `SESSION_COOKIE_SAMESITE` (optional)
+- `SESSION_COOKIE_SECURE` (optional)
 
-Typical optional:
-- `FRONTEND_URL` (if unset, defaults in app behavior)
-- `OAUTH_REDIRECT_URI` (if unset, built from `DASHBOARD_URL`)
-- DB vars (`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`) only if your WEB flow uses DB-backed features
-- `FERNET_KEY` if using encrypted secret storage from WEB routes
+### BOT-only
 
-## BOT-INTERNAL
+No additional required variables beyond shared.
 
-Required:
-- `SERVICE_MODE=BOT_INTERNAL`
-- `DISCORD_TOKEN`
+### Legacy / not required in 2-service mode
+
+- `BOT_SERVICE_URL`
 - `BOT_INTERNAL_SECRET`
+- `BOT_INTERNAL_HOST`
+- `BOT_INTERNAL_PORT`
+- `RUN_BOT_INTERNAL`
 
-Not required unless you intentionally add DB-backed behavior:
-- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`
+## Command sync / duplicate command cleanup
 
-## BOT
+The bot now uses a single command sync path. For guild-scoped dev (`GUILD_ID` set), startup performs a one-time clear+sync to remove stale guild commands before syncing current commands.
 
-Required:
-- `SERVICE_MODE=BOT`
-- `DISCORD_TOKEN`
+## Troubleshooting
 
-Also required if bot runtime features use DB:
-- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`
-- `FERNET_KEY` (if bot reads encrypted API keys)
-
-## Networking between WEB and BOT-INTERNAL
-
-- Configure `BOT_SERVICE_URL` on WEB to point to BOT-INTERNAL's reachable URL.
-- WEB must send `X-Internal-Secret` and BOT-INTERNAL validates it against `BOT_INTERNAL_SECRET`.
-- WEB should never receive `DISCORD_TOKEN`.
-
-## Health checks
-
-- WEB: `GET /api/health`
-- BOT-INTERNAL: `GET /internal/health` (requires `X-Internal-Secret`)
-
-## Quick verification commands
-
-```bash
-python -m py_compile $(rg --files -g '*.py')
-```
+- **Missing env var at boot**: startup now fails fast with an explicit list.
+- **Slash commands duplicated**:
+  1. Ensure only one BOT Railway service is running.
+  2. Keep `GUILD_ID` set in development so clear+sync runs on startup.
+- **Dashboard guild dropdown empty**:
+  - User must have `Administrator` or `Manage Server`.
+  - Bot must still be present in that guild.
+- **Welcome messages not sent**:
+  - Configure `welcome_channel_id` + `welcome_enabled` in dashboard settings.
+  - Confirm bot has `View Channel` + `Send Messages` in that channel.

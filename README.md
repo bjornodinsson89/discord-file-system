@@ -165,10 +165,10 @@ python bot.py
 
 Run **two Railway services** from the same repo:
 
-- **API service**: `SERVICE_MODE=API` and start command `uvicorn api.main:app --host 0.0.0.0 --port $PORT`
+- **WEB service**: `SERVICE_MODE=WEB` and start command `uvicorn api.main:app --host 0.0.0.0 --port $PORT`
 - **BOT service**: `SERVICE_MODE=BOT` and start command `python bot.py`
 
-`railway.json` now defaults to API mode when `SERVICE_MODE` is unset, and switches to bot mode when `SERVICE_MODE=BOT`.
+`railway.json` defaults to the WEB command unless `START_COMMAND` is overridden per-service.
 
 ## 📂 Project Structure
 
@@ -377,3 +377,71 @@ Built with love for the Torn City community.
 ---
 
 **Need Help?** Open an issue or contact the development team.
+
+## Deployment topology (authoritative)
+
+This codebase requires **2 services** in Railway:
+
+- **WEB** (`uvicorn api.main:app --host 0.0.0.0 --port $PORT`) for dashboard + OAuth + API.
+- **BOT** (`python bot.py`) for Discord gateway events and slash commands.
+
+`bot_internal` is legacy and not required by active WEB routes.
+
+## Environment variable audit
+
+All environment variables referenced in code:
+
+- `DISCORD_TOKEN`
+- `GUILD_ID`
+- `DISCORD_CLIENT_ID`
+- `DISCORD_CLIENT_SECRET`
+- `BOT_SERVICE_URL` (legacy)
+- `BOT_INTERNAL_SECRET` (legacy)
+- `BOT_INTERNAL_HOST` (legacy)
+- `BOT_INTERNAL_PORT` (legacy)
+- `SERVICE_MODE`
+- `RUN_WEB`
+- `RUN_BOT`
+- `RUN_BOT_INTERNAL` (legacy)
+- `DASHBOARD_URL`
+- `FRONTEND_URL`
+- `DASHBOARD_SECRET_KEY`
+- `OAUTH_REDIRECT_URI`
+- `DB_HOST`
+- `DB_PORT`
+- `DB_NAME`
+- `DB_USER`
+- `DB_PASSWORD`
+- `DB_SSL`
+- `RUN_MIGRATIONS`
+- `FERNET_KEY`
+- `SESSION_COOKIE_SAMESITE`
+- `SESSION_COOKIE_SECURE`
+
+### Service scoping
+
+- **Shared required**: `DISCORD_TOKEN`, DB vars (`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, optional `DB_SSL`), `FERNET_KEY`.
+- **WEB required**: `DASHBOARD_URL`, `FRONTEND_URL`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DASHBOARD_SECRET_KEY`.
+- **BOT required**: shared only.
+- **Legacy not required by active flow**: `BOT_SERVICE_URL`, `BOT_INTERNAL_SECRET`, `BOT_INTERNAL_HOST`, `BOT_INTERNAL_PORT`, `RUN_BOT_INTERNAL`.
+
+## Security / DB access notes
+
+- Dashboard writes are server-side only through FastAPI routes (no direct client DB writes).
+- Web auth uses Discord OAuth session and server-side guild permission checks.
+- Blacklist functionality is dashboard API only; bot slash blacklist commands are not registered.
+
+### Recommended Supabase RLS posture
+
+If using Supabase directly for SQL access, keep app writes behind server credentials and apply restrictive RLS:
+
+```sql
+-- Example baseline: deny by default
+alter table public.blacklist enable row level security;
+create policy "deny_all_by_default" on public.blacklist
+for all using (false) with check (false);
+
+-- If you later expose read access via Supabase auth claims, create explicit per-guild policies.
+```
+
+For this app, preferred approach is still: DB access from backend only with privileged server credentials.

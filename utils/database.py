@@ -63,7 +63,7 @@ class DatabaseManager:
                     log.info("No pending migrations applied")
             except Exception:
                 log.exception("Database migrations failed")
-                if config.SERVICE_MODE == "API":
+                if config.SERVICE_MODE == "WEB":
                     raise
                 log.warning("Continuing without migrations because this is not API mode")
         else:
@@ -182,6 +182,43 @@ class DatabaseManager:
                     END $$;
                 """)
                 log.info("✅ user_api_keys.guild_id column verified")
+
+                # Fix 8: Add welcome settings columns
+                await conn.execute("""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_name = 'guild_settings'
+                        ) AND NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = 'guild_settings' AND column_name = 'welcome_channel_id'
+                        ) THEN
+                            ALTER TABLE guild_settings ADD COLUMN welcome_channel_id BIGINT;
+                        END IF;
+
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_name = 'guild_settings'
+                        ) AND NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = 'guild_settings' AND column_name = 'welcome_message_template'
+                        ) THEN
+                            ALTER TABLE guild_settings ADD COLUMN welcome_message_template TEXT;
+                        END IF;
+
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_name = 'guild_settings'
+                        ) AND NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = 'guild_settings' AND column_name = 'welcome_enabled'
+                        ) THEN
+                            ALTER TABLE guild_settings ADD COLUMN welcome_enabled BOOLEAN DEFAULT FALSE;
+                        END IF;
+                    END $$;
+                """)
+                log.info("✅ guild_settings welcome columns verified")
                 
                 log.info("🎉 All emergency schema fixes applied!")
                 
