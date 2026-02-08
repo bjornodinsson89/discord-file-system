@@ -1,21 +1,23 @@
-# Railway Split Deployment (Web + Bot)
+# Railway Split Deployment (Web/API + Bot)
 
-This project runs as **two Railway services** from the same repository:
+Run this repo as **two Railway services**.
 
-- **Web service** (Discord OAuth + dashboard APIs)
-- **Bot service** (Discord bot + privileged internal API)
+## Service commands
 
-The web service must **not** have `DISCORD_TOKEN`.
+Use per-service `START_COMMAND` so each service starts the right process:
 
-## Start commands
-
-- **Web service**
-  - `uvicorn web.app:app --host 0.0.0.0 --port $PORT`
+- **Web/API service**
+  - `SERVICE_MODE=API`
+  - `RUN_MIGRATIONS=true`
+  - `START_COMMAND=uvicorn web.app:app --host 0.0.0.0 --port $PORT`
 - **Bot service**
-  - `python bot.py`
-  - `bot.py` now starts the Discord bot and the internal API server in-process.
+  - `SERVICE_MODE=BOT`
+  - `RUN_MIGRATIONS=false`
+  - `START_COMMAND=python bot.py`
 
-## Environment variables
+`railway.json` now logs `SERVICE_MODE`, `START_COMMAND`, and `RUN_MIGRATIONS` at boot, then executes `START_COMMAND` when provided.
+
+## Required environment variables
 
 ### Shared (both services)
 
@@ -27,44 +29,48 @@ The web service must **not** have `DISCORD_TOKEN`.
 - `DB_SSL`
 - `FERNET_KEY`
 - `BOT_INTERNAL_SECRET`
+- `DASHBOARD_URL`
 
-### Web-only
+### Web/API-only
 
+- `SERVICE_MODE=API`
+- `RUN_MIGRATIONS=true`
+- `START_COMMAND=uvicorn web.app:app --host 0.0.0.0 --port $PORT`
 - `DISCORD_CLIENT_ID`
 - `DISCORD_CLIENT_SECRET`
 - `DASHBOARD_SECRET_KEY`
-- `DASHBOARD_URL`
 - `OAUTH_REDIRECT_URI`
 - `FRONTEND_URL`
 - `BOT_SERVICE_URL` (example: `http://bot-service.railway.internal:8081`)
 
 ### Bot-only
 
+- `SERVICE_MODE=BOT`
+- `RUN_MIGRATIONS=false`
+- `START_COMMAND=python bot.py`
 - `DISCORD_TOKEN`
-- `GUILD_ID` (optional, test-guild slash sync)
+- `GUILD_ID` (optional)
 - `BOT_INTERNAL_HOST` (optional, default `0.0.0.0`)
 - `BOT_INTERNAL_PORT` (optional, default `8081`)
 
-## Internal API authentication
+## Migration compatibility fallback
 
-All `/internal/*` routes require:
+If your existing database has an older `schema_migrations` table, run:
 
-- Header: `X-Internal-Secret`
-- Value: exact `BOT_INTERNAL_SECRET`
+```sql
+ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS description text;
+```
 
-Requests with missing/invalid secret are rejected.
+## Checklist
 
-## Setup checklist
-
-1. Create two Railway services from this repo (`web`, `bot`).
-2. Set shared env vars on both services.
-3. Set web-only and bot-only vars on the correct service.
-4. Set bot internal port to `8081` (or matching value in `BOT_SERVICE_URL`).
+1. Create two Railway services from the same repo.
+2. Set **shared vars** on both services.
+3. Set web-only vars on the API service and bot-only vars on the bot service.
+4. Ensure `RUN_MIGRATIONS=true` only on API service.
 5. Deploy both services.
 
-## Quick smoke checks
+## Smoke checks
 
 ```bash
-python -m py_compile bot.py bot_internal/app.py web/internal_bot_client.py web/permissions.py admin_api/routes.py utils/database.py views/__init__.py
-npm --prefix frontend run build
+python -m py_compile bot.py web/app.py migrations/migration_runner.py utils/database.py config.py
 ```

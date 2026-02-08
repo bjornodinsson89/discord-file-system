@@ -46,12 +46,29 @@ class DatabaseManager:
         # Apply emergency schema fixes for missing columns
         await self.apply_emergency_schema_fixes()
         
+        log.info(
+            "Migration gate: SERVICE_MODE=%s RUN_MIGRATIONS=%s run_migrations=%s",
+            config.SERVICE_MODE or "(unset)",
+            config.RUN_MIGRATIONS,
+            run_migrations,
+        )
+
         if run_migrations:
             from migrations.migration_runner import run_migrations
-            applied_count = await run_migrations(self.pool)
-            if applied_count > 0:
-                log.info(f"Applied {applied_count} database migrations")
-        
+            try:
+                applied_count = await run_migrations(self.pool)
+                if applied_count > 0:
+                    log.info(f"Applied {applied_count} database migrations")
+                else:
+                    log.info("No pending migrations applied")
+            except Exception:
+                log.exception("Database migrations failed")
+                if config.SERVICE_MODE == "API":
+                    raise
+                log.warning("Continuing without migrations because this is not API mode")
+        else:
+            log.info("Skipping migrations on startup")
+
         return self.pool
     
     async def apply_emergency_schema_fixes(self):
@@ -1272,12 +1289,19 @@ class DatabaseManager:
             """, coverage_id, log_timestamp)
     
     async def cleanup_expired_coverage_reservations(self) -> int:
-        """Clean up unpaid coverage reservations."""
+        """Clean up unpaid coverage reservations without crashing workers."""
         async with self.pool.acquire() as conn:
-            result = await conn.execute("""
-                DELETE FROM insurance_coverage
-                WHERE status = 'pending' AND reserved_until < NOW()
-            """)
+            try:
+                result = await conn.execute("""
+                    DELETE FROM insurance_coverage
+                    WHERE status = 'pending' AND reserved_until < NOW()
+                """)
+            except asyncpg.UndefinedColumnError:
+                log.warning(
+                    "Skipping coverage reservation cleanup because reserved_until does not exist yet"
+                )
+                return 0
+
             deleted = int(result.split()[-1])
             if deleted > 0:
                 log.info(f"Cleaned up {deleted} expired coverage reservations")
@@ -1826,13 +1850,16 @@ class DatabaseManager:
 
 _db_manager: Optional[DatabaseManager] = None
 _db_loop: Optional[asyncio.AbstractEventLoop] = None
-_db_lock = asyncio.Lock()
+_db_lock: Optional[asyncio.Lock] = None
 
 
 async def init_database() -> DatabaseManager:
     """Initialize the database manager singleton."""
-    global _db_manager, _db_loop
+    global _db_manager, _db_loop, _db_lock
     current_loop = asyncio.get_running_loop()
+
+    if _db_lock is None:
+        _db_lock = asyncio.Lock()
 
     async with _db_lock:
         if _db_manager and _db_loop is current_loop:

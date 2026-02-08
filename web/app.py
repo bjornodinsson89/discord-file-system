@@ -3,6 +3,8 @@ Happy Jumper Web Dashboard - Main Application
 FastAPI app serving both dashboard UI and Admin API.
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +26,7 @@ from admin_api.routes import (
     members_router,
     blacklist_router,
 )
-from utils import init_database, get_database, init_security, init_torn_api
+from utils import init_database, init_security, init_torn_api
 
 log = logging.getLogger("happy_jumper.web")
 
@@ -32,33 +34,59 @@ log = logging.getLogger("happy_jumper.web")
 # APP INITIALIZATION
 # ============================================================================
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize and tear down API process resources on the running loop."""
+    app.state.mode = "API"
+    app.state.db = None
+    app.state.torn_api = None
+    app.state.security = None
+
+    log.info(
+        "Boot config: SERVICE_MODE=%s RUN_WEB=%s RUN_BOT=%s RUN_MIGRATIONS=%s",
+        config.SERVICE_MODE or "(unset)",
+        config.RUN_WEB,
+        config.RUN_BOT,
+        config.RUN_MIGRATIONS,
+    )
+
+    if config.SERVICE_MODE and config.SERVICE_MODE != "API":
+        log.info("API disabled: SERVICE_MODE=%s", config.SERVICE_MODE)
+        yield
+        return
+
+    log.info("Starting process mode=API")
+    if not config.RUN_WEB:
+        log.info("RUN_WEB is disabled; API process will only answer health checks")
+        yield
+        return
+
+    db = await init_database()
+    torn_api = init_torn_api()
+    security = await init_security()
+
+    app.state.db = db
+    app.state.torn_api = torn_api
+    app.state.security = security
+    log.info("API process dependencies initialized")
+
+    try:
+        yield
+    finally:
+        if app.state.torn_api is not None:
+            await app.state.torn_api.close()
+            log.info("Torn API client closed")
+
+        if app.state.db is not None:
+            await app.state.db.close()
+
+
 app = FastAPI(
     title="Happy Jumper Dashboard",
     description="Admin & Creation Panel for Happy Jumper Discord Bot",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan,
 )
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize process-scoped services for API workers."""
-    if not config.RUN_WEB:
-        log.info("RUN_WEB is disabled; API process will still answer health checks")
-        return
-    await init_database()
-    init_torn_api()
-    await init_security()
-    log.info("Web process dependencies initialized")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Close shared resources on process shutdown."""
-    try:
-        db = get_database()
-    except RuntimeError:
-        return
-    await db.close()
 
 # ============================================================================
 # MIDDLEWARE
@@ -107,7 +135,7 @@ app.include_router(blacklist_router, prefix="/api/blacklist", tags=["Blacklist"]
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint for Railway."""
-    return {"status": "healthy", "service": "happy-jumper"}
+    return {"status": "healthy", "service": "happy-jumper", "mode": app.state.mode}
 
 # ============================================================================
 # STATIC FILES & SPA

@@ -68,15 +68,29 @@ class MigrationRunner:
         self.migrations_dir = Path(__file__).parent
     
     async def init_migrations_table(self):
-        """Create migrations tracking table if it doesn't exist."""
+        """Create migrations tracking table and backfill optional columns."""
         async with self.pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS schema_migrations (
                     version VARCHAR(50) PRIMARY KEY,
-                    description TEXT,
                     applied_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            await conn.execute(
+                "ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS description TEXT"
+            )
+
+    async def _migrations_has_description(self, conn: asyncpg.Connection) -> bool:
+        """Return True when schema_migrations.description exists."""
+        return bool(await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'schema_migrations'
+                  AND column_name = 'description'
+            )
+        """))
     
     async def get_applied_migrations(self) -> Set[str]:
         """Get set of applied migration versions."""
@@ -113,11 +127,18 @@ class MigrationRunner:
             sql = filepath.read_text()
             async with self.pool.acquire() as conn:
                 await conn.execute(sql)
-                await conn.execute("""
-                    INSERT INTO schema_migrations (version, description)
-                    VALUES ($1, $2)
-                    ON CONFLICT (version) DO NOTHING
-                """, version, f"Migration {filepath.name}")
+                if await self._migrations_has_description(conn):
+                    await conn.execute("""
+                        INSERT INTO schema_migrations (version, applied_at, description)
+                        VALUES ($1, NOW(), $2)
+                        ON CONFLICT (version) DO NOTHING
+                    """, version, f"Migration {filepath.name}")
+                else:
+                    await conn.execute("""
+                        INSERT INTO schema_migrations (version, applied_at)
+                        VALUES ($1, NOW())
+                        ON CONFLICT (version) DO NOTHING
+                    """, version)
             
             log.info(f"  ✓ {filepath.name} completed")
             return True
