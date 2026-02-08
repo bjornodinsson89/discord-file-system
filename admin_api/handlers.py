@@ -4,14 +4,13 @@ Implements create/edit actions and "post to Discord now" integration.
 """
 
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
-import discord
 from fastapi import HTTPException
 
 from utils import get_database, get_torn_api
-from utils.embeds import *
 from admin_api.schemas import *
+from web.discord_api import DiscordRestClient, get_guild, get_guild_channels
 import config
 
 log = logging.getLogger("happy_jumper.admin_api")
@@ -20,16 +19,16 @@ log = logging.getLogger("happy_jumper.admin_api")
 # BOT INSTANCE (injected at runtime)
 # ============================================================================
 
-_bot_instance: Optional[discord.Client] = None
+_bot_instance: Optional[object] = None
 
-def set_bot_instance(bot: discord.Client):
+def set_bot_instance(bot: object):
     """Set the bot instance for posting to Discord."""
     global _bot_instance
     _bot_instance = bot
     log.info("Bot instance registered with admin API")
 
 
-def get_bot() -> discord.Client:
+def get_bot() -> object:
     """Get the bot instance when running in BOT mode.
 
     WEB deployments may serve admin APIs without an in-memory discord.py client.
@@ -46,6 +45,69 @@ def get_bot() -> discord.Client:
     return _bot_instance
 
 
+
+
+def _is_web_mode() -> bool:
+    return config.SERVICE_MODE.upper() == "WEB"
+
+
+async def _validate_discord_channel(guild_id: int, channel_id: int):
+    guild = await get_guild(guild_id)
+    if not guild:
+        raise ValueError("Guild not found")
+
+    channels = await get_guild_channels(guild_id)
+    if not any(int(ch["id"]) == int(channel_id) for ch in channels):
+        raise ValueError("Channel not found")
+
+
+def _session_embed_payload(session: Dict[str, Any], signups: Optional[list[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    signups = signups or []
+    paid = sum(1 for s in signups if s.get("status") == "paid")
+    reserved = sum(1 for s in signups if s.get("status") == "reserved")
+    available = max(session.get("max_spots", 0) - len(signups), 0)
+
+    if session.get("payment_type") == "xanax":
+        payment = f"{session.get('payment_amount', 0)}x Xanax"
+    elif session.get("payment_type") == "erotic_dvd":
+        payment = f"{session.get('payment_amount', 0)}x Erotic DVD"
+    else:
+        payment = str(session.get("payment_amount", ""))
+
+    status = session.get("status", "open").title()
+    fields = [
+        {"name": "Host", "value": f"<@{session['host_discord_id']}>\nTorn: `{session['host_torn_id']}`", "inline": True},
+        {"name": "Spots", "value": f"Paid: {paid}\nReserved: {reserved}\nAvailable: {available}", "inline": True},
+        {"name": "Payment", "value": payment, "inline": True},
+    ]
+
+    return {
+        "title": f"Happy Jump #{session['id']} - {status}",
+        "description": "Manage this session from the dashboard.",
+        "color": config.COLOR_PRIMARY,
+        "fields": fields,
+        "footer": {"text": "Happy Jumper Bot"},
+    }
+
+
+def _raffle_embed_payload(raffle: Dict[str, Any], entries: Optional[list[Dict[str, Any]]] = None, winner: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    entries = entries or []
+    status = raffle.get("status", "active").title()
+    description = f"Tickets sold: {len(entries)}/{raffle.get('tickets_available', 0)}"
+    if winner:
+        description += f"\nWinner: <@{winner['discord_id']}>"
+
+    return {
+        "title": f"Raffle #{raffle['raffle_id']} - {status}",
+        "description": description,
+        "color": config.COLOR_INFO,
+        "fields": [
+            {"name": "Prize", "value": raffle.get("prize", "Unknown"), "inline": False},
+            {"name": "Ticket Price", "value": str(raffle.get("ticket_price", 0)), "inline": True},
+        ],
+        "footer": {"text": "Happy Jumper Bot"},
+    }
+
 # ============================================================================
 # SESSION HANDLERS
 # ============================================================================
@@ -54,58 +116,39 @@ async def create_session_handler(
     request: CreateSessionRequest,
     admin_discord_id: int
 ) -> SessionResponse:
-    """
-    Create a 99k jump session and post announcement to Discord.
-    
-    Steps:
-    1. Validate request data
-    2. Insert session into database
-    3. Post announcement embed to Discord channel
-    4. Store message_id back to database
-    5. Return session data with message link
-    """
+    """Create a 99k jump session and post announcement to Discord."""
     db = get_database()
-    bot = get_bot()
-    
-    # Get guild and channel
-    guild = bot.get_guild(request.guild_id)
-    if not guild:
-        raise ValueError("Guild not found")
-    
-    channel = guild.get_channel(request.channel_id)
-    if not channel:
-        raise ValueError("Channel not found")
-    
-    # Get admin's Torn ID
+
+    if _is_web_mode():
+        await _validate_discord_channel(request.guild_id, request.channel_id)
+    else:
+        bot = get_bot()
+        guild = bot.get_guild(request.guild_id)
+        if not guild:
+            raise ValueError("Guild not found")
+        channel = guild.get_channel(request.channel_id)
+        if not channel:
+            raise ValueError("Channel not found")
+
     api_key_data = await db.get_user_api_key(admin_discord_id)
     if not api_key_data:
         raise ValueError("Admin must have API key registered to create sessions")
-    
+
     host_torn_id = api_key_data['torn_user_id']
-    
-    # Calculate timing
     torn_api = get_torn_api()
     torn_time = await torn_api.get_torn_time()
     created_tct = torn_time
     estimated_jump_tct = created_tct + (request.start_delay_hours * 3600)
-    
-    # Determine payment item ID
+
     payment_item_id = None
     if request.payment_type == "erotic_dvd":
         payment_item_id = config.DVD_ITEM_ID
     elif request.payment_type == "xanax":
         payment_item_id = config.XANAX_ITEM_ID
-    
-    # Convert xanax_stack to xanax_count for database (backwards compatibility)
-    xanax_count_map = {
-        "1_xanax": 1,
-        "2_xanax": 2,
-        "3_xanax": 3,
-        "full_stack": 100  # Represent full stack as 100
-    }
+
+    xanax_count_map = {"1_xanax": 1, "2_xanax": 2, "3_xanax": 3, "full_stack": 100}
     xanax_count = xanax_count_map.get(request.xanax_stack, 1)
-    
-    # Create session in database
+
     session_id = await db.create_jump_session(
         guild_id=request.guild_id,
         host_discord_id=admin_discord_id,
@@ -119,29 +162,42 @@ async def create_session_handler(
         payment_amount=request.payment_amount,
         payment_item_id=payment_item_id
     )
-    
-    # Update with dashboard metadata
+
     await db.update_jump_session(
         session_id,
         xanax_stack=request.xanax_stack,
         created_by_dashboard=True,
         dashboard_admin_id=admin_discord_id
     )
-    
-    # Create and post announcement embed
+
     session_data = await db.get_jump_session(session_id)
-    embed = create_session_announcement_embed(session_data, guild)
-    
-    # Import views here to avoid circular dependency
-    from views import JumpSessionView
-    view = JumpSessionView(session_id)
-    
-    message = await channel.send(embed=embed, view=view)
-    
-    # Store message ID
-    await db.update_jump_session(session_id, announcement_message_id=message.id)
-    
-    # Log audit
+
+    if _is_web_mode():
+        rest_client = DiscordRestClient()
+        embed_payload = _session_embed_payload(session_data)
+        message = await rest_client.send_message(
+            request.channel_id,
+            embeds=[embed_payload],
+            content="New jump session is open. Use the dashboard to join/manage signups.",
+        )
+        message_id = int(message["id"])
+    else:
+        from utils.embeds import create_session_announcement_embed
+        from views import JumpSessionView
+
+        guild = bot.get_guild(request.guild_id)
+        channel = guild.get_channel(request.channel_id)
+        embed = create_session_announcement_embed(session_data, guild)
+        view = JumpSessionView(session_id)
+        msg = await channel.send(embed=embed, view=view)
+        message_id = int(msg.id)
+
+    await db.update_jump_session(
+        session_id,
+        announcement_message_id=message_id,
+        announcement_channel_id=request.channel_id,
+    )
+
     await db.log_audit(
         admin_discord_id,
         "session_created_dashboard",
@@ -149,11 +205,10 @@ async def create_session_handler(
         session_id,
         {"channel_id": request.channel_id}
     )
-    
-    # Return response
+
     session_data = await db.get_jump_session(session_id)
-    message_url = f"https://discord.com/channels/{request.guild_id}/{request.channel_id}/{message.id}"
-    
+    message_url = f"https://discord.com/channels/{request.guild_id}/{request.channel_id}/{message_id}"
+
     return SessionResponse(
         **session_data,
         message_url=message_url
@@ -281,30 +336,28 @@ async def create_raffle_handler(
 ) -> RaffleResponse:
     """Create a raffle and post announcement to Discord."""
     db = get_database()
-    bot = get_bot()
-    
-    # Get guild and channel
-    guild = bot.get_guild(request.guild_id)
-    if not guild:
-        raise ValueError("Guild not found")
-    
-    channel = guild.get_channel(request.channel_id)
-    if not channel:
-        raise ValueError("Channel not found")
-    
-    # Calculate end time
+
+    if _is_web_mode():
+        await _validate_discord_channel(request.guild_id, request.channel_id)
+    else:
+        bot = get_bot()
+        guild = bot.get_guild(request.guild_id)
+        if not guild:
+            raise ValueError("Guild not found")
+        channel = guild.get_channel(request.channel_id)
+        if not channel:
+            raise ValueError("Channel not found")
+
     end_time = datetime.utcnow() + timedelta(hours=request.duration_hours)
-    
-    # Determine payment item ID
+
     payment_item_id = None
     if request.ticket_payment_type == "erotic_dvd":
         payment_item_id = config.DVD_ITEM_ID
     elif request.ticket_payment_type == "xanax":
         payment_item_id = config.XANAX_ITEM_ID
-    
+
     max_tickets_per_user = request.max_tickets_per_user if request.max_tickets_per_user > 0 else None
 
-    # Create raffle in database
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow("""
             INSERT INTO raffles (
@@ -318,32 +371,41 @@ async def create_raffle_handler(
             request.tickets_available, max_tickets_per_user, end_time
         )
         raffle_id = row['raffle_id']
-        
-        # Update with dashboard metadata
+
         await conn.execute("""
             UPDATE raffles
             SET created_by_dashboard = TRUE, dashboard_admin_id = $1
             WHERE raffle_id = $2
         """, admin_discord_id, raffle_id)
-    
-    # Create and post announcement embed
+
     raffle_data = await _get_raffle(raffle_id)
-    embed = create_raffle_announcement_embed(raffle_data, guild)
-    
-    # Import views here to avoid circular dependency
-    from views import RaffleView
-    view = RaffleView(raffle_id)
-    
-    message = await channel.send(embed=embed, view=view)
-    
-    # Store message ID
+
+    if _is_web_mode():
+        rest_client = DiscordRestClient()
+        embed_payload = _raffle_embed_payload(raffle_data)
+        message = await rest_client.send_message(
+            request.channel_id,
+            embeds=[embed_payload],
+            content="New raffle is live. Use the dashboard for interactions.",
+        )
+        message_id = int(message["id"])
+    else:
+        from utils.embeds import create_raffle_announcement_embed
+        from views import RaffleView
+
+        guild = bot.get_guild(request.guild_id)
+        channel = guild.get_channel(request.channel_id)
+        embed = create_raffle_announcement_embed(raffle_data, guild)
+        view = RaffleView(raffle_id)
+        msg = await channel.send(embed=embed, view=view)
+        message_id = int(msg.id)
+
     async with db.pool.acquire() as conn:
         await conn.execute(
-            "UPDATE raffles SET announcement_message_id = $1 WHERE raffle_id = $2",
-            message.id, raffle_id
+            "UPDATE raffles SET announcement_message_id = $1, announcement_channel_id = $2 WHERE raffle_id = $3",
+            message_id, request.channel_id, raffle_id
         )
-    
-    # Log audit
+
     await db.log_audit(
         admin_discord_id,
         "raffle_created_dashboard",
@@ -351,12 +413,11 @@ async def create_raffle_handler(
         raffle_id,
         {"channel_id": request.channel_id}
     )
-    
-    # Return response
+
     raffle_data = await _get_raffle(raffle_id)
-    message_url = f"https://discord.com/channels/{request.guild_id}/{request.channel_id}/{message.id}"
+    message_url = f"https://discord.com/channels/{request.guild_id}/{request.channel_id}/{message_id}"
     raffle_data['message_url'] = message_url
-    
+
     return RaffleResponse(**raffle_data)
 
 
@@ -669,8 +730,7 @@ async def _get_session_channel_id(session_id: int) -> Optional[int]:
     if not session:
         return None
     
-    settings = await db.get_guild_settings(session['guild_id'])
-    return settings.get('jump_99k_channel_id')
+    return session.get('announcement_channel_id')
 
 
 async def _get_raffle(raffle_id: int) -> Dict:
@@ -693,50 +753,45 @@ async def update_session_message(session_id: int):
     """Update the Discord message for a session after changes."""
     try:
         db = get_database()
-        bot = get_bot()
-        
         session = await db.get_jump_session(session_id)
         if not session or not session.get('announcement_message_id'):
             return
-        
+
+        channel_id = session.get('announcement_channel_id')
+        if not channel_id:
+            settings = await db.get_guild_settings(session['guild_id'])
+            channel_id = settings.get('jump_99k_channel_id')
+        if not channel_id:
+            return
+
+        signups = await db.get_session_signups(session_id)
+
+        if _is_web_mode():
+            rest_client = DiscordRestClient()
+            await rest_client.edit_message(
+                int(channel_id),
+                int(session['announcement_message_id']),
+                embeds=[_session_embed_payload(session, signups)],
+                content="Session updated. Use the dashboard for latest status.",
+            )
+            return
+
+        bot = get_bot()
         guild = bot.get_guild(session['guild_id'])
         if not guild:
             return
-        
-        settings = await db.get_guild_settings(session['guild_id'])
-        channel_id = settings.get('jump_99k_channel_id')
-        if not channel_id:
-            return
-        
         channel = guild.get_channel(channel_id)
         if not channel:
             return
-        
-        try:
-            message = await channel.fetch_message(session['announcement_message_id'])
-            
-            # Get updated data
-            signups = await db.get_session_signups(session_id)
-            readiness = await db.get_session_readiness(session_id)
-            
-            # Rebuild embed
-            from utils.embeds import create_jump_session_embed
-            embed = create_jump_session_embed(session, signups, readiness)
-            
-            # Update view based on status
-            from views import JumpSessionView
-            if session['status'] in ('open', 'locked'):
-                view = JumpSessionView(session_id)
-            else:
-                view = None  # No buttons for completed/cancelled
-            
-            await message.edit(embed=embed, view=view)
-            
-        except discord.NotFound:
-            log.warning(f"Session message {session['announcement_message_id']} not found")
-        except discord.Forbidden:
-            log.warning("Cannot edit session message - missing permissions")
-            
+
+        message = await channel.fetch_message(session['announcement_message_id'])
+        readiness = await db.get_session_readiness(session_id)
+        from utils.embeds import create_jump_session_embed
+        from views import JumpSessionView
+
+        embed = create_jump_session_embed(session, signups, readiness)
+        view = JumpSessionView(session_id) if session['status'] in ('open', 'locked') else None
+        await message.edit(embed=embed, view=view)
     except Exception as e:
         log.error(f"Error updating session message: {e}")
 
@@ -745,58 +800,56 @@ async def update_raffle_message(raffle_id: int, winner: Optional[Dict] = None):
     """Update the Discord message for a raffle after changes."""
     try:
         db = get_database()
-        bot = get_bot()
-        
         raffle = await db.get_raffle(raffle_id)
         if not raffle or not raffle.get('announcement_message_id'):
             return
-        
-        guild = bot.get_guild(raffle['guild_id'])
-        if not guild:
-            return
-        
+
         settings = await db.get_guild_settings(raffle['guild_id'])
         channel_id = raffle.get('announcement_channel_id') or settings.get('raffle_channel_id')
         if not channel_id:
             return
-        
+
+        entries = await db.get_raffle_entries(raffle_id)
+
+        if _is_web_mode():
+            rest_client = DiscordRestClient()
+            await rest_client.edit_message(
+                int(channel_id),
+                int(raffle['announcement_message_id']),
+                embeds=[_raffle_embed_payload(raffle, entries, winner)],
+                content="Raffle updated. Use the dashboard for latest status.",
+            )
+            if winner:
+                await rest_client.send_message(
+                    int(channel_id),
+                    embeds=[_raffle_embed_payload(raffle, entries, winner)],
+                    content=f"🎉 Winner: <@{winner['discord_id']}> (Ticket #{winner['ticket_number']})",
+                )
+            return
+
+        bot = get_bot()
+        guild = bot.get_guild(raffle['guild_id'])
+        if not guild:
+            return
         channel = guild.get_channel(channel_id)
         if not channel:
             return
-        
-        try:
-            message = await channel.fetch_message(raffle['announcement_message_id'])
-            
-            # Get updated data
-            entries = await db.get_raffle_entries(raffle_id)
-            
-            # Rebuild embed based on status
-            from utils.embeds import create_raffle_embed, create_raffle_winner_embed
-            
-            if raffle['status'] == 'completed' and winner:
-                embed = create_raffle_winner_embed(raffle, winner)
-            else:
-                embed = create_raffle_embed(raffle, entries)
-            
-            # Update view based on status
-            from views import RaffleView
-            if raffle['status'] in ('active', 'open'):
-                view = RaffleView(raffle_id)
-            else:
-                view = None  # No buttons for completed/cancelled
-            
-            await message.edit(embed=embed, view=view)
-            
-            # If there's a winner, also send a new message
-            if winner:
-                winner_embed = create_raffle_winner_embed(raffle, winner)
-                await channel.send(embed=winner_embed)
-            
-        except discord.NotFound:
-            log.warning(f"Raffle message {raffle['announcement_message_id']} not found")
-        except discord.Forbidden:
-            log.warning("Cannot edit raffle message - missing permissions")
-            
+
+        message = await channel.fetch_message(raffle['announcement_message_id'])
+
+        from utils.embeds import create_raffle_embed, create_raffle_winner_embed
+        from views import RaffleView
+
+        if raffle['status'] == 'completed' and winner:
+            embed = create_raffle_winner_embed(raffle, winner)
+        else:
+            embed = create_raffle_embed(raffle, entries)
+
+        view = RaffleView(raffle_id) if raffle['status'] in ('active', 'open') else None
+        await message.edit(embed=embed, view=view)
+
+        if winner:
+            winner_embed = create_raffle_winner_embed(raffle, winner)
+            await channel.send(embed=winner_embed)
     except Exception as e:
         log.error(f"Error updating raffle message: {e}")
-

@@ -42,6 +42,11 @@ Do **not** use legacy `RUN_WEB` / `RUN_BOT` flags. Use `SERVICE_MODE` only.
 - `OAUTH_REDIRECT_URI`
 - `FRONTEND_URL`
 
+### Discord message delivery behavior
+- Web service (`SERVICE_MODE=WEB`) can create sessions/raffles and post/edit announcement messages directly via Discord REST endpoints using the bot token.
+- Bot service (`SERVICE_MODE=BOT`) continues to use `discord.py` gateway features (including interactive components/views).
+- If only Web is running, admin posting/editing still works; interactive button views are BOT-only.
+
 ### Bot-only env vars
 - `SERVICE_MODE=BOT`
 - `GUILD_ID` (optional)

@@ -132,3 +132,76 @@ async def get_guild_roles(guild_id: int) -> List[Dict[str, Any]]:
                     "color": str(role.get("color", 0)),
                 })
             return sorted(roles, key=lambda r: r["name"].lower())
+
+
+class DiscordRestClient:
+    """Minimal Discord REST client for sending/editing webhook-like bot messages."""
+
+    def __init__(self):
+        self._headers = _bot_headers()
+
+    async def send_message(
+        self,
+        channel_id: int,
+        *,
+        content: Optional[str] = None,
+        embeds: Optional[List[Dict[str, Any]]] = None,
+        components: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        if content is not None:
+            payload["content"] = content
+        if embeds is not None:
+            payload["embeds"] = embeds
+        if components is not None:
+            payload["components"] = components
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
+                headers=self._headers,
+                json=payload,
+            ) as resp:
+                if resp.status in (200, 201):
+                    return await resp.json()
+                body = await resp.text()
+                raise RuntimeError(f"Failed to send Discord message ({resp.status}): {body}")
+
+    async def edit_message(
+        self,
+        channel_id: int,
+        message_id: int,
+        *,
+        content: Optional[str] = None,
+        embeds: Optional[List[Dict[str, Any]]] = None,
+        components: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        if content is not None:
+            payload["content"] = content
+        if embeds is not None:
+            payload["embeds"] = embeds
+        if components is not None:
+            payload["components"] = components
+
+        async with aiohttp.ClientSession() as session:
+            async with session.patch(
+                f"{DISCORD_API_BASE}/channels/{channel_id}/messages/{message_id}",
+                headers=self._headers,
+                json=payload,
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                body = await resp.text()
+                raise RuntimeError(f"Failed to edit Discord message ({resp.status}): {body}")
+
+    async def delete_message(self, channel_id: int, message_id: int):
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(
+                f"{DISCORD_API_BASE}/channels/{channel_id}/messages/{message_id}",
+                headers=self._headers,
+            ) as resp:
+                if resp.status == 204:
+                    return
+                body = await resp.text()
+                raise RuntimeError(f"Failed to delete Discord message ({resp.status}): {body}")

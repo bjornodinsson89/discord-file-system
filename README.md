@@ -63,6 +63,12 @@ Duplicate commands happen when old global + guild registrations both exist.
 4. Confirm logs show `scope=guild:<id>` and global cleanup.
 5. Set `CLEAN_COMMANDS=0` (or remove it) and restart bot normally.
 
+## Discord posting behavior by mode
+
+- **WEB mode (`SERVICE_MODE=WEB`)** posts session/raffle announcements through Discord REST API using `DISCORD_TOKEN` (no in-memory `discord.py` bot required).
+- **BOT mode (`SERVICE_MODE=BOT`)** posts/edits through `discord.py` gateway runtime and can attach interactive views/components.
+- In WEB mode, announcement messages degrade gracefully to embed/content updates without interactive component views.
+
 ## Permissions model
 
 - `/dashboard` command: requires **Discord Administrator** OR a role matching `ADMIN_ROLE_NAME`.
