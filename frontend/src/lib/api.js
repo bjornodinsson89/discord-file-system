@@ -6,6 +6,16 @@
 const API_BASE = '/api';
 const AUTH_BASE = '/auth';
 
+let inMemoryCsrfToken = null;
+
+export function setCsrfToken(token) {
+  inMemoryCsrfToken = typeof token === 'string' && token.trim() ? token : null;
+}
+
+export function getCsrfToken() {
+  return inMemoryCsrfToken;
+}
+
 function extractErrorMessage(payload, fallback) {
   if (!payload) return fallback;
   if (typeof payload === 'string') return payload;
@@ -44,10 +54,8 @@ async function request(url, options = {}) {
 
   const method = (config.method || 'GET').toUpperCase();
   if (!['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(method)) {
-    const csrfToken = getCookie('csrf_token');
-    if (csrfToken) {
-      config.headers['X-CSRF-Token'] = csrfToken;
-    }
+    const csrfToken = getCsrfToken() || getCookie('csrf_token');
+    if (csrfToken) config.headers['X-CSRF-Token'] = csrfToken;
   }
 
   if (options.body && typeof options.body === 'object') {
@@ -56,8 +64,13 @@ async function request(url, options = {}) {
 
   const response = await fetch(url, config);
 
+  const payload = await response.json().catch(() => null);
+
+  if (response.ok && payload && typeof payload.csrf_token === 'string') {
+    setCsrfToken(payload.csrf_token);
+  }
+
   if (!response.ok) {
-    const payload = await response.json().catch(() => null);
     const message = extractErrorMessage(payload, `HTTP ${response.status}`);
     const error = new Error(message);
     error.status = response.status;
@@ -66,7 +79,7 @@ async function request(url, options = {}) {
     throw error;
   }
 
-  return response.json();
+  return payload;
 }
 
 export const auth = {
