@@ -292,6 +292,8 @@ async def create_raffle_handler(
     elif request.ticket_payment_type == "xanax":
         payment_item_id = config.XANAX_ITEM_ID
     
+    max_tickets_per_user = request.max_tickets_per_user if request.max_tickets_per_user > 0 else None
+
     # Create raffle in database
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow("""
@@ -303,7 +305,7 @@ async def create_raffle_handler(
             RETURNING raffle_id
         """, request.guild_id, admin_discord_id, request.prize,
             request.ticket_payment_type, request.ticket_price, payment_item_id,
-            request.tickets_available, request.max_tickets_per_user, end_time
+            request.tickets_available, max_tickets_per_user, end_time
         )
         raffle_id = row['raffle_id']
         
@@ -395,7 +397,7 @@ async def draw_raffle_handler(
 
     if not raffle:
         raise ValueError("Raffle not found")
-    if raffle['status'] != 'active':
+    if raffle['status'] not in ('active', 'open'):
         raise ValueError("Raffle is not active")
 
     winner = await db.draw_raffle_winner(raffle_id)
@@ -424,7 +426,7 @@ async def cancel_raffle_handler(
 
     if not raffle:
         raise ValueError("Raffle not found")
-    if raffle['status'] != 'active':
+    if raffle['status'] not in ('active', 'open'):
         raise ValueError("Raffle is not active")
 
     await db.cancel_raffle(raffle_id)
@@ -768,7 +770,7 @@ async def update_raffle_message(raffle_id: int, winner: Optional[Dict] = None):
             
             # Update view based on status
             from views import RaffleView
-            if raffle['status'] == 'active':
+            if raffle['status'] in ('active', 'open'):
                 view = RaffleView(raffle_id)
             else:
                 view = None  # No buttons for completed/cancelled

@@ -1454,7 +1454,9 @@ class DatabaseManager:
         # Validate payment type
         if ticket_payment_type not in ('xanax', 'erotic_dvd'):
             raise ValueError(f"Invalid ticket payment type: {ticket_payment_type}")
-        
+
+        max_tickets_value = max_tickets_per_user if max_tickets_per_user and max_tickets_per_user > 0 else None
+
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 INSERT INTO raffles (
@@ -1466,7 +1468,7 @@ class DatabaseManager:
                 RETURNING raffle_id
             """, guild_id, creator_discord_id, prize, ticket_payment_type,
                 ticket_price, ticket_payment_item_id, tickets_available,
-                max_tickets_per_user, end_time, channel_id)
+                max_tickets_value, end_time, channel_id)
             return row['raffle_id']
     
     async def get_raffle(self, raffle_id: int) -> Optional[Dict]:
@@ -1499,7 +1501,7 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT * FROM raffles
-                WHERE guild_id = $1 AND status = 'active'
+                WHERE guild_id = $1 AND status IN ('active', 'open')
                 ORDER BY end_time
             """, guild_id)
             return [dict(row) for row in rows]
@@ -1509,7 +1511,7 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             count = await conn.fetchval("""
                 SELECT COUNT(*) FROM raffles
-                WHERE creator_discord_id = $1 AND status = 'active'
+                WHERE creator_discord_id = $1 AND status IN ('active', 'open')
             """, creator_discord_id)
             return count > 0
     
@@ -1522,7 +1524,7 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 SELECT * FROM raffles
-                WHERE guild_id = $1 AND creator_discord_id = $2 AND status = 'active'
+                WHERE guild_id = $1 AND creator_discord_id = $2 AND status IN ('active', 'open')
             """, guild_id, creator_discord_id)
             return dict(row) if row else None
     
@@ -1531,7 +1533,7 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT * FROM raffles
-                WHERE status = 'active' AND end_time <= NOW()
+                WHERE status IN ('active', 'open') AND end_time <= NOW()
             """)
             return [dict(row) for row in rows]
     
@@ -1824,7 +1826,7 @@ class DatabaseManager:
             
             active_raffles = await conn.fetchval("""
                 SELECT COUNT(*) FROM raffles
-                WHERE guild_id = $1 AND status = 'active'
+                WHERE guild_id = $1 AND status IN ('active', 'open')
             """, guild_id)
             
             active_policies = await conn.fetchval("""
