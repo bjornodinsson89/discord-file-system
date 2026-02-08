@@ -31,5 +31,8 @@ async def enforce_csrf(request: Request) -> None:
 
     expected = get_or_create_csrf_token(request)
     provided = request.headers.get(CSRF_HEADER)
-    if not provided or not secrets.compare_digest(provided, expected):
+    if not provided:
+        raise HTTPException(status_code=403, detail="Invalid CSRF token: missing X-CSRF-Token header")
+
+    if not secrets.compare_digest(provided, expected):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")

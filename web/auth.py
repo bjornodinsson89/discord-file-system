@@ -12,6 +12,7 @@ import logging
 from urllib.parse import quote
 
 import config
+from web.csrf import get_or_create_csrf_token
 from web.permissions import get_current_user
 
 log = logging.getLogger("happy_jumper.auth")
@@ -133,16 +134,21 @@ async def logout(request: Request):
 
 
 @router.get("/me")
-async def get_me(user: Dict = Depends(get_current_user)):
+async def get_me(request: Request, user: Dict = Depends(get_current_user)):
     """Get current user info."""
-    return user
+    return {
+        **user,
+        "csrf_token": get_or_create_csrf_token(request),
+    }
 
 
 @router.get("/status")
 async def auth_status(request: Request):
     """Check if user is authenticated."""
     user = request.session.get("user")
+    csrf_token = get_or_create_csrf_token(request) if user else None
     return {
         "authenticated": user is not None,
-        "user": user if user else None
+        "user": user if user else None,
+        "csrf_token": csrf_token,
     }

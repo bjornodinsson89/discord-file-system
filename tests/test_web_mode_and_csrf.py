@@ -5,6 +5,7 @@ import admin_api.handlers as handlers
 import config
 from admin_api.schemas import CreateSessionRequest
 from web import csrf
+from web.auth import auth_status
 
 
 class _DummyRequest:
@@ -157,3 +158,36 @@ def test_csrf_accepts_matching_token_header():
     request.headers[csrf.CSRF_HEADER] = token
 
     asyncio.run(csrf.enforce_csrf(request))
+
+
+def test_auth_status_returns_csrf_token_for_authenticated_session():
+    request = _DummyRequest("GET", "/auth/status", session={"user": {"id": "1", "username": "tester"}})
+
+    result = asyncio.run(auth_status(request))
+
+    assert result["authenticated"] is True
+    assert result["user"]["id"] == "1"
+    assert isinstance(result["csrf_token"], str)
+    assert result["csrf_token"] == request.session[csrf.CSRF_SESSION_KEY]
+
+
+def test_csrf_token_is_stable_across_multiple_reads():
+    request = _DummyRequest("GET", "/api/sessions/list", session={"user": {"id": "1"}})
+
+    first = csrf.get_or_create_csrf_token(request)
+    second = csrf.get_or_create_csrf_token(request)
+
+    assert first == second
+
+
+def test_csrf_missing_header_returns_403_http_exception():
+    request = _DummyRequest("POST", "/api/sessions/create", session={"user": {"id": "1"}})
+
+    import pytest
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(csrf.enforce_csrf(request))
+
+    assert exc_info.value.status_code == 403
+    assert "missing X-CSRF-Token header" in str(exc_info.value.detail)

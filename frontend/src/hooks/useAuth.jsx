@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useCallback, createContext, useContext } from 'react';
-import { auth as authApi, guilds as guildsApi } from '../lib/api';
+import { auth as authApi, guilds as guildsApi, setCsrfToken } from '../lib/api';
 
 const AuthContext = createContext(null);
 
@@ -27,6 +27,7 @@ export function AuthProvider({ children }) {
   const checkAuth = useCallback(async () => {
     try {
       const response = await authApi.getStatus();
+      setCsrfToken(response?.csrf_token || null);
       if (response.authenticated) {
         setUser(response.user);
         setAdminGuilds([]);
@@ -54,6 +55,7 @@ export function AuthProvider({ children }) {
   const logout = () => {
     setUser(null);
     setAdminGuilds([]);
+    setCsrfToken(null);
     authApi.logout();
   };
 
