@@ -12,10 +12,9 @@ Usage:
 import asyncio
 import asyncpg
 import logging
-import os
 import sys
 from pathlib import Path
-from typing import List, Tuple, Set, Optional
+from typing import List, Tuple, Set
 
 # Add parent directory to path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -27,7 +26,7 @@ log = logging.getLogger("happy_jumper.migrations")
 
 async def get_connection() -> asyncpg.Connection:
     """Get a database connection with PgBouncer-safe settings."""
-    ssl_mode = config.DB_SSL if hasattr(config, 'DB_SSL') and config.DB_SSL != 'disable' else None
+    ssl_mode = config.get_db_ssl_config()
     
     return await asyncpg.connect(
         host=config.DB_HOST,
@@ -43,7 +42,7 @@ async def get_connection() -> asyncpg.Connection:
 
 async def get_pool() -> asyncpg.Pool:
     """Get a connection pool with PgBouncer-safe settings."""
-    ssl_mode = config.DB_SSL if hasattr(config, 'DB_SSL') and config.DB_SSL != 'disable' else None
+    ssl_mode = config.get_db_ssl_config()
     
     return await asyncpg.create_pool(
         host=config.DB_HOST,

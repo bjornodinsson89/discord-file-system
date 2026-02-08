@@ -9,6 +9,7 @@ import aiohttp
 import secrets
 from typing import Optional, Dict
 import logging
+from urllib.parse import quote
 
 import config
 from web.permissions import get_current_user
@@ -20,8 +21,6 @@ router = APIRouter()
 # ============================================================================
 # DISCORD OAuth2 CONFIGURATION
 # ============================================================================
-
-from urllib.parse import quote
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 OAUTH_SCOPES = ["identify", "guilds"]
@@ -120,6 +119,7 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
             for g in guilds_data
         ]
     }
+    request.session.pop("oauth_state", None)
     
     # Redirect to authenticated dashboard route
     return RedirectResponse(url="/dashboard")

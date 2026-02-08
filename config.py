@@ -4,6 +4,7 @@ Extended with Dashboard, OAuth, and Admin API settings.
 """
 
 import os
+import ssl
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -49,9 +50,31 @@ DB_PORT = int(os.getenv("DB_PORT", "6543"))
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_SSL = os.getenv("DB_SSL")
+DB_SSL = os.getenv("DB_SSL", "disable")
 RUN_MIGRATIONS = _env_flag("RUN_MIGRATIONS", False)
 RUN_MIGRATIONS_ON_STARTUP = RUN_MIGRATIONS and SERVICE_MODE == "WEB"
+RUN_EMERGENCY_SCHEMA_FIXES = _env_flag("RUN_EMERGENCY_SCHEMA_FIXES", False)
+
+
+def get_db_ssl_config() -> bool | ssl.SSLContext | None:
+    """Normalize DB_SSL into asyncpg-compatible ssl argument.
+
+    asyncpg accepts bool, SSLContext, or None. It does *not* accept arbitrary
+    strings like "require".
+    """
+    value = (DB_SSL or "").strip().lower()
+    if value in {"", "disable", "false", "0", "off", "no"}:
+        return None
+    if value in {"allow", "prefer", "require", "true", "1", "on", "yes"}:
+        return True
+    if value in {"verify-ca", "verify-full"}:
+        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        context.check_hostname = value == "verify-full"
+        context.verify_mode = ssl.CERT_REQUIRED
+        return context
+    raise RuntimeError(
+        f"Unsupported DB_SSL value {DB_SSL!r}. Use disable/require/verify-ca/verify-full."
+    )
 
 # ============================================================================
 # SECURITY
