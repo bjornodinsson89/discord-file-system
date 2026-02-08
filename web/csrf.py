@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 from fastapi import Request, HTTPException
 
 CSRF_SESSION_KEY = "csrf_token"
 CSRF_HEADER = "x-csrf-token"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
+
+log = logging.getLogger("happy_jumper.csrf")
 
 
 def get_or_create_csrf_token(request: Request) -> str:
@@ -32,7 +35,21 @@ async def enforce_csrf(request: Request) -> None:
     expected = get_or_create_csrf_token(request)
     provided = request.headers.get(CSRF_HEADER)
     if not provided:
+        log.warning(
+            "CSRF validation failed method=%s path=%s has_header=%s has_session_user=%s",
+            request.method,
+            request.url.path,
+            False,
+            bool(request.session.get("user")),
+        )
         raise HTTPException(status_code=403, detail="Invalid CSRF token: missing X-CSRF-Token header")
 
     if not secrets.compare_digest(provided, expected):
+        log.warning(
+            "CSRF validation failed method=%s path=%s has_header=%s has_session_user=%s",
+            request.method,
+            request.url.path,
+            True,
+            bool(request.session.get("user")),
+        )
         raise HTTPException(status_code=403, detail="Invalid CSRF token")

@@ -6,6 +6,8 @@ import config
 from admin_api.schemas import CreateSessionRequest
 from web import csrf
 from web.auth import auth_status
+from fastapi import Response
+from web.app import ensure_csrf_cookie
 
 
 class _DummyRequest:
@@ -191,3 +193,43 @@ def test_csrf_missing_header_returns_403_http_exception():
 
     assert exc_info.value.status_code == 403
     assert "missing X-CSRF-Token header" in str(exc_info.value.detail)
+
+
+class _CookieCaptureResponse(Response):
+    def __init__(self):
+        super().__init__(content="ok")
+        self.cookies_set = []
+
+    def set_cookie(self, key, value="", max_age=None, expires=None, path="/", domain=None, secure=False, httponly=False, samesite="lax"):
+        self.cookies_set.append({
+            "key": key,
+            "value": value,
+            "path": path,
+            "secure": secure,
+            "httponly": httponly,
+            "samesite": samesite,
+        })
+        return super().set_cookie(
+            key,
+            value=value,
+            max_age=max_age,
+            expires=expires,
+            path=path,
+            domain=domain,
+            secure=secure,
+            httponly=httponly,
+            samesite=samesite,
+        )
+
+
+def test_ensure_csrf_cookie_sets_path_root_for_authenticated_session():
+    request = _DummyRequest("GET", "/api/sessions/list", session={"user": {"id": "1"}})
+
+    async def _call_next(_request):
+        return _CookieCaptureResponse()
+
+    response = asyncio.run(ensure_csrf_cookie(request, _call_next))
+    csrf_cookie = next((cookie for cookie in response.cookies_set if cookie["key"] == "csrf_token"), None)
+
+    assert csrf_cookie is not None
+    assert csrf_cookie["path"] == "/"
