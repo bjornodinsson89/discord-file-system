@@ -51,29 +51,54 @@ DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_SSL = os.getenv("DB_SSL", "disable")
+DB_SSL_CA_FILE = os.getenv("DB_SSL_CA_FILE")
 RUN_MIGRATIONS = _env_flag("RUN_MIGRATIONS", False)
 RUN_MIGRATIONS_ON_STARTUP = RUN_MIGRATIONS and SERVICE_MODE == "WEB"
 RUN_EMERGENCY_SCHEMA_FIXES = _env_flag("RUN_EMERGENCY_SCHEMA_FIXES", False)
 
 
-def get_db_ssl_config() -> bool | ssl.SSLContext | None:
+def get_db_ssl_config() -> ssl.SSLContext | None:
     """Normalize DB_SSL into asyncpg-compatible ssl argument.
 
-    asyncpg accepts bool, SSLContext, or None. It does *not* accept arbitrary
-    strings like "require".
+    Supported modes mirror libpq sslmode semantics:
+    - disable: no TLS
+    - require/prefer/allow: TLS without certificate verification
+    - verify-ca: verify chain (optionally from DB_SSL_CA_FILE), no hostname check
+    - verify-full: verify chain + hostname
     """
     value = (DB_SSL or "").strip().lower()
     if value in {"", "disable", "false", "0", "off", "no"}:
         return None
+
+    ca_file = (DB_SSL_CA_FILE or "").strip()
+
+    if ca_file:
+        try:
+            with open(ca_file, "rb"):
+                pass
+        except OSError as exc:
+            raise RuntimeError(
+                f"DB_SSL_CA_FILE is set but unreadable: {ca_file!r}"
+            ) from exc
+
     if value in {"allow", "prefer", "require", "true", "1", "on", "yes"}:
-        return True
-    if value in {"verify-ca", "verify-full"}:
         context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
+
+    if value in {"verify-ca", "verify-full"}:
+        context = ssl.create_default_context(
+            ssl.Purpose.SERVER_AUTH,
+            cafile=ca_file or None,
+        )
         context.check_hostname = value == "verify-full"
         context.verify_mode = ssl.CERT_REQUIRED
         return context
+
     raise RuntimeError(
-        f"Unsupported DB_SSL value {DB_SSL!r}. Use disable/require/verify-ca/verify-full."
+        f"Unsupported DB_SSL value {DB_SSL!r}. "
+        "Use disable/require/prefer/allow/verify-ca/verify-full."
     )
 
 # ============================================================================

@@ -27,20 +27,25 @@ class DatabaseManager:
         if self.pool and not self.pool._closed:
             return self.pool
         ssl_mode = config.get_db_ssl_config()
-        
-        self.pool = await asyncpg.create_pool(
-            host=config.DB_HOST,
-            port=config.DB_PORT,
-            database=config.DB_NAME,
-            user=config.DB_USER,
-            password=config.DB_PASSWORD,
-            ssl=ssl_mode,
-            min_size=2,
-            max_size=10,
-            command_timeout=60,
-            # CRITICAL: Required for PgBouncer/Supabase pooler
-            statement_cache_size=0,
-        )
+        log.info("Initializing DB pool (ssl_mode=%s)", (config.DB_SSL or "disable").strip().lower())
+
+        try:
+            self.pool = await asyncpg.create_pool(
+                host=config.DB_HOST,
+                port=config.DB_PORT,
+                database=config.DB_NAME,
+                user=config.DB_USER,
+                password=config.DB_PASSWORD,
+                ssl=ssl_mode,
+                min_size=2,
+                max_size=10,
+                command_timeout=60,
+                # CRITICAL: Required for PgBouncer/Supabase pooler
+                statement_cache_size=0,
+            )
+        except Exception:
+            log.exception("Failed to initialize DB pool (ssl_mode=%s)", (config.DB_SSL or "disable").strip().lower())
+            raise
         log.info("Database pool initialized with PgBouncer-safe settings")
         
         # Apply emergency schema fixes only when explicitly enabled.
