@@ -94,6 +94,14 @@ async def sync_application_commands() -> None:
         log.info("Command sync skipped (already synced).")
         return
 
+    db = get_database()
+    lock_key = 82542001
+    have_lock = await db.try_advisory_lock(lock_key)
+    if not have_lock:
+        log.info("Command sync skipped (another bot process currently syncing commands)")
+        bot.synced = True
+        return
+
     try:
         if config.GUILD_ID:
             guild = discord.Object(id=config.GUILD_ID)
@@ -130,6 +138,8 @@ async def sync_application_commands() -> None:
         bot.synced = True
     except Exception:
         log.exception("Failed to sync commands")
+    finally:
+        await db.release_advisory_lock(lock_key)
 
 
 def render_welcome_message(template: str, member: discord.Member) -> str:
@@ -145,6 +155,26 @@ def render_welcome_message(template: str, member: discord.Member) -> str:
         rendered = rendered.replace(token, value)
     return rendered[:1900]
 
+
+
+
+def _user_is_admin_in_guild(member: discord.Member) -> bool:
+    """Return True when member has Administrator (or configured admin role) in guild."""
+    if member.guild_permissions.administrator:
+        return True
+    configured_role = (config.ADMIN_ROLE_NAME or "").strip().lower()
+    if configured_role:
+        return any(role.name.strip().lower() == configured_role for role in member.roles)
+    return False
+
+
+async def user_has_dashboard_access(user: discord.abc.User) -> bool:
+    """Check whether user can administer at least one guild where the bot is present."""
+    for guild in bot.guilds:
+        member = guild.get_member(user.id)
+        if member and _user_is_admin_in_guild(member):
+            return True
+    return False
 
 async def _send_interaction_error(interaction: discord.Interaction, message: str):
     """Best-effort user-facing interaction error response."""
@@ -423,7 +453,14 @@ async def stats(interaction: discord.Interaction):
 async def dashboard(interaction: discord.Interaction):
     """Show dashboard link."""
     await interaction.response.defer(ephemeral=True)
-    if not await ensure_admin(interaction):
+    if not await user_has_dashboard_access(interaction.user):
+        await interaction.followup.send(
+            embed=create_error_embed(
+                "Not Authorized",
+                "You must be an Administrator in at least one server where Happy Jumper is installed.",
+            ),
+            ephemeral=True,
+        )
         return
     embed = discord.Embed(
         title=f"{config.EMOJI_CHART} Happy Jumper Dashboard",
@@ -1330,6 +1367,13 @@ async def _draw_raffle_winner(raffle: dict):
 
 async def main():
     """Main entry point for the Discord bot process."""
+    if config.SERVICE_MODE != "BOT":
+        raise RuntimeError(
+            f"Refusing to start Discord bot with SERVICE_MODE={config.SERVICE_MODE!r}. "
+            "Set SERVICE_MODE=BOT for the bot service."
+        )
+
+    config.validate_config()
     log.info("Starting process mode=BOT")
 
     async with bot:

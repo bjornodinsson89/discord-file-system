@@ -15,10 +15,12 @@ Legacy `bot_internal` service is retired and must not be deployed.
 
 ## Service setup steps
 
+Do **not** use legacy `RUN_WEB` / `RUN_BOT` flags. Use `SERVICE_MODE` only.
+
 1. Create Railway project and attach your database.
 2. Create **Web** service from repo.
 3. Create **Bot** service from same repo.
-4. Set start commands exactly as above.
+4. Set start commands exactly as above (or use the repo default Railway start command that branches on `SERVICE_MODE`).
 5. Set env vars per service.
 
 ### Shared env vars (set in both services)

@@ -11,6 +11,8 @@ Happy Jumper runs as **exactly 2 Railway services**:
 
 ## Required environment variables
 
+Do **not** use legacy `RUN_WEB` / `RUN_BOT` flags. Use `SERVICE_MODE` only.
+
 ### Shared (Web + Bot)
 - `DB_HOST`
 - `DB_PORT`
@@ -90,3 +92,12 @@ SERVICE_MODE=BOT python bot.py
 # web
 SERVICE_MODE=WEB uvicorn web.app:app --host 0.0.0.0 --port 8000
 ```
+
+
+## Railway default start command
+
+`railway.json` uses a single runtime switch:
+- `SERVICE_MODE=WEB` -> `uvicorn web.app:app --host 0.0.0.0 --port $PORT`
+- `SERVICE_MODE=BOT` -> `python bot.py`
+
+This prevents a service from accidentally starting the wrong process.
