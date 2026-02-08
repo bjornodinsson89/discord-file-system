@@ -12,8 +12,8 @@ import { Card, CardContent, CardHeader, CardTitle, Button, useToast } from '../c
 export default function SettingsPage() {
   const { selectedGuildId, selectedGuild } = useGuilds();
   const { addToast } = useToast();
-  const { channels, loading: channelsLoading } = useChannels(selectedGuildId);
-  const { roles, loading: rolesLoading } = useRoles(selectedGuildId);
+  const { channels, loading: channelsLoading, error: channelsError } = useChannels(selectedGuildId);
+  const { roles, loading: rolesLoading, error: rolesError } = useRoles(selectedGuildId);
   
   const [formData, setFormData] = useState({
     host99k_role_id: '',
@@ -136,6 +136,18 @@ export default function SettingsPage() {
       {success && (
         <div className="bg-green-500/20 border border-green-500 rounded-lg p-4 text-green-200">
           Settings saved successfully!
+        </div>
+      )}
+
+      {channelsError && (
+        <div className="bg-yellow-500/20 border border-yellow-500 rounded-lg p-4 text-yellow-100">
+          Failed to load channels from Discord: {channelsError}
+        </div>
+      )}
+
+      {rolesError && (
+        <div className="bg-yellow-500/20 border border-yellow-500 rounded-lg p-4 text-yellow-100">
+          Failed to load roles from Discord: {rolesError}
         </div>
       )}
 

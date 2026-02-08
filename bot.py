@@ -54,22 +54,28 @@ def normalize_dashboard_url(url: str) -> str:
 
 
 async def ensure_admin(interaction: discord.Interaction) -> bool:
-    """Ensure the invoking user has Administrator or Manage Guild permissions."""
-    has_required = bool(
-        interaction.guild
-        and (
-            interaction.user.guild_permissions.administrator
-            or interaction.user.guild_permissions.manage_guild
-        )
-    )
-    if not has_required:
-        embed = create_error_embed("Not Authorized", "Administrator or Manage Server permission required.")
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+    """Ensure the invoking user is Administrator or has configured admin role."""
+    if not interaction.guild:
         return False
-    return True
+
+    is_admin = interaction.user.guild_permissions.administrator
+    has_admin_role = False
+    configured_role = (config.ADMIN_ROLE_NAME or "").strip().lower()
+    if configured_role:
+        has_admin_role = any(role.name.strip().lower() == configured_role for role in interaction.user.roles)
+
+    if is_admin or has_admin_role:
+        return True
+
+    requirement = "Administrator"
+    if configured_role:
+        requirement += f" or role '{config.ADMIN_ROLE_NAME}'"
+    embed = create_error_embed("Not Authorized", f"{requirement} required.")
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    return False
 
 # ============================================================================
 # BOT SETUP
@@ -83,26 +89,44 @@ bot.synced = False
 
 
 async def sync_application_commands() -> None:
-    """Sync commands once, with optional cleanup to remove stale guild commands."""
+    """Sync commands in one scope only (global OR guild), with optional cleanup."""
     if bot.synced:
         log.info("Command sync skipped (already synced).")
         return
 
     try:
-        cleanup_stale = (config.SERVICE_MODE == "BOT" and bool(config.GUILD_ID))
-        if cleanup_stale:
-            guild = discord.Object(id=config.GUILD_ID)
-            bot.tree.clear_commands(guild=guild)
-            await bot.tree.sync(guild=guild)
-            log.info("Cleared stale guild commands for cleanup in guild %s", config.GUILD_ID)
-
         if config.GUILD_ID:
             guild = discord.Object(id=config.GUILD_ID)
+            log.info("Command sync scope=guild:%s CLEAN_COMMANDS=%s", config.GUILD_ID, config.CLEAN_COMMANDS)
+
+            if config.CLEAN_COMMANDS:
+                bot.tree.clear_commands(guild=None)
+                await bot.tree.sync()
+                log.info("Cleanup: cleared GLOBAL commands")
+
+                bot.tree.clear_commands(guild=guild)
+                await bot.tree.sync(guild=guild)
+                log.info("Cleanup: cleared guild commands in %s", config.GUILD_ID)
+
             synced = await bot.tree.sync(guild=guild)
             log.info("Commands synced to guild %s: %s commands", config.GUILD_ID, len(synced))
         else:
+            log.info("Command sync scope=global CLEAN_COMMANDS=%s", config.CLEAN_COMMANDS)
+
+            if config.CLEAN_COMMANDS:
+                for g in bot.guilds:
+                    try:
+                        bot.tree.clear_commands(guild=g)
+                        await bot.tree.sync(guild=g)
+                    except Exception:
+                        log.exception("Cleanup: failed to clear guild commands for guild %s", g.id)
+                bot.tree.clear_commands(guild=None)
+                await bot.tree.sync()
+                log.info("Cleanup: cleared GLOBAL commands before final sync")
+
             synced = await bot.tree.sync()
             log.info("Commands synced globally: %s commands", len(synced))
+
         bot.synced = True
     except Exception:
         log.exception("Failed to sync commands")
@@ -1306,9 +1330,6 @@ async def _draw_raffle_winner(raffle: dict):
 
 async def main():
     """Main entry point for the Discord bot process."""
-    if not config.RUN_BOT:
-        log.info("Bot disabled: RUN_BOT is false")
-        return
     log.info("Starting process mode=BOT")
 
     async with bot:

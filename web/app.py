@@ -44,10 +44,6 @@ async def lifespan(app: FastAPI):
 
     log.info("Starting process mode=WEB")
     config.validate_config()
-    if not config.RUN_WEB:
-        log.info("RUN_WEB is disabled; WEB process will only answer health checks")
-        yield
-        return
 
     db = await init_database()
     torn_api = init_torn_api()
@@ -121,6 +117,7 @@ app.include_router(blacklist_router, prefix="/api/blacklist", tags=["Blacklist"]
 # ============================================================================
 
 @app.get("/api/health")
+@app.get("/health")
 async def health_check():
     """Health check endpoint for Railway."""
     return {"status": "healthy", "service": "happy-jumper", "mode": app.state.mode}

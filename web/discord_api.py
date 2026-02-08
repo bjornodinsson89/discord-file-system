@@ -82,19 +82,17 @@ async def get_guild(guild_id: int) -> Optional[Dict[str, Any]]:
 
 
 async def get_guild_channels(guild_id: int) -> List[Dict[str, Any]]:
-    """Return text channels from Discord REST, fallback to empty list."""
-    try:
-        headers = _bot_headers()
-    except RuntimeError:
-        return []
+    """Return text channels from Discord REST."""
+    headers = _bot_headers()
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{DISCORD_API_BASE}/guilds/{guild_id}/channels", headers=headers) as resp:
             if resp.status != 200:
-                if resp.status not in (403, 404):
-                    body = await resp.text()
-                    log.warning("Failed to fetch channels for guild %s: %s %s", guild_id, resp.status, body)
-                return []
+                body = await resp.text()
+                if resp.status in (403, 404):
+                    raise RuntimeError("Bot cannot access this guild's channels. Re-invite the bot with proper permissions.")
+                log.warning("Failed to fetch channels for guild %s: %s %s", guild_id, resp.status, body)
+                raise RuntimeError("Discord API failed while loading channels. Please retry.")
 
             payload = await resp.json()
             channels = []
@@ -109,19 +107,17 @@ async def get_guild_channels(guild_id: int) -> List[Dict[str, Any]]:
 
 
 async def get_guild_roles(guild_id: int) -> List[Dict[str, Any]]:
-    """Return guild roles from Discord REST, fallback to empty list."""
-    try:
-        headers = _bot_headers()
-    except RuntimeError:
-        return []
+    """Return guild roles from Discord REST."""
+    headers = _bot_headers()
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{DISCORD_API_BASE}/guilds/{guild_id}/roles", headers=headers) as resp:
             if resp.status != 200:
-                if resp.status not in (403, 404):
-                    body = await resp.text()
-                    log.warning("Failed to fetch roles for guild %s: %s %s", guild_id, resp.status, body)
-                return []
+                body = await resp.text()
+                if resp.status in (403, 404):
+                    raise RuntimeError("Bot cannot access this guild's roles. Re-invite the bot with proper permissions.")
+                log.warning("Failed to fetch roles for guild %s: %s %s", guild_id, resp.status, body)
+                raise RuntimeError("Discord API failed while loading roles. Please retry.")
 
             payload = await resp.json()
             roles = []

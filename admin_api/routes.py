@@ -35,7 +35,10 @@ async def get_guild_channels(
 ):
     """Get list of text channels in guild via Discord REST."""
     await require_guild_admin(guild_id, user)
-    channels = await discord_get_guild_channels(guild_id)
+    try:
+        channels = await discord_get_guild_channels(guild_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
     return {"channels": channels}
 
 
@@ -46,7 +49,10 @@ async def get_guild_roles(
 ):
     """Get list of roles in guild via Discord REST."""
     await require_guild_admin(guild_id, user)
-    roles = await discord_get_guild_roles(guild_id)
+    try:
+        roles = await discord_get_guild_roles(guild_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
     return {"roles": roles}
 
 

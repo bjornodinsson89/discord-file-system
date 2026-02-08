@@ -16,18 +16,12 @@ def _env_flag(name: str, default: bool) -> bool:
 # DISCORD CONFIGURATION
 # ============================================================================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
-BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "").rstrip("/")
-BOT_INTERNAL_SECRET = os.getenv("BOT_INTERNAL_SECRET")
-BOT_INTERNAL_HOST = os.getenv("BOT_INTERNAL_HOST", "0.0.0.0")
-BOT_INTERNAL_PORT = int(os.getenv("BOT_INTERNAL_PORT", "8081"))
+GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
+ADMIN_ROLE_NAME = os.getenv("ADMIN_ROLE_NAME")
+CLEAN_COMMANDS = _env_flag("CLEAN_COMMANDS", False)
 SERVICE_MODE = os.getenv("SERVICE_MODE", "WEB").strip().upper()
-RUN_WEB = _env_flag("RUN_WEB", SERVICE_MODE == "WEB")
-RUN_BOT = _env_flag("RUN_BOT", SERVICE_MODE == "BOT")
-RUN_BOT_INTERNAL = _env_flag("RUN_BOT_INTERNAL", SERVICE_MODE == "BOT_INTERNAL")
-
 # ============================================================================
 # DASHBOARD CONFIGURATION
 # ============================================================================
@@ -55,7 +49,7 @@ DB_PORT = int(os.getenv("DB_PORT", "6543"))
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_SSL = os.getenv("DB_SSL", "require")
+DB_SSL = os.getenv("DB_SSL")
 RUN_MIGRATIONS = _env_flag("RUN_MIGRATIONS", False)
 RUN_MIGRATIONS_ON_STARTUP = RUN_MIGRATIONS and SERVICE_MODE == "WEB"
 
@@ -223,8 +217,8 @@ PAYMENT_TYPES = {
 # ============================================================================
 def validate_config() -> None:
     """Validate required environment variables by process role."""
+    mode = (SERVICE_MODE or "WEB").upper()
     missing: list[str] = []
-    mode = SERVICE_MODE or "WEB"
 
     shared_required = {
         "DB_HOST": DB_HOST,
@@ -232,29 +226,27 @@ def validate_config() -> None:
         "DB_NAME": DB_NAME,
         "DB_USER": DB_USER,
         "DB_PASSWORD": DB_PASSWORD,
+        "DB_SSL": DB_SSL,
         "FERNET_KEY": FERNET_KEY,
+        "DISCORD_TOKEN": DISCORD_TOKEN,
     }
-    missing.extend(name for name, value in shared_required.items() if not value)
+    missing.extend(name for name, value in shared_required.items() if value in (None, ""))
 
-    if mode == "WEB" or RUN_WEB:
+    if mode == "WEB":
         web_required = {
-            "DASHBOARD_URL": DASHBOARD_URL,
-            "FRONTEND_URL": FRONTEND_URL,
             "DISCORD_CLIENT_ID": DISCORD_CLIENT_ID,
             "DISCORD_CLIENT_SECRET": DISCORD_CLIENT_SECRET,
             "DASHBOARD_SECRET_KEY": DASHBOARD_SECRET_KEY_ENV,
-            "DISCORD_TOKEN": DISCORD_TOKEN,
+            "OAUTH_REDIRECT_URI": OAUTH_REDIRECT_URI,
+            "FRONTEND_URL": FRONTEND_URL,
         }
-        missing.extend(name for name, value in web_required.items() if not value)
+        missing.extend(name for name, value in web_required.items() if value in (None, ""))
+    elif mode == "BOT":
+        # Optional for bot mode: GUILD_ID, ADMIN_ROLE_NAME, CLEAN_COMMANDS.
+        pass
+    else:
+        raise RuntimeError(f"Unsupported SERVICE_MODE={mode!r}. Expected WEB or BOT.")
 
-    if mode == "BOT" or RUN_BOT:
-        bot_required = {
-            "DISCORD_TOKEN": DISCORD_TOKEN,
-        }
-        missing.extend(name for name, value in bot_required.items() if not value)
-
-    deduped_missing = list(dict.fromkeys(missing))
-    if deduped_missing:
-        raise RuntimeError(
-            f"Missing required environment variables for {mode}: {', '.join(deduped_missing)}"
-        )
+    if missing:
+        unique = list(dict.fromkeys(missing))
+        raise RuntimeError(f"Missing required environment variables for {mode}: {', '.join(unique)}")
