@@ -23,8 +23,9 @@ BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://localhost:8081").rstrip("
 BOT_INTERNAL_SECRET = os.getenv("BOT_INTERNAL_SECRET")
 BOT_INTERNAL_HOST = os.getenv("BOT_INTERNAL_HOST", "0.0.0.0")
 BOT_INTERNAL_PORT = int(os.getenv("BOT_INTERNAL_PORT", "8081"))
-RUN_WEB = _env_flag("RUN_WEB", True)
-RUN_BOT = _env_flag("RUN_BOT", True)
+SERVICE_MODE = os.getenv("SERVICE_MODE", "").strip().upper()
+RUN_WEB = _env_flag("RUN_WEB", SERVICE_MODE != "BOT")
+RUN_BOT = _env_flag("RUN_BOT", SERVICE_MODE != "API")
 
 # ============================================================================
 # DASHBOARD CONFIGURATION
@@ -54,12 +55,8 @@ DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_SSL = os.getenv("DB_SSL", "require")
-RUN_MIGRATIONS_ON_STARTUP = os.getenv("RUN_MIGRATIONS_ON_STARTUP", "false").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+RUN_MIGRATIONS = _env_flag("RUN_MIGRATIONS", False)
+RUN_MIGRATIONS_ON_STARTUP = RUN_MIGRATIONS and SERVICE_MODE == "API"
 
 # ============================================================================
 # SECURITY

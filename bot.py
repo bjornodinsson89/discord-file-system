@@ -1332,7 +1332,7 @@ async def _draw_raffle_winner(raffle: dict):
 async def main():
     """Main entry point for the Discord bot process."""
     if not config.RUN_BOT:
-        log.info("RUN_BOT is disabled; bot process exiting")
+        log.info("Bot disabled: RUN_BOT is false")
         return
     log.info("Starting process mode=BOT")
 

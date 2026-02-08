@@ -46,12 +46,29 @@ class DatabaseManager:
         # Apply emergency schema fixes for missing columns
         await self.apply_emergency_schema_fixes()
         
+        log.info(
+            "Migration gate: SERVICE_MODE=%s RUN_MIGRATIONS=%s run_migrations=%s",
+            config.SERVICE_MODE or "(unset)",
+            config.RUN_MIGRATIONS,
+            run_migrations,
+        )
+
         if run_migrations:
             from migrations.migration_runner import run_migrations
-            applied_count = await run_migrations(self.pool)
-            if applied_count > 0:
-                log.info(f"Applied {applied_count} database migrations")
-        
+            try:
+                applied_count = await run_migrations(self.pool)
+                if applied_count > 0:
+                    log.info(f"Applied {applied_count} database migrations")
+                else:
+                    log.info("No pending migrations applied")
+            except Exception:
+                log.exception("Database migrations failed")
+                if config.SERVICE_MODE == "API":
+                    raise
+                log.warning("Continuing without migrations because this is not API mode")
+        else:
+            log.info("Skipping migrations on startup")
+
         return self.pool
     
     async def apply_emergency_schema_fixes(self):
