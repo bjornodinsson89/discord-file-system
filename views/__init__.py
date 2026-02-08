@@ -613,7 +613,7 @@ class BuyTicketsModal(ui.Modal, title="Buy Raffle Tickets"):
             
             db = get_database()
             raffle = await db.get_raffle(self.raffle_id)
-            if not raffle or raffle['status'] != 'active':
+            if not raffle or raffle['status'] not in ('active', 'open'):
                 await interaction.followup.send(embed=create_error_embed("Raffle Unavailable"), ephemeral=True)
                 return
             

@@ -19,19 +19,20 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
-BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://localhost:8081").rstrip("/")
+BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "").rstrip("/")
 BOT_INTERNAL_SECRET = os.getenv("BOT_INTERNAL_SECRET")
 BOT_INTERNAL_HOST = os.getenv("BOT_INTERNAL_HOST", "0.0.0.0")
 BOT_INTERNAL_PORT = int(os.getenv("BOT_INTERNAL_PORT", "8081"))
-SERVICE_MODE = os.getenv("SERVICE_MODE", "").strip().upper()
-RUN_WEB = _env_flag("RUN_WEB", SERVICE_MODE != "BOT")
-RUN_BOT = _env_flag("RUN_BOT", SERVICE_MODE != "API")
+SERVICE_MODE = os.getenv("SERVICE_MODE", "WEB").strip().upper()
+RUN_WEB = _env_flag("RUN_WEB", SERVICE_MODE == "WEB")
+RUN_BOT = _env_flag("RUN_BOT", SERVICE_MODE == "BOT")
+RUN_BOT_INTERNAL = _env_flag("RUN_BOT_INTERNAL", SERVICE_MODE == "BOT_INTERNAL")
 
 # ============================================================================
 # DASHBOARD CONFIGURATION
 # ============================================================================
-DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:8000").rstrip("/")
-FRONTEND_URL = os.getenv("FRONTEND_URL", DASHBOARD_URL).rstrip("/")
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "").rstrip("/")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "").rstrip("/")
 
 # IMPORTANT:
 # - Always define this before using it anywhere else (prevents NameError).
@@ -56,7 +57,7 @@ DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_SSL = os.getenv("DB_SSL", "require")
 RUN_MIGRATIONS = _env_flag("RUN_MIGRATIONS", False)
-RUN_MIGRATIONS_ON_STARTUP = RUN_MIGRATIONS and SERVICE_MODE == "API"
+RUN_MIGRATIONS_ON_STARTUP = RUN_MIGRATIONS and SERVICE_MODE == "WEB"
 
 # ============================================================================
 # SECURITY
@@ -221,45 +222,36 @@ PAYMENT_TYPES = {
 # VALIDATION
 # ============================================================================
 def validate_config() -> None:
-    """Validate required environment variables for split web/bot processes."""
+    """Validate required environment variables by process role."""
     missing: list[str] = []
+    mode = SERVICE_MODE or "WEB"
 
-    # Shared requirements used by both bot and web processes.
-    shared_required = {
-        "DB_HOST": DB_HOST,
-        "DB_PORT": DB_PORT,
-        "DB_NAME": DB_NAME,
-        "DB_USER": DB_USER,
-        "DB_PASSWORD": DB_PASSWORD,
-        "DB_SSL": DB_SSL,
-        "FERNET_KEY": FERNET_KEY,
-    }
-    missing.extend(name for name, value in shared_required.items() if not value)
-
-    if RUN_BOT:
-        bot_required = {
-            "DISCORD_TOKEN": DISCORD_TOKEN,
-            "BOT_INTERNAL_SECRET": BOT_INTERNAL_SECRET,
-        }
-        missing.extend(name for name, value in bot_required.items() if not value)
-
-    if RUN_WEB:
+    if mode == "WEB" or RUN_WEB:
         web_required = {
+            "DASHBOARD_URL": DASHBOARD_URL,
             "DISCORD_CLIENT_ID": DISCORD_CLIENT_ID,
             "DISCORD_CLIENT_SECRET": DISCORD_CLIENT_SECRET,
+            "DASHBOARD_SECRET_KEY": DASHBOARD_SECRET_KEY_ENV,
             "BOT_SERVICE_URL": BOT_SERVICE_URL,
             "BOT_INTERNAL_SECRET": BOT_INTERNAL_SECRET,
-            "DASHBOARD_SECRET_KEY": DASHBOARD_SECRET_KEY_ENV,
-            "DASHBOARD_URL": DASHBOARD_URL,
-            "FRONTEND_URL": FRONTEND_URL,
-            "OAUTH_REDIRECT_URI": OAUTH_REDIRECT_URI,
         }
         missing.extend(name for name, value in web_required.items() if not value)
 
-    # De-duplicate while preserving order.
-    deduped_missing = list(dict.fromkeys(missing))
+    if mode == "BOT_INTERNAL" or RUN_BOT_INTERNAL:
+        internal_required = {
+            "DISCORD_TOKEN": DISCORD_TOKEN,
+            "BOT_INTERNAL_SECRET": BOT_INTERNAL_SECRET,
+        }
+        missing.extend(name for name, value in internal_required.items() if not value)
 
+    if mode == "BOT" or RUN_BOT:
+        bot_required = {
+            "DISCORD_TOKEN": DISCORD_TOKEN,
+        }
+        missing.extend(name for name, value in bot_required.items() if not value)
+
+    deduped_missing = list(dict.fromkeys(missing))
     if deduped_missing:
         raise RuntimeError(
-            f"Missing required environment variables: {', '.join(deduped_missing)}"
+            f"Missing required environment variables for {mode}: {', '.join(deduped_missing)}"
         )

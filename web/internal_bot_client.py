@@ -21,19 +21,24 @@ class InternalBotClient:
         return {"X-Internal-Secret": self.secret}
 
     async def _request(self, method: str, path: str, json: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        if not self.base_url:
+            raise HTTPException(status_code=500, detail="BOT_SERVICE_URL is not configured")
+
         url = f"{self.base_url}{path}"
+        timeout = aiohttp.ClientTimeout(total=10)
+
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.request(method, url, headers=self._headers(), json=json) as resp:
                     payload = await resp.json(content_type=None)
                     if resp.status >= 400:
                         detail = payload.get("detail") if isinstance(payload, dict) else str(payload)
-                        raise HTTPException(status_code=502, detail=f"Bot internal API error: {detail}")
-                    return payload
+                        raise HTTPException(status_code=502, detail=f"Bot internal service error: {detail}")
+                    return payload if isinstance(payload, dict) else {}
         except HTTPException:
             raise
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Failed to reach bot internal API: {exc}")
+        except Exception:
+            raise HTTPException(status_code=502, detail="Bot internal service offline")
 
     async def guild_presence(self, guild_id: int) -> bool:
         data = await self._request("GET", f"/internal/guilds/{guild_id}/presence")

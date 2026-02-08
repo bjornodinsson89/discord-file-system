@@ -1,76 +1,81 @@
-# Railway Split Deployment (Web/API + Bot)
+# Railway Deployment: 3 Services (WEB, BOT, BOT-INTERNAL)
 
-Run this repo as **two Railway services**.
+Deploy this repository as **three Railway services** from the same repo:
 
-## Service commands
+1. **WEB** (dashboard + admin API)
+2. **BOT** (Discord gateway bot only)
+3. **BOT-INTERNAL** (FastAPI internal bridge to Discord REST)
 
-Use per-service `START_COMMAND` so each service starts the right process:
+## Railway project setup
 
-- **Web/API service**
-  - `SERVICE_MODE=API`
-  - `RUN_MIGRATIONS=true`
+- Keep one repo, create 3 services in Railway from it.
+- Set each service's `START_COMMAND` separately.
+- `railway.json` uses `START_COMMAND` so each service can boot independently.
+
+### Service start commands
+
+- **WEB**
   - `START_COMMAND=uvicorn web.app:app --host 0.0.0.0 --port $PORT`
-- **Bot service**
-  - `SERVICE_MODE=BOT`
-  - `RUN_MIGRATIONS=false`
+  - `SERVICE_MODE=WEB`
+- **BOT**
   - `START_COMMAND=python bot.py`
+  - `SERVICE_MODE=BOT`
+- **BOT-INTERNAL**
+  - `START_COMMAND=uvicorn bot_internal.app:app --host 0.0.0.0 --port $PORT`
+  - `SERVICE_MODE=BOT_INTERNAL`
 
-`railway.json` now logs `SERVICE_MODE`, `START_COMMAND`, and `RUN_MIGRATIONS` at boot, then executes `START_COMMAND` when provided.
+## Exact environment variables by service
 
-## Required environment variables
+## WEB
 
-### Shared (both services)
-
-- `DB_HOST`
-- `DB_PORT`
-- `DB_NAME`
-- `DB_USER`
-- `DB_PASSWORD`
-- `DB_SSL`
-- `FERNET_KEY`
-- `BOT_INTERNAL_SECRET`
+Required:
+- `SERVICE_MODE=WEB`
 - `DASHBOARD_URL`
-
-### Web/API-only
-
-- `SERVICE_MODE=API`
-- `RUN_MIGRATIONS=true`
-- `START_COMMAND=uvicorn web.app:app --host 0.0.0.0 --port $PORT`
 - `DISCORD_CLIENT_ID`
 - `DISCORD_CLIENT_SECRET`
 - `DASHBOARD_SECRET_KEY`
-- `OAUTH_REDIRECT_URI`
-- `FRONTEND_URL`
-- `BOT_SERVICE_URL` (example: `http://bot-service.railway.internal:8081`)
+- `BOT_SERVICE_URL` (URL of BOT-INTERNAL service)
+- `BOT_INTERNAL_SECRET` (shared secret)
 
-### Bot-only
+Typical optional:
+- `FRONTEND_URL` (if unset, defaults in app behavior)
+- `OAUTH_REDIRECT_URI` (if unset, built from `DASHBOARD_URL`)
+- DB vars (`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`) only if your WEB flow uses DB-backed features
+- `FERNET_KEY` if using encrypted secret storage from WEB routes
 
-- `SERVICE_MODE=BOT`
-- `RUN_MIGRATIONS=false`
-- `START_COMMAND=python bot.py`
+## BOT-INTERNAL
+
+Required:
+- `SERVICE_MODE=BOT_INTERNAL`
 - `DISCORD_TOKEN`
-- `GUILD_ID` (optional)
-- `BOT_INTERNAL_HOST` (optional, default `0.0.0.0`)
-- `BOT_INTERNAL_PORT` (optional, default `8081`)
+- `BOT_INTERNAL_SECRET`
 
-## Migration compatibility fallback
+Not required unless you intentionally add DB-backed behavior:
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`
 
-If your existing database has an older `schema_migrations` table, run:
+## BOT
 
-```sql
-ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS description text;
-```
+Required:
+- `SERVICE_MODE=BOT`
+- `DISCORD_TOKEN`
 
-## Checklist
+Also required if bot runtime features use DB:
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`
+- `FERNET_KEY` (if bot reads encrypted API keys)
 
-1. Create two Railway services from the same repo.
-2. Set **shared vars** on both services.
-3. Set web-only vars on the API service and bot-only vars on the bot service.
-4. Ensure `RUN_MIGRATIONS=true` only on API service.
-5. Deploy both services.
+## Networking between WEB and BOT-INTERNAL
 
-## Smoke checks
+- Configure `BOT_SERVICE_URL` on WEB to point to BOT-INTERNAL's reachable URL.
+- WEB must send `X-Internal-Secret` and BOT-INTERNAL validates it against `BOT_INTERNAL_SECRET`.
+- WEB should never receive `DISCORD_TOKEN`.
+
+## Health checks
+
+- WEB: `GET /api/health`
+- BOT-INTERNAL: `GET /internal/health` (requires `X-Internal-Secret`)
+
+## Quick verification commands
 
 ```bash
-python -m py_compile bot.py web/app.py migrations/migration_runner.py utils/database.py config.py
+python -m py_compile $(rg --files -g '*.py')
 ```

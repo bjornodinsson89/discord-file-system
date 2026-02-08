@@ -37,14 +37,15 @@ log = logging.getLogger("happy_jumper.web")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize and tear down API process resources on the running loop."""
-    app.state.mode = "API"
+    app.state.mode = "WEB"
     app.state.db = None
     app.state.torn_api = None
     app.state.security = None
 
-    log.info("Starting process mode=API")
+    log.info("Starting process mode=WEB")
+    config.validate_config()
     if not config.RUN_WEB:
-        log.info("RUN_WEB is disabled; API process will only answer health checks")
+        log.info("RUN_WEB is disabled; WEB process will only answer health checks")
         yield
         return
 
@@ -55,7 +56,7 @@ async def lifespan(app: FastAPI):
     app.state.db = db
     app.state.torn_api = torn_api
     app.state.security = security
-    log.info("API process dependencies initialized")
+    log.info("WEB process dependencies initialized")
 
     try:
         yield
