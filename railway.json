@@ -5,7 +5,7 @@
     "buildCommand": "cd frontend && npm ci && npm run build"
   },
   "deploy": {
-    "startCommand": "bash -lc \"${START_COMMAND:-uvicorn web.app:app --host 0.0.0.0 --port ${PORT:-8000}}\"",
+    "startCommand": "bash -lc 'case \"${SERVICE_MODE:-}\" in WEB) exec uvicorn web.app:app --host 0.0.0.0 --port ${PORT:-8000} ;; BOT) exec python bot.py ;; *) echo \"ERROR: SERVICE_MODE must be WEB or BOT\"; exit 1 ;; esac'",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }

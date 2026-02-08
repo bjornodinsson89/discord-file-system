@@ -38,6 +38,11 @@ log = logging.getLogger("happy_jumper.web")
 async def lifespan(app: FastAPI):
     """Initialize and tear down API process resources on the running loop."""
     app.state.mode = "WEB"
+    if config.SERVICE_MODE != "WEB":
+        raise RuntimeError(
+            f"Refusing to start web service with SERVICE_MODE={config.SERVICE_MODE!r}. "
+            "Set SERVICE_MODE=WEB for the web service."
+        )
     app.state.db = None
     app.state.torn_api = None
     app.state.security = None
@@ -120,7 +125,8 @@ app.include_router(blacklist_router, prefix="/api/blacklist", tags=["Blacklist"]
 @app.get("/health")
 async def health_check():
     """Health check endpoint for Railway."""
-    return {"status": "healthy", "service": "happy-jumper", "mode": app.state.mode}
+    mode = getattr(app.state, "mode", "WEB")
+    return {"status": "healthy", "service": "happy-jumper", "mode": mode}
 
 # ============================================================================
 # STATIC FILES & SPA
@@ -185,15 +191,23 @@ async def not_found_handler(request: Request, exc):
     return Response(content="Not Found", status_code=404)
 
 
+def _route_name(request: Request) -> str:
+    endpoint = request.scope.get("endpoint")
+    return getattr(endpoint, "__name__", "unknown_route")
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Consistent JSON error payload for API routes."""
+    route = _route_name(request)
     if request.url.path.startswith("/api/"):
+        if exc.status_code >= 500:
+            log.exception("HTTPException on route=%s path=%s status=%s", route, request.url.path, exc.status_code)
         message = "Internal server error" if exc.status_code >= 500 else str(exc.detail)
         code = "internal_error" if exc.status_code >= 500 else "http_error"
         return JSONResponse(
             status_code=exc.status_code,
-            content={"detail": message, "code": code},
+            content={"detail": message, "code": code, "route": route},
         )
     return Response(content="Not Found", status_code=exc.status_code)
 
@@ -201,10 +215,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     """Fallback exception mapping with server-side traceback logging."""
-    log.exception("Unhandled API exception on %s: %s", request.url.path, exc)
+    route = _route_name(request)
+    log.exception("Unhandled exception route=%s path=%s", route, request.url.path)
     if request.url.path.startswith("/api/"):
         return JSONResponse(
             status_code=500,
-            content={"detail": "Internal server error", "code": "internal_error"},
+            content={"detail": "Internal server error", "code": "internal_error", "route": route},
         )
     return Response(content="Internal server error", status_code=500)

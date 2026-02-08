@@ -14,25 +14,13 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const getAdminGuildsFromUser = useCallback((targetUser) => {
-    if (!targetUser) return [];
-
-    // Administrator permission bit
-    const ADMIN_BIT = 0x8;
-
-    return (targetUser.guilds || []).filter(guild => {
-      const perms = parseInt(guild.permissions || '0', 10);
-      return guild.owner || ((perms & ADMIN_BIT) === ADMIN_BIT);
-    });
-  }, []);
-
-  const loadAdminGuilds = useCallback(async (fallbackGuilds = []) => {
+  const loadAdminGuilds = useCallback(async () => {
     try {
       const data = await guildsApi.getAdminGuilds();
-      setAdminGuilds(data.guilds || fallbackGuilds);
+      setAdminGuilds(data.guilds || []);
     } catch (err) {
       console.error('Failed to fetch admin guilds:', err);
-      setAdminGuilds(fallbackGuilds);
+      setAdminGuilds([]);
     }
   }, []);
 
@@ -41,9 +29,8 @@ export function AuthProvider({ children }) {
       const response = await authApi.getStatus();
       if (response.authenticated) {
         setUser(response.user);
-        const fallbackGuilds = getAdminGuildsFromUser(response.user);
-        setAdminGuilds(fallbackGuilds);
-        await loadAdminGuilds(fallbackGuilds);
+        setAdminGuilds([]);
+        await loadAdminGuilds();
       } else {
         setUser(null);
         setAdminGuilds([]);
@@ -54,7 +41,7 @@ export function AuthProvider({ children }) {
     } finally {
       setLoading(false);
     }
-  }, [getAdminGuildsFromUser, loadAdminGuilds]);
+  }, [loadAdminGuilds]);
 
   useEffect(() => {
     checkAuth();
@@ -70,10 +57,7 @@ export function AuthProvider({ children }) {
     authApi.logout();
   };
 
-  const getAdminGuilds = () => {
-    if (adminGuilds.length > 0) return adminGuilds;
-    return getAdminGuildsFromUser(user);
-  };
+  const getAdminGuilds = () => adminGuilds;
 
   const value = {
     user,

@@ -231,6 +231,16 @@ class DatabaseManager:
         if self.pool:
             await self.pool.close()
             log.info("Database pool closed")
+
+    async def try_advisory_lock(self, lock_key: int) -> bool:
+        """Try to acquire a PostgreSQL advisory lock for singleton tasks."""
+        async with self.pool.acquire() as conn:
+            return bool(await conn.fetchval("SELECT pg_try_advisory_lock($1)", lock_key))
+
+    async def release_advisory_lock(self, lock_key: int) -> bool:
+        """Release a PostgreSQL advisory lock if held."""
+        async with self.pool.acquire() as conn:
+            return bool(await conn.fetchval("SELECT pg_advisory_unlock($1)", lock_key))
     
     # ========================================================================
     # USER API KEYS
@@ -389,7 +399,11 @@ class DatabaseManager:
         values.extend([limit, offset])
         
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(query, *values)
+            try:
+                rows = await conn.fetch(query, *values)
+            except asyncpg.PostgresError:
+                log.warning("Audit log query failed; returning empty entries", exc_info=True)
+                return []
             return [dict(row) for row in rows]
     
     async def get_audit_log_count(
@@ -425,7 +439,11 @@ class DatabaseManager:
             idx += 1
         
         async with self.pool.acquire() as conn:
-            return await conn.fetchval(query, *values)
+            try:
+                return int(await conn.fetchval(query, *values) or 0)
+            except asyncpg.PostgresError:
+                log.warning("Audit log count query failed; returning 0", exc_info=True)
+                return 0
     
     # ========================================================================
     # HAPPY JUMP SESSIONS
@@ -552,7 +570,11 @@ class DatabaseManager:
         values.extend([limit, offset])
         
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(query, *values)
+            try:
+                rows = await conn.fetch(query, *values)
+            except asyncpg.PostgresError:
+                log.warning("Audit log query failed; returning empty entries", exc_info=True)
+                return []
             return [dict(row) for row in rows]
     
     async def get_session_count(
@@ -576,7 +598,11 @@ class DatabaseManager:
             idx += 1
         
         async with self.pool.acquire() as conn:
-            return await conn.fetchval(query, *values)
+            try:
+                return int(await conn.fetchval(query, *values) or 0)
+            except asyncpg.PostgresError:
+                log.warning("Audit log count query failed; returning 0", exc_info=True)
+                return 0
     
     async def lock_session(self, session_id: int):
         """Lock a session to prevent new signups."""
@@ -1131,7 +1157,11 @@ class DatabaseManager:
         query += " ORDER BY created_at DESC"
         
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(query, *values)
+            try:
+                rows = await conn.fetch(query, *values)
+            except asyncpg.PostgresError:
+                log.warning("Audit log query failed; returning empty entries", exc_info=True)
+                return []
             return [dict(row) for row in rows]
     
     # ========================================================================
@@ -1197,7 +1227,11 @@ class DatabaseManager:
         query += " ORDER BY p.created_at DESC"
         
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(query, *values)
+            try:
+                rows = await conn.fetch(query, *values)
+            except asyncpg.PostgresError:
+                log.warning("Audit log query failed; returning empty entries", exc_info=True)
+                return []
             return [dict(row) for row in rows]
     
     async def get_provider_policies(self, provider_id: int) -> List[Dict]:
@@ -1411,7 +1445,11 @@ class DatabaseManager:
         query += " ORDER BY c.created_at DESC"
         
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(query, *values)
+            try:
+                rows = await conn.fetch(query, *values)
+            except asyncpg.PostgresError:
+                log.warning("Audit log query failed; returning empty entries", exc_info=True)
+                return []
             return [dict(row) for row in rows]
     
     async def get_pending_claims(self, guild_id: Optional[int] = None) -> List[Dict]:
@@ -1596,7 +1634,11 @@ class DatabaseManager:
         values.extend([limit, offset])
         
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(query, *values)
+            try:
+                rows = await conn.fetch(query, *values)
+            except asyncpg.PostgresError:
+                log.warning("Audit log query failed; returning empty entries", exc_info=True)
+                return []
             return [dict(row) for row in rows]
     
     async def get_raffle_count(
@@ -1613,7 +1655,11 @@ class DatabaseManager:
             values.append(status)
         
         async with self.pool.acquire() as conn:
-            return await conn.fetchval(query, *values)
+            try:
+                return int(await conn.fetchval(query, *values) or 0)
+            except asyncpg.PostgresError:
+                log.warning("Audit log count query failed; returning 0", exc_info=True)
+                return 0
     
     # ========================================================================
     # RAFFLE ENTRIES
@@ -1854,33 +1900,60 @@ class DatabaseManager:
             }
     
     async def get_dashboard_stats(self, guild_id: int) -> Dict:
-        """Get dashboard KPI stats."""
+        """Get dashboard KPI stats with schema-tolerant fallbacks."""
+
+        async def _safe_count(conn: asyncpg.Connection, query: str, *args: Any) -> int:
+            try:
+                value = await conn.fetchval(query, *args)
+                return int(value or 0)
+            except asyncpg.PostgresError:
+                log.warning("Dashboard stats query failed; defaulting to 0", exc_info=True)
+                return 0
+
         async with self.pool.acquire() as conn:
-            active_sessions = await conn.fetchval("""
+            active_sessions = await _safe_count(
+                conn,
+                """
                 SELECT COUNT(*) FROM happy_jump_sessions
                 WHERE guild_id = $1 AND status IN ('open', 'locked')
-            """, guild_id)
-            
-            active_raffles = await conn.fetchval("""
+                """,
+                guild_id,
+            )
+
+            active_raffles = await _safe_count(
+                conn,
+                """
                 SELECT COUNT(*) FROM raffles
                 WHERE guild_id = $1 AND status IN ('active', 'open')
-            """, guild_id)
-            
-            active_policies = await conn.fetchval("""
+                """,
+                guild_id,
+            )
+
+            active_policies = await _safe_count(
+                conn,
+                """
                 SELECT COUNT(*) FROM insurance_policies p
                 JOIN insurance_providers pr ON pr.provider_id = p.provider_id
-                WHERE p.active = TRUE AND pr.approval_status = 'approved'
-            """)
-            
-            pending_claims = await conn.fetchval("""
-                SELECT COUNT(*) FROM insurance_claims WHERE status = 'pending'
-            """)
-            
+                WHERE p.active = TRUE AND pr.approval_status = 'approved' AND p.guild_id = $1
+                """,
+                guild_id,
+            )
+
+            pending_claims = await _safe_count(
+                conn,
+                """
+                SELECT COUNT(*) FROM insurance_claims c
+                JOIN insurance_policies p ON p.id = c.policy_id
+                WHERE c.status = 'pending' AND p.guild_id = $1
+                """,
+                guild_id,
+            )
+
             return {
                 'active_sessions': active_sessions,
                 'active_raffles': active_raffles,
                 'active_policies': active_policies,
-                'pending_claims': pending_claims
+                'pending_claims': pending_claims,
             }
 
 # ============================================================================
