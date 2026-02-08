@@ -22,6 +22,9 @@ export default function SettingsPage() {
     jump_99k_channel_id: '',
     insurance_channel_id: '',
     raffle_channel_id: '',
+    welcome_channel_id: '',
+    welcome_message_template: 'Welcome {user} to {guild}! You are member #{member_count}.',
+    welcome_enabled: false,
     reservation_timeout_minutes: 5,
     auto_complete_enabled: true,
   });
@@ -45,6 +48,9 @@ export default function SettingsPage() {
         jump_99k_channel_id: data.jump_99k_channel_id || '',
         insurance_channel_id: data.insurance_channel_id || '',
         raffle_channel_id: data.raffle_channel_id || '',
+        welcome_channel_id: data.welcome_channel_id || '',
+        welcome_message_template: data.welcome_message_template || 'Welcome {user} to {guild}! You are member #{member_count}.',
+        welcome_enabled: data.welcome_enabled ?? false,
         reservation_timeout_minutes: data.reservation_timeout_minutes || 5,
         auto_complete_enabled: data.auto_complete_enabled ?? true,
       });
@@ -87,6 +93,9 @@ export default function SettingsPage() {
       if (formData.jump_99k_channel_id) updates.jump_99k_channel_id = parseInt(formData.jump_99k_channel_id, 10);
       if (formData.insurance_channel_id) updates.insurance_channel_id = parseInt(formData.insurance_channel_id, 10);
       if (formData.raffle_channel_id) updates.raffle_channel_id = parseInt(formData.raffle_channel_id, 10);
+      if (formData.welcome_channel_id) updates.welcome_channel_id = parseInt(formData.welcome_channel_id, 10);
+      updates.welcome_message_template = formData.welcome_message_template;
+      updates.welcome_enabled = formData.welcome_enabled;
       updates.reservation_timeout_minutes = formData.reservation_timeout_minutes;
       updates.auto_complete_enabled = formData.auto_complete_enabled;
 
@@ -187,6 +196,26 @@ export default function SettingsPage() {
               <select
                 name="insurance_channel_id"
                 value={formData.insurance_channel_id}
+                onChange={handleChange}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-purple-500"
+                disabled={channelsLoading}
+              >
+                <option value="">Select a channel...</option>
+                {channels.map(channel => (
+                  <option key={channel.id} value={channel.id}>
+                    #{channel.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">
+                Welcome Channel
+              </label>
+              <select
+                name="welcome_channel_id"
+                value={formData.welcome_channel_id}
                 onChange={handleChange}
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-purple-500"
                 disabled={channelsLoading}
@@ -320,6 +349,34 @@ export default function SettingsPage() {
         </Card>
 
         {/* Submit */}
+        <Card>
+          <CardHeader>
+            <CardTitle>👋 Welcome Messages</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <label className="flex items-center gap-2 text-gray-300">
+              <input
+                type="checkbox"
+                name="welcome_enabled"
+                checked={formData.welcome_enabled}
+                onChange={handleChange}
+              />
+              Enable welcome messages
+            </label>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Welcome Template</label>
+              <textarea
+                name="welcome_message_template"
+                value={formData.welcome_message_template}
+                onChange={handleChange}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-purple-500"
+                rows={4}
+              />
+              <p className="text-xs text-gray-400 mt-1">Placeholders: {'{user}'} {'{username}'} {'{guild}'} {'{member_count}'}</p>
+            </div>
+          </CardContent>
+        </Card>
+
         <div className="flex justify-end">
           <Button type="submit" disabled={saving}>
             {saving ? 'Saving...' : 'Save Settings'}

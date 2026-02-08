@@ -9,7 +9,7 @@ from discord.ext import commands, tasks
 import logging
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 import sys
 
 import config
@@ -21,7 +21,7 @@ from utils.embeds import (
 )
 from views import (
     ApiKeyIntroView, ConfirmRemoveKeyView, JumpSessionView, HostControlView,
-    SetupView, AdminDashboardView, BlacklistView, InsurancePolicyView,
+    SetupView, AdminDashboardView, InsurancePolicyView,
     ProviderClaimsView, RaffleView
 )
 
@@ -54,9 +54,16 @@ def normalize_dashboard_url(url: str) -> str:
 
 
 async def ensure_admin(interaction: discord.Interaction) -> bool:
-    """Ensure the invoking user has administrator permissions."""
-    if not interaction.guild or not interaction.user.guild_permissions.administrator:
-        embed = create_error_embed("Not Authorized", "Administrator permission required.")
+    """Ensure the invoking user has Administrator or Manage Guild permissions."""
+    has_required = bool(
+        interaction.guild
+        and (
+            interaction.user.guild_permissions.administrator
+            or interaction.user.guild_permissions.manage_guild
+        )
+    )
+    if not has_required:
+        embed = create_error_embed("Not Authorized", "Administrator or Manage Server permission required.")
         if interaction.response.is_done():
             await interaction.followup.send(embed=embed, ephemeral=True)
         else:
@@ -73,6 +80,46 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 bot.synced = False
+
+
+async def sync_application_commands() -> None:
+    """Sync commands once, with optional cleanup to remove stale guild commands."""
+    if bot.synced:
+        log.info("Command sync skipped (already synced).")
+        return
+
+    try:
+        cleanup_stale = (config.SERVICE_MODE == "BOT" and bool(config.GUILD_ID))
+        if cleanup_stale:
+            guild = discord.Object(id=config.GUILD_ID)
+            bot.tree.clear_commands(guild=guild)
+            await bot.tree.sync(guild=guild)
+            log.info("Cleared stale guild commands for cleanup in guild %s", config.GUILD_ID)
+
+        if config.GUILD_ID:
+            guild = discord.Object(id=config.GUILD_ID)
+            synced = await bot.tree.sync(guild=guild)
+            log.info("Commands synced to guild %s: %s commands", config.GUILD_ID, len(synced))
+        else:
+            synced = await bot.tree.sync()
+            log.info("Commands synced globally: %s commands", len(synced))
+        bot.synced = True
+    except Exception:
+        log.exception("Failed to sync commands")
+
+
+def render_welcome_message(template: str, member: discord.Member) -> str:
+    """Render a safe welcome template with supported placeholders only."""
+    placeholders = {
+        "{user}": member.mention,
+        "{username}": member.display_name,
+        "{guild}": member.guild.name,
+        "{member_count}": str(member.guild.member_count or 0),
+    }
+    rendered = template
+    for token, value in placeholders.items():
+        rendered = rendered.replace(token, value)
+    return rendered[:1900]
 
 
 async def _send_interaction_error(interaction: discord.Interaction, message: str):
@@ -125,22 +172,7 @@ async def on_ready():
     log.info(f"Discord.py version: {discord.__version__}")
     log.info(f"Guilds: {len(bot.guilds)}")
     
-    # Sync commands once per process lifecycle
-    if not bot.synced:
-        try:
-            if config.GUILD_ID:
-                guild = discord.Object(id=config.GUILD_ID)
-                bot.tree.copy_global_to(guild=guild)
-                synced = await bot.tree.sync(guild=guild)
-                log.info(f"Commands synced to guild {config.GUILD_ID}: {len(synced)} commands")
-            else:
-                synced = await bot.tree.sync()
-                log.info(f"Commands synced globally: {len(synced)} commands")
-            bot.synced = True
-        except Exception as e:
-            log.error(f"Failed to sync commands: {e}")
-    else:
-        log.info("Command sync skipped (already synced).")
+    await sync_application_commands()
     
     # Start background workers
     if not cleanup_worker.is_running():
@@ -161,6 +193,32 @@ async def on_guild_join(guild: discord.Guild):
     log.info(f"Joined guild: {guild.name} ({guild.id})")
     db = get_database()
     await db.get_guild_settings(guild.id)  # Create default settings
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """Send configured welcome message when enabled for the guild."""
+    db = get_database()
+    settings = await db.get_guild_settings(member.guild.id)
+
+    if not settings.get("welcome_enabled") or not settings.get("welcome_channel_id"):
+        return
+
+    channel = member.guild.get_channel(settings["welcome_channel_id"])
+    if channel is None:
+        log.warning("Welcome channel %s not found in guild %s", settings.get("welcome_channel_id"), member.guild.id)
+        return
+
+    template = settings.get("welcome_message_template") or "Welcome {user} to {guild}!"
+    message = render_welcome_message(template, member)
+
+    try:
+        await channel.send(message)
+        log.info("Welcome message sent in guild=%s channel=%s user=%s", member.guild.id, channel.id, member.id)
+    except discord.Forbidden:
+        log.warning("Missing permission to send welcome message in guild=%s channel=%s", member.guild.id, channel.id)
+    except Exception:
+        log.exception("Failed to send welcome message in guild=%s", member.guild.id)
 
 
 @bot.tree.error
@@ -341,6 +399,8 @@ async def stats(interaction: discord.Interaction):
 async def dashboard(interaction: discord.Interaction):
     """Show dashboard link."""
     await interaction.response.defer(ephemeral=True)
+    if not await ensure_admin(interaction):
+        return
     embed = discord.Embed(
         title=f"{config.EMOJI_CHART} Happy Jumper Dashboard",
         description=(
@@ -763,91 +823,6 @@ async def claim_reject(interaction: discord.Interaction, claim_id: int, notes: s
     except Exception as e:
         log.exception(f"Claim reject failed: {e}")
         await interaction.followup.send(embed=create_error_embed("Claim Reject Failed", str(e)), ephemeral=True)
-
-
-@bot.tree.command(name="blacklist_add", description="Add a user to the blacklist (Admin only)")
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(
-    member="Member to blacklist",
-    reason="Reason for blacklist",
-    expires_in_hours="Optional expiration in hours"
-)
-async def blacklist_add(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    reason: str = None,
-    expires_in_hours: int = None
-):
-    await interaction.response.defer(ephemeral=True)
-    if not await ensure_admin(interaction):
-        return
-    try:
-        expires_at = None
-        if expires_in_hours:
-            expires_at = datetime.utcnow() + timedelta(hours=expires_in_hours)
-        response = await admin_handlers.add_blacklist_handler(
-            interaction.guild_id,
-            member.id,
-            reason,
-            interaction.user.id,
-            expires_at=expires_at,
-            source="discord"
-        )
-        await interaction.followup.send(embed=create_success_embed("Blacklist Updated", response.message), ephemeral=True)
-    except Exception as e:
-        log.exception(f"Blacklist add failed: {e}")
-        await interaction.followup.send(embed=create_error_embed("Blacklist Add Failed", str(e)), ephemeral=True)
-
-
-@bot.tree.command(name="blacklist_remove", description="Remove a user from the blacklist (Admin only)")
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(member="Member to remove from blacklist")
-async def blacklist_remove(interaction: discord.Interaction, member: discord.Member):
-    await interaction.response.defer(ephemeral=True)
-    if not await ensure_admin(interaction):
-        return
-    try:
-        response = await admin_handlers.remove_blacklist_handler(
-            interaction.guild_id,
-            member.id,
-            interaction.user.id,
-            source="discord"
-        )
-        await interaction.followup.send(embed=create_success_embed("Blacklist Updated", response.message), ephemeral=True)
-    except Exception as e:
-        log.exception(f"Blacklist remove failed: {e}")
-        await interaction.followup.send(embed=create_error_embed("Blacklist Remove Failed", str(e)), ephemeral=True)
-
-
-@bot.tree.command(name="blacklist_list", description="List blacklisted users (Admin only)")
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(search="Search by reason or ID")
-async def blacklist_list(interaction: discord.Interaction, search: str = None):
-    await interaction.response.defer(ephemeral=True)
-    if not await ensure_admin(interaction):
-        return
-    try:
-        db = get_database()
-        entries = await db.get_blacklist(interaction.guild_id)
-        if search:
-            lowered = search.lower()
-            entries = [
-                e for e in entries
-                if lowered in str(e.get("discord_id"))
-                or lowered in (e.get("reason") or "").lower()
-            ]
-        if not entries:
-            await interaction.followup.send(embed=create_info_embed("Blacklist", "No blacklist entries found."), ephemeral=True)
-            return
-        lines = [
-            f"<@{entry['discord_id']}> • {entry.get('reason', 'No reason')}"
-            for entry in entries[:20]
-        ]
-        embed = create_info_embed("Blacklist", "\n".join(lines))
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except Exception as e:
-        log.exception(f"Blacklist list failed: {e}")
-        await interaction.followup.send(embed=create_error_embed("Blacklist List Failed", str(e)), ephemeral=True)
 
 
 @bot.tree.command(name="settings_show", description="Show current guild settings (Admin only)")
