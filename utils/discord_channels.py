@@ -7,7 +7,10 @@ import discord
 
 async def resolve_guild_channel(interaction: discord.Interaction, selected: Any) -> discord.abc.GuildChannel | None:
     """Resolve lightweight app-command channel selections to real guild channels."""
-    if isinstance(selected, discord.abc.GuildChannel):
+    # App command selectors can return lightweight wrappers (e.g. AppCommandChannel)
+    # that expose an ID but do not implement `permissions_for`. Only return early
+    # when we already have a fully-fledged guild channel object.
+    if isinstance(selected, discord.abc.GuildChannel) and hasattr(selected, "permissions_for"):
         return selected
 
     guild = interaction.guild

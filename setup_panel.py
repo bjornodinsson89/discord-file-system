@@ -229,6 +229,13 @@ class SetupPanelView(OwnerView):
         return resolved
 
     async def _set_channel(self, interaction: discord.Interaction, key: str, channel: Any):
+        log.info(
+            "Setup channel selection guild_id=%s key=%s selected_channel_id=%s selected_type=%s",
+            interaction.guild_id,
+            key,
+            getattr(channel, "id", None),
+            type(channel).__name__,
+        )
         resolved = await self._resolve_real_channel(interaction, channel)
         if resolved is None:
             await interaction.response.send_message(
@@ -259,6 +266,7 @@ class SetupPanelView(OwnerView):
         if key == "jump_99k_channel_id":
             updates["announce_channel_id"] = resolved.id
         await self.save_changes(interaction, updates)
+        log.info("Setup channel updated guild_id=%s key=%s channel_id=%s", interaction.guild_id, key, resolved.id)
 
     @discord.ui.button(label="Channels", style=discord.ButtonStyle.primary)
     async def channels_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
