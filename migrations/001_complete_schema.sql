@@ -49,6 +49,10 @@ CREATE TABLE guild_settings (
     raffle_channel_id BIGINT,
     reservation_timeout_minutes INTEGER DEFAULT 5,
     auto_complete_enabled BOOLEAN DEFAULT TRUE,
+    announce_channel_id BIGINT,
+    admin_role_ids JSONB,
+    welcome_enabled BOOLEAN DEFAULT FALSE,
+    welcome_message_template TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

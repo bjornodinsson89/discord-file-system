@@ -1,7 +1,4 @@
-"""
-Happy Jumper Bot Configuration - vNext
-Extended with Dashboard, OAuth, and Admin API settings.
-"""
+"""Happy Jumper bot configuration (Discord-only service)."""
 
 import os
 import ssl
@@ -13,38 +10,11 @@ def _env_flag(name: str, default: bool) -> bool:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
-# ============================================================================
-# DISCORD CONFIGURATION
-# ============================================================================
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
-DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
-ADMIN_ROLE_NAME = os.getenv("ADMIN_ROLE_NAME")
 CLEAN_COMMANDS = _env_flag("CLEAN_COMMANDS", False)
-SERVICE_MODE = os.getenv("SERVICE_MODE", "WEB").strip().upper()
-# ============================================================================
-# DASHBOARD CONFIGURATION
-# ============================================================================
-DASHBOARD_URL = os.getenv("DASHBOARD_URL", "").rstrip("/")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "").rstrip("/")
 
-# IMPORTANT:
-# - Always define this before using it anywhere else (prevents NameError).
-# - In production you MUST set DASHBOARD_SECRET_KEY (validate_config enforces it).
-DASHBOARD_SECRET_KEY_ENV = os.getenv("DASHBOARD_SECRET_KEY")
-DASHBOARD_SECRET_KEY = DASHBOARD_SECRET_KEY_ENV or os.urandom(32).hex()
-
-# OAuth redirect URI should ideally be explicit via env to avoid path mismatches.
-# If not provided, fall back to the expected mounted auth router location.
-OAUTH_REDIRECT_URI = os.getenv(
-    "OAUTH_REDIRECT_URI",
-    f"{DASHBOARD_URL}/auth/callback"
-)
-
-# ============================================================================
-# DATABASE CONFIGURATION
-# ============================================================================
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = int(os.getenv("DB_PORT", "6543"))
 DB_NAME = os.getenv("DB_NAME")
@@ -53,33 +23,21 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_SSL = os.getenv("DB_SSL", "disable")
 DB_SSL_CA_FILE = os.getenv("DB_SSL_CA_FILE")
 RUN_MIGRATIONS = _env_flag("RUN_MIGRATIONS", False)
-RUN_MIGRATIONS_ON_STARTUP = RUN_MIGRATIONS and SERVICE_MODE == "WEB"
+RUN_MIGRATIONS_ON_STARTUP = RUN_MIGRATIONS
 RUN_EMERGENCY_SCHEMA_FIXES = _env_flag("RUN_EMERGENCY_SCHEMA_FIXES", False)
+
+FERNET_KEY = os.getenv("FERNET_KEY")
 
 
 def get_db_ssl_config() -> ssl.SSLContext | None:
-    """Normalize DB_SSL into asyncpg-compatible ssl argument.
-
-    Supported modes mirror libpq sslmode semantics:
-    - disable: no TLS
-    - require/prefer/allow: TLS without certificate verification
-    - verify-ca: verify chain (optionally from DB_SSL_CA_FILE), no hostname check
-    - verify-full: verify chain + hostname
-    """
     value = (DB_SSL or "").strip().lower()
     if value in {"", "disable", "false", "0", "off", "no"}:
         return None
 
     ca_file = (DB_SSL_CA_FILE or "").strip()
-
     if ca_file:
-        try:
-            with open(ca_file, "rb"):
-                pass
-        except OSError as exc:
-            raise RuntimeError(
-                f"DB_SSL_CA_FILE is set but unreadable: {ca_file!r}"
-            ) from exc
+        with open(ca_file, "rb"):
+            pass
 
     if value in {"allow", "prefer", "require", "true", "1", "on", "yes"}:
         context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
@@ -88,55 +46,14 @@ def get_db_ssl_config() -> ssl.SSLContext | None:
         return context
 
     if value in {"verify-ca", "verify-full"}:
-        context = ssl.create_default_context(
-            ssl.Purpose.SERVER_AUTH,
-            cafile=ca_file or None,
-        )
+        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=ca_file or None)
         context.check_hostname = value == "verify-full"
         context.verify_mode = ssl.CERT_REQUIRED
         return context
 
-    raise RuntimeError(
-        f"Unsupported DB_SSL value {DB_SSL!r}. "
-        "Use disable/require/prefer/allow/verify-ca/verify-full."
-    )
-
-# ============================================================================
-# SECURITY
-# ============================================================================
-FERNET_KEY = os.getenv("FERNET_KEY")
-SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE")
-SESSION_COOKIE_SECURE_ENV = os.getenv("SESSION_COOKIE_SECURE")
+    raise RuntimeError(f"Unsupported DB_SSL value {DB_SSL!r}.")
 
 
-def _is_https_url(url: str) -> bool:
-    return url.lower().startswith("https://")
-
-
-def _env_to_bool(value: str | None, default: bool) -> bool:
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-if SESSION_COOKIE_SAMESITE is None:
-    SESSION_COOKIE_SAMESITE = "none" if _is_https_url(DASHBOARD_URL) else "lax"
-else:
-    SESSION_COOKIE_SAMESITE = SESSION_COOKIE_SAMESITE.strip().lower()
-
-SESSION_COOKIE_SECURE = _env_to_bool(
-    SESSION_COOKIE_SECURE_ENV,
-    _is_https_url(DASHBOARD_URL)
-)
-
-# Browsers reject SameSite=None cookies unless Secure is enabled.
-if SESSION_COOKIE_SAMESITE == "none":
-    SESSION_COOKIE_SECURE = True
-
-# ============================================================================
-# TORN API
-# ============================================================================
-# Torn API v2 base URL (v1 endpoints are not permitted).
 TORN_BASE_URL = "https://api.torn.com/v2"
 TORN_API_KEY_LINK = (
     "https://www.torn.com/preferences.php#tab=api"
@@ -144,6 +61,7 @@ TORN_API_KEY_LINK = (
     "&title=Happy_Jumper_Bot"
 )
 
+DASHBOARD_SECRET_KEY = os.getenv("DASHBOARD_SECRET_KEY")
 DVD_ITEM_ID = 366
 XANAX_ITEM_ID = 206
 ECSTASY_ITEM_ID = 41
@@ -161,10 +79,6 @@ LOG_IDS = {
 
 API_RATE_LIMIT_PER_MINUTE = 100
 API_RATE_LIMIT_BURST = 10
-
-# ============================================================================
-# HAPPY JUMP SETTINGS
-# ============================================================================
 DEFAULT_RESERVATION_TIMEOUT = 5
 MAX_JUMP_SPOTS = 10
 MIN_JUMP_SPOTS = 1
@@ -172,46 +86,30 @@ MAX_XANAX_STACK = 3
 MIN_XANAX_STACK = 1
 MAX_START_DELAY_HOURS = 30
 MIN_ENERGY_REQUIREMENT = 250
-
-# ============================================================================
-# INSURANCE SETTINGS
-# ============================================================================
 INSURANCE_MONITOR_INTERVAL = 60
-MAX_INSURANCE_DURATION_HOURS = 720  # 30 days
+MAX_INSURANCE_DURATION_HOURS = 720
 MIN_INSURANCE_DURATION_HOURS = 1
 MAX_COVERAGE_XANAX = 1000
 MIN_COVERAGE_XANAX = 1
 INSURANCE_RESERVATION_TIMEOUT = 10
-
 COVERAGE_TYPES = {
     "xanax_stack": "Xanax Stack Only",
     "ecstasy_after_stack": "Ecstasy After Stack",
     "all_drugs": "All Drug-Related Losses"
 }
-
-# ============================================================================
-# RAFFLE SETTINGS
-# ============================================================================
 RAFFLE_RESERVATION_TIMEOUT = 10
 MAX_RAFFLE_TICKETS = 10000
 MIN_RAFFLE_TICKETS = 10
 MAX_TICKET_PRICE = 100
 MIN_TICKET_PRICE = 1
-MAX_RAFFLE_DURATION_HOURS = 720  # 30 days
+MAX_RAFFLE_DURATION_HOURS = 720
 MIN_RAFFLE_DURATION_HOURS = 1
 RAFFLE_CHECK_INTERVAL = 60
-
-# ============================================================================
-# WORKER INTERVALS (seconds)
-# ============================================================================
 CLEANUP_INTERVAL = 60
 READINESS_REFRESH_INTERVAL = 300
 INSURANCE_CHECK_INTERVAL = 60
 RAFFLE_COMPLETION_INTERVAL = 60
 
-# ============================================================================
-# UI - COLORS
-# ============================================================================
 COLOR_SUCCESS = 0x2ECC71
 COLOR_ERROR = 0xE74C3C
 COLOR_WARNING = 0xF39C12
@@ -221,9 +119,6 @@ COLOR_SECONDARY = 0x95A5A6
 COLOR_INSURANCE = 0x1ABC9C
 COLOR_RAFFLE = 0xE91E63
 
-# ============================================================================
-# UI - EMOJIS
-# ============================================================================
 EMOJI_CHECK = "✅"
 EMOJI_CROSS = "❌"
 EMOJI_WARNING = "⚠️"
@@ -244,31 +139,19 @@ EMOJI_CHART = "📊"
 EMOJI_LIST = "📋"
 EMOJI_DICE = "🎲"
 
-# ============================================================================
-# HOST REPUTATION
-# ============================================================================
 MIN_RATING = 1
 MAX_RATING = 5
 REPUTATION_THRESHOLD_GOOD = 4.0
 REPUTATION_THRESHOLD_BAD = 2.5
 
-# ============================================================================
-# PAYMENT TYPES
-# ============================================================================
 PAYMENT_TYPES = {
     "xanax": {"id": XANAX_ITEM_ID, "name": "Xanax", "emoji": EMOJI_PILL},
     "erotic_dvd": {"id": DVD_ITEM_ID, "name": "Erotic DVD", "emoji": "📀"}
 }
 
-# ============================================================================
-# VALIDATION
-# ============================================================================
-def validate_config() -> None:
-    """Validate required environment variables by process role."""
-    mode = (SERVICE_MODE or "WEB").upper()
-    missing: list[str] = []
 
-    shared_required = {
+def validate_config() -> None:
+    required = {
         "DB_HOST": DB_HOST,
         "DB_PORT": DB_PORT,
         "DB_NAME": DB_NAME,
@@ -278,23 +161,6 @@ def validate_config() -> None:
         "FERNET_KEY": FERNET_KEY,
         "DISCORD_TOKEN": DISCORD_TOKEN,
     }
-    missing.extend(name for name, value in shared_required.items() if value in (None, ""))
-
-    if mode == "WEB":
-        web_required = {
-            "DISCORD_CLIENT_ID": DISCORD_CLIENT_ID,
-            "DISCORD_CLIENT_SECRET": DISCORD_CLIENT_SECRET,
-            "DASHBOARD_SECRET_KEY": DASHBOARD_SECRET_KEY_ENV,
-            "OAUTH_REDIRECT_URI": OAUTH_REDIRECT_URI,
-            "FRONTEND_URL": FRONTEND_URL,
-        }
-        missing.extend(name for name, value in web_required.items() if value in (None, ""))
-    elif mode == "BOT":
-        # Optional for bot mode: GUILD_ID, ADMIN_ROLE_NAME, CLEAN_COMMANDS.
-        pass
-    else:
-        raise RuntimeError(f"Unsupported SERVICE_MODE={mode!r}. Expected WEB or BOT.")
-
+    missing = [name for name, value in required.items() if value in (None, "")]
     if missing:
-        unique = list(dict.fromkeys(missing))
-        raise RuntimeError(f"Missing required environment variables for {mode}: {', '.join(unique)}")
+        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")

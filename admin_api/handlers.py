@@ -6,11 +6,8 @@ Implements create/edit actions and "post to Discord now" integration.
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
-from fastapi import HTTPException
-
 from utils import get_database, get_torn_api
 from admin_api.schemas import *
-from web.discord_api import DiscordRestClient, get_guild, get_guild_channels
 import config
 
 log = logging.getLogger("happy_jumper.admin_api")
@@ -27,38 +24,10 @@ def set_bot_instance(bot: object):
     _bot_instance = bot
     log.info("Bot instance registered with admin API")
 
-
 def get_bot() -> object:
-    """Get the bot instance when running in BOT mode.
-
-    WEB deployments may serve admin APIs without an in-memory discord.py client.
-    In that case, endpoints that require gateway-only actions should return 503.
-    """
     if _bot_instance is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Bot runtime is unavailable for this action. "
-                "Run the BOT service or use an endpoint backed by Discord REST."
-            ),
-        )
+        raise RuntimeError("Bot runtime is unavailable for this action")
     return _bot_instance
-
-
-
-
-def _is_web_mode() -> bool:
-    return config.SERVICE_MODE.upper() == "WEB"
-
-
-async def _validate_discord_channel(guild_id: int, channel_id: int):
-    guild = await get_guild(guild_id)
-    if not guild:
-        raise ValueError("Guild not found")
-
-    channels = await get_guild_channels(guild_id)
-    if not any(int(ch["id"]) == int(channel_id) for ch in channels):
-        raise ValueError("Channel not found")
 
 
 def _session_embed_payload(session: Dict[str, Any], signups: Optional[list[Dict[str, Any]]] = None) -> Dict[str, Any]:
@@ -119,16 +88,13 @@ async def create_session_handler(
     """Create a 99k jump session and post announcement to Discord."""
     db = get_database()
 
-    if _is_web_mode():
-        await _validate_discord_channel(request.guild_id, request.channel_id)
-    else:
-        bot = get_bot()
-        guild = bot.get_guild(request.guild_id)
-        if not guild:
-            raise ValueError("Guild not found")
-        channel = guild.get_channel(request.channel_id)
-        if not channel:
-            raise ValueError("Channel not found")
+    bot = get_bot()
+    guild = bot.get_guild(request.guild_id)
+    if not guild:
+        raise ValueError("Guild not found")
+    channel = guild.get_channel(request.channel_id)
+    if not channel:
+        raise ValueError("Channel not found")
 
     api_key_data = await db.get_user_api_key(admin_discord_id)
     if not api_key_data:
@@ -172,25 +138,15 @@ async def create_session_handler(
 
     session_data = await db.get_jump_session(session_id)
 
-    if _is_web_mode():
-        rest_client = DiscordRestClient()
-        embed_payload = _session_embed_payload(session_data)
-        message = await rest_client.send_message(
-            request.channel_id,
-            embeds=[embed_payload],
-            content="New jump session is open. Use the dashboard to join/manage signups.",
-        )
-        message_id = int(message["id"])
-    else:
-        from utils.embeds import create_session_announcement_embed
-        from views import JumpSessionView
+    from utils.embeds import create_session_announcement_embed
+    from views import JumpSessionView
 
-        guild = bot.get_guild(request.guild_id)
-        channel = guild.get_channel(request.channel_id)
-        embed = create_session_announcement_embed(session_data, guild)
-        view = JumpSessionView(session_id)
-        msg = await channel.send(embed=embed, view=view)
-        message_id = int(msg.id)
+    guild = bot.get_guild(request.guild_id)
+    channel = guild.get_channel(request.channel_id)
+    embed = create_session_announcement_embed(session_data, guild)
+    view = JumpSessionView(session_id)
+    msg = await channel.send(embed=embed, view=view)
+    message_id = int(msg.id)
 
     await db.update_jump_session(
         session_id,
@@ -200,7 +156,7 @@ async def create_session_handler(
 
     await db.log_audit(
         admin_discord_id,
-        "session_created_dashboard",
+        "session_created",
         "session",
         session_id,
         {"channel_id": request.channel_id}
@@ -337,16 +293,13 @@ async def create_raffle_handler(
     """Create a raffle and post announcement to Discord."""
     db = get_database()
 
-    if _is_web_mode():
-        await _validate_discord_channel(request.guild_id, request.channel_id)
-    else:
-        bot = get_bot()
-        guild = bot.get_guild(request.guild_id)
-        if not guild:
-            raise ValueError("Guild not found")
-        channel = guild.get_channel(request.channel_id)
-        if not channel:
-            raise ValueError("Channel not found")
+    bot = get_bot()
+    guild = bot.get_guild(request.guild_id)
+    if not guild:
+        raise ValueError("Guild not found")
+    channel = guild.get_channel(request.channel_id)
+    if not channel:
+        raise ValueError("Channel not found")
 
     end_time = datetime.utcnow() + timedelta(hours=request.duration_hours)
 

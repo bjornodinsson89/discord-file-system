@@ -1,23 +1,17 @@
-import asyncio
-
-import pytest
-from fastapi import HTTPException
-
-import web.permissions as permissions
+from bot import has_setup_permission
 
 
-def test_has_required_permission_accepts_manage_guild_bit():
-    assert permissions.has_required_guild_admin_permission(str(0x20)) is True
+def test_has_setup_permission_owner():
+    assert has_setup_permission(1, 1, False, False, set(), [])
 
 
-def test_require_guild_admin_error_message(monkeypatch):
-    async def _fake_get_user_guilds(user):
-        return []
+def test_has_setup_permission_manage_guild():
+    assert has_setup_permission(2, 1, False, True, set(), [])
 
-    monkeypatch.setattr(permissions, "get_user_guilds", _fake_get_user_guilds)
 
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(permissions.require_guild_admin(123, {"id": "1"}))
+def test_has_setup_permission_admin_role():
+    assert has_setup_permission(2, 1, False, False, {"99"}, ["99"])
 
-    assert exc_info.value.status_code == 403
-    assert "Owner, Administrator, or Manage Server" in exc_info.value.detail
+
+def test_has_setup_permission_denied():
+    assert not has_setup_permission(2, 1, False, False, {"10"}, ["99"])

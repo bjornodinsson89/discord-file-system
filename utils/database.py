@@ -76,8 +76,7 @@ class DatabaseManager:
             log.info("Skipping emergency schema fixes (RUN_EMERGENCY_SCHEMA_FIXES is disabled)")
         
         log.info(
-            "Migration gate: SERVICE_MODE=%s RUN_MIGRATIONS=%s run_migrations=%s",
-            config.SERVICE_MODE or "(unset)",
+            "Migration gate: RUN_MIGRATIONS=%s run_migrations=%s",
             config.RUN_MIGRATIONS,
             run_migrations,
         )
@@ -92,9 +91,7 @@ class DatabaseManager:
                     log.info("No pending migrations applied")
             except Exception:
                 log.exception("Database migrations failed")
-                if config.SERVICE_MODE == "WEB":
-                    raise
-                log.warning("Continuing without migrations because this is not API mode")
+                raise
         else:
             log.info("Skipping migrations on startup")
 
