@@ -2,7 +2,7 @@
 
 import discord
 from typing import Optional, List, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 import config
 
 
@@ -119,21 +119,41 @@ def create_raffle_embed(raffle: Dict, entries: List[Dict]) -> discord.Embed:
     status_emoji = {'active': config.EMOJI_TICKET, 'drawing': config.EMOJI_DICE,
                     'completed': config.EMOJI_TROPHY, 'cancelled': config.EMOJI_CROSS}.get(raffle['status'], '')
     
-    embed = create_base_embed(f"{status_emoji} Raffle #{raffle['raffle_id']} - {raffle['status'].title()}",
-                              raffle['prize_description'], config.COLOR_RAFFLE)
-    embed.add_field(name=f"{config.EMOJI_USER} Host", value=f"<@{raffle['admin_discord_id']}>", inline=True)
-    
-    paid_entries = [e for e in entries if e['status'] == 'paid']
-    total_tickets = sum(e['tickets'] for e in paid_entries)
-    embed.add_field(name=f"{config.EMOJI_TICKET} Tickets Sold", value=f"{total_tickets}/{raffle['max_tickets']}", inline=True)
-    embed.add_field(name=f"{config.EMOJI_PILL} Ticket Price", value=f"{raffle['ticket_price_xanax']} Xanax", inline=True)
-    embed.add_field(name=f"{config.EMOJI_CLOCK} Ends", value=f"<t:{int(raffle['ends_at'].timestamp())}:R>", inline=True)
+    embed = create_base_embed(
+        f"{status_emoji} Raffle #{raffle['raffle_id']} - {raffle['status'].title()}",
+        raffle['prize'],
+        config.COLOR_RAFFLE,
+    )
+    embed.add_field(name=f"{config.EMOJI_USER} Host", value=f"<@{raffle['creator_discord_id']}>", inline=True)
+
+    paid_entries = [e for e in entries if e.get('payment_verified')]
+    now_utc = datetime.now(timezone.utc)
+    reserved_entries = [
+        e for e in entries
+        if not e.get('payment_verified') and e.get('reserved_until') and e['reserved_until'] > now_utc
+    ]
+    paid_tickets = sum(e.get('num_tickets', 0) for e in paid_entries)
+    reserved_tickets = sum(e.get('num_tickets', 0) for e in reserved_entries)
+    total_tickets = raffle.get('tickets_sold') if raffle.get('tickets_sold') is not None else paid_tickets
+
+    embed.add_field(name=f"{config.EMOJI_TICKET} Tickets Sold", value=f"{total_tickets}/{raffle['tickets_available']}", inline=True)
+    if raffle.get('ticket_payment_type') == 'erotic_dvd':
+        price = f"{raffle['ticket_price']}x Erotic DVD"
+    else:
+        price = f"{raffle['ticket_price']}x Xanax"
+    embed.add_field(name=f"{config.EMOJI_PILL} Ticket Price", value=price, inline=True)
+    end_time = raffle['end_time']
+    if isinstance(end_time, str):
+        end_time = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+    embed.add_field(name=f"{config.EMOJI_CLOCK} Ends", value=f"<t:{int(end_time.timestamp())}:R>", inline=True)
     embed.add_field(name="Participants", value=f"{len(paid_entries)} users", inline=True)
+    if reserved_tickets:
+        embed.add_field(name="Reserved (Unpaid)", value=f"{reserved_tickets} tickets", inline=True)
     embed.add_field(name="Max Per User", value=(f"{raffle['max_tickets_per_user']} tickets" if raffle.get('max_tickets_per_user') else "Unlimited"), inline=True)
     
     if raffle['status'] == 'completed' and raffle.get('winner_discord_id'):
         embed.add_field(name=f"{config.EMOJI_TROPHY} Winner",
-                        value=f"<@{raffle['winner_discord_id']}> ({raffle['winner_tickets']} tickets)", inline=False)
+                        value=f"<@{raffle['winner_discord_id']}> (Ticket #{raffle.get('winner_ticket_number', '?')})", inline=False)
     
     return embed
 

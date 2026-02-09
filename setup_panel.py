@@ -124,6 +124,13 @@ class TimeoutModal(discord.ui.Modal):
 
 
 class SetupPanelView(OwnerView):
+    @staticmethod
+    def _resolve_bot_member(interaction: discord.Interaction) -> discord.Member | None:
+        if not interaction.guild:
+            return None
+        me = interaction.guild.me or interaction.guild.get_member(interaction.client.user.id)
+        return me
+
     def _build_embed(self) -> discord.Embed:
         s = self.settings
         guild = self.guild
@@ -186,11 +193,17 @@ class SetupPanelView(OwnerView):
         await _send_or_edit(interaction, self._build_embed(), self)
 
     async def _set_channel(self, interaction: discord.Interaction, key: str, channel: discord.abc.GuildChannel):
-        me = interaction.guild.me
-        perms = channel.permissions_for(me)
-        if not (perms.send_messages and perms.embed_links):
+        me = self._resolve_bot_member(interaction)
+        if me is None:
             await interaction.response.send_message(
-                embed=create_error_embed("Missing permissions", f"I need **Send Messages** and **Embed Links** in {channel.mention}."),
+                embed=create_error_embed("Bot member unavailable", "Unable to validate my permissions right now. Please try again."),
+                ephemeral=True,
+            )
+            return
+        perms = channel.permissions_for(me)
+        if not (perms.view_channel and perms.send_messages and perms.embed_links):
+            await interaction.response.send_message(
+                embed=create_error_embed("Missing permissions", f"I need **View Channel**, **Send Messages**, and **Embed Links** in {channel.mention}."),
                 ephemeral=True,
             )
             return
@@ -239,7 +252,12 @@ class BackView(OwnerView):
 
 class ChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, panel: SetupPanelView, key: str, placeholder: str):
-        super().__init__(placeholder=placeholder, min_values=1, max_values=1, channel_types=[discord.ChannelType.text])
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+        )
         self.panel = panel
         self.key = key
 
@@ -320,9 +338,12 @@ class TestView(BackView):
         if channel is None:
             await interaction.response.send_message(embed=create_error_embed("Missing channel", "Configure jump channel first."), ephemeral=True)
             return
-        me = interaction.guild.me
+        me = self.panel._resolve_bot_member(interaction)
+        if me is None:
+            await interaction.response.send_message(embed=create_error_embed("Bot member unavailable", "Unable to validate my permissions right now. Please try again."), ephemeral=True)
+            return
         perms = channel.permissions_for(me)
-        if not (perms.send_messages and perms.embed_links):
+        if not (perms.view_channel and perms.send_messages and perms.embed_links):
             await interaction.response.send_message(embed=create_error_embed("Missing permissions", f"I cannot post embeds in {channel.mention}."), ephemeral=True)
             return
         template = self.settings.get("session_announce_template") or "Session test for {guild} in {channel} at {timestamp}."
@@ -336,9 +357,12 @@ class TestView(BackView):
         if channel is None:
             await interaction.response.send_message(embed=create_error_embed("Missing channel", "Configure welcome channel first."), ephemeral=True)
             return
-        me = interaction.guild.me
+        me = self.panel._resolve_bot_member(interaction)
+        if me is None:
+            await interaction.response.send_message(embed=create_error_embed("Bot member unavailable", "Unable to validate my permissions right now. Please try again."), ephemeral=True)
+            return
         perms = channel.permissions_for(me)
-        if not (perms.send_messages and perms.embed_links):
+        if not (perms.view_channel and perms.send_messages and perms.embed_links):
             await interaction.response.send_message(embed=create_error_embed("Missing permissions", f"I cannot post embeds in {channel.mention}."), ephemeral=True)
             return
         template = self.settings.get("welcome_message_template") or "Welcome {mention} to {guild}!"

@@ -1772,6 +1772,17 @@ class DatabaseManager:
                 WHERE raffle_id = $1 AND payment_verified = TRUE
             """, raffle_id)
             return int(count)
+
+    async def get_raffle_reserved_ticket_count(self, raffle_id: int) -> int:
+        """Get total currently reserved (unpaid, unexpired) tickets for a raffle."""
+        async with self.pool.acquire() as conn:
+            count = await conn.fetchval("""
+                SELECT COALESCE(SUM(num_tickets), 0) FROM raffle_entries
+                WHERE raffle_id = $1
+                  AND payment_verified = FALSE
+                  AND reserved_until > NOW()
+            """, raffle_id)
+            return int(count)
     
     async def get_user_raffle_tickets(self, raffle_id: int, discord_id: int) -> int:
         """Get user's ticket count for a raffle."""
