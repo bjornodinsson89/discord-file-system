@@ -18,8 +18,7 @@ class CreateSessionRequest(BaseModel):
     payment_type: Literal["xanax", "erotic_dvd"]
     payment_amount: int = Field(ge=1, description="Amount per spot")
     spots: int = Field(ge=config.MIN_JUMP_SPOTS, le=config.MAX_JUMP_SPOTS)
-    xanax_stack: Literal["1_xanax", "2_xanax", "3_xanax", "4_xanax", "full_stack"]
-    start_delay_hours: int = Field(ge=0, le=config.MAX_START_DELAY_HOURS)
+    xanax_count: int = Field(default=4, ge=1, le=4)
 
 
 class SessionResponse(BaseModel):
@@ -29,7 +28,7 @@ class SessionResponse(BaseModel):
     host_discord_id: int
     host_torn_id: int
     max_spots: int
-    xanax_stack: str
+    xanax_count: int
     payment_type: str
     payment_amount: int
     status: str

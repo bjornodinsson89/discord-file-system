@@ -127,7 +127,11 @@ async def create_session_handler(
     torn_api = get_torn_api()
     torn_time = await torn_api.get_torn_time()
     created_tct = torn_time
-    estimated_jump_tct = created_tct + (request.start_delay_hours * 3600)
+    if request.xanax_count < 1 or request.xanax_count > 4:
+        raise ValueError("Xanax count must be between 1 and 4")
+
+    start_in_hours = request.xanax_count * 7
+    estimated_jump_tct = created_tct + (start_in_hours * 3600)
 
     payment_item_id = None
     if request.payment_type == "erotic_dvd":
@@ -135,15 +139,12 @@ async def create_session_handler(
     elif request.payment_type == "xanax":
         payment_item_id = config.XANAX_ITEM_ID
 
-    normalized_stack = db.normalize_xanax_stack(request.xanax_stack)
-    allowed_stacks = {"1_xanax": 1, "2_xanax": 2, "3_xanax": 3, "4_xanax": 4}
-    xanax_count = allowed_stacks[normalized_stack]
     log.info(
-        "Session create requested guild_id=%s host_discord_id=%s channel_id=%s xanax_stack=%s",
+        "Session create requested guild_id=%s host_discord_id=%s channel_id=%s xanax_count=%s",
         request.guild_id,
         admin_discord_id,
         request.channel_id,
-        normalized_stack,
+        request.xanax_count,
     )
 
     session_id = await db.create_jump_session(
@@ -151,14 +152,13 @@ async def create_session_handler(
         host_discord_id=admin_discord_id,
         host_torn_id=host_torn_id,
         max_spots=request.spots,
-        xanax_count=xanax_count,
-        start_in_hours=request.start_delay_hours,
+        xanax_count=request.xanax_count,
+        start_in_hours=start_in_hours,
         created_tct=created_tct,
         estimated_jump_tct=estimated_jump_tct,
         payment_type=request.payment_type,
         payment_amount=request.payment_amount,
         payment_item_id=payment_item_id,
-        xanax_stack=normalized_stack,
     )
 
     session_data = await db.get_jump_session(session_id)

@@ -395,19 +395,18 @@ async def stats(interaction: discord.Interaction):
     payment_type="Payment type per spot",
     payment_amount="Amount per spot",
     spots="Number of spots",
-    xanax_stack="Xanax stack size",
-    start_delay_hours="Delay before start in hours"
+    xanax_count="Xanax count (1-4)"
 )
 @app_commands.choices(
     payment_type=[
         app_commands.Choice(name="Xanax", value="xanax"),
         app_commands.Choice(name="Erotic DVD", value="erotic_dvd"),
     ],
-    xanax_stack=[
-        app_commands.Choice(name="1 Xanax", value="1_xanax"),
-        app_commands.Choice(name="2 Xanax", value="2_xanax"),
-        app_commands.Choice(name="3 Xanax", value="3_xanax"),
-        app_commands.Choice(name="4 Xanax", value="4_xanax"),
+    xanax_count=[
+        app_commands.Choice(name="1 Xanax", value=1),
+        app_commands.Choice(name="2 Xanax", value=2),
+        app_commands.Choice(name="3 Xanax", value=3),
+        app_commands.Choice(name="4 Xanax", value=4),
     ]
 )
 async def session_create(
@@ -416,8 +415,7 @@ async def session_create(
     payment_type: app_commands.Choice[str],
     payment_amount: int,
     spots: int,
-    xanax_stack: app_commands.Choice[str],
-    start_delay_hours: int
+    xanax_count: app_commands.Choice[int]
 ):
     await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
@@ -429,8 +427,7 @@ async def session_create(
             payment_type=payment_type.value,
             payment_amount=payment_amount,
             spots=spots,
-            xanax_stack=xanax_stack.value,
-            start_delay_hours=start_delay_hours
+            xanax_count=xanax_count.value
         )
         response = await admin_handlers.create_session_handler(request, interaction.user.id)
         embed = create_success_embed(
@@ -476,7 +473,7 @@ async def session_list(
         lines = []
         for session in data.sessions:
             lines.append(
-                f"#{session.id} • {session.status} • {session.xanax_stack} • {session.max_spots} spots"
+                f"#{session.id} • {session.status} • {session.xanax_count} Xanax • {session.max_spots} spots"
             )
         embed = create_info_embed("Sessions", "\n".join(lines))
         await interaction.followup.send(embed=embed, ephemeral=True)

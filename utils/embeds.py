@@ -59,7 +59,7 @@ def create_jump_session_embed(session: Dict, signups: List[Dict], readiness: Lis
     if session.get('start_in_hours', 0) > 0:
         from datetime import timedelta
         start = session['created_at'] + timedelta(hours=session['start_in_hours'])
-        embed.add_field(name=f"{config.EMOJI_CLOCK} Starts", value=f"<t:{int(start.timestamp())}:R>", inline=True)
+        embed.add_field(name=f"{config.EMOJI_CLOCK} Estimated start", value=f"<t:{int(start.timestamp())}:R>", inline=True)
     
     if signups:
         readiness_map = {r['discord_id']: r for r in (readiness or [])}
@@ -249,7 +249,6 @@ def create_blacklist_embed(blacklist: List[Dict]) -> discord.Embed:
 
 def create_session_announcement_embed(session: Dict, guild) -> discord.Embed:
     """Create announcement embed for a new 99k session (admin-created)."""
-    xanax_label = session.get('xanax_stack', f"{session['xanax_count']} xanax").replace('_', ' ')
     
     embed = create_base_embed(
         f"{config.EMOJI_JUMP} New 99k Jump Session",
@@ -264,8 +263,8 @@ def create_session_announcement_embed(session: Dict, guild) -> discord.Embed:
     )
     
     embed.add_field(
-        name=f"{config.EMOJI_PILL} Xanax Stack",
-        value=xanax_label.title(),
+        name=f"{config.EMOJI_PILL} Xanax",
+        value=f"`{session['xanax_count']}`",
         inline=True
     )
     
@@ -296,7 +295,7 @@ def create_session_announcement_embed(session: Dict, guild) -> discord.Embed:
             start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
         start = start_time + timedelta(hours=session['start_in_hours'])
         embed.add_field(
-            name=f"{config.EMOJI_CLOCK} Starts",
+            name=f"{config.EMOJI_CLOCK} Estimated start",
             value=f"<t:{int(start.timestamp())}:R>",
             inline=True
         )

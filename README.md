@@ -39,7 +39,7 @@ Use `migrations/000_full_schema.sql` as the canonical schema. At minimum, ensure
 - `guild_settings.raffle_channel_id BIGINT`
 - `guild_settings.insurance_channel_id BIGINT`
 - `guild_settings.jump_99k_channel_id BIGINT`
-- `happy_jump_sessions.xanax_stack`
+- `happy_jump_sessions.xanax_count`
 
 If startup schema validation fails, run the full schema SQL in Supabase SQL editor (or equivalent `ALTER TABLE` statements), then restart the bot.
 
