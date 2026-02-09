@@ -110,7 +110,7 @@ class DatabaseManager:
                 "insurance_channel_id",
                 "jump_99k_channel_id",
             },
-            "happy_jump_sessions": {"xanax_stack"},
+            "happy_jump_sessions": {"xanax_count"},
         }
 
         async with self.pool.acquire() as conn:
@@ -391,12 +391,18 @@ class DatabaseManager:
         await repo.upsert_settings(guild_id, **kwargs)
 
     @staticmethod
-    def normalize_xanax_stack(value: Optional[str]) -> str:
-        aliases = {"full_stack": "4_xanax", None: "4_xanax"}
-        normalized = aliases.get(value, value)
-        allowed = {"1_xanax", "2_xanax", "3_xanax", "4_xanax"}
-        if normalized not in allowed:
-            raise ValueError("Invalid xanax stack. Allowed values: 1_xanax, 2_xanax, 3_xanax, 4_xanax.")
+    def normalize_xanax_count(value: Optional[object]) -> int:
+        if value is None:
+            raise ValueError("Xanax count is required")
+
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid xanax count. Allowed values: 1, 2, 3, 4.") from exc
+
+        if normalized < 1 or normalized > 4:
+            raise ValueError("Invalid xanax count. Allowed values: 1, 2, 3, 4.")
+
         return normalized
 
     @staticmethod
@@ -542,27 +548,26 @@ class DatabaseManager:
         estimated_jump_tct: int,
         payment_type: str,
         payment_amount: int,
-        payment_item_id: Optional[int] = None,
-        xanax_stack: Optional[str] = None
+        payment_item_id: Optional[int] = None
     ) -> int:
         """Create a new 99k jump session."""
         # Validate payment type
         if payment_type not in ('xanax', 'erotic_dvd'):
             raise ValueError(f"Invalid payment type: {payment_type}")
         
-        normalized_stack = self.normalize_xanax_stack(xanax_stack)
+        xanax_count = self.normalize_xanax_count(xanax_count)
 
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 INSERT INTO happy_jump_sessions (
                     guild_id, host_discord_id, host_torn_id, jump_type,
-                    max_spots, xanax_count, xanax_stack, start_in_hours,
+                    max_spots, xanax_count, start_in_hours,
                     created_tct, estimated_jump_tct,
                     payment_type, payment_amount, payment_item_id, status
-                ) VALUES ($1, $2, $3, '99k', $4, $5, $6, $7, $8, $9, $10, $11, $12, 'open')
+                ) VALUES ($1, $2, $3, '99k', $4, $5, $6, $7, $8, $9, $10, $11, 'open')
                 RETURNING id
             """, guild_id, host_discord_id, host_torn_id, max_spots, xanax_count,
-                normalized_stack, start_in_hours, created_tct, estimated_jump_tct,
+                start_in_hours, created_tct, estimated_jump_tct,
                 payment_type, payment_amount, payment_item_id)
             return row['id']
     
