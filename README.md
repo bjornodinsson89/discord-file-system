@@ -8,6 +8,26 @@ This project now runs as a **single Discord bot service** (no FastAPI dashboard,
 python bot.py
 ```
 
+## Database schema setup
+
+Use `migration_runner.py` for all schema setup and updates:
+
+- Fresh database install:
+
+```bash
+python migrations/migration_runner.py fresh
+```
+
+  This applies `migrations/000_full_schema.sql`.
+
+- Existing database updates:
+
+```bash
+python migrations/migration_runner.py migrate
+```
+
+  This applies numbered incremental migrations after `000_full_schema.sql`.
+
 ## Required environment variables
 
 - `DISCORD_TOKEN`
