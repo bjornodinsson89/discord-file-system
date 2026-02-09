@@ -12,14 +12,14 @@ import json
 import sys
 
 import config
-from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager
+from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager, GuildSettingsRepository
 from utils.embeds import (
     create_success_embed, create_error_embed, create_warning_embed, create_info_embed,
     create_api_key_guide_embed, create_statistics_embed,
     create_raffle_embed, create_raffle_winner_embed, create_claim_notification_embed
 )
 from views import (
-    ApiKeyIntroView, ConfirmRemoveKeyView, SetupView
+    ApiKeyIntroView, ConfirmRemoveKeyView
 )
 
 from admin_api import handlers as admin_handlers
@@ -41,38 +41,42 @@ logging.basicConfig(
 log = logging.getLogger("happy_jumper")
 
 
-def normalize_dashboard_url(url: str) -> str:
-    """Ensure dashboard URLs include an explicit http/https scheme."""
-    if not url:
-        return url
-    if url.startswith(("http://", "https://")):
-        return url
-    return f"https://{url}"
+
+def has_setup_permission(member_id: int, guild_owner_id: int, is_administrator: bool, can_manage_guild: bool, member_role_ids: set[str], admin_role_ids: list[str]) -> bool:
+    if member_id == guild_owner_id:
+        return True
+    if is_administrator or can_manage_guild:
+        return True
+    return any(str(role_id) in member_role_ids for role_id in (admin_role_ids or []))
 
 
 async def ensure_admin(interaction: discord.Interaction) -> bool:
-    """Ensure the invoking user is Administrator or has configured admin role."""
-    if not interaction.guild:
+    """Ensure invoking user can manage guild bot configuration/actions."""
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return False
 
-    is_admin = interaction.user.guild_permissions.administrator
-    has_admin_role = False
-    configured_role = (config.ADMIN_ROLE_NAME or "").strip().lower()
-    if configured_role:
-        has_admin_role = any(role.name.strip().lower() == configured_role for role in interaction.user.roles)
+    member = interaction.user
+    db = get_database()
+    repo = GuildSettingsRepository(db)
+    settings = await repo.get_or_create(interaction.guild.id)
 
-    if is_admin or has_admin_role:
+    if has_setup_permission(
+        member_id=member.id,
+        guild_owner_id=interaction.guild.owner_id,
+        is_administrator=member.guild_permissions.administrator,
+        can_manage_guild=member.guild_permissions.manage_guild,
+        member_role_ids={str(role.id) for role in member.roles},
+        admin_role_ids=[str(v) for v in (settings.get("admin_role_ids") or [])],
+    ):
         return True
 
-    requirement = "Administrator"
-    if configured_role:
-        requirement += f" or role '{config.ADMIN_ROLE_NAME}'"
-    embed = create_error_embed("Not Authorized", f"{requirement} required.")
+    embed = create_error_embed("Not Authorized", "Guild owner, Administrator, Manage Guild, or configured admin role required.")
     if interaction.response.is_done():
         await interaction.followup.send(embed=embed, ephemeral=True)
     else:
         await interaction.response.send_message(embed=embed, ephemeral=True)
     return False
+
 
 # ============================================================================
 # BOT SETUP
@@ -155,24 +159,6 @@ def render_welcome_message(template: str, member: discord.Member) -> str:
 
 
 
-def _user_is_admin_in_guild(member: discord.Member) -> bool:
-    """Return True when member has Administrator (or configured admin role) in guild."""
-    if member.guild_permissions.administrator:
-        return True
-    configured_role = (config.ADMIN_ROLE_NAME or "").strip().lower()
-    if configured_role:
-        return any(role.name.strip().lower() == configured_role for role in member.roles)
-    return False
-
-
-async def user_has_dashboard_access(user: discord.abc.User) -> bool:
-    """Check whether user can administer at least one guild where the bot is present."""
-    for guild in bot.guilds:
-        member = guild.get_member(user.id)
-        if member and _user_is_admin_in_guild(member):
-            return True
-    return False
-
 async def _send_interaction_error(interaction: discord.Interaction, message: str):
     """Best-effort user-facing interaction error response."""
     embed = create_error_embed("Error", message)
@@ -243,7 +229,18 @@ async def on_guild_join(guild: discord.Guild):
     """Handle bot joining a new guild."""
     log.info(f"Joined guild: {guild.name} ({guild.id})")
     db = get_database()
-    await db.get_guild_settings(guild.id)  # Create default settings
+    repo = GuildSettingsRepository(db)
+    settings = await repo.get_or_create(guild.id)
+    if settings.get("announce_channel_id"):
+        return
+
+    me = guild.me
+    for channel in guild.text_channels:
+        perms = channel.permissions_for(me) if me else None
+        if perms and perms.send_messages and perms.embed_links:
+            await repo.set_announce_channel(guild.id, channel.id)
+            log.info("Auto-selected announce channel %s for guild %s", channel.id, guild.id)
+            break
 
 
 @bot.event
@@ -252,12 +249,12 @@ async def on_member_join(member: discord.Member):
     db = get_database()
     settings = await db.get_guild_settings(member.guild.id)
 
-    if not settings.get("welcome_enabled") or not settings.get("welcome_channel_id"):
+    if not settings.get("welcome_enabled") or not settings.get("announce_channel_id"):
         return
 
-    channel = member.guild.get_channel(settings["welcome_channel_id"])
+    channel = member.guild.get_channel(settings["announce_channel_id"])
     if channel is None:
-        log.warning("Welcome channel %s not found in guild %s", settings.get("welcome_channel_id"), member.guild.id)
+        log.warning("Welcome channel %s not found in guild %s", settings.get("announce_channel_id"), member.guild.id)
         return
 
     template = settings.get("welcome_message_template") or "Welcome {user} to {guild}!"
@@ -373,66 +370,69 @@ async def my_sessions(interaction: discord.Interaction):
 # SLASH COMMANDS - ADMIN SETUP
 # ============================================================================
 
-@bot.tree.command(name="setup", description="Configure bot settings for this server (Admin only)")
-@app_commands.default_permissions(administrator=True)
+@bot.tree.command(name="setup", description="Show configuration and setup instructions")
 async def setup(interaction: discord.Interaction):
-    """Server setup command for administrators."""
+    await interaction.response.defer(ephemeral=True)
+    if not await ensure_admin(interaction):
+        return
+
+    db = get_database()
+    repo = GuildSettingsRepository(db)
+    settings = await repo.get_or_create(interaction.guild_id)
+    announce_channel = interaction.guild.get_channel(settings.get("announce_channel_id") or 0)
+    admin_roles = [interaction.guild.get_role(int(r)) for r in (settings.get("admin_role_ids") or []) if str(r).isdigit()]
+    admin_roles = [r.mention for r in admin_roles if r]
+
+    embed = create_info_embed("Server Setup", "Discord-only configuration is enabled.")
+    embed.add_field(name="Announce Channel", value=announce_channel.mention if announce_channel else "Not set", inline=False)
+    embed.add_field(name="Admin Roles", value=", ".join(admin_roles) if admin_roles else "None configured", inline=False)
+    embed.add_field(name="Commands", value="`/setchannel [channel]` set announce channel\n`/config` view settings\n`/testannounce` send test", inline=False)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="setchannel", description="Set announce channel (defaults to current channel)")
+@app_commands.describe(channel="Channel to use for announcements")
+async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+    await interaction.response.defer(ephemeral=True)
+    if not await ensure_admin(interaction):
+        return
+    channel = channel or interaction.channel
+    db = get_database()
+    repo = GuildSettingsRepository(db)
+    await repo.set_announce_channel(interaction.guild_id, channel.id)
+    await db.log_audit(interaction.user.id, "announce_channel_updated", "guild", interaction.guild_id, {"announce_channel_id": channel.id})
+    await interaction.followup.send(embed=create_success_embed("Announce Channel Updated", f"Now using {channel.mention}"), ephemeral=True)
+
+
+@bot.tree.command(name="config", description="View current guild configuration")
+async def config_view(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     db = get_database()
-    settings = await db.get_guild_settings(interaction.guild_id)
-    
-    embed = create_info_embed(
-        f"{config.EMOJI_CHART} Server Setup",
-        "Configure channels and roles for Happy Jumper features."
-    )
-    
-    # Current settings
-    host_role = interaction.guild.get_role(settings.get('host99k_role_id') or 0)
-    insurer_role = interaction.guild.get_role(settings.get('insurer_role_id') or 0)
-    admin_role = interaction.guild.get_role(settings.get('admin_role_id') or 0)
-    
-    jump_channel = interaction.guild.get_channel(settings.get('jump_99k_channel_id') or 0)
-    insurance_channel = interaction.guild.get_channel(settings.get('insurance_channel_id') or 0)
-    raffle_channel = interaction.guild.get_channel(settings.get('raffle_channel_id') or 0)
-    
-    embed.add_field(
-        name="Roles",
-        value=(
-            f"**99k Host:** {host_role.mention if host_role else 'Not set'}\n"
-            f"**Insurer:** {insurer_role.mention if insurer_role else 'Not set'}\n"
-            f"**Dashboard Admin:** {admin_role.mention if admin_role else 'Not set'}"
-        ),
-        inline=True
-    )
-    
-    embed.add_field(
-        name="Channels",
-        value=(
-            f"**99k Jumps:** {jump_channel.mention if jump_channel else 'Not set'}\n"
-            f"**Insurance:** {insurance_channel.mention if insurance_channel else 'Not set'}\n"
-            f"**Raffles:** {raffle_channel.mention if raffle_channel else 'Not set'}"
-        ),
-        inline=True
-    )
-    
-    embed.add_field(
-        name="Settings",
-        value=(
-            f"**Reservation Timeout:** {settings.get('reservation_timeout_minutes', 5)} minutes\n"
-            f"**Auto-Complete:** {'Enabled' if settings.get('auto_complete_enabled', True) else 'Disabled'}"
-        ),
-        inline=True
-    )
-    
-    # Dashboard link
-    embed.add_field(
-        name=f"{config.EMOJI_CHART} Dashboard",
-        value=f"Configure more settings at:\n{normalize_dashboard_url(config.FRONTEND_URL)}",
-        inline=False
-    )
-    
-    view = SetupView(interaction.guild_id)
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    repo = GuildSettingsRepository(db)
+    settings = await repo.get_or_create(interaction.guild_id)
+    announce_channel = interaction.guild.get_channel(settings.get("announce_channel_id") or 0)
+    embed = create_info_embed("Current Configuration")
+    embed.add_field(name="Announce Channel", value=announce_channel.mention if announce_channel else "Not set", inline=False)
+    embed.add_field(name="Welcome Enabled", value=str(bool(settings.get("welcome_enabled"))), inline=True)
+    embed.add_field(name="Welcome Template", value=settings.get("welcome_message_template") or "Not set", inline=False)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="testannounce", description="Send a test announcement")
+async def testannounce(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    if not await ensure_admin(interaction):
+        return
+    db = get_database()
+    repo = GuildSettingsRepository(db)
+    settings = await repo.get_or_create(interaction.guild_id)
+    channel_id = settings.get("announce_channel_id")
+    channel = interaction.guild.get_channel(channel_id or 0)
+    if channel is None:
+        await interaction.followup.send(embed=create_error_embed("No Announce Channel", "Use `/setchannel` first."), ephemeral=True)
+        return
+    await channel.send(embed=create_info_embed("Test Announcement", f"Configured by {interaction.user.mention}"))
+    await interaction.followup.send(embed=create_success_embed("Test Sent", f"Posted in {channel.mention}"), ephemeral=True)
 
 
 @bot.tree.command(name="stats", description="View server statistics")
@@ -445,46 +445,6 @@ async def stats(interaction: discord.Interaction):
     embed = create_statistics_embed(stats, f"Statistics for {interaction.guild.name}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-
-@bot.tree.command(name="dashboard", description="Get a link to the web dashboard")
-async def dashboard(interaction: discord.Interaction):
-    """Show dashboard link."""
-    await interaction.response.defer(ephemeral=True)
-    if not await user_has_dashboard_access(interaction.user):
-        await interaction.followup.send(
-            embed=create_error_embed(
-                "Not Authorized",
-                "You must be an Administrator in at least one server where Happy Jumper is installed.",
-            ),
-            ephemeral=True,
-        )
-        return
-    embed = discord.Embed(
-        title=f"{config.EMOJI_CHART} Happy Jumper Dashboard",
-        description=(
-            "Access the admin dashboard to manage all bot features from a beautiful web interface.\n\n"
-            f"**Dashboard URL:**\n{normalize_dashboard_url(config.FRONTEND_URL)}\n\n"
-            "**Features:**\n"
-            f"{config.EMOJI_JUMP} Create & manage 99k jump sessions\n"
-            f"{config.EMOJI_TICKET} Create & run raffles\n"
-            f"{config.EMOJI_SHIELD} Insurance policies & claims\n"
-            f"{config.EMOJI_LIST} Full audit logging\n"
-            f"{config.EMOJI_USER} Member management\n\n"
-            "*Login with Discord to access admin features.*"
-        ),
-        color=config.COLOR_PRIMARY
-    )
-    embed.set_footer(text="Secure OAuth2 authentication via Discord")
-
-    # Add a button view for direct access
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(
-        label="Open Dashboard",
-        url=normalize_dashboard_url(config.FRONTEND_URL),
-        style=discord.ButtonStyle.link
-    ))
-
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 # ============================================================================
@@ -910,7 +870,7 @@ async def settings_show(interaction: discord.Interaction):
 @app_commands.describe(
     host_role="Role for 99k hosts",
     insurer_role="Role for insurers",
-    admin_role="Role for dashboard admins",
+    admin_role="Additional role allowed for config/admin commands",
     jump_channel="Channel for 99k jumps",
     insurance_channel="Channel for insurance",
     raffle_channel="Channel for raffles",
@@ -1364,14 +1324,8 @@ async def _draw_raffle_winner(raffle: dict):
 
 async def main():
     """Main entry point for the Discord bot process."""
-    if config.SERVICE_MODE != "BOT":
-        raise RuntimeError(
-            f"Refusing to start Discord bot with SERVICE_MODE={config.SERVICE_MODE!r}. "
-            "Set SERVICE_MODE=BOT for the bot service."
-        )
-
     config.validate_config()
-    log.info("Starting process mode=BOT")
+    log.info("Starting Discord bot service")
 
     async with bot:
         await bot.start(config.DISCORD_TOKEN)

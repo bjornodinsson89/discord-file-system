@@ -1,117 +1,38 @@
-# Happy Jumper
+# Happy Jumper Discord Bot (Railway Single Service)
 
-Happy Jumper runs as **exactly 2 Railway services**:
+This project now runs as a **single Discord bot service** (no FastAPI dashboard, no frontend).
 
-1. **Web service**: FastAPI + dashboard frontend
-   - Start command: `uvicorn web.app:app --host 0.0.0.0 --port $PORT`
-2. **Bot service**: Discord bot worker
-   - Start command: `python bot.py`
+## Start command
 
-> `bot_internal/` and `BOT_SERVICE_URL`/`BOT_INTERNAL_SECRET` are retired legacy concepts and are no longer used.
+```bash
+python bot.py
+```
 
 ## Required environment variables
 
-Do **not** use legacy `RUN_WEB` / `RUN_BOT` flags. Use `SERVICE_MODE` only.
-
-### Shared (Web + Bot)
+- `DISCORD_TOKEN`
 - `DB_HOST`
 - `DB_PORT`
 - `DB_NAME`
 - `DB_USER`
 - `DB_PASSWORD`
 - `DB_SSL`
-- `RUN_MIGRATIONS` *(optional; run pending migrations at startup when set to `1`)*
-- `RUN_EMERGENCY_SCHEMA_FIXES` *(optional; runs legacy emergency DDL only when explicitly set to `1`)*
 - `FERNET_KEY`
-- `DISCORD_TOKEN`
 
-### Web-only
-- `SERVICE_MODE=WEB`
-- `DISCORD_CLIENT_ID`
-- `DISCORD_CLIENT_SECRET`
-- `DASHBOARD_SECRET_KEY`
-- `OAUTH_REDIRECT_URI`
-- `FRONTEND_URL`
+Optional:
+- `GUILD_ID` (faster guild-scoped slash sync in dev)
+- `CLEAN_COMMANDS`
+- `RUN_MIGRATIONS`
+- `RUN_EMERGENCY_SCHEMA_FIXES`
+- `DASHBOARD_SECRET_KEY` (legacy encrypted data compatibility)
 
-`DB_SSL` must be one of: `disable`, `require`, `verify-ca`, `verify-full`.
+## Discord-only configuration commands
 
-## CSRF protection
+- `/setup` – show current config and setup help
+- `/setchannel [channel]` – set announce channel (defaults to current channel)
+- `/config` – read-only view of config
+- `/testannounce` – send a test message to configured announce channel
 
-State-changing dashboard API routes (`POST`/`PUT`/`PATCH`/`DELETE` under `/api`) require an `X-CSRF-Token` header that matches the session token cookie. The bundled frontend client sends this automatically.
+Permission for config commands: guild owner, Administrator, Manage Guild, or a role listed in `guild_settings.admin_role_ids`.
 
-### Bot-only
-- `SERVICE_MODE=BOT`
-- `GUILD_ID` *(optional; when set, bot syncs only guild commands)*
-- `ADMIN_ROLE_NAME` *(optional; `/dashboard` is allowed for this role OR Discord Administrator)*
-- `CLEAN_COMMANDS` *(optional; set `1` for one-time stale command cleanup)*
-
-## Duplicate slash-command cleanup playbook
-
-Duplicate commands happen when old global + guild registrations both exist.
-
-### Production target (global-only)
-1. On bot service, **unset `GUILD_ID`**.
-2. Set `CLEAN_COMMANDS=1`.
-3. Restart bot once.
-4. Confirm logs show `scope=global` and cleanup messages.
-5. Set `CLEAN_COMMANDS=0` (or remove it) and restart bot normally.
-
-### Development target (guild-only)
-1. Set `GUILD_ID=<your_dev_guild_id>`.
-2. Set `CLEAN_COMMANDS=1`.
-3. Restart bot once.
-4. Confirm logs show `scope=guild:<id>` and global cleanup.
-5. Set `CLEAN_COMMANDS=0` (or remove it) and restart bot normally.
-
-## Discord posting behavior by mode
-
-- **WEB mode (`SERVICE_MODE=WEB`)** posts session/raffle announcements through Discord REST API using `DISCORD_TOKEN` (no in-memory `discord.py` bot required).
-- **BOT mode (`SERVICE_MODE=BOT`)** posts/edits through `discord.py` gateway runtime and can attach interactive views/components.
-- In WEB mode, announcement messages degrade gracefully to embed/content updates without interactive component views.
-
-## Permissions model
-
-- `/dashboard` command: requires **Discord Administrator** OR a role matching `ADMIN_ROLE_NAME`.
-- Dashboard guild list: only guilds where the OAuth user has **Administrator** and the bot is present.
-- API routes that accept `guild_id` enforce `require_guild_admin()`.
-
-## Welcome message settings
-
-The welcome system is powered by bot event `on_member_join` and guild settings in DB:
-- `welcome_enabled`
-- `welcome_channel_id`
-- `welcome_message_template`
-
-These are editable in Dashboard → Settings. Channel dropdown data is loaded via Discord API using the bot token.
-
-## Blacklist policy
-
-Blacklist management is **dashboard-only**. There are no slash/message commands for blacklist actions.
-
-## Healthcheck
-
-Web healthcheck endpoints:
-- `/health`
-- `/api/health`
-
-## Local run
-
-```bash
-pip install -r requirements.txt
-cd frontend && npm ci && npm run build && cd ..
-
-# bot
-SERVICE_MODE=BOT python bot.py
-
-# web
-SERVICE_MODE=WEB uvicorn web.app:app --host 0.0.0.0 --port 8000
-```
-
-
-## Railway default start command
-
-`railway.json` uses a single runtime switch:
-- `SERVICE_MODE=WEB` -> `uvicorn web.app:app --host 0.0.0.0 --port $PORT`
-- `SERVICE_MODE=BOT` -> `python bot.py`
-
-This prevents a service from accidentally starting the wrong process.
+On guild join, the bot auto-selects the first text channel where it can `Send Messages` and `Embed Links` and stores it as `announce_channel_id`.

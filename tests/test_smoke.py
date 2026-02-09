@@ -1,16 +1,45 @@
 import asyncio
 
-
-def test_imports():
-    import api.main  # noqa: F401
-    import web.app  # noqa: F401
-    import bot  # noqa: F401
+from utils.guild_settings_repository import GuildSettingsRepository
 
 
-def test_web_health_endpoint_function():
-    from web.app import health_check
+class _Conn:
+    async def __aenter__(self):
+        return self
 
-    payload = asyncio.run(health_check())
-    assert payload["status"] == "healthy"
-    assert payload["service"] == "happy-jumper"
-    assert payload["mode"] in {"WEB", "BOT"}
+    async def __aexit__(self, *_):
+        return False
+
+    async def execute(self, *_args, **_kwargs):
+        return None
+
+    async def fetchrow(self, *_args, **_kwargs):
+        return {
+            "guild_id": 123,
+            "announce_channel_id": 456,
+            "admin_role_ids": ["789"],
+            "welcome_enabled": False,
+            "welcome_message_template": None,
+        }
+
+
+class _Pool:
+    def acquire(self):
+        return _Conn()
+
+
+class _DB:
+    pool = _Pool()
+
+
+def test_settings_repo_get_and_upsert_smoke():
+    async def _run():
+        repo = GuildSettingsRepository(_DB())
+        created = await repo.get_or_create(123)
+        assert created["guild_id"] == 123
+
+        updated = await repo.upsert(123, announce_channel_id=456, admin_role_ids=[789])
+        assert updated["announce_channel_id"] == 456
+        assert updated["admin_role_ids"] == ["789"]
+
+    asyncio.run(_run())

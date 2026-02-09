@@ -11,6 +11,7 @@ from __future__ import annotations
 from .database import DatabaseManager, init_database, get_database
 from .torn_api import TornAPIClient, init_torn_api, get_torn_api
 from .security import SecurityManager, init_security, get_security_manager
+from .guild_settings_repository import GuildSettingsRepository
 
 __all__ = [
     "DatabaseManager",
@@ -22,4 +23,5 @@ __all__ = [
     "SecurityManager",
     "init_security",
     "get_security_manager",
+    "GuildSettingsRepository",
 ]
