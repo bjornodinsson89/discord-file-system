@@ -111,8 +111,21 @@ async def create_session_handler(
     elif request.payment_type == "xanax":
         payment_item_id = config.XANAX_ITEM_ID
 
-    xanax_count_map = {"1_xanax": 1, "2_xanax": 2, "3_xanax": 3, "full_stack": 100}
-    xanax_count = xanax_count_map.get(request.xanax_stack, 1)
+    # Prefer explicit 1-4 stack values; keep legacy full_stack compatibility.
+    stack_aliases = {"full_stack": "4_xanax"}
+    normalized_stack = stack_aliases.get(request.xanax_stack, request.xanax_stack)
+    allowed_stacks = {"1_xanax": 1, "2_xanax": 2, "3_xanax": 3, "4_xanax": 4}
+    if normalized_stack not in allowed_stacks:
+        raise ValueError("Invalid xanax stack. Choose 1, 2, 3, or 4 xanax.")
+
+    xanax_count = allowed_stacks[normalized_stack]
+    log.info(
+        "Session create requested guild_id=%s host_discord_id=%s channel_id=%s xanax_stack=%s",
+        request.guild_id,
+        admin_discord_id,
+        request.channel_id,
+        normalized_stack,
+    )
 
     session_id = await db.create_jump_session(
         guild_id=request.guild_id,
@@ -125,12 +138,8 @@ async def create_session_handler(
         estimated_jump_tct=estimated_jump_tct,
         payment_type=request.payment_type,
         payment_amount=request.payment_amount,
-        payment_item_id=payment_item_id
-    )
-
-    await db.update_jump_session(
-        session_id,
-        xanax_stack=request.xanax_stack,
+        payment_item_id=payment_item_id,
+        xanax_stack=normalized_stack,
     )
 
     session_data = await db.get_jump_session(session_id)
@@ -297,12 +306,26 @@ async def create_raffle_handler(
 
     settings = await db.get_guild_settings(request.guild_id)
     channel_id = settings.get("raffle_channel_id")
+    log.info("Raffle create requested guild_id=%s channel_id=%s", request.guild_id, channel_id)
     if not channel_id:
         raise ValueError("Raffle channel is not configured. Please run /setup first.")
 
     channel = guild.get_channel(channel_id)
     if not channel:
-        raise ValueError("Configured raffle channel was not found. Please run /setup again.")
+        log.warning("Configured raffle channel missing; clearing setting guild_id=%s channel_id=%s", request.guild_id, channel_id)
+        await db.update_guild_settings(request.guild_id, raffle_channel_id=None)
+        raise ValueError("Configured raffle channel no longer exists. I cleared it; please run /setup to set a new raffle channel.")
+
+    me = guild.me or guild.get_member(getattr(bot.user, 'id', 0))
+    if me is None:
+        raise ValueError("I couldn't verify my raffle channel permissions. Please try again in a moment.")
+
+    perms = channel.permissions_for(me)
+    if not (perms.view_channel and perms.send_messages and perms.embed_links):
+        raise ValueError(
+            "I need View Channel, Send Messages, and Embed Links in the configured raffle channel. "
+            "Please fix channel permissions or run /setup again."
+        )
 
     end_time = datetime.utcnow() + timedelta(hours=request.duration_hours)
 

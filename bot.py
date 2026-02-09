@@ -407,7 +407,7 @@ async def stats(interaction: discord.Interaction):
         app_commands.Choice(name="1 Xanax", value="1_xanax"),
         app_commands.Choice(name="2 Xanax", value="2_xanax"),
         app_commands.Choice(name="3 Xanax", value="3_xanax"),
-        app_commands.Choice(name="Full Stack", value="full_stack"),
+        app_commands.Choice(name="4 Xanax", value="4_xanax"),
     ]
 )
 async def session_create(
