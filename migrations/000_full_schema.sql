@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     admin_role_ids JSONB,                 -- Multi-role bot admin access list
     welcome_enabled BOOLEAN DEFAULT FALSE,
     welcome_message_template TEXT,
-    session_announce_template TEXT,
     reservation_timeout_minutes INTEGER DEFAULT 5,
     auto_complete_enabled BOOLEAN DEFAULT TRUE,
     -- Timestamps
@@ -75,8 +74,7 @@ CREATE TABLE IF NOT EXISTS happy_jump_sessions (
     -- Session configuration
     jump_type VARCHAR(20) DEFAULT '99k',
     max_spots INTEGER NOT NULL CHECK (max_spots >= 1 AND max_spots <= 30),
-    xanax_count INTEGER NOT NULL,         -- Legacy: numeric count
-    xanax_stack VARCHAR(20),              -- New: enum value
+    xanax_count INTEGER NOT NULL CHECK (xanax_count >= 1 AND xanax_count <= 4),
     start_in_hours INTEGER DEFAULT 0,
     created_tct INTEGER,                  -- Torn City Time when created
     estimated_jump_tct INTEGER,           -- Estimated jump time in TCT
@@ -90,9 +88,7 @@ CREATE TABLE IF NOT EXISTS happy_jump_sessions (
     completed_at TIMESTAMPTZ,
     -- Timestamps
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    -- Constraints
-    CONSTRAINT chk_xanax_stack CHECK (xanax_stack IS NULL OR xanax_stack IN ('1_xanax', '2_xanax', '3_xanax', 'full_stack'))
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_guild_status ON happy_jump_sessions(guild_id, status);
@@ -236,7 +232,7 @@ CREATE TABLE IF NOT EXISTS insurance_policies (
     premium_per_xanax INTEGER,
     payout_per_xanax INTEGER,
     -- New fields
-    coverage_type VARCHAR(50) CHECK (coverage_type IN ('xanax_stack', 'ecstasy_after_stack', 'all_drugs')),
+    coverage_type VARCHAR(50) CHECK (coverage_type IN ('xanax', 'ecstasy_after_stack', 'all_drugs')),
     payout_description TEXT,
     duration_hours INTEGER DEFAULT 24 CHECK (duration_hours >= 1 AND duration_hours <= 720),
     -- Status

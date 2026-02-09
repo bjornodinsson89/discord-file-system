@@ -1,6 +1,5 @@
 ALTER TABLE guild_settings
-    ADD COLUMN IF NOT EXISTS welcome_channel_id BIGINT,
-    ADD COLUMN IF NOT EXISTS session_announce_template TEXT;
+    ADD COLUMN IF NOT EXISTS welcome_channel_id BIGINT;
 
 UPDATE guild_settings
 SET announce_channel_id = COALESCE(announce_channel_id, jump_99k_channel_id)

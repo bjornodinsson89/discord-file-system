@@ -92,7 +92,7 @@ MAX_COVERAGE_XANAX = 1000
 MIN_COVERAGE_XANAX = 1
 INSURANCE_RESERVATION_TIMEOUT = 10
 COVERAGE_TYPES = {
-    "xanax_stack": "Xanax Stack Only",
+    "xanax": "Xanax",
     "ecstasy_after_stack": "Ecstasy After Stack",
     "all_drugs": "All Drug-Related Losses"
 }

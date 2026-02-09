@@ -2,34 +2,10 @@
 -- Updates schema according to Discord bot requirements
 
 -- ============================================================================
--- HAPPY JUMP SESSIONS: Update xanax_count to xanax_stack with new validation
+-- HAPPY JUMP SESSIONS: Keep numeric xanax_count constraint (1..4)
 -- ============================================================================
-ALTER TABLE happy_jump_sessions 
-ADD COLUMN IF NOT EXISTS xanax_stack VARCHAR(20);
-
--- Migrate existing data
-UPDATE happy_jump_sessions 
-SET xanax_stack = CASE 
-    WHEN xanax_count = 1 THEN '1 xanax'
-    WHEN xanax_count = 2 THEN '2 xanax'
-    WHEN xanax_count = 3 THEN '3 xanax'
-    WHEN xanax_count >= 100 THEN 'full_stack'
-    ELSE '1 xanax'
-END
-WHERE xanax_stack IS NULL;
-
--- Add constraint for valid values
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'chk_xanax_stack'
-    ) THEN
-        ALTER TABLE happy_jump_sessions
-        ADD CONSTRAINT chk_xanax_stack
-        CHECK (xanax_stack IN ('1_xanax', '2_xanax', '3_xanax', 'full_stack'));
-    END IF;
-END $$;
+ALTER TABLE happy_jump_sessions
+    ALTER COLUMN xanax_count SET NOT NULL;
 
 -- ============================================================================
 -- INSURANCE POLICIES: Restructure for new form fields
@@ -53,7 +29,7 @@ UPDATE insurance_policies
 SET 
     cost_type = 'xanax',
     cost_amount = premium_per_xanax,
-    coverage_type = 'xanax_stack',
+    coverage_type = 'xanax',
     payout_description = CONCAT(payout_per_xanax::TEXT, ' per xanax lost')
 WHERE cost_type IS NULL;
 
@@ -66,7 +42,7 @@ BEGIN
     ) THEN
         ALTER TABLE insurance_policies
         ADD CONSTRAINT chk_coverage_type
-        CHECK (coverage_type IN ('xanax_stack', 'ecstasy_after_stack', 'all_drugs'));
+        CHECK (coverage_type IN ('xanax', 'ecstasy_after_stack', 'all_drugs'));
     END IF;
 END $$;
 

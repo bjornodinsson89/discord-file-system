@@ -17,7 +17,6 @@ def test_000_full_schema_contains_required_columns():
         "insurer_role_id BIGINT",
         "welcome_enabled BOOLEAN DEFAULT FALSE",
         "welcome_message_template TEXT",
-        "session_announce_template TEXT",
         "auto_complete_enabled BOOLEAN DEFAULT TRUE",
         "reservation_timeout_minutes INTEGER DEFAULT 5",
         "updated_at TIMESTAMPTZ DEFAULT NOW()",

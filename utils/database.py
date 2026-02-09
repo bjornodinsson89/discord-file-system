@@ -110,7 +110,7 @@ class DatabaseManager:
                 "insurance_channel_id",
                 "jump_99k_channel_id",
             },
-            "happy_jump_sessions": {"xanax_count"},
+            "happy_jump_sessions": {"xanax_count", "start_in_hours", "created_tct", "estimated_jump_tct"},
         }
 
         async with self.pool.acquire() as conn:
@@ -1263,7 +1263,7 @@ class DatabaseManager:
         description: Optional[str] = None,
         cost_type: str = 'xanax',
         cost_amount: int = 1,
-        coverage_type: str = 'xanax_stack',
+        coverage_type: str = 'xanax',
         payout_description: Optional[str] = None,
         duration_hours: int = 24,
         guild_id: Optional[int] = None

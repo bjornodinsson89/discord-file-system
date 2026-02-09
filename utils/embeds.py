@@ -415,11 +415,11 @@ def create_policy_announcement_embed(policy: Dict, guild) -> discord.Embed:
     )
     
     coverage_labels = {
-        'xanax_stack': 'Xanax Stack Only',
+        'xanax': 'Xanax',
         'ecstasy_after_stack': 'Ecstasy After Stack',
         'all_drugs': 'All Drug-Related Losses'
     }
-    coverage_type = policy.get('coverage_type', 'xanax_stack')
+    coverage_type = policy.get('coverage_type', 'xanax')
     
     embed.add_field(
         name="Coverage Type",

@@ -27,7 +27,6 @@ class _Conn:
             "host99k_role_id": None,
             "insurer_role_id": None,
             "admin_role_id": None,
-            "session_announce_template": None,
             "auto_complete_enabled": True,
             "reservation_timeout_minutes": 5,
         }
