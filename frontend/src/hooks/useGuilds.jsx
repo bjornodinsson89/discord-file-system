@@ -17,15 +17,19 @@ export function GuildProvider({ children }) {
     if (user) {
       const resolvedGuilds = adminGuilds.length > 0 ? adminGuilds : getAdminGuilds();
       setGuilds(resolvedGuilds);
-      
-      // Auto-select first guild if none selected
-      if (!selectedGuildId && resolvedGuilds.length > 0) {
+
+      // Auto-select first guild if none selected or the selected guild is no longer valid.
+      const selectedGuildStillValid = resolvedGuilds.some((g) => g.id === selectedGuildId);
+      if ((!selectedGuildId || !selectedGuildStillValid) && resolvedGuilds.length > 0) {
         const savedGuild = localStorage.getItem('selectedGuildId');
         if (savedGuild && resolvedGuilds.find(g => g.id === savedGuild)) {
           setSelectedGuildId(savedGuild);
         } else {
           setSelectedGuildId(resolvedGuilds[0].id);
         }
+      } else if (resolvedGuilds.length === 0 && selectedGuildId) {
+        setSelectedGuildId(null);
+        localStorage.removeItem('selectedGuildId');
       }
     }
   }, [user, getAdminGuilds, adminGuilds, selectedGuildId]);
