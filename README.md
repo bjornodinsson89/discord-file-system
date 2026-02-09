@@ -45,13 +45,10 @@ Optional:
 - `RUN_MIGRATIONS`
 - `RUN_EMERGENCY_SCHEMA_FIXES`
 
-## Discord-only configuration commands
+## Discord-only configuration
 
-- `/setup` – show current config and setup help
-- `/setchannel [channel]` – set announce channel (defaults to current channel)
-- `/config` – read-only view of config
-- `/testannounce` – send a test message to configured announce channel
+Run `/setup` to configure everything (channels, roles, announcement templates, feature toggles, and tests) from one interactive panel.
 
-Permission for config commands: guild owner, Administrator, Manage Guild, or a role listed in `guild_settings.admin_role_ids`.
+Permission for setup: guild owner, Administrator, Manage Guild, or a role listed in `guild_settings.admin_role_ids`.
 
 On guild join, the bot auto-selects the first text channel where it can `Send Messages` and `Embed Links` and stores it as `announce_channel_id`.

@@ -21,6 +21,7 @@ from utils.embeds import (
 from views import (
     ApiKeyIntroView, ConfirmRemoveKeyView
 )
+from setup_panel import send_setup_panel, has_setup_permission
 
 from bot_actions import handlers as admin_handlers
 from bot_actions.schemas import (
@@ -39,16 +40,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 log = logging.getLogger("happy_jumper")
-
-
-
-def has_setup_permission(member_id: int, guild_owner_id: int, is_administrator: bool, can_manage_guild: bool, member_role_ids: set[str], admin_role_ids: list[str]) -> bool:
-    if member_id == guild_owner_id:
-        return True
-    if is_administrator or can_manage_guild:
-        return True
-    return any(str(role_id) in member_role_ids for role_id in (admin_role_ids or []))
-
 
 async def ensure_admin(interaction: discord.Interaction) -> bool:
     """Ensure invoking user can manage guild bot configuration/actions."""
@@ -249,12 +240,16 @@ async def on_member_join(member: discord.Member):
     db = get_database()
     settings = await db.get_guild_settings(member.guild.id)
 
-    if not settings.get("welcome_enabled") or not settings.get("announce_channel_id"):
+    if not settings.get("welcome_enabled"):
         return
 
-    channel = member.guild.get_channel(settings["announce_channel_id"])
+    welcome_channel_id = settings.get("welcome_channel_id") or settings.get("announce_channel_id")
+    if not welcome_channel_id:
+        return
+
+    channel = member.guild.get_channel(welcome_channel_id)
     if channel is None:
-        log.warning("Welcome channel %s not found in guild %s", settings.get("announce_channel_id"), member.guild.id)
+        log.warning("Welcome channel %s not found in guild %s", welcome_channel_id, member.guild.id)
         return
 
     template = settings.get("welcome_message_template") or "Welcome {user} to {guild}!"
@@ -370,69 +365,11 @@ async def my_sessions(interaction: discord.Interaction):
 # SLASH COMMANDS - ADMIN SETUP
 # ============================================================================
 
-@bot.tree.command(name="setup", description="Show configuration and setup instructions")
+@bot.tree.command(name="setup", description="Open the interactive server setup panel")
 async def setup(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    if not await ensure_admin(interaction):
-        return
-
     db = get_database()
-    repo = GuildSettingsRepository(db)
-    settings = await repo.get_or_create(interaction.guild_id)
-    announce_channel = interaction.guild.get_channel(settings.get("announce_channel_id") or 0)
-    admin_roles = [interaction.guild.get_role(int(r)) for r in (settings.get("admin_role_ids") or []) if str(r).isdigit()]
-    admin_roles = [r.mention for r in admin_roles if r]
+    await send_setup_panel(interaction, db)
 
-    embed = create_info_embed("Server Setup", "Discord-only configuration is enabled.")
-    embed.add_field(name="Announce Channel", value=announce_channel.mention if announce_channel else "Not set", inline=False)
-    embed.add_field(name="Admin Roles", value=", ".join(admin_roles) if admin_roles else "None configured", inline=False)
-    embed.add_field(name="Commands", value="`/setchannel [channel]` set announce channel\n`/config` view settings\n`/testannounce` send test", inline=False)
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="setchannel", description="Set announce channel (defaults to current channel)")
-@app_commands.describe(channel="Channel to use for announcements")
-async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel | None = None):
-    await interaction.response.defer(ephemeral=True)
-    if not await ensure_admin(interaction):
-        return
-    channel = channel or interaction.channel
-    db = get_database()
-    repo = GuildSettingsRepository(db)
-    await repo.set_announce_channel(interaction.guild_id, channel.id)
-    await db.log_audit(interaction.user.id, "announce_channel_updated", "guild", interaction.guild_id, {"announce_channel_id": channel.id})
-    await interaction.followup.send(embed=create_success_embed("Announce Channel Updated", f"Now using {channel.mention}"), ephemeral=True)
-
-
-@bot.tree.command(name="config", description="View current guild configuration")
-async def config_view(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    db = get_database()
-    repo = GuildSettingsRepository(db)
-    settings = await repo.get_or_create(interaction.guild_id)
-    announce_channel = interaction.guild.get_channel(settings.get("announce_channel_id") or 0)
-    embed = create_info_embed("Current Configuration")
-    embed.add_field(name="Announce Channel", value=announce_channel.mention if announce_channel else "Not set", inline=False)
-    embed.add_field(name="Welcome Enabled", value=str(bool(settings.get("welcome_enabled"))), inline=True)
-    embed.add_field(name="Welcome Template", value=settings.get("welcome_message_template") or "Not set", inline=False)
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="testannounce", description="Send a test announcement")
-async def testannounce(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    if not await ensure_admin(interaction):
-        return
-    db = get_database()
-    repo = GuildSettingsRepository(db)
-    settings = await repo.get_or_create(interaction.guild_id)
-    channel_id = settings.get("announce_channel_id")
-    channel = interaction.guild.get_channel(channel_id or 0)
-    if channel is None:
-        await interaction.followup.send(embed=create_error_embed("No Announce Channel", "Use `/setchannel` first."), ephemeral=True)
-        return
-    await channel.send(embed=create_info_embed("Test Announcement", f"Configured by {interaction.user.mention}"))
-    await interaction.followup.send(embed=create_success_embed("Test Sent", f"Posted in {channel.mention}"), ephemeral=True)
 
 
 @bot.tree.command(name="stats", description="View server statistics")
@@ -841,82 +778,6 @@ async def claim_reject(interaction: discord.Interaction, claim_id: int, notes: s
     except Exception as e:
         log.exception(f"Claim reject failed: {e}")
         await interaction.followup.send(embed=create_error_embed("Claim Reject Failed", str(e)), ephemeral=True)
-
-
-@bot.tree.command(name="settings_show", description="Show current guild settings (Admin only)")
-@app_commands.default_permissions(administrator=True)
-async def settings_show(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    if not await ensure_admin(interaction):
-        return
-    try:
-        db = get_database()
-        settings = await db.get_guild_settings(interaction.guild_id)
-        embed = create_info_embed(
-            "Guild Settings",
-            (
-                f"Reservation Timeout: {settings.get('reservation_timeout_minutes')} minutes\n"
-                f"Auto Complete: {'Enabled' if settings.get('auto_complete_enabled') else 'Disabled'}"
-            )
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except Exception as e:
-        log.exception(f"Settings show failed: {e}")
-        await interaction.followup.send(embed=create_error_embed("Settings Show Failed", str(e)), ephemeral=True)
-
-
-@bot.tree.command(name="settings_update", description="Update guild settings (Admin only)")
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(
-    host_role="Role for 99k hosts",
-    insurer_role="Role for insurers",
-    admin_role="Additional role allowed for config/admin commands",
-    jump_channel="Channel for 99k jumps",
-    insurance_channel="Channel for insurance",
-    raffle_channel="Channel for raffles",
-    reservation_timeout_minutes="Reservation timeout in minutes",
-    auto_complete_enabled="Auto-complete sessions"
-)
-async def settings_update(
-    interaction: discord.Interaction,
-    host_role: discord.Role = None,
-    insurer_role: discord.Role = None,
-    admin_role: discord.Role = None,
-    jump_channel: discord.TextChannel = None,
-    insurance_channel: discord.TextChannel = None,
-    raffle_channel: discord.TextChannel = None,
-    reservation_timeout_minutes: int = None,
-    auto_complete_enabled: bool = None
-):
-    await interaction.response.defer(ephemeral=True)
-    if not await ensure_admin(interaction):
-        return
-    try:
-        request = UpdateSettingsRequest(
-            guild_id=interaction.guild_id,
-            host99k_role_id=host_role.id if host_role else None,
-            insurer_role_id=insurer_role.id if insurer_role else None,
-            admin_role_id=admin_role.id if admin_role else None,
-            jump_99k_channel_id=jump_channel.id if jump_channel else None,
-            insurance_channel_id=insurance_channel.id if insurance_channel else None,
-            raffle_channel_id=raffle_channel.id if raffle_channel else None,
-            reservation_timeout_minutes=reservation_timeout_minutes,
-            auto_complete_enabled=auto_complete_enabled
-        )
-        updated = await admin_handlers.update_settings_handler(
-            request,
-            interaction.user.id,
-            source="discord"
-        )
-        embed = create_success_embed(
-            "Settings Updated",
-            f"Reservation Timeout: {updated.reservation_timeout_minutes} minutes\n"
-            f"Auto Complete: {'Enabled' if updated.auto_complete_enabled else 'Disabled'}"
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except Exception as e:
-        log.exception(f"Settings update failed: {e}")
-        await interaction.followup.send(embed=create_error_embed("Settings Update Failed", str(e)), ephemeral=True)
 
 
 @bot.tree.command(name="audit_log", description="View recent audit log entries (Admin only)")
