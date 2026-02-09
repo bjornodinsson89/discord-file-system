@@ -10,7 +10,7 @@ terms below.
 - Server administrators are responsible for configuring permissions and roles.
 
 ## 2) Acceptable Use
-- Do not abuse, spam, or attempt to disrupt the bot or dashboard.
+- Do not abuse, spam, or attempt to disrupt the bot.
 - Do not attempt to bypass permissions or access data you are not authorized to
   access.
 - Do not submit fraudulent data (including Torn API Keys or Discord IDs).
@@ -27,7 +27,7 @@ terms below.
 ## 5) Liability
 - The service is provided “as is” with no warranties.
 - We are not liable for lost data, interrupted service, or damages resulting
-  from use of the bot or dashboard.
+  from use of the bot.
 
 ## 6) Changes
 - Terms may be updated at any time.

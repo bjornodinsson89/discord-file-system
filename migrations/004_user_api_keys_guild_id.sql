@@ -1,4 +1,4 @@
--- Add guild_id tracking for API key registrations so dashboard members can resolve per-guild users.
+-- Add guild_id tracking for API key registrations for per-guild user resolution.
 ALTER TABLE user_api_keys
     ADD COLUMN IF NOT EXISTS guild_id BIGINT;
 

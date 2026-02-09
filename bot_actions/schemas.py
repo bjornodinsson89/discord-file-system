@@ -1,6 +1,5 @@
 """
-Admin API Schemas
-Pydantic models for request validation and response serialization.
+Bot action schemas used by Discord commands.
 """
 
 from pydantic import BaseModel, Field
@@ -36,8 +35,6 @@ class SessionResponse(BaseModel):
     status: str
     announcement_message_id: Optional[int] = None
     message_url: Optional[str] = None
-    created_by_dashboard: Optional[bool] = None
-    dashboard_admin_id: Optional[int] = None
     created_at: datetime
     
     class Config:
@@ -166,7 +163,7 @@ class GuildInfoResponse(BaseModel):
 
 
 class MemberSummary(BaseModel):
-    """Member summary for admin dashboard."""
+    """Member summary for bot administration."""
     discord_id: int
     username: Optional[str] = None
     display_name: Optional[str] = None

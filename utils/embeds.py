@@ -228,7 +228,7 @@ def create_blacklist_embed(blacklist: List[Dict]) -> discord.Embed:
 
 
 def create_session_announcement_embed(session: Dict, guild) -> discord.Embed:
-    """Create announcement embed for a new 99k session (dashboard-created)."""
+    """Create announcement embed for a new 99k session (admin-created)."""
     xanax_label = session.get('xanax_stack', f"{session['xanax_count']} xanax").replace('_', ' ')
     
     embed = create_base_embed(
@@ -292,7 +292,7 @@ def create_session_announcement_embed(session: Dict, guild) -> discord.Embed:
 
 
 def create_raffle_announcement_embed(raffle: Dict, guild) -> discord.Embed:
-    """Create announcement embed for a new raffle (dashboard-created)."""
+    """Create announcement embed for a new raffle (admin-created)."""
     embed = create_base_embed(
         f"{config.EMOJI_TICKET} New Raffle!",
         raffle['prize'],
@@ -359,7 +359,7 @@ def create_raffle_announcement_embed(raffle: Dict, guild) -> discord.Embed:
 
 
 def create_policy_announcement_embed(policy: Dict, guild) -> discord.Embed:
-    """Create announcement embed for a new insurance policy (dashboard-created)."""
+    """Create announcement embed for a new insurance policy (admin-created)."""
     embed = create_base_embed(
         f"{config.EMOJI_SHIELD} New Insurance Policy",
         policy.get('description', 'A new insurance policy is now available!'),

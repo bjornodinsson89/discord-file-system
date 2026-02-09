@@ -6,7 +6,6 @@
 -- ============================================================================
 
 -- Drop existing tables if doing a full reset (comment out for production!)
--- DROP TABLE IF EXISTS dashboard_sessions CASCADE;
 -- DROP TABLE IF EXISTS audit_log CASCADE;
 -- DROP TABLE IF EXISTS raffle_entries CASCADE;
 -- DROP TABLE IF EXISTS raffles CASCADE;
@@ -45,7 +44,7 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     -- Role configuration
     host99k_role_id BIGINT,              -- Role required to host 99k sessions
     insurer_role_id BIGINT,               -- Role required to be insurance provider
-    admin_role_id BIGINT,                 -- Role that grants dashboard admin access (Permission Model C)
+    admin_role_id BIGINT,                 -- Role that grants bot admin access (Permission Model C)
     -- Channel configuration
     jump_99k_channel_id BIGINT,           -- Channel for 99k session announcements
     insurance_channel_id BIGINT,          -- Channel for insurance policy announcements
@@ -83,9 +82,6 @@ CREATE TABLE IF NOT EXISTS happy_jump_sessions (
     status VARCHAR(20) DEFAULT 'open' CHECK (status IN ('open', 'locked', 'completed', 'cancelled')),
     announcement_message_id BIGINT,
     completed_at TIMESTAMPTZ,
-    -- Dashboard metadata
-    created_by_dashboard BOOLEAN DEFAULT FALSE,
-    dashboard_admin_id BIGINT,
     -- Timestamps
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -239,9 +235,6 @@ CREATE TABLE IF NOT EXISTS insurance_policies (
     duration_hours INTEGER DEFAULT 24 CHECK (duration_hours >= 1 AND duration_hours <= 720),
     -- Status
     active BOOLEAN DEFAULT TRUE,
-    -- Dashboard metadata
-    created_by_dashboard BOOLEAN DEFAULT FALSE,
-    dashboard_admin_id BIGINT,
     announcement_message_id BIGINT,
     -- Timestamps
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -342,9 +335,6 @@ CREATE TABLE IF NOT EXISTS raffles (
     -- Discord message
     announcement_message_id BIGINT,
     announcement_channel_id BIGINT,
-    -- Dashboard metadata
-    created_by_dashboard BOOLEAN DEFAULT FALSE,
-    dashboard_admin_id BIGINT,
     -- Timestamps
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -381,7 +371,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_expiry ON raffle_entries(reserved_until) 
 
 -- ============================================================================
 -- AUDIT LOG
--- Track all admin/dashboard actions
+-- Track all admin actions
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS audit_log (
     id SERIAL PRIMARY KEY,
@@ -395,7 +385,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     -- Payload
     payload JSONB,
     -- Source tracking
-    source VARCHAR(20) DEFAULT 'discord' CHECK (source IN ('discord', 'dashboard', 'api', 'system')),
+    source VARCHAR(20) DEFAULT 'discord' CHECK (source IN ('discord', 'api', 'system')),
     ip_address INET,
     -- Timestamps
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -407,24 +397,6 @@ CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_target ON audit_log(target_type, target_id);
 
--- ============================================================================
--- DASHBOARD SESSIONS
--- Web authentication sessions for dashboard users
--- ============================================================================
-CREATE TABLE IF NOT EXISTS dashboard_sessions (
-    session_id VARCHAR(255) PRIMARY KEY,
-    discord_id BIGINT NOT NULL,
-    -- Session data
-    session_data JSONB NOT NULL,          -- Stores access_token, guilds, etc.
-    -- Timing
-    expires_at TIMESTAMPTZ NOT NULL,
-    last_accessed_at TIMESTAMPTZ DEFAULT NOW(),
-    -- Timestamps
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_expiry ON dashboard_sessions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_discord_id ON dashboard_sessions(discord_id);
 
 -- ============================================================================
 -- MIGRATION TRACKING
