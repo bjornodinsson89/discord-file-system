@@ -6,6 +6,7 @@ from typing import Any
 import discord
 
 from utils import GuildSettingsRepository
+from utils.discord_channels import resolve_guild_channel
 from utils.embeds import create_error_embed, create_info_embed, create_success_embed
 
 log = logging.getLogger("happy_jumper.setup_panel")
@@ -217,33 +218,15 @@ class SetupPanelView(OwnerView):
         await _send_or_edit(interaction, self._build_embed(), self)
 
     async def _resolve_real_channel(self, interaction: discord.Interaction, selected: Any) -> discord.abc.GuildChannel | None:
-        if hasattr(selected, "permissions_for"):
-            return selected
-
-        guild = interaction.guild
-        if guild is None:
-            return None
-
-        channel_id = getattr(selected, "id", None)
-        resolved = guild.get_channel(channel_id) if channel_id else None
-        if resolved is not None and hasattr(resolved, "permissions_for"):
-            return resolved
-
-        bot = getattr(interaction, "client", None)
-        if bot is not None and channel_id:
-            try:
-                fetched = await bot.fetch_channel(channel_id)
-                if hasattr(fetched, "permissions_for"):
-                    return fetched
-            except Exception:
-                log.exception(
-                    "Failed to fetch selected setup channel guild_id=%s channel_id=%s selected_type=%s",
-                    interaction.guild_id,
-                    channel_id,
-                    type(selected).__name__,
-                )
-
-        return None
+        resolved = await resolve_guild_channel(interaction, selected)
+        if resolved is None:
+            log.warning(
+                "Failed to resolve selected setup channel guild_id=%s channel_id=%s selected_type=%s",
+                interaction.guild_id,
+                getattr(selected, "id", None),
+                type(selected).__name__,
+            )
+        return resolved
 
     async def _set_channel(self, interaction: discord.Interaction, key: str, channel: Any):
         resolved = await self._resolve_real_channel(interaction, channel)
@@ -264,10 +247,11 @@ class SetupPanelView(OwnerView):
                 ephemeral=True,
             )
             return
+        mention = getattr(resolved, "mention", f"<#{resolved.id}>")
         perms = resolved.permissions_for(me)
         if not (perms.view_channel and perms.send_messages and perms.embed_links):
             await interaction.response.send_message(
-                embed=create_error_embed("Missing permissions", f"I need **View Channel**, **Send Messages**, and **Embed Links** in {resolved.mention}."),
+                embed=create_error_embed("Missing permissions", f"I need **View Channel**, **Send Messages**, and **Embed Links** in {mention}."),
                 ephemeral=True,
             )
             return

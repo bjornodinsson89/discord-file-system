@@ -6,6 +6,7 @@ import logging
 from typing import Optional
 from datetime import datetime, timedelta
 from utils import get_database, get_security_manager, get_torn_api
+from utils.discord_channels import resolve_guild_channel
 from utils.torn_api import TornAPIError, TornAPIPermissionError
 from utils.embeds import *
 import config
@@ -787,10 +788,24 @@ class ChannelSelectMenu(ui.ChannelSelect):
     
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+
+        selected = self.values[0]
+        resolved = await resolve_guild_channel(interaction, selected)
+        if resolved is None:
+            await interaction.followup.send(
+                embed=create_error_embed(
+                    "Channel unavailable",
+                    "I couldn't resolve that channel in this server. Please select another channel.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        mention = getattr(resolved, "mention", f"<#{resolved.id}>")
         db = get_database()
-        await db.update_guild_settings(interaction.guild.id, **{self.setting_key: self.values[0].id})
+        await db.update_guild_settings(interaction.guild.id, **{self.setting_key: resolved.id})
         await db.log_audit(interaction.user.id, f"set_{self.setting_key}", "guild", interaction.guild.id)
-        await interaction.followup.send(embed=create_success_embed("Channel Updated", f"Set to {self.values[0].mention}"), ephemeral=True)
+        await interaction.followup.send(embed=create_success_embed("Channel Updated", f"Set to {mention}"), ephemeral=True)
 
 
 class AdminDashboardView(ui.View):
