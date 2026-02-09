@@ -49,7 +49,11 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     jump_99k_channel_id BIGINT,           -- Channel for 99k session announcements
     insurance_channel_id BIGINT,          -- Channel for insurance policy announcements
     raffle_channel_id BIGINT,             -- Channel for raffle announcements
+    announce_channel_id BIGINT,           -- Unified channel for bot announcements
     -- Settings
+    admin_role_ids JSONB,                 -- Multi-role bot admin access list
+    welcome_enabled BOOLEAN DEFAULT FALSE,
+    welcome_message_template TEXT,
     reservation_timeout_minutes INTEGER DEFAULT 5,
     auto_complete_enabled BOOLEAN DEFAULT TRUE,
     -- Timestamps
