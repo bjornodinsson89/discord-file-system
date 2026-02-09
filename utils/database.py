@@ -95,7 +95,62 @@ class DatabaseManager:
         else:
             log.info("Skipping migrations on startup")
 
+        await self.validate_required_schema()
+
         return self.pool
+
+    async def validate_required_schema(self) -> None:
+        """Fail fast when required schema columns are missing."""
+        required_columns = {
+            "guild_settings": {
+                "announce_channel_id",
+                "welcome_channel_id",
+                "admin_role_ids",
+                "raffle_channel_id",
+                "insurance_channel_id",
+                "jump_99k_channel_id",
+            },
+            "happy_jump_sessions": {"xanax_stack"},
+        }
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT table_name, column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND (
+                    (table_name = 'guild_settings' AND column_name = ANY($1::text[])) OR
+                    (table_name = 'happy_jump_sessions' AND column_name = ANY($2::text[]))
+                  )
+                """,
+                list(required_columns["guild_settings"]),
+                list(required_columns["happy_jump_sessions"]),
+            )
+
+        present: dict[str, set[str]] = {}
+        for row in rows:
+            present.setdefault(row["table_name"], set()).add(row["column_name"])
+
+        missing = {
+            table: sorted(cols - present.get(table, set()))
+            for table, cols in required_columns.items()
+            if cols - present.get(table, set())
+        }
+        if not missing:
+            log.info("✅ Required Supabase schema columns verified")
+            return
+
+        missing_summary = "; ".join(f"{table}: {', '.join(cols)}" for table, cols in missing.items())
+        log.error(
+            "❌ Required Supabase columns missing (%s). Run migrations/000_full_schema.sql, then run SQL to add missing columns.",
+            missing_summary,
+        )
+        raise RuntimeError(
+            "Database schema is missing required columns. "
+            f"Missing -> {missing_summary}. "
+            "Run migrations/000_full_schema.sql (or equivalent ALTER TABLE statements in Supabase) and restart."
+        )
     
     async def apply_emergency_schema_fixes(self):
         """Apply emergency schema fixes for missing columns (PgBouncer-safe)."""
@@ -323,33 +378,33 @@ class DatabaseManager:
     
     async def get_guild_settings(self, guild_id: int) -> Dict:
         """Get guild settings, creating default entry if needed."""
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO guild_settings (guild_id) VALUES ($1) ON CONFLICT DO NOTHING",
-                guild_id
-            )
-            row = await conn.fetchrow(
-                "SELECT * FROM guild_settings WHERE guild_id = $1", guild_id
-            )
-            return dict(row)
+        from .guild_settings_repository import GuildSettingsRepository
+
+        repo = GuildSettingsRepository(self)
+        return await repo.get_settings(guild_id)
     
     async def update_guild_settings(self, guild_id: int, **kwargs):
         """Update guild settings."""
-        if not kwargs:
-            return
-        
-        # Build dynamic SET clause
-        sets = []
-        values = [guild_id]
-        for i, (key, value) in enumerate(kwargs.items(), start=2):
-            sets.append(f"{key} = ${i}")
-            values.append(value)
-        
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                f"UPDATE guild_settings SET {', '.join(sets)}, updated_at = NOW() WHERE guild_id = $1",
-                *values
-            )
+        from .guild_settings_repository import GuildSettingsRepository
+
+        repo = GuildSettingsRepository(self)
+        await repo.upsert_settings(guild_id, **kwargs)
+
+    @staticmethod
+    def normalize_xanax_stack(value: Optional[str]) -> str:
+        aliases = {"full_stack": "4_xanax", None: "4_xanax"}
+        normalized = aliases.get(value, value)
+        allowed = {"1_xanax", "2_xanax", "3_xanax", "4_xanax"}
+        if normalized not in allowed:
+            raise ValueError("Invalid xanax stack. Allowed values: 1_xanax, 2_xanax, 3_xanax, 4_xanax.")
+        return normalized
+
+    @staticmethod
+    def merge_raffle_tickets(existing_tickets: int, incoming_tickets: int, payment_verified: bool) -> int:
+        """Overwrite unpaid reservations, accumulate paid ticket purchases."""
+        if payment_verified:
+            return int(existing_tickets) + int(incoming_tickets)
+        return int(incoming_tickets)
     
     async def get_all_guild_settings(self) -> List[Dict]:
         """Get settings for all guilds."""
@@ -495,6 +550,8 @@ class DatabaseManager:
         if payment_type not in ('xanax', 'erotic_dvd'):
             raise ValueError(f"Invalid payment type: {payment_type}")
         
+        normalized_stack = self.normalize_xanax_stack(xanax_stack)
+
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 INSERT INTO happy_jump_sessions (
@@ -505,7 +562,7 @@ class DatabaseManager:
                 ) VALUES ($1, $2, $3, '99k', $4, $5, $6, $7, $8, $9, $10, $11, $12, 'open')
                 RETURNING id
             """, guild_id, host_discord_id, host_torn_id, max_spots, xanax_count,
-                xanax_stack, start_in_hours, created_tct, estimated_jump_tct,
+                normalized_stack, start_in_hours, created_tct, estimated_jump_tct,
                 payment_type, payment_amount, payment_item_id)
             return row['id']
     
@@ -1602,7 +1659,7 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT * FROM raffles
-                WHERE guild_id = $1 AND status IN ('active', 'open')
+                WHERE guild_id = $1 AND status = 'active'
                 ORDER BY end_time
             """, guild_id)
             return [dict(row) for row in rows]
@@ -1612,7 +1669,7 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             count = await conn.fetchval("""
                 SELECT COUNT(*) FROM raffles
-                WHERE creator_discord_id = $1 AND status IN ('active', 'open')
+                WHERE creator_discord_id = $1 AND status = 'active'
             """, creator_discord_id)
             return count > 0
     
@@ -1625,7 +1682,7 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 SELECT * FROM raffles
-                WHERE guild_id = $1 AND creator_discord_id = $2 AND status IN ('active', 'open')
+                WHERE guild_id = $1 AND creator_discord_id = $2 AND status = 'active'
             """, guild_id, creator_discord_id)
             return dict(row) if row else None
     
@@ -1634,7 +1691,7 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT * FROM raffles
-                WHERE status IN ('active', 'open') AND end_time <= NOW()
+                WHERE status = 'active' AND end_time <= NOW()
             """)
             return [dict(row) for row in rows]
     
@@ -1701,15 +1758,27 @@ class DatabaseManager:
     ) -> int:
         """Create or update raffle entry."""
         async with self.pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                "SELECT num_tickets, payment_verified FROM raffle_entries WHERE raffle_id = $1 AND discord_id = $2",
+                raffle_id,
+                discord_id,
+            )
+            merged_tickets = self.merge_raffle_tickets(
+                existing_tickets=existing["num_tickets"] if existing else 0,
+                incoming_tickets=num_tickets,
+                payment_verified=bool(existing and existing["payment_verified"]),
+            )
             row = await conn.fetchrow("""
                 INSERT INTO raffle_entries 
                 (raffle_id, discord_id, torn_user_id, num_tickets, reserved_until, payment_verified)
                 VALUES ($1, $2, $3, $4, $5, FALSE)
                 ON CONFLICT (raffle_id, discord_id) DO UPDATE SET
-                    num_tickets = raffle_entries.num_tickets + EXCLUDED.num_tickets,
+                    num_tickets = $6,
+                    payment_verified = raffle_entries.payment_verified,
+                    payment_verified_at = raffle_entries.payment_verified_at,
                     reserved_until = EXCLUDED.reserved_until
                 RETURNING entry_id
-            """, raffle_id, discord_id, torn_user_id, num_tickets, reserved_until)
+            """, raffle_id, discord_id, torn_user_id, num_tickets, reserved_until, merged_tickets)
             return row['entry_id']
     
     async def get_raffle_entry(self, raffle_id: int, discord_id: int) -> Optional[Dict]:
@@ -1911,7 +1980,7 @@ class DatabaseManager:
                 conn,
                 """
                 SELECT COUNT(*) FROM raffles
-                WHERE guild_id = $1 AND status IN ('active', 'open')
+                WHERE guild_id = $1 AND status = 'active'
                 """,
                 guild_id,
             )

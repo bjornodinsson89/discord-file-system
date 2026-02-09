@@ -28,6 +28,21 @@ python migrations/migration_runner.py migrate
 
   This applies numbered incremental migrations after `000_full_schema.sql`.
 
+
+## Supabase SQL required
+
+Use `migrations/000_full_schema.sql` as the canonical schema. At minimum, ensure these columns exist:
+
+- `guild_settings.announce_channel_id BIGINT`
+- `guild_settings.welcome_channel_id BIGINT`
+- `guild_settings.admin_role_ids JSONB`
+- `guild_settings.raffle_channel_id BIGINT`
+- `guild_settings.insurance_channel_id BIGINT`
+- `guild_settings.jump_99k_channel_id BIGINT`
+- `happy_jump_sessions.xanax_stack`
+
+If startup schema validation fails, run the full schema SQL in Supabase SQL editor (or equivalent `ALTER TABLE` statements), then restart the bot.
+
 ## Required environment variables
 
 - `DISCORD_TOKEN`
@@ -46,6 +61,8 @@ Optional:
 - `RUN_EMERGENCY_SCHEMA_FIXES`
 
 ## Discord-only configuration
+
+`/setup` is the only configuration surface for guild channels, roles, templates, and feature toggles.
 
 Run `/setup` to configure everything (channels, roles, announcement templates, feature toggles, and tests) from one interactive panel.
 

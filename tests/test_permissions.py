@@ -1,4 +1,6 @@
-from setup_panel import has_setup_permission
+from types import SimpleNamespace
+
+from setup_panel import _missing_channel_perms, has_setup_permission
 
 
 def test_has_setup_permission_owner():
@@ -19,3 +21,13 @@ def test_has_setup_permission_admin_role():
 
 def test_has_setup_permission_denied():
     assert not has_setup_permission(2, 1, False, False, {"10"}, ["99"])
+
+
+class _Channel:
+    def permissions_for(self, _member):
+        return SimpleNamespace(view_channel=False, send_messages=True, embed_links=False)
+
+
+def test_missing_channel_permissions_helper():
+    missing = _missing_channel_perms(_Channel(), object())
+    assert missing == ["View Channel", "Embed Links"]
