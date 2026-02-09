@@ -434,13 +434,6 @@ class AnnouncementsView(BackView):
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
-    @discord.ui.button(label="Edit Session Template", style=discord.ButtonStyle.secondary)
-    async def edit_session(self, interaction: discord.Interaction, _: discord.ui.Button):
-        try:
-            await interaction.response.send_modal(TemplateModal(self.panel, "session_announce_template", "Session announce template", self.settings.get("session_announce_template")))
-        except Exception as error:
-            await _respond_callback_error(interaction, error)
-
 
 class FeatureTogglesView(BackView):
     @discord.ui.button(label="Toggle Auto Complete", style=discord.ButtonStyle.primary)
@@ -475,7 +468,7 @@ class TestView(BackView):
             if missing:
                 await interaction.response.send_message(embed=create_error_embed("Missing permissions", f"Missing in {channel.mention}: **{', '.join(missing)}**."), ephemeral=True)
                 return
-            template = self.settings.get("session_announce_template") or "Session test for {guild} in {channel} at {timestamp}."
+            template = "Session test for {guild} in {channel} at {timestamp}."
             await channel.send(embed=create_info_embed("Session Announcement Test", _render_template(template, interaction)))
             await interaction.response.send_message(embed=create_success_embed("Test sent", f"Posted in {channel.mention}."), ephemeral=True)
         except Exception as error:

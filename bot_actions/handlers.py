@@ -3,6 +3,7 @@ Bot action handlers used by Discord commands.
 """
 
 import logging
+import time
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 from utils import get_database, get_torn_api
@@ -124,14 +125,12 @@ async def create_session_handler(
         raise ValueError("Admin must have API key registered to create sessions")
 
     host_torn_id = api_key_data['torn_user_id']
-    torn_api = get_torn_api()
-    torn_time = await torn_api.get_torn_time()
-    created_tct = torn_time
+    created_tct = int(time.time())
     if request.xanax_count < 1 or request.xanax_count > 4:
         raise ValueError("Xanax count must be between 1 and 4")
 
-    start_in_hours = request.xanax_count * 7
-    estimated_jump_tct = created_tct + (start_in_hours * 3600)
+    start_in_hours = 0
+    estimated_jump_tct = created_tct + (start_in_hours * 3600) + (request.xanax_count * 7 * 3600)
 
     payment_item_id = None
     if request.payment_type == "erotic_dvd":

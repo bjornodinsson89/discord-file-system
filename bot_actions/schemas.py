@@ -104,7 +104,7 @@ class CreatePolicyRequest(BaseModel):
     description: str = Field(min_length=1, description="Coverage instructions")
     cost_type: Literal["xanax", "erotic_dvd"]
     cost_amount: int = Field(ge=1, description="Premium cost")
-    coverage_type: Literal["xanax_stack", "ecstasy_after_stack", "all_drugs"]
+    coverage_type: Literal["xanax", "ecstasy_after_stack", "all_drugs"]
     payout_description: str = Field(min_length=1, description="Freeform payout terms")
     duration_hours: int = Field(ge=config.MIN_INSURANCE_DURATION_HOURS, le=config.MAX_INSURANCE_DURATION_HOURS)
 

@@ -21,7 +21,6 @@ class GuildSettingsRepository:
         "admin_role_id",
         "welcome_enabled",
         "welcome_message_template",
-        "session_announce_template",
         "auto_complete_enabled",
         "reservation_timeout_minutes",
     }
@@ -48,7 +47,6 @@ class GuildSettingsRepository:
         "admin_role_id": None,
         "welcome_enabled": False,
         "welcome_message_template": None,
-        "session_announce_template": None,
         "auto_complete_enabled": True,
         "reservation_timeout_minutes": 5,
     }

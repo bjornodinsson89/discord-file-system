@@ -669,7 +669,7 @@ async def raffle_cancel(interaction: discord.Interaction, raffle_id: int):
         app_commands.Choice(name="Erotic DVD", value="erotic_dvd"),
     ],
     coverage_type=[
-        app_commands.Choice(name="Xanax Stack", value="xanax_stack"),
+        app_commands.Choice(name="Xanax", value="xanax"),
         app_commands.Choice(name="Ecstasy After Stack", value="ecstasy_after_stack"),
         app_commands.Choice(name="All Drugs", value="all_drugs"),
     ]

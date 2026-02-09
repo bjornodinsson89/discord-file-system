@@ -16,7 +16,7 @@ def test_create_session_request_accepts_xanax_count_1_to_4():
     assert req.xanax_count == 4
 
 
-@pytest.mark.parametrize("value", [0, 5, "full_stack", "4_xanax", None])
+@pytest.mark.parametrize("value", [0, 5, "abc", "4.0", None])
 def test_normalize_xanax_count_rejects_invalid_values(value):
     with pytest.raises(ValueError):
         DatabaseManager.normalize_xanax_count(value)
