@@ -588,9 +588,9 @@ class RaffleView(ui.View):
             await interaction.followup.send(embed=create_info_embed("No Tickets", "You haven't entered this raffle"), ephemeral=True)
             return
         
-        status = entry['status']
+        status = "paid" if entry.get('payment_verified') else "reserved"
         info = f"**Tickets:** {entry['num_tickets']}\n**Status:** {status.title()}"
-        if status == 'reserved' and entry['reserved_until']:
+        if status == 'reserved' and entry.get('reserved_until'):
             info += f"\n**Expires:** <t:{int(entry['reserved_until'].timestamp())}:R>"
         
         await interaction.followup.send(embed=create_info_embed("Your Entry", info), ephemeral=True)
@@ -626,9 +626,11 @@ class BuyTicketsModal(ui.Modal, title="Buy Raffle Tickets"):
                 return
             
             # Check total tickets
-            sold = await db.get_raffle_ticket_count(self.raffle_id)
-            if sold + tickets > raffle['tickets_available']:
-                await interaction.followup.send(embed=create_error_embed("Not Enough Tickets", f"Only {raffle['tickets_available'] - sold} available"), ephemeral=True)
+            paid = await db.get_raffle_ticket_count(self.raffle_id)
+            reserved = await db.get_raffle_reserved_ticket_count(self.raffle_id)
+            used = paid + reserved
+            if used + tickets > raffle['tickets_available']:
+                await interaction.followup.send(embed=create_error_embed("Not Enough Tickets", f"Only {max(raffle['tickets_available'] - used, 0)} available"), ephemeral=True)
                 return
             
             key_data = await db.get_user_api_key(interaction.user.id)
@@ -639,12 +641,21 @@ class BuyTicketsModal(ui.Modal, title="Buy Raffle Tickets"):
             reserved_until = datetime.utcnow() + timedelta(minutes=config.RAFFLE_RESERVATION_TIMEOUT)
             await db.create_raffle_entry(self.raffle_id, interaction.user.id, key_data['torn_user_id'], tickets, reserved_until)
             
-            total_xanax = tickets * raffle['ticket_price']
+            total_items = tickets * raffle['ticket_price']
+            item_label = "Xanax" if raffle['ticket_payment_type'] == 'xanax' else "Erotic DVD"
+            creator_key = await db.get_user_api_key(raffle['creator_discord_id'])
+            creator_torn_id = creator_key['torn_user_id'] if creator_key else None
+            recipient_line = f"**Send to:** <@{raffle['creator_discord_id']}>"
+            if creator_torn_id:
+                recipient_line += f" (Torn: `{creator_torn_id}`)"
+            else:
+                recipient_line += "\nCreator has not registered API key; contact creator."
+
             await interaction.followup.send(embed=create_info_embed(
                 "Tickets Reserved",
                 f"**Tickets:** {tickets}\n"
-                f"**Cost:** {total_xanax} Xanax\n"
-                f"**Send to:** <@{raffle['admin_discord_id']}> (Torn: `{raffle['admin_torn_id']}`)\n"
+                f"**Cost:** {total_items} {item_label}\n"
+                f"{recipient_line}\n"
                 f"**Expires:** <t:{int(reserved_until.timestamp())}:R>"
             ), view=RafflePaymentView(self.raffle_id), ephemeral=True)
         except ValueError:
@@ -659,13 +670,13 @@ class RafflePaymentView(ui.View):
         super().__init__(timeout=600)
         self.raffle_id = raffle_id
     
-    @ui.button(label="Verify Xanax Payment", style=discord.ButtonStyle.success, emoji=config.EMOJI_PILL)
+    @ui.button(label="Verify Payment", style=discord.ButtonStyle.success, emoji=config.EMOJI_PILL)
     async def verify(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
             db = get_database()
             entry = await db.get_raffle_entry(self.raffle_id, interaction.user.id)
-            if not entry or entry['status'] == 'paid':
+            if not entry or entry.get('payment_verified'):
                 await interaction.followup.send(embed=create_error_embed("Entry Unavailable"), ephemeral=True)
                 return
             
@@ -675,12 +686,24 @@ class RafflePaymentView(ui.View):
             api_key = security.decrypt(key_data['encrypted_key'])
             
             torn_api = get_torn_api()
-            total_xanax = entry['num_tickets'] * raffle['ticket_price']
-            
-            payment = await torn_api.verify_xanax_payment(api_key, raffle['admin_torn_id'], total_xanax)
+            creator_key = await db.get_user_api_key(raffle['creator_discord_id'])
+            creator_torn_id = creator_key['torn_user_id'] if creator_key else None
+            if not creator_torn_id:
+                await interaction.followup.send(embed=create_error_embed("Creator Not Configured", "Creator has not registered API key; contact creator."), ephemeral=True)
+                return
+
+            amount = entry['num_tickets'] * raffle['ticket_price']
+            if raffle['ticket_payment_type'] == 'xanax':
+                payment = await torn_api.verify_xanax_payment(api_key, creator_torn_id, amount)
+            elif raffle['ticket_payment_type'] == 'erotic_dvd':
+                payment = await torn_api.verify_dvd_payment(api_key, creator_torn_id, amount)
+            else:
+                await interaction.followup.send(embed=create_error_embed("Unsupported Payment Type", raffle['ticket_payment_type']), ephemeral=True)
+                return
             
             if not payment:
-                await interaction.followup.send(embed=create_error_embed("Payment Not Found", "Send Xanax and try again"), ephemeral=True)
+                item_label = "Xanax" if raffle['ticket_payment_type'] == 'xanax' else "Erotic DVD"
+                await interaction.followup.send(embed=create_error_embed("Payment Not Found", f"Send {item_label} and try again"), ephemeral=True)
                 return
             
             await db.verify_raffle_payment(self.raffle_id, interaction.user.id)
@@ -759,7 +782,7 @@ class ChannelSelectView(ui.View):
 
 class ChannelSelectMenu(ui.ChannelSelect):
     def __init__(self, setting_key: str):
-        super().__init__(placeholder="Select a channel...", channel_types=[discord.ChannelType.text])
+        super().__init__(placeholder="Select a channel...", channel_types=[discord.ChannelType.text, discord.ChannelType.news])
         self.setting_key = setting_key
     
     async def callback(self, interaction: discord.Interaction):
