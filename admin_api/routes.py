@@ -24,7 +24,12 @@ async def list_admin_guilds(
     user: dict = Depends(get_current_user)
 ):
     """List guilds the user can administer."""
-    guilds = await get_user_guilds(user)
+    try:
+        guilds = await get_user_guilds(user)
+    except HTTPException as exc:
+        if exc.status_code == 503:
+            raise HTTPException(status_code=503, detail={"detail": str(exc.detail), "code": "discord_bot_unavailable"})
+        raise
     return {"guilds": guilds}
 
 

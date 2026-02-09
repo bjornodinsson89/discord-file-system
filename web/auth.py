@@ -4,7 +4,7 @@ Handles Discord login, token exchange, and session management.
 """
 
 from fastapi import APIRouter, Request, HTTPException, Depends
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 import aiohttp
 import secrets
 from typing import Optional, Dict
@@ -12,12 +12,35 @@ import logging
 from urllib.parse import quote
 
 import config
-from web.csrf import get_or_create_csrf_token
+from web.csrf import generate_csrf_token, verify_csrf_token
 from web.permissions import get_current_user
 
 log = logging.getLogger("happy_jumper.auth")
 
 router = APIRouter()
+
+
+def _csrf_secret(request: Request) -> str:
+    return getattr(request.app.state, "csrf_hmac_secret", config.DASHBOARD_SECRET_KEY)
+
+
+def _ensure_csrf_cookie_token(request: Request) -> str:
+    token = request.cookies.get("csrf_token")
+    secret = _csrf_secret(request)
+    if token and verify_csrf_token(token, secret):
+        return token
+    return generate_csrf_token(secret)
+
+
+def _set_csrf_cookie(response: JSONResponse, token: str) -> None:
+    response.set_cookie(
+        "csrf_token",
+        token,
+        path="/",
+        secure=config.SESSION_COOKIE_SECURE,
+        httponly=False,
+        samesite=config.SESSION_COOKIE_SAMESITE,
+    )
 
 # ============================================================================
 # DISCORD OAuth2 CONFIGURATION
@@ -136,19 +159,25 @@ async def logout(request: Request):
 @router.get("/me")
 async def get_me(request: Request, user: Dict = Depends(get_current_user)):
     """Get current user info."""
-    return {
+    csrf_token = _ensure_csrf_cookie_token(request)
+    response = JSONResponse(content={
         **user,
-        "csrf_token": get_or_create_csrf_token(request),
-    }
+        "csrf_token": csrf_token,
+    })
+    _set_csrf_cookie(response, csrf_token)
+    return response
 
 
 @router.get("/status")
 async def auth_status(request: Request):
     """Check if user is authenticated."""
     user = request.session.get("user")
-    csrf_token = get_or_create_csrf_token(request) if user else None
-    return {
+    csrf_token = _ensure_csrf_cookie_token(request) if user else None
+    response = JSONResponse(content={
         "authenticated": user is not None,
         "user": user if user else None,
         "csrf_token": csrf_token,
-    }
+    })
+    if user and csrf_token:
+        _set_csrf_cookie(response, csrf_token)
+    return response

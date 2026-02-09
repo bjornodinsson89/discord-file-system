@@ -4,6 +4,7 @@ FastAPI app serving both dashboard UI and Admin API.
 """
 
 from contextlib import asynccontextmanager
+import secrets
 
 from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
@@ -15,7 +16,9 @@ from pathlib import Path
 
 import config
 from web.auth import router as auth_router
-from web.csrf import enforce_csrf, get_or_create_csrf_token
+from web.csrf import enforce_csrf, generate_csrf_token, verify_csrf_token
+from web.permissions import get_current_user
+from web.discord_api import probe_bot_guild_status
 from admin_api.routes import (
     guild_router,
     sessions_router,
@@ -47,6 +50,7 @@ async def lifespan(app: FastAPI):
     app.state.db = None
     app.state.torn_api = None
     app.state.security = None
+    app.state.csrf_hmac_secret = config.DASHBOARD_SECRET_KEY
 
     log.info("Starting process mode=WEB")
     config.validate_config()
@@ -114,7 +118,10 @@ async def ensure_csrf_cookie(request: Request, call_next):
     """Ensure an explicit CSRF token cookie exists for authenticated browser sessions."""
     response = await call_next(request)
     if request.session.get("user"):
-        token = get_or_create_csrf_token(request)
+        secret = request.app.state.csrf_hmac_secret
+        token = request.cookies.get("csrf_token")
+        if not token or not verify_csrf_token(token, secret):
+            token = generate_csrf_token(secret)
         response.set_cookie(
             "csrf_token",
             token,
@@ -154,6 +161,33 @@ async def health_check():
     """Health check endpoint for Railway."""
     mode = getattr(app.state, "mode", "WEB")
     return {"status": "healthy", "service": "happy-jumper", "mode": mode}
+
+
+@app.get("/api/debug/discord")
+async def discord_debug(guild_id: int | None = None, user: dict = Depends(get_current_user)):
+    """Auth-protected Discord connectivity diagnostics."""
+    token = (config.DISCORD_TOKEN or "").strip()
+    masked = f"Bot {token[:6]}***" if token else None
+    result: dict[str, object] = {
+        "has_discord_token": bool(token),
+        "token_prefix": masked,
+        "bot_guild_check": {},
+        "errors": [],
+        "user_id": user.get("id"),
+    }
+
+    if guild_id is not None:
+        try:
+            probe = await probe_bot_guild_status(guild_id)
+            status = "present" if probe.get("ok") else "not_present"
+            if probe.get("http_status") in (401, 429) or probe.get("http_status", 0) >= 500:
+                status = "error"
+            result["bot_guild_check"] = {str(guild_id): {"status": status, "http_status": probe.get("http_status")}}
+        except Exception as exc:
+            result["bot_guild_check"] = {str(guild_id): "error"}
+            result["errors"].append(str(exc))
+
+    return result
 
 # ============================================================================
 # STATIC FILES & SPA
@@ -228,13 +262,27 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     """Consistent JSON error payload for API routes."""
     route = _route_name(request)
     if request.url.path.startswith("/api/"):
+        request_id = secrets.token_hex(8)
         if exc.status_code >= 500:
-            log.exception("HTTPException on route=%s path=%s status=%s", route, request.url.path, exc.status_code)
+            log.exception(
+                "HTTPException on route=%s path=%s status=%s request_id=%s",
+                route,
+                request.url.path,
+                exc.status_code,
+                request_id,
+            )
         message = "Internal server error" if exc.status_code >= 500 else str(exc.detail)
         code = "internal_error" if exc.status_code >= 500 else "http_error"
+        detail = "Internal server error" if exc.status_code >= 500 else exc.detail
+        content = {"detail": message, "code": code, "route": route}
+        if isinstance(detail, dict):
+            content.update(detail)
+            content["route"] = route
+        if exc.status_code >= 500:
+            content["request_id"] = request_id
         return JSONResponse(
             status_code=exc.status_code,
-            content={"detail": message, "code": code, "route": route},
+            content=content,
         )
     return Response(content=str(exc.detail), status_code=exc.status_code)
 
@@ -243,10 +291,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 async def unhandled_exception_handler(request: Request, exc: Exception):
     """Fallback exception mapping with server-side traceback logging."""
     route = _route_name(request)
-    log.exception("Unhandled exception route=%s path=%s", route, request.url.path)
+    request_id = secrets.token_hex(8)
+    log.exception("Unhandled exception route=%s path=%s request_id=%s", route, request.url.path, request_id)
     if request.url.path.startswith("/api/"):
         return JSONResponse(
             status_code=500,
-            content={"detail": "Internal server error", "code": "internal_error", "route": route},
+            content={"detail": "Internal server error", "code": "internal_error", "route": route, "request_id": request_id},
         )
     return Response(content="Internal server error", status_code=500)

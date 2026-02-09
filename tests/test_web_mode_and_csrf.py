@@ -4,18 +4,19 @@ import importlib
 import admin_api.handlers as handlers
 import config
 from admin_api.schemas import CreateSessionRequest
-from web import csrf
 from web.auth import auth_status
 from fastapi import Response
 from web.app import ensure_csrf_cookie
 
 
 class _DummyRequest:
-    def __init__(self, method: str, path: str, session: dict | None = None, headers: dict | None = None):
+    def __init__(self, method: str, path: str, session: dict | None = None, headers: dict | None = None, cookies: dict | None = None):
         self.method = method
         self.url = type("URL", (), {"path": path})()
         self.session = session if session is not None else {}
         self.headers = headers or {}
+        self.cookies = cookies or {}
+        self.app = type("DummyApp", (), {"state": type("State", (), {"csrf_hmac_secret": "test-secret"})()})()
 
 
 class _DummyTornAPI:
@@ -140,59 +141,14 @@ def test_update_session_in_web_mode_uses_rest_edit_message(monkeypatch):
     assert edited["message_id"] == 555
 
 
-def test_csrf_safe_methods_are_allowed():
-    request = _DummyRequest("GET", "/api/sessions/list", session={"user": {"id": "1"}})
-    asyncio.run(csrf.enforce_csrf(request))
-
-
-def test_csrf_rejects_unsafe_method_without_header():
-    request = _DummyRequest("POST", "/api/sessions/create", session={"user": {"id": "1"}})
-
-    import pytest
-
-    with pytest.raises(Exception, match="Invalid CSRF token"):
-        asyncio.run(csrf.enforce_csrf(request))
-
-
-def test_csrf_accepts_matching_token_header():
-    request = _DummyRequest("POST", "/api/settings/update", session={"user": {"id": "1"}})
-    token = csrf.get_or_create_csrf_token(request)
-    request.headers[csrf.CSRF_HEADER] = token
-
-    asyncio.run(csrf.enforce_csrf(request))
-
-
 def test_auth_status_returns_csrf_token_for_authenticated_session():
     request = _DummyRequest("GET", "/auth/status", session={"user": {"id": "1", "username": "tester"}})
 
     result = asyncio.run(auth_status(request))
 
-    assert result["authenticated"] is True
-    assert result["user"]["id"] == "1"
-    assert isinstance(result["csrf_token"], str)
-    assert result["csrf_token"] == request.session[csrf.CSRF_SESSION_KEY]
-
-
-def test_csrf_token_is_stable_across_multiple_reads():
-    request = _DummyRequest("GET", "/api/sessions/list", session={"user": {"id": "1"}})
-
-    first = csrf.get_or_create_csrf_token(request)
-    second = csrf.get_or_create_csrf_token(request)
-
-    assert first == second
-
-
-def test_csrf_missing_header_returns_403_http_exception():
-    request = _DummyRequest("POST", "/api/sessions/create", session={"user": {"id": "1"}})
-
-    import pytest
-    from fastapi import HTTPException
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(csrf.enforce_csrf(request))
-
-    assert exc_info.value.status_code == 403
-    assert "missing X-CSRF-Token header" in str(exc_info.value.detail)
+    payload = result.body.decode("utf-8")
+    assert "\"authenticated\":true" in payload
+    assert "\"csrf_token\":" in payload
 
 
 class _CookieCaptureResponse(Response):

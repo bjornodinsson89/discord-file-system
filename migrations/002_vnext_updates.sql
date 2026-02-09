@@ -19,9 +19,17 @@ END
 WHERE xanax_stack IS NULL;
 
 -- Add constraint for valid values
-ALTER TABLE happy_jump_sessions 
-ADD CONSTRAINT chk_xanax_stack 
-CHECK (xanax_stack IN ('1_xanax', '2_xanax', '3_xanax', 'full_stack'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_xanax_stack'
+    ) THEN
+        ALTER TABLE happy_jump_sessions
+        ADD CONSTRAINT chk_xanax_stack
+        CHECK (xanax_stack IN ('1_xanax', '2_xanax', '3_xanax', 'full_stack'));
+    END IF;
+END $$;
 
 -- ============================================================================
 -- INSURANCE POLICIES: Restructure for new form fields
@@ -50,14 +58,30 @@ SET
 WHERE cost_type IS NULL;
 
 -- Add constraint for valid coverage types
-ALTER TABLE insurance_policies 
-ADD CONSTRAINT chk_coverage_type 
-CHECK (coverage_type IN ('xanax_stack', 'ecstasy_after_stack', 'all_drugs'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_coverage_type'
+    ) THEN
+        ALTER TABLE insurance_policies
+        ADD CONSTRAINT chk_coverage_type
+        CHECK (coverage_type IN ('xanax_stack', 'ecstasy_after_stack', 'all_drugs'));
+    END IF;
+END $$;
 
 -- Add constraint for valid cost types
-ALTER TABLE insurance_policies 
-ADD CONSTRAINT chk_cost_type 
-CHECK (cost_type IN ('xanax', 'erotic_dvd'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_cost_type'
+    ) THEN
+        ALTER TABLE insurance_policies
+        ADD CONSTRAINT chk_cost_type
+        CHECK (cost_type IN ('xanax', 'erotic_dvd'));
+    END IF;
+END $$;
 
 -- ============================================================================
 -- RAFFLES: Rename max_tickets to tickets_available
@@ -109,9 +133,17 @@ ADD COLUMN IF NOT EXISTS approved_by BIGINT;
 ALTER TABLE insurance_providers 
 ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
 
-ALTER TABLE insurance_providers 
-ADD CONSTRAINT chk_approval_status 
-CHECK (approval_status IN ('pending', 'approved', 'rejected', 'disabled'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_approval_status'
+    ) THEN
+        ALTER TABLE insurance_providers
+        ADD CONSTRAINT chk_approval_status
+        CHECK (approval_status IN ('pending', 'approved', 'rejected', 'disabled'));
+    END IF;
+END $$;
 
 -- ============================================================================
 -- INDEXES FOR DASHBOARD QUERIES
