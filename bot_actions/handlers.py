@@ -1,16 +1,15 @@
 """
-Admin API Handlers
-Implements create/edit actions and "post to Discord now" integration.
+Bot action handlers used by Discord commands.
 """
 
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 from utils import get_database, get_torn_api
-from admin_api.schemas import *
+from bot_actions.schemas import *
 import config
 
-log = logging.getLogger("happy_jumper.admin_api")
+log = logging.getLogger("happy_jumper.bot_actions")
 
 # ============================================================================
 # BOT INSTANCE (injected at runtime)
@@ -22,7 +21,7 @@ def set_bot_instance(bot: object):
     """Set the bot instance for posting to Discord."""
     global _bot_instance
     _bot_instance = bot
-    log.info("Bot instance registered with admin API")
+    log.info("Bot instance registered with bot actions")
 
 def get_bot() -> object:
     if _bot_instance is None:
@@ -52,7 +51,7 @@ def _session_embed_payload(session: Dict[str, Any], signups: Optional[list[Dict[
 
     return {
         "title": f"Happy Jump #{session['id']} - {status}",
-        "description": "Manage this session from the dashboard.",
+        "description": "Manage this session from Discord.",
         "color": config.COLOR_PRIMARY,
         "fields": fields,
         "footer": {"text": "Happy Jumper Bot"},
@@ -132,8 +131,6 @@ async def create_session_handler(
     await db.update_jump_session(
         session_id,
         xanax_stack=request.xanax_stack,
-        created_by_dashboard=True,
-        dashboard_admin_id=admin_discord_id
     )
 
     session_data = await db.get_jump_session(session_id)
@@ -210,7 +207,7 @@ async def list_sessions_handler(
     )
 
 
-async def lock_session_handler(session_id: int, actor_discord_id: int, source: str = "dashboard") -> SuccessResponse:
+async def lock_session_handler(session_id: int, actor_discord_id: int, source: str = "discord") -> SuccessResponse:
     """Lock a session to prevent new signups."""
     db = get_database()
     session = await db.get_jump_session(session_id)
@@ -234,7 +231,7 @@ async def cancel_session_handler(
     session_id: int,
     actor_discord_id: int,
     reason: Optional[str] = None,
-    source: str = "dashboard"
+    source: str = "discord"
 ) -> SuccessResponse:
     """Cancel a session."""
     db = get_database()
@@ -258,7 +255,7 @@ async def cancel_session_handler(
 async def complete_session_handler(
     session_id: int,
     actor_discord_id: int,
-    source: str = "dashboard"
+    source: str = "discord"
 ) -> SuccessResponse:
     """Mark a session as completed."""
     db = get_database()
@@ -325,11 +322,6 @@ async def create_raffle_handler(
         )
         raffle_id = row['raffle_id']
 
-        await conn.execute("""
-            UPDATE raffles
-            SET created_by_dashboard = TRUE, dashboard_admin_id = $1
-            WHERE raffle_id = $2
-        """, admin_discord_id, raffle_id)
 
     raffle_data = await _get_raffle(raffle_id)
 
@@ -339,7 +331,7 @@ async def create_raffle_handler(
         message = await rest_client.send_message(
             request.channel_id,
             embeds=[embed_payload],
-            content="New raffle is live. Use the dashboard for interactions.",
+            content="New raffle is live. Use Discord interactions.",
         )
         message_id = int(message["id"])
     else:
@@ -361,7 +353,7 @@ async def create_raffle_handler(
 
     await db.log_audit(
         admin_discord_id,
-        "raffle_created_dashboard",
+        "raffle_created",
         "raffle",
         raffle_id,
         {"channel_id": request.channel_id}
@@ -413,7 +405,7 @@ async def list_raffles_handler(
 async def draw_raffle_handler(
     raffle_id: int,
     actor_discord_id: int,
-    source: str = "dashboard"
+    source: str = "discord"
 ) -> SuccessResponse:
     """Draw a winner for a raffle."""
     db = get_database()
@@ -442,7 +434,7 @@ async def draw_raffle_handler(
 async def cancel_raffle_handler(
     raffle_id: int,
     actor_discord_id: int,
-    source: str = "dashboard"
+    source: str = "discord"
 ) -> SuccessResponse:
     """Cancel a raffle."""
     db = get_database()
@@ -508,17 +500,11 @@ async def create_policy_handler(
         )
         policy_id = row['policy_id']
         
-        # Update with dashboard metadata
-        await conn.execute("""
-            UPDATE insurance_policies
-            SET created_by_dashboard = TRUE, dashboard_admin_id = $1
-            WHERE policy_id = $2
-        """, provider_discord_id, policy_id)
     
     # Log audit
     await db.log_audit(
         provider_discord_id,
-        "policy_created_dashboard",
+        "policy_created",
         "policy",
         policy_id,
         {"provider_id": provider_id}
@@ -533,7 +519,7 @@ async def approve_provider_handler(
     provider_id: int,
     status: str,
     actor_discord_id: int,
-    source: str = "dashboard"
+    source: str = "discord"
 ) -> SuccessResponse:
     """Approve, reject, or disable an insurance provider."""
     db = get_database()
@@ -562,7 +548,7 @@ async def approve_provider_handler(
 async def approve_claim_handler(
     claim_id: int,
     actor_discord_id: int,
-    source: str = "dashboard"
+    source: str = "discord"
 ) -> SuccessResponse:
     """Approve an insurance claim."""
     db = get_database()
@@ -585,7 +571,7 @@ async def reject_claim_handler(
     claim_id: int,
     actor_discord_id: int,
     notes: Optional[str] = None,
-    source: str = "dashboard"
+    source: str = "discord"
 ) -> SuccessResponse:
     """Reject an insurance claim."""
     db = get_database()
@@ -611,7 +597,7 @@ async def add_blacklist_handler(
     reason: Optional[str],
     actor_discord_id: int,
     expires_at: Optional[datetime] = None,
-    source: str = "dashboard"
+    source: str = "discord"
 ) -> SuccessResponse:
     """Add a user to the blacklist."""
     db = get_database()
@@ -635,7 +621,7 @@ async def remove_blacklist_handler(
     guild_id: int,
     discord_id: int,
     actor_discord_id: int,
-    source: str = "dashboard"
+    source: str = "discord"
 ) -> SuccessResponse:
     """Remove a user from the blacklist."""
     db = get_database()
@@ -651,7 +637,7 @@ async def remove_blacklist_handler(
 async def update_settings_handler(
     request: UpdateSettingsRequest,
     actor_discord_id: int,
-    source: str = "dashboard"
+    source: str = "discord"
 ) -> SettingsResponse:
     """Update guild settings and return refreshed settings."""
     db = get_database()
@@ -725,7 +711,7 @@ async def update_session_message(session_id: int):
                 int(channel_id),
                 int(session['announcement_message_id']),
                 embeds=[_session_embed_payload(session, signups)],
-                content="Session updated. Use the dashboard for latest status.",
+                content="Session updated.",
             )
             return
 
@@ -770,7 +756,7 @@ async def update_raffle_message(raffle_id: int, winner: Optional[Dict] = None):
                 int(channel_id),
                 int(raffle['announcement_message_id']),
                 embeds=[_raffle_embed_payload(raffle, entries, winner)],
-                content="Raffle updated. Use the dashboard for latest status.",
+                content="Raffle updated.",
             )
             if winner:
                 await rest_client.send_message(

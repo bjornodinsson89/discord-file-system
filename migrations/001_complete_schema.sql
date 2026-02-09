@@ -5,7 +5,6 @@
 -- ============================================================================
 
 -- Drop all existing tables (for clean rebuild)
-DROP TABLE IF EXISTS dashboard_sessions CASCADE;
 DROP TABLE IF EXISTS audit_log CASCADE;
 DROP TABLE IF EXISTS raffle_entries CASCADE;
 DROP TABLE IF EXISTS raffles CASCADE;
@@ -43,7 +42,7 @@ CREATE TABLE guild_settings (
     guild_id BIGINT PRIMARY KEY,
     host99k_role_id BIGINT,
     insurer_role_id BIGINT,
-    admin_role_id BIGINT,  -- Permission Model C: users with this role can use dashboard
+    admin_role_id BIGINT,  -- Permission Model C: users with this role can manage the bot
     jump_99k_channel_id BIGINT,
     insurance_channel_id BIGINT,
     raffle_channel_id BIGINT,
@@ -79,8 +78,6 @@ CREATE TABLE happy_jump_sessions (
     status VARCHAR(20) DEFAULT 'open',
     announcement_message_id BIGINT,
     announcement_channel_id BIGINT,
-    created_by_dashboard BOOLEAN DEFAULT FALSE,
-    dashboard_admin_id BIGINT,
     completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -247,8 +244,6 @@ CREATE TABLE insurance_policies (
     duration_hours INTEGER DEFAULT 24 CHECK (duration_hours >= 1 AND duration_hours <= 720),
     active BOOLEAN DEFAULT TRUE,
     
-    created_by_dashboard BOOLEAN DEFAULT FALSE,
-    dashboard_admin_id BIGINT,
     announcement_message_id BIGINT,
     announcement_channel_id BIGINT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -338,8 +333,6 @@ CREATE TABLE raffles (
     end_time TIMESTAMPTZ NOT NULL,
     announcement_message_id BIGINT,
     announcement_channel_id BIGINT,
-    created_by_dashboard BOOLEAN DEFAULT FALSE,
-    dashboard_admin_id BIGINT,
     drawn_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     
@@ -398,27 +391,6 @@ CREATE INDEX idx_audit_action ON audit_log(action);
 CREATE INDEX idx_audit_created ON audit_log(created_at DESC);
 CREATE INDEX idx_audit_target ON audit_log(target_type, target_id);
 
--- ============================================================================
--- DASHBOARD SESSIONS
--- Web dashboard authentication sessions
--- ============================================================================
-CREATE TABLE dashboard_sessions (
-    session_id VARCHAR(255) PRIMARY KEY,
-    discord_id BIGINT NOT NULL,
-    discord_username VARCHAR(100),
-    discord_avatar VARCHAR(255),
-    access_token TEXT,
-    refresh_token TEXT,
-    token_expires_at TIMESTAMPTZ,
-    guilds JSONB,  -- Cached list of user's guilds with admin access
-    session_data JSONB NOT NULL DEFAULT '{}',
-    expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX idx_dashboard_sessions_expiry ON dashboard_sessions(expires_at);
-CREATE INDEX idx_dashboard_sessions_discord_id ON dashboard_sessions(discord_id);
 
 -- ============================================================================
 -- HELPER FUNCTIONS
@@ -437,7 +409,6 @@ $$ language 'plpgsql';
 CREATE TRIGGER update_user_api_keys_updated_at BEFORE UPDATE ON user_api_keys FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_guild_settings_updated_at BEFORE UPDATE ON guild_settings FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_sessions_updated_at BEFORE UPDATE ON happy_jump_sessions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-CREATE TRIGGER update_dashboard_sessions_updated_at BEFORE UPDATE ON dashboard_sessions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
 -- VERIFICATION QUERIES

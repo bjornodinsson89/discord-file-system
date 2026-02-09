@@ -1,5 +1,5 @@
 """
-Happy Jump Discord Bot - vNext with Dashboard
+Happy Jump Discord Bot - Discord-only service
 Discord bot process entrypoint (no embedded web server).
 """
 
@@ -22,8 +22,8 @@ from views import (
     ApiKeyIntroView, ConfirmRemoveKeyView
 )
 
-from admin_api import handlers as admin_handlers
-from admin_api.schemas import (
+from bot_actions import handlers as admin_handlers
+from bot_actions.schemas import (
     CreateSessionRequest,
     CreateRaffleRequest,
     CreatePolicyRequest,
@@ -968,9 +968,6 @@ async def cleanup_worker():
         deleted_coverage = await db.cleanup_expired_coverage_reservations()
         if deleted_coverage > 0:
             log.info(f"Cleaned up {deleted_coverage} expired coverage reservations")
-        
-        # Clean up expired dashboard sessions
-        await db.cleanup_expired_dashboard_sessions()
         
         # Auto-promote from waitlist for sessions with open spots
         sessions = await db.get_sessions_with_expired_signups()

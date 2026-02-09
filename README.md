@@ -24,7 +24,6 @@ Optional:
 - `CLEAN_COMMANDS`
 - `RUN_MIGRATIONS`
 - `RUN_EMERGENCY_SCHEMA_FIXES`
-- `DASHBOARD_SECRET_KEY` (legacy encrypted data compatibility)
 
 ## Discord-only configuration commands
 

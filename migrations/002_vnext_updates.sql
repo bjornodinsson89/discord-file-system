@@ -1,5 +1,5 @@
 -- Migration 002: vNext Schema Updates
--- Updates schema according to dashboard specification requirements
+-- Updates schema according to Discord bot requirements
 
 -- ============================================================================
 -- HAPPY JUMP SESSIONS: Update xanax_count to xanax_stack with new validation
@@ -102,26 +102,8 @@ ALTER COLUMN tickets_available SET NOT NULL;
 -- ADD METADATA COLUMNS FOR DASHBOARD ACTIONS
 -- ============================================================================
 
--- Add created_by and dashboard tracking to sessions
-ALTER TABLE happy_jump_sessions 
-ADD COLUMN IF NOT EXISTS created_by_dashboard BOOLEAN DEFAULT FALSE;
 
-ALTER TABLE happy_jump_sessions 
-ADD COLUMN IF NOT EXISTS dashboard_admin_id BIGINT;
 
--- Add created_by and dashboard tracking to raffles
-ALTER TABLE raffles 
-ADD COLUMN IF NOT EXISTS created_by_dashboard BOOLEAN DEFAULT FALSE;
-
-ALTER TABLE raffles 
-ADD COLUMN IF NOT EXISTS dashboard_admin_id BIGINT;
-
--- Add created_by and dashboard tracking to insurance policies
-ALTER TABLE insurance_policies 
-ADD COLUMN IF NOT EXISTS created_by_dashboard BOOLEAN DEFAULT FALSE;
-
-ALTER TABLE insurance_policies 
-ADD COLUMN IF NOT EXISTS dashboard_admin_id BIGINT;
 
 -- Add provider approval workflow fields
 ALTER TABLE insurance_providers 
@@ -149,15 +131,15 @@ END $$;
 -- INDEXES FOR DASHBOARD QUERIES
 -- ============================================================================
 
--- Index for dashboard session queries
+-- Index for session queries
 CREATE INDEX IF NOT EXISTS idx_sessions_created_at 
 ON happy_jump_sessions(created_at DESC);
 
--- Index for dashboard raffle queries
+-- Index for raffle queries
 CREATE INDEX IF NOT EXISTS idx_raffles_created_at 
 ON raffles(created_at DESC);
 
--- Index for dashboard insurance queries
+-- Index for insurance queries
 CREATE INDEX IF NOT EXISTS idx_policies_provider_active 
 ON insurance_policies(provider_id, active);
 
@@ -165,6 +147,6 @@ ON insurance_policies(provider_id, active);
 CREATE INDEX IF NOT EXISTS idx_providers_approval_status 
 ON insurance_providers(approval_status);
 
--- Index for audit log dashboard queries
+-- Index for audit log source queries
 CREATE INDEX IF NOT EXISTS idx_audit_created_desc 
 ON audit_log(created_at DESC);

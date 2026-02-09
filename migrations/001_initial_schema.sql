@@ -236,13 +236,3 @@ CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_discord_id);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 
--- Dashboard Sessions
-CREATE TABLE IF NOT EXISTS dashboard_sessions (
-    session_id VARCHAR(255) PRIMARY KEY,
-    discord_id BIGINT NOT NULL,
-    session_data JSONB NOT NULL,
-    expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_expiry ON dashboard_sessions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_discord_id ON dashboard_sessions(discord_id);

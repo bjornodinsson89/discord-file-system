@@ -1847,56 +1847,6 @@ class DatabaseManager:
         await self.update_raffle(raffle_id, status='cancelled')
     
     # ========================================================================
-    # DASHBOARD SESSIONS
-    # ========================================================================
-    
-    async def create_dashboard_session(
-        self,
-        session_id: str,
-        discord_id: int,
-        session_data: Dict,
-        expires_at: datetime
-    ):
-        """Create or update dashboard session."""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO dashboard_sessions (session_id, discord_id, session_data, expires_at)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (session_id) DO UPDATE SET
-                    session_data = EXCLUDED.session_data,
-                    expires_at = EXCLUDED.expires_at,
-                    last_accessed_at = NOW()
-            """, session_id, discord_id, json.dumps(session_data), expires_at)
-    
-    async def get_dashboard_session(self, session_id: str) -> Optional[Dict]:
-        """Get dashboard session."""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                SELECT * FROM dashboard_sessions
-                WHERE session_id = $1 AND expires_at > NOW()
-            """, session_id)
-            if row:
-                result = dict(row)
-                result['session_data'] = json.loads(result['session_data'])
-                return result
-            return None
-    
-    async def delete_dashboard_session(self, session_id: str):
-        """Delete dashboard session."""
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM dashboard_sessions WHERE session_id = $1", session_id
-            )
-    
-    async def cleanup_expired_dashboard_sessions(self) -> int:
-        """Clean up expired dashboard sessions."""
-        async with self.pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM dashboard_sessions WHERE expires_at < NOW()"
-            )
-            return int(result.split()[-1])
-    
-    # ========================================================================
     # STATISTICS
     # ========================================================================
     
@@ -1925,15 +1875,15 @@ class DatabaseManager:
                 'raffles': dict(raffles)
             }
     
-    async def get_dashboard_stats(self, guild_id: int) -> Dict:
-        """Get dashboard KPI stats with schema-tolerant fallbacks."""
+    async def get_admin_stats(self, guild_id: int) -> Dict:
+        """Get admin KPI stats with schema-tolerant fallbacks."""
 
         async def _safe_count(conn: asyncpg.Connection, query: str, *args: Any) -> int:
             try:
                 value = await conn.fetchval(query, *args)
                 return int(value or 0)
             except asyncpg.PostgresError:
-                log.warning("Dashboard stats query failed; defaulting to 0", exc_info=True)
+                log.warning("Admin stats query failed; defaulting to 0", exc_info=True)
                 return 0
 
         async with self.pool.acquire() as conn:

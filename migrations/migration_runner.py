@@ -199,7 +199,7 @@ class MigrationRunner:
             'happy_jump_signups', 'happy_jump_waitlist', 'happy_jump_readiness',
             'insurance_providers', 'insurance_policies', 'insurance_coverage',
             'insurance_claims', 'raffles', 'raffle_entries', 'audit_log',
-            'dashboard_sessions', 'blacklist', 'host_reputation', 'host_ratings'
+            'blacklist', 'host_reputation', 'host_ratings'
         ]
         
         all_good = True
@@ -270,7 +270,7 @@ async def reset_database_standalone() -> bool:
     
     try:
         tables = [
-            'dashboard_sessions', 'audit_log', 'raffle_entries', 'raffles',
+            'audit_log', 'raffle_entries', 'raffles',
             'insurance_claims', 'insurance_coverage', 'insurance_policies',
             'insurance_providers', 'blacklist', 'host_ratings', 'host_reputation',
             'happy_jump_readiness', 'happy_jump_waitlist', 'happy_jump_signups',
