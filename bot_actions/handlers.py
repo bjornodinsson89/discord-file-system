@@ -29,6 +29,30 @@ def get_bot() -> object:
     return _bot_instance
 
 
+async def _resolve_raffle_channel(guild, bot, channel_id: int):
+    channel = guild.get_channel(int(channel_id)) if channel_id else None
+    if channel is None and channel_id:
+        try:
+            fetched = await guild.fetch_channel(int(channel_id))
+            if hasattr(fetched, "send"):
+                channel = fetched
+        except Exception:
+            channel = None
+    return channel
+
+
+def _missing_channel_permissions(channel, me) -> list[str]:
+    perms = channel.permissions_for(me)
+    missing = []
+    if not perms.view_channel:
+        missing.append("View Channel")
+    if not perms.send_messages:
+        missing.append("Send Messages")
+    if not perms.embed_links:
+        missing.append("Embed Links")
+    return missing
+
+
 def _session_embed_payload(session: Dict[str, Any], signups: Optional[list[Dict[str, Any]]] = None) -> Dict[str, Any]:
     signups = signups or []
     paid = sum(1 for s in signups if s.get("status") == "paid")
@@ -111,13 +135,8 @@ async def create_session_handler(
     elif request.payment_type == "xanax":
         payment_item_id = config.XANAX_ITEM_ID
 
-    # Prefer explicit 1-4 stack values; keep legacy full_stack compatibility.
-    stack_aliases = {"full_stack": "4_xanax"}
-    normalized_stack = stack_aliases.get(request.xanax_stack, request.xanax_stack)
+    normalized_stack = db.normalize_xanax_stack(request.xanax_stack)
     allowed_stacks = {"1_xanax": 1, "2_xanax": 2, "3_xanax": 3, "4_xanax": 4}
-    if normalized_stack not in allowed_stacks:
-        raise ValueError("Invalid xanax stack. Choose 1, 2, 3, or 4 xanax.")
-
     xanax_count = allowed_stacks[normalized_stack]
     log.info(
         "Session create requested guild_id=%s host_discord_id=%s channel_id=%s xanax_stack=%s",
@@ -310,20 +329,20 @@ async def create_raffle_handler(
     if not channel_id:
         raise ValueError("Raffle channel is not configured. Please run /setup first.")
 
-    channel = guild.get_channel(channel_id)
+    channel = await _resolve_raffle_channel(guild, bot, channel_id)
     if not channel:
         log.warning("Configured raffle channel missing; clearing setting guild_id=%s channel_id=%s", request.guild_id, channel_id)
         await db.update_guild_settings(request.guild_id, raffle_channel_id=None)
-        raise ValueError("Configured raffle channel no longer exists. I cleared it; please run /setup to set a new raffle channel.")
+        raise ValueError("Configured raffle channel is invalid. I cleared it; please run /setup to set a new raffle channel.")
 
     me = guild.me or guild.get_member(getattr(bot.user, 'id', 0))
     if me is None:
         raise ValueError("I couldn't verify my raffle channel permissions. Please try again in a moment.")
 
-    perms = channel.permissions_for(me)
-    if not (perms.view_channel and perms.send_messages and perms.embed_links):
+    missing = _missing_channel_permissions(channel, me)
+    if missing:
         raise ValueError(
-            "I need View Channel, Send Messages, and Embed Links in the configured raffle channel. "
+            f"Missing permissions in raffle channel: {', '.join(missing)}. "
             "Please fix channel permissions or run /setup again."
         )
 
@@ -429,7 +448,7 @@ async def draw_raffle_handler(
 
     if not raffle:
         raise ValueError("Raffle not found")
-    if raffle['status'] not in ('active', 'open'):
+    if raffle['status'] != 'active':
         raise ValueError("Raffle is not active")
 
     winner = await db.draw_raffle_winner(raffle_id)
@@ -458,7 +477,7 @@ async def cancel_raffle_handler(
 
     if not raffle:
         raise ValueError("Raffle not found")
-    if raffle['status'] not in ('active', 'open'):
+    if raffle['status'] != 'active':
         raise ValueError("Raffle is not active")
 
     await db.cancel_raffle(raffle_id)
@@ -727,6 +746,13 @@ async def update_session_message(session_id: int):
             return
         channel = guild.get_channel(channel_id)
         if not channel:
+            try:
+                fetched = await guild.fetch_channel(channel_id)
+                if hasattr(fetched, "send"):
+                    channel = fetched
+            except Exception:
+                channel = None
+        if not channel:
             return
 
         message = await channel.fetch_message(session['announcement_message_id'])
@@ -763,6 +789,15 @@ async def update_raffle_message(raffle_id: int, winner: Optional[Dict] = None):
             return
         channel = guild.get_channel(channel_id)
         if not channel:
+            try:
+                fetched = await guild.fetch_channel(channel_id)
+                if hasattr(fetched, "send"):
+                    channel = fetched
+            except Exception:
+                channel = None
+        if not channel:
+            await db.update_guild_settings(raffle['guild_id'], raffle_channel_id=None)
+            log.warning("Raffle channel id %s invalid for guild %s; cleared setting", channel_id, raffle['guild_id'])
             return
 
         message = await channel.fetch_message(raffle['announcement_message_id'])
@@ -775,7 +810,7 @@ async def update_raffle_message(raffle_id: int, winner: Optional[Dict] = None):
         else:
             embed = create_raffle_embed(raffle, entries)
 
-        view = RaffleView(raffle_id) if raffle['status'] in ('active', 'open') else None
+        view = RaffleView(raffle_id) if raffle['status'] == 'active' else None
         await message.edit(embed=embed, view=view)
 
         if winner:

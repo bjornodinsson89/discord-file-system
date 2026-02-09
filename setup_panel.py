@@ -69,6 +69,27 @@ async def _send_or_edit(interaction: discord.Interaction, embed: discord.Embed, 
         await interaction.response.edit_message(embed=embed, view=view)
 
 
+def _missing_channel_perms(channel: discord.abc.GuildChannel, me: discord.Member) -> list[str]:
+    perms = channel.permissions_for(me)
+    missing: list[str] = []
+    if not perms.view_channel:
+        missing.append('View Channel')
+    if not perms.send_messages:
+        missing.append('Send Messages')
+    if not perms.embed_links:
+        missing.append('Embed Links')
+    return missing
+
+
+async def _respond_callback_error(interaction: discord.Interaction, error: Exception):
+    log.exception('Setup callback error guild_id=%s user_id=%s', interaction.guild_id, interaction.user.id if interaction.user else None, exc_info=error)
+    msg = "Unexpected setup error. Please try again, or rerun /setup if this continues."
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=create_error_embed('Setup failed', msg), ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=create_error_embed('Setup failed', msg), ephemeral=True)
+
+
 class OwnerView(discord.ui.View):
     def __init__(self, *, owner_id: int, db, settings: dict[str, Any], timeout: float = 300):
         super().__init__(timeout=timeout)
@@ -129,7 +150,10 @@ class TemplateModal(discord.ui.Modal):
         self.add_item(self.template_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await self.panel.save_changes(interaction, {self.field_name: str(self.template_input.value).strip() or None})
+        try:
+            await self.panel.save_changes(interaction, {self.field_name: str(self.template_input.value).strip() or None})
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
 
 class TimeoutModal(discord.ui.Modal):
@@ -141,11 +165,14 @@ class TimeoutModal(discord.ui.Modal):
         self.timeout_minutes.default = str(current or 5)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        raw = str(self.timeout_minutes.value).strip()
-        if not raw.isdigit() or not 1 <= int(raw) <= 60:
-            await interaction.response.send_message(embed=create_error_embed("Invalid value", "Reservation timeout must be between 1 and 60."), ephemeral=True)
-            return
-        await self.panel.save_changes(interaction, {"reservation_timeout_minutes": int(raw)})
+        try:
+            raw = str(self.timeout_minutes.value).strip()
+            if not raw.isdigit() or not 1 <= int(raw) <= 60:
+                await interaction.response.send_message(embed=create_error_embed("Invalid value", "Reservation timeout must be between 1 and 60."), ephemeral=True)
+                return
+            await self.panel.save_changes(interaction, {"reservation_timeout_minutes": int(raw)})
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
 
 class SetupPanelView(OwnerView):
@@ -241,7 +268,7 @@ class SetupPanelView(OwnerView):
             await interaction.response.send_message(
                 embed=create_error_embed(
                     "Channel unavailable",
-                    "I couldn't resolve that channel in this server. Please select another channel or try `/setup` again.",
+                    "Couldn't resolve that channel. Try again, or check bot permissions.",
                 ),
                 ephemeral=True,
             )
@@ -255,10 +282,10 @@ class SetupPanelView(OwnerView):
             )
             return
         mention = getattr(resolved, "mention", f"<#{resolved.id}>")
-        perms = resolved.permissions_for(me)
-        if not (perms.view_channel and perms.send_messages and perms.embed_links):
+        missing = _missing_channel_perms(resolved, me)
+        if missing:
             await interaction.response.send_message(
-                embed=create_error_embed("Missing permissions", f"I need **View Channel**, **Send Messages**, and **Embed Links** in {mention}."),
+                embed=create_error_embed("Missing permissions", f"Missing in {mention}: **{', '.join(missing)}**."),
                 ephemeral=True,
             )
             return
@@ -270,29 +297,47 @@ class SetupPanelView(OwnerView):
 
     @discord.ui.button(label="Channels", style=discord.ButtonStyle.primary)
     async def channels_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, create_info_embed("Channels", "Use buttons below to pick each channel."), ChannelsView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        try:
+            await _send_or_edit(interaction, create_info_embed("Channels", "Use buttons below to pick each channel."), ChannelsView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
     @discord.ui.button(label="Roles", style=discord.ButtonStyle.primary)
     async def roles_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, create_info_embed("Roles", "Configure admin, host, and insurer roles."), RolesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        try:
+            await _send_or_edit(interaction, create_info_embed("Roles", "Configure admin, host, and insurer roles."), RolesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
     @discord.ui.button(label="Announcements", style=discord.ButtonStyle.primary)
     async def announcements_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, create_info_embed("Announcements", f"Toggle and edit announcement templates. Supported: {SUPPORTED_PLACEHOLDERS}"), AnnouncementsView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        try:
+            await _send_or_edit(interaction, create_info_embed("Announcements", f"Toggle and edit announcement templates. Supported: {SUPPORTED_PLACEHOLDERS}"), AnnouncementsView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
     @discord.ui.button(label="Feature Toggles", style=discord.ButtonStyle.primary)
     async def feature_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, create_info_embed("Feature Toggles", "Change runtime behavior toggles."), FeatureTogglesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        try:
+            await _send_or_edit(interaction, create_info_embed("Feature Toggles", "Change runtime behavior toggles."), FeatureTogglesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
     @discord.ui.button(label="Test", style=discord.ButtonStyle.secondary)
     async def test_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, create_info_embed("Test", "Send test announcements to configured channels."), TestView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        try:
+            await _send_or_edit(interaction, create_info_embed("Test", "Send test announcements to configured channels."), TestView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
     async def close_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        for child in self.children:
-            child.disabled = True
-        await _send_or_edit(interaction, create_success_embed("Setup closed", "You can run `/setup` again anytime."), self)
+        try:
+            for child in self.children:
+                child.disabled = True
+            await _send_or_edit(interaction, create_success_embed("Setup closed", "You can run `/setup` again anytime."), self)
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
 
 class BackView(OwnerView):
@@ -303,7 +348,10 @@ class BackView(OwnerView):
 
     @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary)
     async def back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, self.panel._build_embed(), self.panel)
+        try:
+            await _send_or_edit(interaction, self.panel._build_embed(), self.panel)
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
 
 class ChannelSelect(discord.ui.ChannelSelect):
@@ -318,7 +366,10 @@ class ChannelSelect(discord.ui.ChannelSelect):
         self.key = key
 
     async def callback(self, interaction: discord.Interaction):
-        await self.panel._set_channel(interaction, self.key, self.values[0])
+        try:
+            await self.panel._set_channel(interaction, self.key, self.values[0])
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
 
 class ChannelsView(BackView):
@@ -336,8 +387,11 @@ class AdminRoleSelect(discord.ui.RoleSelect):
         self.panel = panel
 
     async def callback(self, interaction: discord.Interaction):
-        role_ids = [str(role.id) for role in self.values if role.name != "@everyone"]
-        await self.panel.save_changes(interaction, {"admin_role_ids": role_ids, "admin_role_id": int(role_ids[0]) if role_ids else None})
+        try:
+            role_ids = [int(role.id) for role in self.values if not role.is_default()]
+            await self.panel.save_changes(interaction, {"admin_role_ids": role_ids, "admin_role_id": role_ids[0] if role_ids else None})
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
 
 class SingleRoleSelect(discord.ui.RoleSelect):
@@ -347,11 +401,14 @@ class SingleRoleSelect(discord.ui.RoleSelect):
         self.key = key
 
     async def callback(self, interaction: discord.Interaction):
-        role = self.values[0]
-        if role.is_default():
-            await interaction.response.send_message(embed=create_error_embed("Invalid role", "Cannot use @everyone for this setting."), ephemeral=True)
-            return
-        await self.panel.save_changes(interaction, {self.key: role.id})
+        try:
+            role = self.values[0]
+            if role.is_default():
+                await interaction.response.send_message(embed=create_error_embed("Invalid role", "Cannot use @everyone for this setting."), ephemeral=True)
+                return
+            await self.panel.save_changes(interaction, {self.key: int(role.id)})
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
 
 class RolesView(BackView):
@@ -365,65 +422,86 @@ class RolesView(BackView):
 class AnnouncementsView(BackView):
     @discord.ui.button(label="Toggle Welcome", style=discord.ButtonStyle.primary)
     async def toggle_welcome(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.panel.save_changes(interaction, {"welcome_enabled": not bool(self.settings.get("welcome_enabled"))})
+        try:
+            await self.panel.save_changes(interaction, {"welcome_enabled": not bool(self.settings.get("welcome_enabled"))})
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
     @discord.ui.button(label="Edit Welcome Template", style=discord.ButtonStyle.secondary)
     async def edit_welcome(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(TemplateModal(self.panel, "welcome_message_template", "Welcome message template", self.settings.get("welcome_message_template")))
+        try:
+            await interaction.response.send_modal(TemplateModal(self.panel, "welcome_message_template", "Welcome message template", self.settings.get("welcome_message_template")))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
     @discord.ui.button(label="Edit Session Template", style=discord.ButtonStyle.secondary)
     async def edit_session(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(TemplateModal(self.panel, "session_announce_template", "Session announce template", self.settings.get("session_announce_template")))
+        try:
+            await interaction.response.send_modal(TemplateModal(self.panel, "session_announce_template", "Session announce template", self.settings.get("session_announce_template")))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
 
 class FeatureTogglesView(BackView):
     @discord.ui.button(label="Toggle Auto Complete", style=discord.ButtonStyle.primary)
     async def toggle_auto_complete(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.panel.save_changes(interaction, {"auto_complete_enabled": not bool(self.settings.get("auto_complete_enabled", True))})
+        try:
+            await self.panel.save_changes(interaction, {"auto_complete_enabled": not bool(self.settings.get("auto_complete_enabled", True))})
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
     @discord.ui.button(label="Set Reservation Timeout", style=discord.ButtonStyle.secondary)
     async def reservation_timeout(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(TimeoutModal(self.panel, self.settings.get("reservation_timeout_minutes")))
+        try:
+            await interaction.response.send_modal(TimeoutModal(self.panel, self.settings.get("reservation_timeout_minutes")))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
 
 class TestView(BackView):
     @discord.ui.button(label="Test session announcement", style=discord.ButtonStyle.success)
     async def test_session(self, interaction: discord.Interaction, _: discord.ui.Button):
-        channel_id = self.settings.get("jump_99k_channel_id") or self.settings.get("announce_channel_id")
-        channel = interaction.guild.get_channel(channel_id or 0)
-        if channel is None:
-            await interaction.response.send_message(embed=create_error_embed("Missing channel", "Configure jump channel first."), ephemeral=True)
-            return
-        me = self.panel._resolve_bot_member(interaction)
-        if me is None:
-            await interaction.response.send_message(embed=create_error_embed("Bot member unavailable", "Unable to validate my permissions right now. Please try again."), ephemeral=True)
-            return
-        perms = channel.permissions_for(me)
-        if not (perms.view_channel and perms.send_messages and perms.embed_links):
-            await interaction.response.send_message(embed=create_error_embed("Missing permissions", f"I cannot post embeds in {channel.mention}."), ephemeral=True)
-            return
-        template = self.settings.get("session_announce_template") or "Session test for {guild} in {channel} at {timestamp}."
-        await channel.send(embed=create_info_embed("Session Announcement Test", _render_template(template, interaction)))
-        await interaction.response.send_message(embed=create_success_embed("Test sent", f"Posted in {channel.mention}."), ephemeral=True)
+        try:
+            channel_id = self.settings.get("jump_99k_channel_id") or self.settings.get("announce_channel_id")
+            channel = interaction.guild.get_channel(channel_id or 0)
+            if channel is None:
+                await interaction.response.send_message(embed=create_error_embed("Missing channel", "Configure jump channel first."), ephemeral=True)
+                return
+            me = self.panel._resolve_bot_member(interaction)
+            if me is None:
+                await interaction.response.send_message(embed=create_error_embed("Bot member unavailable", "Unable to validate my permissions right now. Please try again."), ephemeral=True)
+                return
+            missing = _missing_channel_perms(channel, me)
+            if missing:
+                await interaction.response.send_message(embed=create_error_embed("Missing permissions", f"Missing in {channel.mention}: **{', '.join(missing)}**."), ephemeral=True)
+                return
+            template = self.settings.get("session_announce_template") or "Session test for {guild} in {channel} at {timestamp}."
+            await channel.send(embed=create_info_embed("Session Announcement Test", _render_template(template, interaction)))
+            await interaction.response.send_message(embed=create_success_embed("Test sent", f"Posted in {channel.mention}."), ephemeral=True)
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
     @discord.ui.button(label="Test welcome", style=discord.ButtonStyle.success)
     async def test_welcome(self, interaction: discord.Interaction, _: discord.ui.Button):
-        channel_id = self.settings.get("welcome_channel_id") or self.settings.get("announce_channel_id")
-        channel = interaction.guild.get_channel(channel_id or 0)
-        if channel is None:
-            await interaction.response.send_message(embed=create_error_embed("Missing channel", "Configure welcome channel first."), ephemeral=True)
-            return
-        me = self.panel._resolve_bot_member(interaction)
-        if me is None:
-            await interaction.response.send_message(embed=create_error_embed("Bot member unavailable", "Unable to validate my permissions right now. Please try again."), ephemeral=True)
-            return
-        perms = channel.permissions_for(me)
-        if not (perms.view_channel and perms.send_messages and perms.embed_links):
-            await interaction.response.send_message(embed=create_error_embed("Missing permissions", f"I cannot post embeds in {channel.mention}."), ephemeral=True)
-            return
-        template = self.settings.get("welcome_message_template") or "Welcome {mention} to {guild}!"
-        await channel.send(embed=create_success_embed("Welcome Test", _render_template(template, interaction)))
-        await interaction.response.send_message(embed=create_success_embed("Test sent", f"Posted in {channel.mention}."), ephemeral=True)
+        try:
+            channel_id = self.settings.get("welcome_channel_id") or self.settings.get("announce_channel_id")
+            channel = interaction.guild.get_channel(channel_id or 0)
+            if channel is None:
+                await interaction.response.send_message(embed=create_error_embed("Missing channel", "Configure welcome channel first."), ephemeral=True)
+                return
+            me = self.panel._resolve_bot_member(interaction)
+            if me is None:
+                await interaction.response.send_message(embed=create_error_embed("Bot member unavailable", "Unable to validate my permissions right now. Please try again."), ephemeral=True)
+                return
+            missing = _missing_channel_perms(channel, me)
+            if missing:
+                await interaction.response.send_message(embed=create_error_embed("Missing permissions", f"Missing in {channel.mention}: **{', '.join(missing)}**."), ephemeral=True)
+                return
+            template = self.settings.get("welcome_message_template") or "Welcome {mention} to {guild}!"
+            await channel.send(embed=create_success_embed("Welcome Test", _render_template(template, interaction)))
+            await interaction.response.send_message(embed=create_success_embed("Test sent", f"Posted in {channel.mention}."), ephemeral=True)
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
 
 async def send_setup_panel(interaction: discord.Interaction, db) -> None:

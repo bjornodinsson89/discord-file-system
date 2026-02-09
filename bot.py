@@ -1121,8 +1121,33 @@ async def _draw_raffle_winner(raffle: dict):
             log.warning("Raffle channel not configured for guild %s; skipping raffle completion announcement", raffle['guild_id'])
             return
         
-        channel = guild.get_channel(channel_id)
+        channel = guild.get_channel(int(channel_id)) if channel_id else None
+        if channel is None and channel_id:
+            try:
+                fetched = await guild.fetch_channel(int(channel_id))
+                if hasattr(fetched, "send"):
+                    channel = fetched
+            except Exception:
+                channel = None
         if not channel:
+            await db.update_guild_settings(raffle['guild_id'], raffle_channel_id=None)
+            log.warning("Configured raffle channel invalid for guild %s; cleared raffle_channel_id", raffle['guild_id'])
+            return
+
+        me = guild.me or guild.get_member(getattr(bot.user, 'id', 0))
+        if me is None:
+            log.warning("Bot member unavailable while completing raffle %s", raffle_id)
+            return
+        perms = channel.permissions_for(me)
+        missing = []
+        if not perms.view_channel:
+            missing.append("View Channel")
+        if not perms.send_messages:
+            missing.append("Send Messages")
+        if not perms.embed_links:
+            missing.append("Embed Links")
+        if missing:
+            log.warning("Missing raffle completion channel permissions guild=%s channel=%s missing=%s", raffle['guild_id'], channel_id, ', '.join(missing))
             return
         
         # Get updated raffle data
