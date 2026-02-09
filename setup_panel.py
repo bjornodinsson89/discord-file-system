@@ -88,6 +88,30 @@ class OwnerView(discord.ui.View):
         for child in self.children:
             child.disabled = True
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item[Any]) -> None:
+        selected = None
+        if hasattr(item, "values"):
+            values = getattr(item, "values") or []
+            if values:
+                selected = values[0]
+        log.exception(
+            "Setup callback failed guild_id=%s user_id=%s selected_id=%s selected_type=%s item_type=%s",
+            interaction.guild_id,
+            interaction.user.id if interaction.user else None,
+            getattr(selected, "id", None),
+            type(selected).__name__ if selected else None,
+            type(item).__name__,
+            exc_info=error,
+        )
+        message = (
+            "Something went wrong while saving this setup option. "
+            "Please try again. If this keeps happening, re-run `/setup`."
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=create_error_embed("Setup failed", message), ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=create_error_embed("Setup failed", message), ephemeral=True)
+
 
 class TemplateModal(discord.ui.Modal):
     def __init__(self, panel: "SetupPanelView", field_name: str, label: str, current_value: str | None):
@@ -192,7 +216,47 @@ class SetupPanelView(OwnerView):
         )
         await _send_or_edit(interaction, self._build_embed(), self)
 
-    async def _set_channel(self, interaction: discord.Interaction, key: str, channel: discord.abc.GuildChannel):
+    async def _resolve_real_channel(self, interaction: discord.Interaction, selected: Any) -> discord.abc.GuildChannel | None:
+        if hasattr(selected, "permissions_for"):
+            return selected
+
+        guild = interaction.guild
+        if guild is None:
+            return None
+
+        channel_id = getattr(selected, "id", None)
+        resolved = guild.get_channel(channel_id) if channel_id else None
+        if resolved is not None and hasattr(resolved, "permissions_for"):
+            return resolved
+
+        bot = getattr(interaction, "client", None)
+        if bot is not None and channel_id:
+            try:
+                fetched = await bot.fetch_channel(channel_id)
+                if hasattr(fetched, "permissions_for"):
+                    return fetched
+            except Exception:
+                log.exception(
+                    "Failed to fetch selected setup channel guild_id=%s channel_id=%s selected_type=%s",
+                    interaction.guild_id,
+                    channel_id,
+                    type(selected).__name__,
+                )
+
+        return None
+
+    async def _set_channel(self, interaction: discord.Interaction, key: str, channel: Any):
+        resolved = await self._resolve_real_channel(interaction, channel)
+        if resolved is None:
+            await interaction.response.send_message(
+                embed=create_error_embed(
+                    "Channel unavailable",
+                    "I couldn't resolve that channel in this server. Please select another channel or try `/setup` again.",
+                ),
+                ephemeral=True,
+            )
+            return
+
         me = self._resolve_bot_member(interaction)
         if me is None:
             await interaction.response.send_message(
@@ -200,16 +264,16 @@ class SetupPanelView(OwnerView):
                 ephemeral=True,
             )
             return
-        perms = channel.permissions_for(me)
+        perms = resolved.permissions_for(me)
         if not (perms.view_channel and perms.send_messages and perms.embed_links):
             await interaction.response.send_message(
-                embed=create_error_embed("Missing permissions", f"I need **View Channel**, **Send Messages**, and **Embed Links** in {channel.mention}."),
+                embed=create_error_embed("Missing permissions", f"I need **View Channel**, **Send Messages**, and **Embed Links** in {resolved.mention}."),
                 ephemeral=True,
             )
             return
-        updates = {key: channel.id}
+        updates = {key: resolved.id}
         if key == "jump_99k_channel_id":
-            updates["announce_channel_id"] = channel.id
+            updates["announce_channel_id"] = resolved.id
         await self.save_changes(interaction, updates)
 
     @discord.ui.button(label="Channels", style=discord.ButtonStyle.primary)

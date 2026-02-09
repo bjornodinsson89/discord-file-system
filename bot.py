@@ -537,7 +537,6 @@ async def session_complete(interaction: discord.Interaction, session_id: int):
 @bot.tree.command(name="raffle_create", description="Create a raffle (Admin only)")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
-    channel="Channel to post the raffle announcement",
     prize="Prize description",
     ticket_payment_type="Ticket payment type",
     ticket_price="Ticket price",
@@ -553,7 +552,6 @@ async def session_complete(interaction: discord.Interaction, session_id: int):
 )
 async def raffle_create(
     interaction: discord.Interaction,
-    channel: discord.TextChannel,
     prize: str,
     ticket_payment_type: app_commands.Choice[str],
     ticket_price: int,
@@ -567,7 +565,6 @@ async def raffle_create(
     try:
         request = CreateRaffleRequest(
             guild_id=interaction.guild_id,
-            channel_id=channel.id,
             prize=prize,
             ticket_payment_type=ticket_payment_type.value,
             ticket_price=ticket_price,
@@ -1118,9 +1115,10 @@ async def _draw_raffle_winner(raffle: dict):
             return
         
         settings = await db.get_guild_settings(raffle['guild_id'])
-        channel_id = raffle.get('announcement_channel_id') or settings.get('raffle_channel_id')
+        channel_id = settings.get('raffle_channel_id')
         
         if not channel_id:
+            log.warning("Raffle channel not configured for guild %s; skipping raffle completion announcement", raffle['guild_id'])
             return
         
         channel = guild.get_channel(channel_id)
