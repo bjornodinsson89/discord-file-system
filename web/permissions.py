@@ -48,7 +48,13 @@ async def get_user_guilds(user: Dict = Depends(get_current_user)) -> list:
         if not guild_id:
             continue
 
-        if await is_bot_in_guild(guild_id):
+        try:
+            bot_present = await is_bot_in_guild(guild_id)
+        except RuntimeError as exc:
+            log.error("Discord bot presence check failed guild_id=%s error=%s", guild_id, exc)
+            raise HTTPException(status_code=503, detail=f"Discord bot connectivity error: {exc}")
+
+        if bot_present:
             eligible_guilds.append(guild)
         else:
             log.debug("Guild %s filtered out: bot not present", guild_id)

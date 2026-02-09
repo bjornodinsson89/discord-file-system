@@ -39,28 +39,58 @@ def _cache_put(guild_id: int, value: bool):
 
 
 async def is_bot_in_guild(guild_id: int) -> bool:
-    """Check bot membership with GET /guilds/{guild_id}; 200=present, 403/404=not present."""
+    """Check bot membership with GET /guilds/{guild_id}; raise on auth/rate-limit outages."""
     cached = _cache_get(guild_id)
     if cached is not None:
         return cached
 
-    try:
-        headers = _bot_headers()
-    except RuntimeError:
-        return False
+    headers = _bot_headers()
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{DISCORD_API_BASE}/guilds/{guild_id}", headers=headers) as resp:
             if resp.status == 200:
                 _cache_put(guild_id, True)
                 return True
+            if resp.status == 401:
+                body = await resp.text()
+                log.error("Discord bot token unauthorized for guild %s: %s", guild_id, body)
+                raise RuntimeError("Discord bot token unauthorized (401). Check DISCORD_TOKEN in WEB service.")
             if resp.status in (403, 404):
                 _cache_put(guild_id, False)
                 return False
+            if resp.status == 429:
+                retry_after_header = resp.headers.get("Retry-After")
+                retry_after = None
+                if retry_after_header:
+                    try:
+                        retry_after = float(retry_after_header)
+                    except ValueError:
+                        retry_after = None
+                body = await resp.text()
+                log.warning(
+                    "Discord guild presence rate-limited for guild %s retry_after=%s body=%s",
+                    guild_id,
+                    retry_after,
+                    body,
+                )
+                raise RuntimeError("Discord API rate limit while checking bot presence. Please retry shortly.")
             body = await resp.text()
             log.warning("Unexpected guild presence response for %s: %s %s", guild_id, resp.status, body)
-            _cache_put(guild_id, False)
-            return False
+            raise RuntimeError(f"Discord API returned {resp.status} while checking bot presence")
+
+
+async def probe_bot_guild_status(guild_id: int) -> Dict[str, Any]:
+    """Diagnostic helper returning raw HTTP status for a single guild presence probe."""
+    headers = _bot_headers()
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{DISCORD_API_BASE}/guilds/{guild_id}", headers=headers) as resp:
+            body = await resp.text()
+            return {
+                "guild_id": guild_id,
+                "http_status": resp.status,
+                "ok": resp.status == 200,
+                "body": body[:500],
+            }
 
 
 async def get_guild(guild_id: int) -> Optional[Dict[str, Any]]:

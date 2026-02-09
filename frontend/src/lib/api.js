@@ -20,6 +20,9 @@ export function getCsrfToken() {
 function extractErrorMessage(payload, fallback) {
   if (!payload) return fallback;
   if (typeof payload === 'string') return payload;
+  if (payload.request_id && typeof payload.detail === 'string') {
+    return `${payload.detail} (request_id: ${payload.request_id})`;
+  }
   if (typeof payload.detail === 'string') return payload.detail;
   if (payload.detail) {
     try { return JSON.stringify(payload.detail); } catch (_) { return fallback; }
@@ -102,6 +105,7 @@ async function request(url, options = {}) {
     error.status = response.status;
     error.code = payload?.code || 'http_error';
     error.detail = payload?.detail || message;
+    error.requestId = payload?.request_id || null;
     throw error;
   }
 
