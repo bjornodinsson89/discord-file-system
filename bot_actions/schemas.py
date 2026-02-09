@@ -56,7 +56,6 @@ class SessionListResponse(BaseModel):
 class CreateRaffleRequest(BaseModel):
     """Request to create a raffle."""
     guild_id: int
-    channel_id: int
     prize: str = Field(min_length=1, max_length=500, description="Freeform prize description")
     ticket_payment_type: Literal["xanax", "erotic_dvd"]
     ticket_price: int = Field(ge=config.MIN_TICKET_PRICE, le=config.MAX_TICKET_PRICE)
@@ -297,4 +296,3 @@ class ErrorResponse(BaseModel):
     success: bool = False
     error: str
     detail: Optional[str] = None
-

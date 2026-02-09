@@ -294,9 +294,15 @@ async def create_raffle_handler(
     guild = bot.get_guild(request.guild_id)
     if not guild:
         raise ValueError("Guild not found")
-    channel = guild.get_channel(request.channel_id)
+
+    settings = await db.get_guild_settings(request.guild_id)
+    channel_id = settings.get("raffle_channel_id")
+    if not channel_id:
+        raise ValueError("Raffle channel is not configured. Please run /setup first.")
+
+    channel = guild.get_channel(channel_id)
     if not channel:
-        raise ValueError("Channel not found")
+        raise ValueError("Configured raffle channel was not found. Please run /setup again.")
 
     end_time = datetime.utcnow() + timedelta(hours=request.duration_hours)
 
@@ -322,33 +328,20 @@ async def create_raffle_handler(
         )
         raffle_id = row['raffle_id']
 
-
     raffle_data = await _get_raffle(raffle_id)
 
-    if _is_web_mode():
-        rest_client = DiscordRestClient()
-        embed_payload = _raffle_embed_payload(raffle_data)
-        message = await rest_client.send_message(
-            request.channel_id,
-            embeds=[embed_payload],
-            content="New raffle is live. Use Discord interactions.",
-        )
-        message_id = int(message["id"])
-    else:
-        from utils.embeds import create_raffle_announcement_embed
-        from views import RaffleView
+    from utils.embeds import create_raffle_announcement_embed
+    from views import RaffleView
 
-        guild = bot.get_guild(request.guild_id)
-        channel = guild.get_channel(request.channel_id)
-        embed = create_raffle_announcement_embed(raffle_data, guild)
-        view = RaffleView(raffle_id)
-        msg = await channel.send(embed=embed, view=view)
-        message_id = int(msg.id)
+    embed = create_raffle_announcement_embed(raffle_data, guild)
+    view = RaffleView(raffle_id)
+    msg = await channel.send(embed=embed, view=view)
+    message_id = int(msg.id)
 
     async with db.pool.acquire() as conn:
         await conn.execute(
             "UPDATE raffles SET announcement_message_id = $1, announcement_channel_id = $2 WHERE raffle_id = $3",
-            message_id, request.channel_id, raffle_id
+            message_id, channel_id, raffle_id
         )
 
     await db.log_audit(
@@ -356,11 +349,11 @@ async def create_raffle_handler(
         "raffle_created",
         "raffle",
         raffle_id,
-        {"channel_id": request.channel_id}
+        {"channel_id": channel_id}
     )
 
     raffle_data = await _get_raffle(raffle_id)
-    message_url = f"https://discord.com/channels/{request.guild_id}/{request.channel_id}/{message_id}"
+    message_url = f"https://discord.com/channels/{request.guild_id}/{channel_id}/{message_id}"
     raffle_data['message_url'] = message_url
 
     return RaffleResponse(**raffle_data)
@@ -526,7 +519,7 @@ async def approve_provider_handler(
     provider = await db.get_provider_by_id(provider_id)
 
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise ValueError("Provider not found")
 
     if status == "approved":
         await db.approve_provider(provider_id, actor_discord_id)
@@ -535,7 +528,7 @@ async def approve_provider_handler(
     elif status == "disabled":
         await db.set_provider_active(provider_id, False)
     else:
-        raise HTTPException(status_code=400, detail="Invalid status. Must be 'approved', 'rejected', or 'disabled'")
+        raise ValueError("Invalid status. Must be 'approved', 'rejected', or 'disabled'")
 
     await db.log_audit(
         actor_discord_id, "provider_approval_updated", "provider", provider_id,
@@ -555,9 +548,9 @@ async def approve_claim_handler(
     claim = await db.get_claim(claim_id)
 
     if not claim:
-        raise HTTPException(status_code=404, detail="Claim not found")
+        raise ValueError("Claim not found")
     if claim['status'] != 'pending':
-        raise HTTPException(status_code=400, detail="Claim is not pending")
+        raise ValueError("Claim is not pending")
 
     await db.approve_claim(claim_id, actor_discord_id)
     await db.log_audit(
@@ -705,16 +698,6 @@ async def update_session_message(session_id: int):
 
         signups = await db.get_session_signups(session_id)
 
-        if _is_web_mode():
-            rest_client = DiscordRestClient()
-            await rest_client.edit_message(
-                int(channel_id),
-                int(session['announcement_message_id']),
-                embeds=[_session_embed_payload(session, signups)],
-                content="Session updated.",
-            )
-            return
-
         bot = get_bot()
         guild = bot.get_guild(session['guild_id'])
         if not guild:
@@ -744,27 +727,12 @@ async def update_raffle_message(raffle_id: int, winner: Optional[Dict] = None):
             return
 
         settings = await db.get_guild_settings(raffle['guild_id'])
-        channel_id = raffle.get('announcement_channel_id') or settings.get('raffle_channel_id')
+        channel_id = settings.get('raffle_channel_id')
         if not channel_id:
+            log.warning("Raffle channel not configured for guild %s; cannot update raffle %s", raffle['guild_id'], raffle_id)
             return
 
         entries = await db.get_raffle_entries(raffle_id)
-
-        if _is_web_mode():
-            rest_client = DiscordRestClient()
-            await rest_client.edit_message(
-                int(channel_id),
-                int(raffle['announcement_message_id']),
-                embeds=[_raffle_embed_payload(raffle, entries, winner)],
-                content="Raffle updated.",
-            )
-            if winner:
-                await rest_client.send_message(
-                    int(channel_id),
-                    embeds=[_raffle_embed_payload(raffle, entries, winner)],
-                    content=f"🎉 Winner: <@{winner['discord_id']}> (Ticket #{winner['ticket_number']})",
-                )
-            return
 
         bot = get_bot()
         guild = bot.get_guild(raffle['guild_id'])
