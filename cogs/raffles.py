@@ -43,9 +43,9 @@ class RaffleCreateModal(discord.ui.Modal):
 
     tickets_available = discord.ui.TextInput(
         label="🎟️ Total Tickets",
-        placeholder="Max tickets to sell (min 10)",
+        placeholder="Total tickets to sell (minimum 1)",
         required=True,
-        max_length=4
+        max_length=10
     )
 
     max_per_user = discord.ui.TextInput(
@@ -80,9 +80,9 @@ class RaffleCreateModal(discord.ui.Modal):
                 )
                 return
 
-            if total < 10:
+            if total < 1:
                 await interaction.response.send_message(
-                    "❌ Minimum 10 tickets required", ephemeral=True
+                    "❌ Total Tickets must be 1 or greater", ephemeral=True
                 )
                 return
 
@@ -169,7 +169,7 @@ class RaffleBuyModal(discord.ui.Modal):
         label="🎟️ Number of Tickets",
         placeholder="How many tickets?",
         required=True,
-        max_length=2
+        max_length=10
     )
 
     def __init__(self, raffle_id: int, repo: RafflesRepository):
