@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional, Dict, Any
 
 from utils import get_database
+from services import InsuranceService, InvalidInput
 
 
 async def perform_application_review(
@@ -20,7 +21,7 @@ async def perform_application_review(
     db = get_database()
 
     if category == "insurer":
-        result = await db.review_insurer_application(
+        result = await InsuranceService(db).review_insurer_application(
             provider_id=application_id,
             decision=decision,
             admin_discord_id=admin_discord_id,
@@ -33,8 +34,6 @@ async def perform_application_review(
         action = "insurer_application_approved" if decision == "approve" else "insurer_application_denied"
         target_type = "insurance_provider"
     elif category == "host99k":
-        if not await db.table_exists("host_applications"):
-            raise RuntimeError("host_applications table missing. Run migrations first.")
         result = await db.review_host_application(
             application_id=application_id,
             decision=decision,
