@@ -40,6 +40,11 @@ from bot_actions.schemas import (
     UpdateSettingsRequest
 )
 
+# REPOSITORY IMPORTS (Added for background workers)
+from repositories.insurance import InsuranceRepository
+from repositories.raffles import RafflesRepository
+from repositories.audit import AuditRepository
+
 log = logging.getLogger("happy_jumper")
 
 async def ensure_admin(interaction: discord.Interaction) -> bool:
@@ -1296,11 +1301,14 @@ async def insurance_monitor():
         torn_api = get_torn_api()
         security = get_security_manager()
         
+        # Create repository instance
+        insurance_repo = InsuranceRepository(db.pool)
+        
         # Expire old coverage
-        await db.expire_coverage()
+        await insurance_repo.expire_coverage()
         
         # Get all active coverage
-        active_coverage = await db.get_active_coverage()
+        active_coverage = await insurance_repo.get_active_coverage()
         
         for coverage in active_coverage:
             try:
@@ -1324,7 +1332,7 @@ async def insurance_monitor():
                         # Check if claim already exists
                         log_id = od_event.get('log_id') or log_entry.get('id') or log_entry.get('log_id')
                         if log_id:
-                            existing = await db.check_existing_claim(coverage['coverage_id'], log_id)
+                            existing = await insurance_repo.check_existing_claim(coverage['coverage_id'], log_id)
                             if existing:
                                 continue
                         
@@ -1335,7 +1343,7 @@ async def insurance_monitor():
                 if drug_logs:
                     latest_ts = max(log_entry.get('timestamp', 0) for log_entry in drug_logs)
                     if latest_ts > last_check:
-                        await db.update_coverage_last_check(coverage['coverage_id'], latest_ts)
+                        await insurance_repo.update_coverage_last_check(coverage['coverage_id'], latest_ts)
                 
             except Exception as e:
                 log.warning(f"Failed to monitor coverage {coverage['coverage_id']}: {e}")
@@ -1358,8 +1366,11 @@ async def raffle_completion_worker():
     try:
         db = get_database()
         
+        # Create repository instance
+        raffles_repo = RafflesRepository(db.pool)
+        
         # Get raffles that need to be drawn
-        raffles_to_draw = await db.get_raffles_to_draw()
+        raffles_to_draw = await raffles_repo.get_raffles_to_draw()
         
         for raffle in raffles_to_draw:
             try:
@@ -1399,8 +1410,11 @@ async def _create_insurance_claim(coverage: dict, od_event: dict, raw_log: dict)
     db = get_database()
     
     try:
+        # Create repository instance
+        insurance_repo = InsuranceRepository(db.pool)
+        
         # Get policy for payout calculation
-        policy = await db.get_policy(coverage['policy_id'])
+        policy = await insurance_repo.get_policy(coverage['policy_id'])
         if not policy:
             return
         
@@ -1410,7 +1424,7 @@ async def _create_insurance_claim(coverage: dict, od_event: dict, raw_log: dict)
         payout_amount = coverage.get('payout_amount', 0)
         
         # Create claim
-        claim_id = await db.create_claim(
+        claim_id = await insurance_repo.create_claim(
             coverage_id=coverage['coverage_id'],
             policy_id=coverage['policy_id'],
             user_discord_id=coverage['user_discord_id'],
@@ -1428,12 +1442,12 @@ async def _create_insurance_claim(coverage: dict, od_event: dict, raw_log: dict)
         
         # Notify provider
         try:
-            provider = await db.get_provider_by_id(policy['provider_id'])
+            provider = await insurance_repo.get_provider_by_id(policy['provider_id'])
             if provider:
                 for guild in bot.guilds:
                     member = guild.get_member(provider['discord_id'])
                     if member:
-                        claim = await db.get_claim(claim_id)
+                        claim = await insurance_repo.get_claim(claim_id)
                         embed = create_claim_notification_embed(claim, coverage)
                         try:
                             await member.send(embed=embed)
@@ -1451,18 +1465,22 @@ async def _draw_raffle_winner(raffle: dict):
     """Draw a winner for a completed raffle."""
     db = get_database()
     
+    # Create repository instances
+    raffles_repo = RafflesRepository(db.pool)
+    audit_repo = AuditRepository(db.pool)
+    
     raffle_id = raffle['raffle_id']
     
     # Mark as drawing to prevent duplicate draws
-    await db.update_raffle(raffle_id, status='drawing')
+    await raffles_repo.update_raffle(raffle_id, status='drawing')
     
     try:
         # Draw winner
-        winner = await db.draw_raffle_winner(raffle_id)
+        winner = await raffles_repo.draw_raffle_winner(raffle_id)
         
         # Log the draw
-        await db.log_audit(
-            None,  # System action
+        await audit_repo.log_audit(
+            None,  # System action (no actor)
             "raffle_auto_drawn",
             "raffle",
             raffle_id,
@@ -1513,7 +1531,7 @@ async def _draw_raffle_winner(raffle: dict):
             return
         
         # Get updated raffle data
-        updated_raffle = await db.get_raffle(raffle_id)
+        updated_raffle = await raffles_repo.get_raffle(raffle_id)
         
         if winner:
             # Announce winner
@@ -1545,7 +1563,7 @@ async def _draw_raffle_winner(raffle: dict):
         if raffle.get('announcement_message_id'):
             try:
                 message = await channel.fetch_message(raffle['announcement_message_id'])
-                entries = await db.get_raffle_entries(raffle_id)
+                entries = await raffles_repo.get_raffle_entries(raffle_id)
                 
                 if winner:
                     embed = create_raffle_winner_embed(updated_raffle, winner)
@@ -1564,7 +1582,7 @@ async def _draw_raffle_winner(raffle: dict):
     except Exception as e:
         log.error(f"Error drawing raffle {raffle_id}: {e}")
         # Reset status if draw failed
-        await db.update_raffle(raffle_id, status='active')
+        await raffles_repo.update_raffle(raffle_id, status='active')
         raise
 
 
