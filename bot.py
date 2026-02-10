@@ -10,6 +10,7 @@ import logging
 import asyncio
 import json
 import sys
+from urllib.parse import urlparse
 
 import config
 from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager, GuildSettingsRepository
@@ -67,6 +68,204 @@ async def ensure_admin(interaction: discord.Interaction) -> bool:
     else:
         await interaction.response.send_message(embed=embed, ephemeral=True)
     return False
+
+
+
+def _is_valid_torn_url(raw_url: str) -> bool:
+    url = (raw_url or "").strip()
+    if not url.lower().startswith("http"):
+        return False
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
+    return bool(host) and "torn.com" in host
+
+
+def _excerpt(text: str, limit: int = 180) -> str:
+    value = (text or "").strip().replace("\n", " ")
+    if len(value) <= limit:
+        return value
+    return f"{value[: limit - 3]}..."
+
+
+async def _resolve_announce_channel(interaction: discord.Interaction) -> discord.abc.Messageable | None:
+    if not interaction.guild:
+        return interaction.channel
+
+    db = get_database()
+    repo = GuildSettingsRepository(db)
+    settings = await repo.get_or_create(interaction.guild.id)
+    announce_channel_id = settings.get("announce_channel_id")
+    if announce_channel_id:
+        channel = interaction.guild.get_channel(int(announce_channel_id))
+        if channel:
+            return channel
+    return interaction.channel
+
+
+async def _can_review_applications(interaction: discord.Interaction) -> bool:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return False
+
+    member = interaction.user
+    db = get_database()
+    repo = GuildSettingsRepository(db)
+    settings = await repo.get_or_create(interaction.guild.id)
+
+    admin_role_ids = [str(v) for v in (settings.get("admin_role_ids") or [])]
+    fallback_admin_role_id = settings.get("admin_role_id")
+    if fallback_admin_role_id:
+        admin_role_ids.append(str(fallback_admin_role_id))
+
+    if has_setup_permission(
+        member_id=member.id,
+        guild_owner_id=interaction.guild.owner_id,
+        is_administrator=member.guild_permissions.administrator,
+        can_manage_guild=member.guild_permissions.manage_guild,
+        member_role_ids={str(role.id) for role in member.roles},
+        admin_role_ids=admin_role_ids,
+    ):
+        return True
+
+    embed = create_error_embed("Not Authorized", "Configured admin role(s), Manage Guild, or Administrator required.")
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    return False
+
+
+class RequestInsurerModal(discord.ui.Modal, title="Insurer Application"):
+    torn_id = discord.ui.TextInput(label="Torn ID", required=True, max_length=20)
+    torn_name = discord.ui.TextInput(label="Torn Name", required=True, max_length=100)
+    forum_url = discord.ui.TextInput(label="Torn Forum Thread URL", required=True, max_length=500)
+    company_name = discord.ui.TextInput(label="Company/Service Name", required=False, max_length=100)
+    description_terms = discord.ui.TextInput(label="Description/Terms", required=True, style=discord.TextStyle.paragraph, max_length=1500)
+    proof_vouches = discord.ui.TextInput(label="Proof/Vouches", required=False, style=discord.TextStyle.paragraph, max_length=1500)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw_torn_id = str(self.torn_id.value).strip()
+        torn_name = str(self.torn_name.value).strip()
+        forum_url = str(self.forum_url.value).strip()
+        company_name = str(self.company_name.value).strip() or None
+        description_terms = str(self.description_terms.value).strip()
+        proof_vouches = str(self.proof_vouches.value).strip()
+
+        if not raw_torn_id.isdigit():
+            await interaction.response.send_message(embed=create_error_embed("Invalid Torn ID", "Torn ID must be numeric."), ephemeral=True)
+            return
+        if not torn_name or not description_terms:
+            await interaction.response.send_message(embed=create_error_embed("Missing Fields", "Please complete all required fields."), ephemeral=True)
+            return
+        if not _is_valid_torn_url(forum_url):
+            await interaction.response.send_message(embed=create_error_embed("Invalid URL", "URL must start with http and contain torn.com."), ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        db = get_database()
+        application_data = {
+            "torn_name": torn_name,
+            "forum_url": forum_url,
+            "description_terms": description_terms,
+            "proof_vouches": proof_vouches or None,
+        }
+        provider = await db.upsert_insurer_application(
+            guild_id=interaction.guild_id,
+            discord_id=interaction.user.id,
+            torn_user_id=int(raw_torn_id),
+            company_name=company_name,
+            application_data=application_data,
+        )
+
+        provider_id = provider["provider_id"]
+        admin_channel = await _resolve_announce_channel(interaction)
+        if admin_channel:
+            lines = [
+                "📝 **Insurer application submitted**",
+                f"Applicant: {interaction.user.mention} (`{interaction.user.id}`)",
+                f"Torn: `{raw_torn_id}` • **{torn_name}**",
+                f"Forum URL: {forum_url}",
+                f"Company: {company_name or 'N/A'}",
+                f"Description excerpt: {_excerpt(description_terms)}",
+                f"Application ID: `{provider_id}`",
+                "",
+                f"Review with: `/application_review category:insurer application_id:{provider_id} decision:approve|deny reason:<optional>`",
+            ]
+            await admin_channel.send("\n".join(lines))
+
+        await interaction.followup.send(
+            embed=create_success_embed("Application Submitted", "Your insurer application was submitted and is pending admin review."),
+            ephemeral=True,
+        )
+
+
+class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
+    torn_id = discord.ui.TextInput(label="Torn ID", required=True, max_length=20)
+    torn_name = discord.ui.TextInput(label="Torn Name", required=True, max_length=100)
+    forum_url = discord.ui.TextInput(label="Hosting Thread/Forum URL", required=True, max_length=500)
+    schedule = discord.ui.TextInput(label="Schedule/Availability", required=True, style=discord.TextStyle.paragraph, max_length=1000)
+    experience = discord.ui.TextInput(label="Experience", required=False, style=discord.TextStyle.paragraph, max_length=1000)
+    notes_rules = discord.ui.TextInput(label="Notes/Rules", required=False, style=discord.TextStyle.paragraph, max_length=1000)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw_torn_id = str(self.torn_id.value).strip()
+        torn_name = str(self.torn_name.value).strip()
+        forum_url = str(self.forum_url.value).strip()
+        schedule = str(self.schedule.value).strip()
+        experience = str(self.experience.value).strip()
+        notes_rules = str(self.notes_rules.value).strip()
+
+        if not raw_torn_id.isdigit():
+            await interaction.response.send_message(embed=create_error_embed("Invalid Torn ID", "Torn ID must be numeric."), ephemeral=True)
+            return
+        if not torn_name or not schedule:
+            await interaction.response.send_message(embed=create_error_embed("Missing Fields", "Please complete all required fields."), ephemeral=True)
+            return
+        if not _is_valid_torn_url(forum_url):
+            await interaction.response.send_message(embed=create_error_embed("Invalid URL", "URL must start with http and contain torn.com."), ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        db = get_database()
+        if not await db.table_exists("host_applications"):
+            await interaction.followup.send(
+                embed=create_error_embed("Application Unavailable", "host_applications table is missing. Run migrations first."),
+                ephemeral=True,
+            )
+            return
+
+        application_data = {
+            "schedule": schedule,
+            "experience": experience or None,
+            "notes_rules": notes_rules or None,
+        }
+        host_application = await db.upsert_host_application(
+            guild_id=interaction.guild_id,
+            discord_id=interaction.user.id,
+            torn_user_id=int(raw_torn_id),
+            display_name=torn_name,
+            forum_url=forum_url,
+            application_data=application_data,
+        )
+
+        application_id = host_application["id"]
+        admin_channel = await _resolve_announce_channel(interaction)
+        if admin_channel:
+            lines = [
+                "📝 **Host99k application submitted**",
+                f"Applicant: {interaction.user.mention} (`{interaction.user.id}`)",
+                f"Torn: `{raw_torn_id}` • **{torn_name}**",
+                f"Forum URL: {forum_url}",
+                f"Schedule excerpt: {_excerpt(schedule)}",
+                f"Application ID: `{application_id}`",
+                "",
+                f"Review with: `/application_review category:host99k application_id:{application_id} decision:approve|deny reason:<optional>`",
+            ]
+            await admin_channel.send("\n".join(lines))
+
+        await interaction.followup.send(
+            embed=create_success_embed("Application Submitted", "Your host99k application was submitted and is pending admin review."),
+            ephemeral=True,
+        )
 
 
 # ============================================================================
@@ -772,6 +971,132 @@ async def claim_reject(interaction: discord.Interaction, claim_id: int, notes: s
     except Exception as e:
         log.exception(f"Claim reject failed: {e}")
         await interaction.followup.send(embed=create_error_embed("Claim Reject Failed", str(e)), ephemeral=True)
+
+
+@bot.tree.command(name="request_insurer", description="Submit an insurer approval application")
+async def request_insurer(interaction: discord.Interaction):
+    await interaction.response.send_modal(RequestInsurerModal())
+
+
+@bot.tree.command(name="request_host99k", description="Submit a host99k approval application")
+async def request_host99k(interaction: discord.Interaction):
+    await interaction.response.send_modal(RequestHost99kModal())
+
+
+@bot.tree.command(name="application_review", description="Review insurer/host99k applications (Admin only)")
+@app_commands.describe(
+    category="Application category",
+    application_id="Application ID",
+    decision="Approve or deny",
+    reason="Optional reason, especially for denials",
+)
+@app_commands.choices(
+    category=[
+        app_commands.Choice(name="insurer", value="insurer"),
+        app_commands.Choice(name="host99k", value="host99k"),
+    ],
+    decision=[
+        app_commands.Choice(name="approve", value="approve"),
+        app_commands.Choice(name="deny", value="deny"),
+    ],
+)
+async def application_review(
+    interaction: discord.Interaction,
+    category: app_commands.Choice[str],
+    application_id: int,
+    decision: app_commands.Choice[str],
+    reason: str = None,
+):
+    await interaction.response.defer(ephemeral=True)
+    if not await _can_review_applications(interaction):
+        return
+
+    db = get_database()
+    chosen_category = category.value
+    chosen_decision = decision.value
+    reason_text = reason.strip() if reason else None
+
+    applicant_discord_id = None
+    guild_id = interaction.guild_id
+
+    try:
+        if chosen_category == "insurer":
+            result = await db.review_insurer_application(
+                provider_id=application_id,
+                decision="approve" if chosen_decision == "approve" else "deny",
+                admin_discord_id=interaction.user.id,
+                reason=reason_text,
+            )
+            if not result:
+                await interaction.followup.send(embed=create_error_embed("Not Found", f"Insurer application `{application_id}` not found."), ephemeral=True)
+                return
+            applicant_discord_id = result["discord_id"]
+            guild_id = result.get("guild_id") or guild_id
+        else:
+            if not await db.table_exists("host_applications"):
+                await interaction.followup.send(embed=create_error_embed("Unavailable", "host_applications table missing. Run migrations first."), ephemeral=True)
+                return
+            result = await db.review_host_application(
+                application_id=application_id,
+                decision="approve" if chosen_decision == "approve" else "deny",
+                admin_discord_id=interaction.user.id,
+                reason=reason_text,
+            )
+            if not result:
+                await interaction.followup.send(embed=create_error_embed("Not Found", f"Host99k application `{application_id}` not found."), ephemeral=True)
+                return
+            applicant_discord_id = result["discord_id"]
+            guild_id = result["guild_id"]
+
+        await db.log_audit(
+            actor_id=interaction.user.id,
+            action="application_reviewed",
+            target_type=chosen_category,
+            target_id=application_id,
+            payload={
+                "category": chosen_category,
+                "application_id": application_id,
+                "decision": chosen_decision,
+                "reason": reason_text,
+            },
+            guild_id=guild_id,
+            source="discord",
+        )
+
+        dm_status = "Applicant DM sent."
+        if interaction.guild and applicant_discord_id:
+            member = interaction.guild.get_member(int(applicant_discord_id))
+            if not member:
+                try:
+                    member = await interaction.guild.fetch_member(int(applicant_discord_id))
+                except Exception:
+                    member = None
+
+            if member:
+                decision_word = "approved" if chosen_decision == "approve" else "denied"
+                dm_embed = create_info_embed(
+                    "Application Review Result",
+                    f"Your **{chosen_category}** application (ID `{application_id}`) was **{decision_word}**."
+                    + (f"\nReason: {reason_text}" if reason_text and chosen_decision == "deny" else ""),
+                )
+                try:
+                    await member.send(embed=dm_embed)
+                except discord.Forbidden:
+                    dm_status = "Could not DM applicant (DMs disabled)."
+            else:
+                dm_status = "Could not resolve applicant for DM."
+
+        await interaction.followup.send(
+            embed=create_success_embed(
+                "Application Reviewed",
+                f"{chosen_category} application `{application_id}` set to **{chosen_decision}**. {dm_status}",
+            ),
+            ephemeral=True,
+        )
+    except Exception as e:
+        log.exception("Application review failed: %s", e)
+        await interaction.followup.send(embed=create_error_embed("Application Review Failed", str(e)), ephemeral=True)
+
 
 
 @bot.tree.command(name="audit_log", description="View recent audit log entries (Admin only)")
