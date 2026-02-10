@@ -121,7 +121,7 @@ class RafflesRepository(RepositoryBase):
                 # PURE RANDOM: Each user has equal chance regardless of ticket count
                 winner = random.choice(entries)
                 
-                # Get winner's Torn name
+                # Get winner's Torn name using your existing API client
                 winner_torn_name = await self._get_torn_name(winner["torn_user_id"])
                 
                 # Store winner info in raffle record
@@ -155,95 +155,122 @@ class RafflesRepository(RepositoryBase):
                 }
     
     async def _get_torn_name(self, torn_id: int) -> str:
-        """Fetch Torn name from API."""
+        """Fetch Torn name using TornAPIClient."""
         try:
-            async with aiohttp.ClientSession() as session:
-                # Note: You need to add TORN_API_KEY to config
-                from config import TORN_API_KEY
-                async with session.get(
-                    f"https://api.torn.com/user/{torn_id}?selections=basic&key={TORN_API_KEY}"
-                ) as resp:
-                    data = await resp.json()
-                    return data.get("name", f"User_{torn_id}")
+            from utils.torn_api import get_torn_api
+            # Use any available API key to lookup the name
+            # In practice, you might want to use the bot's own key if available
+            async with self.pool.acquire() as conn:
+                # Get any valid API key to make the lookup
+                key_row = await conn.fetchrow(
+                    "SELECT api_key FROM user_api_keys LIMIT 1"
+                )
+                if not key_row:
+                    return f"User_{torn_id}"
+                
+                # Decrypt the key
+                from cryptography.fernet import Fernet
+                import config
+                f = Fernet(config.FERNET_KEY)
+                api_key = f.decrypt(key_row["api_key"].encode()).decode()
+                
+                api = get_torn_api()
+                user_data = await api.get_user_data(api_key)
+                return user_data.get("profile", {}).get("name", f"User_{torn_id}")
         except Exception:
             return f"User_{torn_id}"
     
     async def verify_prize_delivery(
         self, 
         raffle_id: int, 
+        winner_discord_id: int,
         winner_torn_id: int,
         creator_torn_id: int,
-        api_key: str
     ) -> Optional[dict[str, Any]]:
-        """Verify creator sent winner an item via Torn API logs."""
+        """Verify creator sent winner an item via Torn API logs using winner's API key."""
+        # Get winner's encrypted API key from database
+        async with self.pool.acquire() as conn:
+            key_row = await conn.fetchrow(
+                "SELECT api_key FROM user_api_keys WHERE discord_id = $1",
+                winner_discord_id
+            )
+            
+            if not key_row:
+                return {"error": "Winner has no linked API key"}
+            
+            # Decrypt the API key
+            from cryptography.fernet import Fernet
+            import config
+            f = Fernet(config.FERNET_KEY)
+            api_key = f.decrypt(key_row["api_key"].encode()).decode()
+        
+        # Use existing TornAPIClient to check logs
+        from utils.torn_api import get_torn_api, TornAPIError
+        api = get_torn_api()
+        
         # Check logs from last 7 days
         timestamp = int(time.time()) - (7 * 24 * 3600)
         
         try:
-            async with aiohttp.ClientSession() as session:
-                url = (
-                    f"https://api.torn.com/user/{winner_torn_id}"
-                    f"?selections=log&log=2211&from={timestamp}&key={api_key}"
-                )
-                async with session.get(url) as resp:
-                    data = await resp.json()
-                    
-                    if "error" in data:
-                        return {"error": data["error"]["error"]}
-                    
-                    logs = data.get("log", {})
-                    
-                    # Look for item_received log where sender is creator
-                    for log_id, log_entry in logs.items():
-                        if str(log_entry.get("sender_id")) == str(creator_torn_id):
-                            # Found it! Mark as verified
-                            async with self.pool.acquire() as conn:
-                                await conn.execute(
-                                    """
-                                    UPDATE raffles 
-                                    SET status = 'completed',
-                                        prize_verified_at = NOW(),
-                                        verification_log_id = $1
-                                    WHERE raffle_id = $2
-                                    """,
-                                    log_id,
-                                    raffle_id,
-                                )
-                                
-                                # Log to audit
-                                await conn.execute(
-                                    """
-                                    INSERT INTO audit_log (
-                                        actor_discord_id, action, target_type, 
-                                        target_id, payload, guild_id, source, created_at
-                                    ) VALUES (
-                                        $1, 'prize_verified', 'raffle', $2, $3, 
-                                        (SELECT guild_id FROM raffles WHERE raffle_id = $2),
-                                        'raffle_system', NOW()
-                                    )
-                                    """,
-                                    winner_torn_id,
-                                    raffle_id,
-                                    json.dumps({
-                                        "log_id": log_id,
-                                        "log_entry": log_entry,
-                                        "creator_torn_id": creator_torn_id,
-                                        "winner_torn_id": winner_torn_id,
-                                        "verified_at": datetime.utcnow().isoformat()
-                                    })
-                                )
-                            
-                            return {
-                                "verified": True,
-                                "log_id": log_id,
+            # Get user logs using the winner's API key
+            logs = await api.get_user_logs(api_key, limit=200, log_types=[2211])  # 2211 = item_received
+            
+            for log_entry in logs:
+                if log_entry.get("timestamp", 0) < timestamp:
+                    continue
+                
+                # Check if sender is the creator
+                if str(log_entry.get("sender_id")) == str(creator_torn_id):
+                    # Found it! Mark as verified
+                    async with self.pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            UPDATE raffles 
+                            SET status = 'completed',
+                                prize_verified_at = NOW(),
+                                verification_log_id = $1
+                            WHERE raffle_id = $2
+                            """,
+                            str(log_entry.get("id") or log_entry.get("log_id")),
+                            raffle_id,
+                        )
+                        
+                        # Log to audit
+                        await conn.execute(
+                            """
+                            INSERT INTO audit_log (
+                                actor_discord_id, action, target_type, 
+                                target_id, payload, guild_id, source, created_at
+                            ) VALUES (
+                                $1, 'prize_verified', 'raffle', $2, $3, 
+                                (SELECT guild_id FROM raffles WHERE raffle_id = $2),
+                                'raffle_system', NOW()
+                            )
+                            """,
+                            winner_discord_id,
+                            raffle_id,
+                            json.dumps({
+                                "log_id": log_entry.get("id") or log_entry.get("log_id"),
                                 "log_entry": log_entry,
-                                "timestamp": log_entry.get("timestamp")
-                            }
+                                "creator_torn_id": creator_torn_id,
+                                "winner_torn_id": winner_torn_id,
+                                "verified_at": datetime.utcnow().isoformat()
+                            })
+                        )
                     
-                    return {"verified": False, "message": "No item received from creator found in logs"}
+                    return {
+                        "verified": True,
+                        "log_id": log_entry.get("id") or log_entry.get("log_id"),
+                        "log_entry": log_entry,
+                        "timestamp": log_entry.get("timestamp")
+                    }
+            
+            return {"verified": False, "message": "No item received from creator found in logs"}
                     
-        except Exception as e:
+        except TornAPIError as e:
             return {"verified": False, "error": str(e)}
+        except Exception as e:
+            return {"verified": False, "error": f"Verification failed: {str(e)}"}
 
     async def reserve_entry(
         self, raffle_id: int, discord_id: int, torn_user_id: int,
@@ -340,8 +367,9 @@ class RafflesRepository(RepositoryBase):
                 SELECT raffle_id, guild_id, creator_discord_id, prize,
                        ticket_payment_type, ticket_price, tickets_available,
                        max_tickets_per_user, status, winner_discord_id,
-                       winner_torn_name, end_time, end_trigger, hours_after_sold_out,
-                       tickets_fully_sold_at, tickets_sold, created_at
+                       winner_torn_name, winner_torn_id, end_time, end_trigger, 
+                       hours_after_sold_out, tickets_fully_sold_at, tickets_sold, 
+                       created_at
                 FROM raffles WHERE raffle_id = $1
                 """,
                 raffle_id,
@@ -375,7 +403,7 @@ class RafflesRepository(RepositoryBase):
                 values.append(value)
             values.append(raffle_id)
             
-            query = f"UPDATE raffles SET {', '.join(join(sets))} WHERE raffle_id = ${len(values)}"
+            query = f"UPDATE raffles SET {', '.join(sets)} WHERE raffle_id = ${len(values)}"
             result = await conn.execute(query, *values)
             return "UPDATE 1" in result
 
@@ -420,3 +448,4 @@ class RafflesRepository(RepositoryBase):
                     """
                 )
             return [dict(row) for row in rows]
+
