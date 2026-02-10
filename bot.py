@@ -138,6 +138,332 @@ async def _can_review_applications(interaction: discord.Interaction) -> bool:
     return False
 
 
+def _coverage_label(value: str) -> str:
+    labels = {
+        "xanax": "Xanax",
+        "xanax_stack": "Xanax Stack",
+        "ecstasy_after_stack": "Ecstasy After Stack",
+        "all_drugs": "All Drugs",
+    }
+    return labels.get(value or "", value or "Unknown")
+
+
+async def _fetch_approved_providers(guild_id: int, active_only: bool) -> list[dict]:
+    db = get_database()
+    async with db.pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT provider_id, discord_id, torn_user_id, company_name, application_data
+            FROM insurance_providers
+            WHERE guild_id = $1
+              AND approval_status = 'approved'
+              AND (active = true OR $2 = false)
+            ORDER BY provider_id DESC
+            """,
+            guild_id,
+            active_only,
+        )
+    return [dict(row) for row in rows]
+
+
+async def _fetch_provider_policy_summary(
+    guild_id: int,
+    provider_ids: list[int],
+    *,
+    active_only: bool,
+    coverage_type: str | None,
+    jump_type: str | None,
+) -> dict[int, dict]:
+    if not provider_ids:
+        return {}
+
+    db = get_database()
+    async with db.pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT provider_id,
+                   array_agg(DISTINCT coverage_type) FILTER (WHERE coverage_type IS NOT NULL) AS types,
+                   count(*) FILTER (WHERE active = true) AS active_policy_count
+            FROM insurance_policies
+            WHERE guild_id = $1
+              AND provider_id = ANY($2::int[])
+              AND ($3::text IS NULL OR coverage_type = $3)
+              AND ($4::text IS NULL OR $4 = ANY(covered_jump_types))
+              AND (active = true OR $5 = false)
+            GROUP BY provider_id
+            """,
+            guild_id,
+            provider_ids,
+            coverage_type,
+            jump_type,
+            active_only,
+        )
+    return {int(row["provider_id"]): dict(row) for row in rows}
+
+
+async def _fetch_provider_policies(
+    guild_id: int,
+    provider_id: int,
+    *,
+    active_only: bool,
+    coverage_type: str | None,
+    jump_type: str | None,
+) -> list[dict]:
+    db = get_database()
+    async with db.pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT *
+            FROM insurance_policies
+            WHERE guild_id = $1
+              AND provider_id = $2
+              AND (active = true OR $3 = false)
+              AND ($4::text IS NULL OR coverage_type = $4)
+              AND ($5::text IS NULL OR $5 = ANY(covered_jump_types))
+            ORDER BY policy_id DESC
+            """,
+            guild_id,
+            provider_id,
+            active_only,
+            coverage_type,
+            jump_type,
+        )
+    return [dict(row) for row in rows]
+
+
+async def _resolve_provider_display_name(client: discord.Client, provider: dict) -> str:
+    company_name = (provider.get("company_name") or "").strip()
+    if company_name:
+        return company_name
+
+    discord_id = provider.get("discord_id")
+    if not discord_id:
+        return f"Provider #{provider.get('provider_id')}"
+
+    user = client.get_user(int(discord_id))
+    if not user:
+        try:
+            user = await client.fetch_user(int(discord_id))
+        except Exception:
+            user = None
+
+    if user:
+        return user.display_name
+    return f"User {discord_id}"
+
+
+class InsurerSelect(discord.ui.Select):
+    def __init__(self, parent_view: "InsurerBrowserView", options: list[discord.SelectOption]):
+        super().__init__(
+            placeholder="Select an insurer to view details...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"insurers:list:select:{parent_view.page}",
+        )
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        provider_id = int(self.values[0])
+        await self.parent_view.show_provider_card(interaction, provider_id)
+
+
+class InsurerBrowserView(discord.ui.View):
+    PAGE_SIZE = 25
+
+    def __init__(
+        self,
+        *,
+        guild_id: int,
+        requester_id: int,
+        active_only: bool,
+        coverage_type: str | None,
+        jump_type: str | None,
+    ):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.requester_id = requester_id
+        self.active_only = active_only
+        self.coverage_type = coverage_type
+        self.jump_type = jump_type
+        self.page = 0
+        self.providers: list[dict] = []
+        self.policy_summary: dict[int, dict] = {}
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("This browser is only available to the command invoker.", ephemeral=True)
+            return False
+        return True
+
+    async def refresh_data(self):
+        self.providers = await _fetch_approved_providers(self.guild_id, self.active_only)
+        provider_ids = [int(p["provider_id"]) for p in self.providers]
+        self.policy_summary = await _fetch_provider_policy_summary(
+            self.guild_id,
+            provider_ids,
+            active_only=self.active_only,
+            coverage_type=self.coverage_type,
+            jump_type=self.jump_type,
+        )
+        max_page = max(0, (len(self.providers) - 1) // self.PAGE_SIZE)
+        self.page = max(0, min(self.page, max_page))
+
+    def _page_providers(self) -> list[dict]:
+        start = self.page * self.PAGE_SIZE
+        return self.providers[start:start + self.PAGE_SIZE]
+
+    async def _build_select_options(self, client: discord.Client) -> list[discord.SelectOption]:
+        options: list[discord.SelectOption] = []
+        for provider in self._page_providers():
+            provider_id = int(provider["provider_id"])
+            summary = self.policy_summary.get(provider_id, {})
+            types = summary.get("types") or []
+            types_text = ", ".join(_coverage_label(t) for t in types) if types else "None"
+            policy_count = int(summary.get("active_policy_count") or 0)
+            label = await _resolve_provider_display_name(client, provider)
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    description=f"Types: {types_text[:60]} • Policies: {policy_count}"[:100],
+                    value=str(provider_id),
+                )
+            )
+        return options[:25]
+
+    async def render_embed(self) -> discord.Embed:
+        total_pages = max(1, (len(self.providers) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        embed = discord.Embed(title="Approved Insurers", color=discord.Color.blurple())
+        filter_lines = [
+            f"Active only: **{self.active_only}**",
+            f"Coverage type: **{_coverage_label(self.coverage_type) if self.coverage_type else 'Any'}**",
+            f"Jump type: **{self.jump_type or 'Any'}**",
+        ]
+        if not self.providers:
+            embed.description = "No approved insurers found for these filters yet."
+        else:
+            embed.description = "Select an insurer from the dropdown to view their card and policies."
+            embed.add_field(name="Filters", value="\n".join(filter_lines), inline=False)
+            embed.set_footer(text=f"Page {self.page + 1}/{total_pages} • {len(self.providers)} insurer(s)")
+        return embed
+
+    async def rerender(self, interaction: discord.Interaction):
+        self.clear_items()
+        if self.providers:
+            self.add_item(InsurerSelect(self, await self._build_select_options(interaction.client)))
+        self.prev_button.disabled = self.page <= 0
+        self.next_button.disabled = (self.page + 1) * self.PAGE_SIZE >= len(self.providers)
+        await interaction.response.edit_message(embed=await self.render_embed(), view=self)
+
+    async def show_provider_card(self, interaction: discord.Interaction, provider_id: int):
+        provider = next((p for p in self.providers if int(p["provider_id"]) == provider_id), None)
+        if not provider:
+            await interaction.response.send_message("Provider not found in current list.", ephemeral=True)
+            return
+
+        policies = await _fetch_provider_policies(
+            self.guild_id,
+            provider_id,
+            active_only=self.active_only,
+            coverage_type=self.coverage_type,
+            jump_type=self.jump_type,
+        )
+        card_view = InsurerCardView(
+            browser_view=self,
+            provider=provider,
+            policies=policies,
+        )
+        await interaction.response.edit_message(embed=await card_view.render_embed(interaction.client), view=card_view)
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary, custom_id="insurers:list:prev")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        await self.rerender(interaction)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, custom_id="insurers:list:next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        max_page = max(0, (len(self.providers) - 1) // self.PAGE_SIZE)
+        self.page = min(max_page, self.page + 1)
+        await self.rerender(interaction)
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, custom_id="insurers:list:refresh")
+    async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.refresh_data()
+        await self.rerender(interaction)
+
+
+class InsurerCardView(discord.ui.View):
+    PAGE_SIZE = 5
+
+    def __init__(self, *, browser_view: InsurerBrowserView, provider: dict, policies: list[dict]):
+        super().__init__(timeout=300)
+        self.browser_view = browser_view
+        self.provider = provider
+        self.policies = policies
+        self.page = 0
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await self.browser_view.interaction_check(interaction)
+
+    async def render_embed(self, client: discord.Client) -> discord.Embed:
+        provider_id = int(self.provider["provider_id"])
+        discord_id = self.provider.get("discord_id")
+        torn_user_id = self.provider.get("torn_user_id")
+        name = await _resolve_provider_display_name(client, self.provider)
+
+        embed = discord.Embed(title="Insurer Card", color=discord.Color.green())
+        mention = f"<@{discord_id}>" if discord_id else "Unknown"
+        embed.add_field(name="Provider", value=f"{mention} • Torn ID: `{torn_user_id or 'N/A'}`", inline=False)
+        embed.add_field(name="Company", value=name, inline=False)
+        embed.add_field(name="Provider ID", value=str(provider_id), inline=True)
+
+        application_data = self.provider.get("application_data") or {}
+        forum_url = application_data.get("forum_url") if isinstance(application_data, dict) else None
+        if forum_url:
+            embed.add_field(name="Forum URL", value=forum_url, inline=False)
+
+        total_pages = max(1, (len(self.policies) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        start = self.page * self.PAGE_SIZE
+        policy_slice = self.policies[start:start + self.PAGE_SIZE]
+
+        if not policy_slice:
+            embed.add_field(name="Policy Summary", value="No policies found for this provider with current filters.", inline=False)
+        else:
+            for policy in policy_slice:
+                covered_jump_types = policy.get("covered_jump_types") or []
+                jumps_text = ", ".join(covered_jump_types) if covered_jump_types else "None"
+                description = _excerpt(policy.get("description") or "No description", 240)
+                value = (
+                    f"Coverage: **{_coverage_label(policy.get('coverage_type'))}**\n"
+                    f"Jump types: `{jumps_text}`\n"
+                    f"Cost: **{policy.get('cost_type')}** {policy.get('cost_amount')}\n"
+                    f"Max xanax: **{policy.get('max_coverage_xanax', 'N/A')}** • Duration: **{policy.get('duration_hours', 'N/A')}h**\n"
+                    f"Desc: {description}"
+                )
+                embed.add_field(name=f"Policy #{policy.get('policy_id')} • {policy.get('name')}", value=value[:1024], inline=False)
+
+        embed.set_footer(text=f"Policies page {self.page + 1}/{total_pages} • Total policies: {len(self.policies)}")
+        self.prev_policies_button.disabled = self.page <= 0
+        self.next_policies_button.disabled = (self.page + 1) * self.PAGE_SIZE >= len(self.policies)
+        return embed
+
+    @discord.ui.button(label="Prev Policies", style=discord.ButtonStyle.secondary, custom_id="insurers:card:prev")
+    async def prev_policies_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        await interaction.response.edit_message(embed=await self.render_embed(interaction.client), view=self)
+
+    @discord.ui.button(label="Next Policies", style=discord.ButtonStyle.secondary, custom_id="insurers:card:next")
+    async def next_policies_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        max_page = max(0, (len(self.policies) - 1) // self.PAGE_SIZE)
+        self.page = min(max_page, self.page + 1)
+        await interaction.response.edit_message(embed=await self.render_embed(interaction.client), view=self)
+
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.primary, custom_id="insurers:card:back")
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.browser_view.refresh_data()
+        await self.browser_view.rerender(interaction)
+
+
 class RequestInsurerModal(discord.ui.Modal, title="Insurer Application"):
     torn_id = discord.ui.TextInput(label="Torn ID", required=True, max_length=20)
     torn_name = discord.ui.TextInput(label="Torn Name", required=True, max_length=100)
@@ -1038,6 +1364,56 @@ async def request_insurer(interaction: discord.Interaction):
 @bot.tree.command(name="request_host99k", description="Submit a host99k approval application")
 async def request_host99k(interaction: discord.Interaction):
     await interaction.response.send_modal(RequestHost99kModal())
+
+
+@bot.tree.command(name="insurers", description="Browse approved insurers and their policy cards")
+@app_commands.describe(
+    active_only="If false, include approved providers even if inactive",
+    coverage_type="Optional coverage type filter",
+    jump_type="Jump type filter (default: 99k)",
+)
+@app_commands.choices(
+    coverage_type=[
+        app_commands.Choice(name="Xanax Stack", value="xanax_stack"),
+        app_commands.Choice(name="Ecstasy After Stack", value="ecstasy_after_stack"),
+        app_commands.Choice(name="All Drugs", value="all_drugs"),
+    ]
+)
+async def insurers(
+    interaction: discord.Interaction,
+    active_only: bool = True,
+    coverage_type: app_commands.Choice[str] = None,
+    jump_type: str = "99k",
+):
+    if not interaction.guild_id:
+        await interaction.response.send_message(
+            embed=create_error_embed("Guild Only", "This command can only be used inside a server."),
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        selected_coverage = coverage_type.value if coverage_type else None
+        normalized_coverage = "xanax" if selected_coverage == "xanax_stack" else selected_coverage
+
+        view = InsurerBrowserView(
+            guild_id=interaction.guild_id,
+            requester_id=interaction.user.id,
+            active_only=active_only,
+            coverage_type=normalized_coverage,
+            jump_type=(jump_type or "99k").strip() or "99k",
+        )
+        await view.refresh_data()
+        view.clear_items()
+        if view.providers:
+            view.add_item(InsurerSelect(view, await view._build_select_options(interaction.client)))
+        view.prev_button.disabled = True
+        view.next_button.disabled = len(view.providers) <= view.PAGE_SIZE
+        await interaction.followup.send(embed=await view.render_embed(), view=view, ephemeral=True)
+    except Exception as e:
+        log.exception("Insurer browser failed: %s", e)
+        await interaction.followup.send(embed=create_error_embed("Insurer Browser Failed", str(e)), ephemeral=True)
 
 
 @bot.tree.command(name="application_review", description="Review insurer/host99k applications (Admin only)")
