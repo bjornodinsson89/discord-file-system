@@ -13,6 +13,8 @@ import config
 
 log = logging.getLogger("happy_jumper.views")
 
+from .application_review_view import ApplicationReviewView
+
 
 # ============================================================================
 # API KEY VIEWS

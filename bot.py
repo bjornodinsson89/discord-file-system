@@ -20,11 +20,12 @@ from utils.embeds import (
     create_raffle_embed, create_raffle_winner_embed, create_claim_notification_embed
 )
 from views import (
-    ApiKeyIntroView, ConfirmRemoveKeyView
+    ApiKeyIntroView, ConfirmRemoveKeyView, ApplicationReviewView
 )
 from setup_panel import send_setup_panel, has_setup_permission
 
 from bot_actions import handlers as admin_handlers
+from bot_actions.application_review import perform_application_review
 from bot_actions.schemas import (
     CreateSessionRequest,
     CreateRaffleRequest,
@@ -111,10 +112,7 @@ async def _can_review_applications(interaction: discord.Interaction) -> bool:
     repo = GuildSettingsRepository(db)
     settings = await repo.get_or_create(interaction.guild.id)
 
-    admin_role_ids = [str(v) for v in (settings.get("admin_role_ids") or [])]
-    fallback_admin_role_id = settings.get("admin_role_id")
-    if fallback_admin_role_id:
-        admin_role_ids.append(str(fallback_admin_role_id))
+    admin_role_ids = GuildSettingsRepository.resolve_admin_role_ids(settings)
 
     if has_setup_permission(
         member_id=member.id,
@@ -162,9 +160,9 @@ class RequestInsurerModal(discord.ui.Modal, title="Insurer Application"):
         if not torn_name or not description_terms_vouches:
             await interaction.response.send_message(embed=create_error_embed("Missing Fields", "Please complete all required fields."), ephemeral=True)
             return
-        if not _is_valid_torn_url(forum_url):
+        if not forum_url or not _is_valid_torn_url(forum_url):
             await interaction.response.send_message(
-                embed=create_error_embed("Invalid URL", "Enter a full Torn forum URL (e.g., https://www.torn.com/...)."),
+                embed=create_error_embed("Invalid URL", "Forum URL is required and must be a full Torn URL (e.g., https://www.torn.com/...)."),
                 ephemeral=True,
             )
             return
@@ -188,18 +186,22 @@ class RequestInsurerModal(discord.ui.Modal, title="Insurer Application"):
         provider_id = provider["provider_id"]
         admin_channel = await _resolve_announce_channel(interaction)
         if admin_channel:
-            lines = [
-                "📝 **Insurer application submitted**",
-                f"Applicant: {interaction.user.mention} (`{interaction.user.id}`)",
-                f"Torn: `{raw_torn_id}` • **{torn_name}**",
-                f"Forum URL: {forum_url}",
-                f"Company: {company_name or 'N/A'}",
-                f"Description excerpt: {_excerpt(description_terms_vouches)}",
-                f"Application ID: `{provider_id}`",
-                "",
-                f"Review with: `/application_review category:insurer application_id:{provider_id} decision:approve|deny reason:<optional>`",
-            ]
-            await admin_channel.send("\n".join(lines))
+            review_embed = discord.Embed(title=f"insurer application #{provider_id} — Pending", color=discord.Color.blurple())
+            review_embed.add_field(name="Applicant", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=False)
+            review_embed.add_field(name="Torn", value=f"`{raw_torn_id}` • **{torn_name}**", inline=False)
+            review_embed.add_field(name="Forum URL", value=forum_url, inline=False)
+            review_embed.add_field(name="Company", value=company_name or "N/A", inline=False)
+            review_embed.add_field(name="Description excerpt", value=_excerpt(description_terms_vouches), inline=False)
+            review_embed.set_footer(text="Use buttons below or /application_review")
+            await admin_channel.send(
+                embed=review_embed,
+                view=ApplicationReviewView(
+                    category="insurer",
+                    application_id=provider_id,
+                    applicant_discord_id=interaction.user.id,
+                    guild_id=interaction.guild_id,
+                ),
+            )
 
         await interaction.followup.send(
             embed=create_success_embed("Application Submitted", "Your insurer application was submitted and is pending admin review."),
@@ -230,9 +232,9 @@ class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
         if not torn_name or not schedule:
             await interaction.response.send_message(embed=create_error_embed("Missing Fields", "Please complete all required fields."), ephemeral=True)
             return
-        if not _is_valid_torn_url(forum_url):
+        if not forum_url or not _is_valid_torn_url(forum_url):
             await interaction.response.send_message(
-                embed=create_error_embed("Invalid URL", "Enter a full Torn host thread URL (e.g., https://www.torn.com/...)."),
+                embed=create_error_embed("Invalid URL", "Forum URL is required and must be a full Torn host thread URL (e.g., https://www.torn.com/...)."),
                 ephemeral=True,
             )
             return
@@ -251,11 +253,14 @@ class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
             "experience": experience_notes or None,
             "notes_rules": None,
         }
+        fallback_name = (interaction.user.display_name or interaction.user.name or "").strip()
+        effective_torn_name = torn_name or fallback_name
         host_application = await db.upsert_host_application(
             guild_id=interaction.guild_id,
             discord_id=interaction.user.id,
             torn_user_id=int(raw_torn_id),
-            display_name=torn_name,
+            torn_name=effective_torn_name,
+            display_name=interaction.user.display_name,
             forum_url=forum_url,
             application_data=application_data,
         )
@@ -263,17 +268,21 @@ class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
         application_id = host_application["id"]
         admin_channel = await _resolve_announce_channel(interaction)
         if admin_channel:
-            lines = [
-                "📝 **Host99k application submitted**",
-                f"Applicant: {interaction.user.mention} (`{interaction.user.id}`)",
-                f"Torn: `{raw_torn_id}` • **{torn_name}**",
-                f"Forum URL: {forum_url}",
-                f"Schedule excerpt: {_excerpt(schedule)}",
-                f"Application ID: `{application_id}`",
-                "",
-                f"Review with: `/application_review category:host99k application_id:{application_id} decision:approve|deny reason:<optional>`",
-            ]
-            await admin_channel.send("\n".join(lines))
+            review_embed = discord.Embed(title=f"host99k application #{application_id} — Pending", color=discord.Color.blurple())
+            review_embed.add_field(name="Applicant", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=False)
+            review_embed.add_field(name="Torn", value=f"`{raw_torn_id}` • **{effective_torn_name}**", inline=False)
+            review_embed.add_field(name="Forum URL", value=forum_url, inline=False)
+            review_embed.add_field(name="Schedule excerpt", value=_excerpt(schedule), inline=False)
+            review_embed.set_footer(text="Use buttons below or /application_review")
+            await admin_channel.send(
+                embed=review_embed,
+                view=ApplicationReviewView(
+                    category="host99k",
+                    application_id=application_id,
+                    applicant_discord_id=interaction.user.id,
+                    guild_id=interaction.guild_id,
+                ),
+            )
 
         await interaction.followup.send(
             embed=create_success_embed("Application Submitted", "Your host99k application was submitted and is pending admin review."),
@@ -400,6 +409,37 @@ async def setup_hook():
 
 bot.setup_hook = setup_hook
 
+
+async def register_persistent_application_review_views() -> None:
+    """Register persistent approve/deny views for pending applications."""
+    db = get_database()
+
+    insurer_apps = await db.list_pending_insurer_applications()
+    for app in insurer_apps:
+        guild_id = app.get("guild_id")
+        if guild_id is None:
+            continue
+        bot.add_view(
+            ApplicationReviewView(
+                category="insurer",
+                application_id=app["provider_id"],
+                applicant_discord_id=app["discord_id"],
+                guild_id=guild_id,
+            )
+        )
+
+    if await db.table_exists("host_applications"):
+        host_apps = await db.list_pending_host_applications()
+        for app in host_apps:
+            bot.add_view(
+                ApplicationReviewView(
+                    category="host99k",
+                    application_id=app["id"],
+                    applicant_discord_id=app["discord_id"],
+                    guild_id=app["guild_id"],
+                )
+            )
+
 # ============================================================================
 # BOT EVENTS
 # ============================================================================
@@ -413,7 +453,8 @@ async def on_ready():
     log.info(f"Guilds: {len(bot.guilds)}")
     
     await sync_application_commands()
-    
+    await register_persistent_application_review_views()
+
     # Start background workers
     if not cleanup_worker.is_running():
         cleanup_worker.start()
@@ -1024,58 +1065,24 @@ async def application_review(
     if not await _can_review_applications(interaction):
         return
 
-    db = get_database()
     chosen_category = category.value
     chosen_decision = decision.value
     reason_text = reason.strip() if reason else None
 
-    applicant_discord_id = None
-    guild_id = interaction.guild_id
-
     try:
-        if chosen_category == "insurer":
-            result = await db.review_insurer_application(
-                provider_id=application_id,
-                decision="approve" if chosen_decision == "approve" else "deny",
-                admin_discord_id=interaction.user.id,
-                reason=reason_text,
-            )
-            if not result:
-                await interaction.followup.send(embed=create_error_embed("Not Found", f"Insurer application `{application_id}` not found."), ephemeral=True)
-                return
-            applicant_discord_id = result["discord_id"]
-            guild_id = result.get("guild_id") or guild_id
-        else:
-            if not await db.table_exists("host_applications"):
-                await interaction.followup.send(embed=create_error_embed("Unavailable", "host_applications table missing. Run migrations first."), ephemeral=True)
-                return
-            result = await db.review_host_application(
-                application_id=application_id,
-                decision="approve" if chosen_decision == "approve" else "deny",
-                admin_discord_id=interaction.user.id,
-                reason=reason_text,
-            )
-            if not result:
-                await interaction.followup.send(embed=create_error_embed("Not Found", f"Host99k application `{application_id}` not found."), ephemeral=True)
-                return
-            applicant_discord_id = result["discord_id"]
-            guild_id = result["guild_id"]
-
-        await db.log_audit(
-            actor_id=interaction.user.id,
-            action="application_reviewed",
-            target_type=chosen_category,
-            target_id=application_id,
-            payload={
-                "category": chosen_category,
-                "application_id": application_id,
-                "decision": chosen_decision,
-                "reason": reason_text,
-            },
-            guild_id=guild_id,
-            source="discord",
+        review = await perform_application_review(
+            category=chosen_category,
+            application_id=application_id,
+            decision="approve" if chosen_decision == "approve" else "deny",
+            admin_discord_id=interaction.user.id,
+            reason=reason_text,
+            guild_id_hint=interaction.guild_id,
         )
+        if not review:
+            await interaction.followup.send(embed=create_error_embed("Not Found", f"{chosen_category} application `{application_id}` not found."), ephemeral=True)
+            return
 
+        applicant_discord_id = review["applicant_discord_id"]
         dm_status = "Applicant DM sent."
         if interaction.guild and applicant_discord_id:
             member = interaction.guild.get_member(int(applicant_discord_id))
@@ -1106,6 +1113,8 @@ async def application_review(
             ),
             ephemeral=True,
         )
+    except RuntimeError as e:
+        await interaction.followup.send(embed=create_error_embed("Unavailable", str(e)), ephemeral=True)
     except Exception as e:
         log.exception("Application review failed: %s", e)
         await interaction.followup.send(embed=create_error_embed("Application Review Failed", str(e)), ephemeral=True)

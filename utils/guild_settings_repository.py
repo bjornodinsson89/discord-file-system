@@ -146,3 +146,12 @@ class GuildSettingsRepository:
 
     async def set_announce_channel(self, guild_id: int, announce_channel_id: int) -> Dict[str, Any]:
         return await self.upsert_settings(guild_id, announce_channel_id=announce_channel_id)
+
+    @staticmethod
+    def resolve_admin_role_ids(settings: Dict[str, Any]) -> list[str]:
+        """Return normalized admin role IDs from admin_role_ids and legacy admin_role_id."""
+        role_ids = [str(v) for v in (settings.get("admin_role_ids") or []) if v is not None]
+        fallback_role_id = settings.get("admin_role_id")
+        if fallback_role_id is not None:
+            role_ids.append(str(fallback_role_id))
+        return role_ids
