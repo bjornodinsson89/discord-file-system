@@ -4,7 +4,6 @@ Raffle system with sell-out trigger support and automatic payment verification.
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
 
 import discord
 from discord import app_commands
@@ -50,73 +49,23 @@ class RaffleCreateModal(discord.ui.Modal):
     )
 
     max_per_user = discord.ui.TextInput(
-        label="📋 Max Tickets Per User",
+        label="📋 Max Per User (0 = unlimited)",
         placeholder="0 = unlimited",
         required=True,
         max_length=3,
         default="0"
     )
 
-    end_trigger = discord.ui.TextInput(
-        label="⏰ End Trigger",
-        placeholder="time | tickets_sold",
-        required=True,
-        max_length=20,
-        default="time"
-    )
-
-    duration = discord.ui.TextInput(
-        label="⏳ Duration",
-        placeholder="H:M or minutes (required if trigger=time)",
-        required=False,
-        max_length=10,
-        default="60"
-    )
-
     def __init__(self):
         super().__init__(title="🎉 Create Raffle")
-
-    @staticmethod
-    def _parse_duration(duration_text: str) -> Optional[timedelta]:
-        if not duration_text:
-            return None
-
-        value = duration_text.strip()
-        if not value:
-            return None
-
-        if ":" in value:
-            parts = value.split(":", 1)
-            if len(parts) != 2:
-                return None
-            hours = int(parts[0].strip())
-            minutes = int(parts[1].strip())
-            if hours < 0 or minutes < 0 or minutes > 59:
-                return None
-            total_minutes = (hours * 60) + minutes
-        else:
-            total_minutes = int(value)
-
-        if total_minutes <= 0:
-            return None
-
-        return timedelta(minutes=total_minutes)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
             payment_type = (self.payment_type.value or "").strip().lower()
-            end_trigger = (self.end_trigger.value or "").strip().lower()
 
             if payment_type not in {"free", "xanax", "erotic_dvd"}:
                 await interaction.response.send_message(
                     "❌ Payment Type must be one of: free, xanax, erotic_dvd",
-                    ephemeral=True
-                )
-                return
-
-            if end_trigger not in {"time", "tickets_sold"}:
-                await interaction.response.send_message(
-                    "❌ End Trigger must be one of: time, tickets_sold",
                     ephemeral=True
                 )
                 return
@@ -149,25 +98,9 @@ class RaffleCreateModal(discord.ui.Modal):
             )
             return
 
-        # Calculate timing
-        if end_trigger == "time":
-            try:
-                duration = self._parse_duration(self.duration.value or "")
-            except ValueError:
-                duration = None
-
-            if duration is None:
-                await interaction.response.send_message(
-                    "❌ Duration must be a positive value in H:M or minutes format",
-                    ephemeral=True
-                )
-                return
-
-            end_time = datetime.utcnow() + duration
-            hours_after_sold_out = None
-        else:
-            end_time = datetime.utcnow() + timedelta(days=30)
-            hours_after_sold_out = None
+        end_time = datetime.utcnow() + timedelta(days=30)
+        end_trigger = "tickets_sold"
+        hours_after_sold_out = None
 
         # Force price to 0 for free entries
         actual_price = 0 if payment_type == "free" else price
@@ -208,32 +141,10 @@ class RaffleCreateModal(discord.ui.Modal):
                 description=f"🎁 **Prize:** {self.prize.value}\n"
                            f"🎟️ **Tickets:** {total} available\n"
                            f"💰 **Price:** {price_display} per ticket\n"
-                           f"📋 **Max per user:** {'Unlimited ♾️' if max_per == 0 else max_per}",
+                           f"📋 **Max per user:** {'Unlimited ♾️' if max_per == 0 else max_per}\n"
+                           "⏰ **Draw occurs 30 seconds after sellout.**",
                 color=discord.Color.green()
             )
-
-            if end_trigger == "tickets_sold":
-                embed.add_field(
-                    name="⏰ End Condition",
-                    value="🎟️ When sold out + **30 seconds**",
-                    inline=False
-                )
-            else:
-                duration_seconds = max(0, int((end_time - datetime.utcnow()).total_seconds()))
-                duration_minutes = duration_seconds // 60
-                hours, minutes = divmod(duration_minutes, 60)
-                time_parts = []
-                if hours:
-                    time_parts.append(f"{hours}h")
-                if minutes:
-                    time_parts.append(f"{minutes}m")
-                if not time_parts:
-                    time_parts.append("<1m")
-                embed.add_field(
-                    name="⏰ End Time",
-                    value=f"⏱️ {' '.join(time_parts)} from now",
-                    inline=False
-                )
 
             if payment_type == "free":
                 embed.add_field(
@@ -570,10 +481,7 @@ class RafflesCog(commands.Cog):
             else:
                 value += f"💰 Price: 📀 {raffle['ticket_price']} Erotic DVD"
 
-            if raffle["end_trigger"] == "tickets_sold":
-                value += "\n⏰ Trigger: 🎟️ Sell-out + 30 seconds"
-            else:
-                value += f"\n⏰ Ends: <t:{int(raffle['end_time'].timestamp())}:R>"
+            value += "\n⏰ Draw occurs 30 seconds after sellout."
 
             embed.add_field(
                 name=f"#{raffle['raffle_id']}: {raffle['prize'][:50]}",
