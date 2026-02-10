@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 
 import config
+from aiohttp import web
 from cogs import EXTENSIONS
 from cogs.events import bot
 
@@ -21,9 +23,28 @@ print("STDOUT: bot process started", flush=True)
 log = logging.getLogger("happy_jumper")
 
 
+async def health_server():
+    """Dummy HTTP server to keep Railway from killing the container."""
+    app = web.Application()
+    app.router.add_get('/health', lambda r: web.Response(text='ok'))
+    app.router.add_get('/', lambda r: web.Response(text='Happy Jumper Bot Running'))
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Railway injects PORT, or default to 3000
+    port = int(os.getenv('PORT', '3000'))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    log.info(f"Health check server started on port {port}")
+
+
 async def main() -> None:
     config.validate_config()
     log.info("Starting Discord bot service")
+
+    # Start health server FIRST (opens port for Railway health checks)
+    asyncio.create_task(health_server())
 
     for ext in EXTENSIONS:
         try:
