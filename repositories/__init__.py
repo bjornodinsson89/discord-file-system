@@ -1,17 +1,17 @@
-from .base import RepositoryBase, create_pool, pool_is_open
-from .guilds import GuildsRepository
-from .insurance import InsuranceRepository
+from .base import RepositoryBase
 from .jumps import JumpsRepository
 from .raffles import RafflesRepository
+from .insurance import InsuranceRepository
 from .users import UsersRepository
+from .guilds import GuildsRepository
+from .audit import AuditRepository  # ADD THIS LINE
 
 __all__ = [
-    "RepositoryBase",
-    "create_pool",
-    "pool_is_open",
-    "JumpsRepository",
-    "InsuranceRepository",
-    "RafflesRepository",
-    "UsersRepository",
-    "GuildsRepository",
+    'RepositoryBase',
+    'JumpsRepository',
+    'RafflesRepository', 
+    'InsuranceRepository',
+    'UsersRepository',
+    'GuildsRepository',
+    'AuditRepository',  # ADD THIS LINE
 ]
