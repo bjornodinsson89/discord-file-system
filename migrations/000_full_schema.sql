@@ -261,6 +261,7 @@ CREATE TABLE IF NOT EXISTS insurance_policies (
     -- New fields
     coverage_type VARCHAR(50) CHECK (coverage_type IN ('xanax', 'ecstasy_after_stack', 'all_drugs')),
     payout_description TEXT,
+    payout_items JSONB NOT NULL DEFAULT '[]'::jsonb,
     duration_hours INTEGER DEFAULT 24 CHECK (duration_hours >= 1 AND duration_hours <= 720),
     -- Status
     active BOOLEAN DEFAULT TRUE,
@@ -314,10 +315,14 @@ CREATE TABLE IF NOT EXISTS insurance_claims (
     claim_type VARCHAR(50) NOT NULL CHECK (claim_type IN ('overdose', 'drug_loss', 'xanax_overdose', 'ecstasy_overdose')),
     xanax_lost INTEGER NOT NULL,
     payout_amount INTEGER NOT NULL,
+    payout_items JSONB NOT NULL DEFAULT '[]'::jsonb,
     -- Evidence
     torn_log_id INTEGER,                  -- Torn API log ID
     torn_log_timestamp INTEGER,           -- Torn API log timestamp
-    torn_log_evidence TEXT,               -- JSON dump of log entry
+    torn_log_evidence TEXT,               -- JSON dump of overdose log entry
+    payout_log_id BIGINT,                 -- Torn payout verification log ID
+    payout_log_timestamp BIGINT,          -- Torn payout verification timestamp
+    payout_log_evidence TEXT,             -- JSON dump of payout verification log entry
     -- Status
     status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'paid')),
     notes TEXT,

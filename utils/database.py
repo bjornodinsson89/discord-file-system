@@ -1662,6 +1662,7 @@ class DatabaseManager:
         cost_amount: int = 1,
         coverage_type: str = 'xanax',
         payout_description: Optional[str] = None,
+        payout_items: Optional[List[Dict[str, Any]]] = None,
         duration_hours: int = 24,
         guild_id: Optional[int] = None
     ) -> int:
@@ -1674,12 +1675,12 @@ class DatabaseManager:
             row = await conn.fetchrow("""
                 INSERT INTO insurance_policies (
                     provider_id, guild_id, name, description,
-                    cost_type, cost_amount, coverage_type, payout_description,
+                    cost_type, cost_amount, coverage_type, payout_description, payout_items,
                     duration_hours, active
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, TRUE)
                 RETURNING policy_id
             """, provider_id, guild_id, name, description, cost_type, cost_amount,
-                coverage_type, payout_description, duration_hours)
+                coverage_type, payout_description, json.dumps(payout_items or []), duration_hours)
             return row['policy_id']
     
     async def get_policy(self, policy_id: int) -> Optional[Dict]:
@@ -1876,6 +1877,7 @@ class DatabaseManager:
         claim_type: str,
         xanax_lost: int,
         payout_amount: int,
+        payout_items: Optional[List[Dict[str, Any]]] = None,
         torn_log_id: Optional[int] = None,
         torn_log_timestamp: Optional[int] = None,
         torn_log_evidence: Optional[str] = None
@@ -1885,12 +1887,12 @@ class DatabaseManager:
             row = await conn.fetchrow("""
                 INSERT INTO insurance_claims (
                     coverage_id, policy_id, user_discord_id, provider_id,
-                    claim_type, xanax_lost, payout_amount,
+                    claim_type, xanax_lost, payout_amount, payout_items,
                     torn_log_id, torn_log_timestamp, torn_log_evidence, status
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, 'pending')
                 RETURNING claim_id
             """, coverage_id, policy_id, user_discord_id, provider_id,
-                claim_type, xanax_lost, payout_amount,
+                claim_type, xanax_lost, payout_amount, json.dumps(payout_items or []),
                 torn_log_id, torn_log_timestamp, torn_log_evidence)
             return row['claim_id']
     
@@ -1984,6 +1986,43 @@ class DatabaseManager:
                 WHERE coverage_id = (SELECT coverage_id FROM insurance_claims WHERE claim_id = $1)
             """, claim_id)
     
+
+    async def set_claim_payout_items(self, claim_id: int, payout_items: List[Dict[str, Any]], resolved_by: Optional[int] = None):
+        """Store payout items for a claim without marking it as paid."""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE insurance_claims
+                SET payout_items = $2::jsonb,
+                    status = CASE WHEN status = 'pending' THEN 'approved' ELSE status END,
+                    resolved_by = COALESCE($3, resolved_by),
+                    resolved_at = CASE WHEN status = 'pending' THEN NOW() ELSE resolved_at END
+                WHERE claim_id = $1
+            """, claim_id, json.dumps(payout_items), resolved_by)
+
+    async def mark_claim_paid_with_log(
+        self,
+        claim_id: int,
+        payout_log_id: int,
+        payout_log_timestamp: int,
+        payout_log_evidence: str
+    ):
+        """Mark claim as paid and persist payout verification log metadata."""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE insurance_claims
+                SET status = 'paid',
+                    payout_log_id = $2,
+                    payout_log_timestamp = $3,
+                    payout_log_evidence = $4
+                WHERE claim_id = $1
+            """, claim_id, payout_log_id, payout_log_timestamp, payout_log_evidence)
+
+            await conn.execute("""
+                UPDATE insurance_coverage
+                SET status = 'claimed'
+                WHERE coverage_id = (SELECT coverage_id FROM insurance_claims WHERE claim_id = $1)
+            """, claim_id)
+
     async def check_existing_claim(self, coverage_id: int, torn_log_id: int) -> bool:
         """Check if a claim already exists for this log entry."""
         async with self.pool.acquire() as conn:

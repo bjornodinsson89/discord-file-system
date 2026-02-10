@@ -3,12 +3,14 @@
 import discord
 from discord import ui
 import logging
+import json
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
 from utils import get_database, get_security_manager, get_torn_api
 from utils.discord_channels import resolve_guild_channel
 from utils.torn_api import TornAPIError, TornAPIPermissionError
 from utils.embeds import *
+from utils.payouts import parse_payout_string, payout_items_to_human, payout_items_to_string, PayoutParseError
 import config
 
 log = logging.getLogger("happy_jumper.views")
@@ -424,6 +426,44 @@ def _trim_text(value: str, limit: int = 180) -> str:
     return f"{text[:limit-3]}..."
 
 
+def _payout_line(items: List[Dict]) -> str:
+    return f"Payout: {payout_items_to_human(items)}"
+
+
+def _extract_log_id(log_entry: Dict) -> Optional[int]:
+    return log_entry.get("id") or log_entry.get("log_id")
+
+
+def _extract_counterparty_torn_id(log_entry: Dict) -> Optional[int]:
+    blob = json.dumps(log_entry, ensure_ascii=False)
+    numbers = []
+    for key in ("user_id", "target", "receiver_id", "sender_id", "player_id", "opponent"):
+        value = log_entry.get(key)
+        if isinstance(value, int):
+            numbers.append(value)
+    for n in numbers:
+        if n > 0:
+            return n
+    return None
+
+
+def _count_item_qty(log_entry: Dict, canonical_item: str) -> int:
+    text = json.dumps(log_entry, ensure_ascii=False).lower()
+    aliases = {
+        "xanax": ["xanax", "xans", "xan"],
+        "erotic_dvd": ["erotic dvd", "edvd", "dvd", "erotic_dvd"],
+        "ecstasy": ["ecstasy", "xtc"],
+    }
+    if not any(alias in text for alias in aliases.get(canonical_item, [])):
+        return 0
+
+    for key in ("quantity", "qty", "amount", "items"):  # best-effort Torn payload support
+        value = log_entry.get(key)
+        if isinstance(value, int):
+            return value
+    return 1
+
+
 
 # ============================================================================
 # INSURANCE VIEWS
@@ -651,8 +691,8 @@ class InsurerCardView(ui.View):
                     f"**Jump Types:** {covered_text}\n"
                     f"**Coverage:** {_coverage_label(policy.get('coverage_type'))}\n"
                     f"**Cost:** {policy.get('cost_type', 'unknown')} {policy.get('cost_amount', 0)}\n"
-                    f"**Max Xanax:** {policy.get('max_coverage_xanax', 0)}\n"
                     f"**Duration:** {policy.get('duration_hours', 0)} hours\n"
+                    f"**{_payout_line(policy.get('payout_items') or [])}**\n"
                     f"**Description:** {_trim_text(policy.get('description') or 'No description provided.', 220)}"
                 )
                 embed.add_field(name=f"#{policy['policy_id']} • {policy.get('name', 'Policy')}", value=body, inline=False)
@@ -811,7 +851,7 @@ class ProviderClaimsView(ui.View):
 
 class ClaimSelect(ui.Select):
     def __init__(self, claims: list):
-        options = [discord.SelectOption(label=f"Claim #{c['claim_id']}", description=f"${c['payout_amount']:,} - {c['status']}", value=str(c['claim_id'])) for c in claims[:25]]
+        options = [discord.SelectOption(label=f"Claim #{c['claim_id']}", description=f"{payout_items_to_human(c.get('payout_items') or [])[:70]} - {c['status']}", value=str(c['claim_id'])) for c in claims[:25]]
         super().__init__(placeholder="Select a claim...", options=options)
     
     async def callback(self, interaction: discord.Interaction):
@@ -819,25 +859,117 @@ class ClaimSelect(ui.Select):
         await interaction.response.send_message(f"Managing Claim #{claim_id}", view=ClaimManageView(claim_id), ephemeral=True)
 
 
+class SetClaimPayoutModal(ui.Modal, title="Set Claim Payout"):
+    payout_items = ui.TextInput(
+        label="Payout (items)",
+        placeholder="xanax=4, edvd=6, ecstasy=1",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=300,
+    )
+
+    def __init__(self, claim_id: int, initial_value: str = ""):
+        super().__init__()
+        self.claim_id = claim_id
+        if initial_value:
+            self.payout_items.default = initial_value[:300]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            parsed = parse_payout_string(self.payout_items.value)
+            if not parsed:
+                raise PayoutParseError("Payout cannot be empty. Example: xanax=4, edvd=6, ecstasy=1")
+            db = get_database()
+            await db.set_claim_payout_items(self.claim_id, parsed, resolved_by=interaction.user.id)
+            await db.log_audit(interaction.user.id, "claim_payout_set", "claim", self.claim_id, {"payout_items": parsed})
+            await interaction.followup.send(
+                embed=create_success_embed("Payout Set", _payout_line(parsed) + "\nNow click **Verify Payout** after sending items."),
+                ephemeral=True,
+            )
+        except PayoutParseError as err:
+            await interaction.followup.send(
+                embed=create_error_embed(
+                    "Invalid Payout String",
+                    f"{err}\nExamples: `xanax=4, edvd=6, ecstasy=1` or `xanax:4,edvd:6`",
+                ),
+                ephemeral=True,
+            )
+        except Exception as exc:
+            log.exception("Set claim payout failed: %s", exc)
+            await interaction.followup.send(embed=create_error_embed("Failed to Set Payout", str(exc)), ephemeral=True)
+
+
 class ClaimManageView(ui.View):
     def __init__(self, claim_id: int):
         super().__init__(timeout=300)
         self.claim_id = claim_id
-    
-    @ui.button(label="Approve & Pay", style=discord.ButtonStyle.success, emoji=config.EMOJI_CHECK)
-    async def approve(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True)
+
+    @ui.button(label="Set Payout", style=discord.ButtonStyle.primary, emoji=config.EMOJI_PILL)
+    async def set_payout(self, interaction: discord.Interaction, button: ui.Button):
         db = get_database()
-        await db.approve_claim(self.claim_id, interaction.user.id)
-        await db.log_audit(interaction.user.id, "claim_approved", "claim", self.claim_id)
-        
         claim = await db.get_claim(self.claim_id)
-        await interaction.followup.send(embed=create_success_embed(
-            "Claim Approved",
-            f"Pay ${claim['payout_amount']:,} to Torn ID `{claim['user_torn_id']}`\n"
-            f"Use `/insurance_verify_payout` after sending."
-        ), ephemeral=True)
-    
+        if not claim:
+            await interaction.response.send_message(embed=create_error_embed("Claim Not Found"), ephemeral=True)
+            return
+
+        policy = await db.get_policy(claim['policy_id'])
+        seed_items = claim.get('payout_items') or (policy.get('payout_items') if policy else []) or []
+        await interaction.response.send_modal(SetClaimPayoutModal(self.claim_id, payout_items_to_string(seed_items)))
+
+    @ui.button(label="Verify Payout", style=discord.ButtonStyle.success, emoji=config.EMOJI_CHECK)
+    async def verify_payout(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            db = get_database()
+            claim = await db.get_claim(self.claim_id)
+            if not claim:
+                await interaction.followup.send(embed=create_error_embed("Claim Not Found"), ephemeral=True)
+                return
+            payout_items = claim.get("payout_items") or []
+            if not payout_items:
+                await interaction.followup.send(embed=create_error_embed("Payout Not Set", "Use **Set Payout** first."), ephemeral=True)
+                return
+
+            key_data = await db.get_user_api_key(interaction.user.id)
+            if not key_data:
+                await interaction.followup.send(embed=create_error_embed("API Key Required", "Register your API key first."), ephemeral=True)
+                return
+
+            security = get_security_manager()
+            api_key = security.decrypt(key_data['encrypted_key'])
+            torn_api = get_torn_api()
+
+            candidate_logs = await torn_api.get_user_logs(api_key, limit=200, log_types=[4102])
+            if not candidate_logs:
+                candidate_logs = await torn_api.get_user_logs(api_key, limit=200, log_types=[4103])
+
+            recipient_torn_id = int(claim['user_torn_id'])
+            matched_log = None
+            for entry in candidate_logs:
+                counterparty = _extract_counterparty_torn_id(entry)
+                if counterparty and counterparty != recipient_torn_id:
+                    continue
+                if all(_count_item_qty(entry, i['item']) >= int(i['qty']) for i in payout_items):
+                    matched_log = entry
+                    break
+
+            if not matched_log:
+                await interaction.followup.send(embed=create_error_embed("Payout Verification Failed", "No matching payout log found yet. Send items and retry."), ephemeral=True)
+                return
+
+            await db.mark_claim_paid_with_log(
+                self.claim_id,
+                int(_extract_log_id(matched_log) or 0),
+                int(matched_log.get('timestamp') or 0),
+                json.dumps(matched_log, ensure_ascii=False),
+            )
+            await db.log_audit(interaction.user.id, "claim_paid", "claim", self.claim_id)
+            await interaction.followup.send(embed=create_success_embed("Claim Paid", _payout_line(payout_items)), ephemeral=True)
+        except Exception as exc:
+            log.exception("Verify payout failed: %s", exc)
+            await interaction.followup.send(embed=create_error_embed("Verification Error", str(exc)), ephemeral=True)
+
     @ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji=config.EMOJI_CROSS)
     async def deny(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_modal(DenyClaimModal(self.claim_id))
