@@ -17,7 +17,6 @@ class GuildSettingsRepository:
         "admin_role_ids",
         "host99k_role_id",
         "insurer_role_id",
-        "admin_role_id",
         "welcome_enabled",
         "welcome_message_template",
         "auto_complete_enabled",
@@ -31,7 +30,6 @@ class GuildSettingsRepository:
         "welcome_channel_id",
         "host99k_role_id",
         "insurer_role_id",
-        "admin_role_id",
     }
     DEFAULT_KEYS = {
         "guild_id": None,
@@ -43,7 +41,6 @@ class GuildSettingsRepository:
         "admin_role_ids": None,
         "host99k_role_id": None,
         "insurer_role_id": None,
-        "admin_role_id": None,
         "welcome_enabled": False,
         "welcome_message_template": None,
         "auto_complete_enabled": True,
@@ -128,9 +125,25 @@ class GuildSettingsRepository:
         return await self.upsert_settings(guild_id, announce_channel_id=announce_channel_id)
 
     @staticmethod
-    def resolve_admin_role_ids(settings: Dict[str, Any]) -> list[str]:
-        role_ids = [str(v) for v in (settings.get("admin_role_ids") or []) if v is not None]
-        fallback_role_id = settings.get("admin_role_id")
-        if fallback_role_id is not None:
-            role_ids.append(str(fallback_role_id))
-        return role_ids
+    def resolve_admin_role_ids(settings: Dict[str, Any]) -> list[int]:
+        raw_value = settings.get("admin_role_ids")
+        if raw_value is None:
+            return []
+        if isinstance(raw_value, list):
+            values = raw_value
+        else:
+            values = [raw_value]
+
+        normalized: list[int] = []
+        for value in values:
+            if value is None:
+                continue
+            if isinstance(value, int):
+                normalized.append(value)
+                continue
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.isdigit():
+                    normalized.append(int(stripped))
+            
+        return normalized

@@ -11,7 +11,6 @@ def test_000_full_schema_contains_required_columns():
         "raffle_channel_id BIGINT",
         "insurance_channel_id BIGINT",
         "welcome_channel_id BIGINT",
-        "admin_role_id BIGINT",
         "admin_role_ids JSONB",
         "host99k_role_id BIGINT",
         "insurer_role_id BIGINT",

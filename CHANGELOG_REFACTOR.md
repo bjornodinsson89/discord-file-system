@@ -2,7 +2,6 @@
 
 ## Added
 - `utils/guild_settings_repository.py` — repository layer for guild settings CRUD/upserts.
-- `migrations/007_discord_only_guild_settings.sql` — adds `announce_channel_id`, `admin_role_ids`, welcome fields, timestamps.
 - `CHANGELOG_REFACTOR.md` — this file.
 
 ## Modified

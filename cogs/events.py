@@ -57,8 +57,8 @@ async def ensure_admin(interaction: discord.Interaction) -> bool:
         guild_owner_id=interaction.guild.owner_id,
         is_administrator=member.guild_permissions.administrator,
         can_manage_guild=member.guild_permissions.manage_guild,
-        member_role_ids={str(role.id) for role in member.roles},
-        admin_role_ids=[str(v) for v in (settings.get("admin_role_ids") or [])],
+        member_role_ids={role.id for role in member.roles},
+        admin_role_ids=GuildSettingsRepository.resolve_admin_role_ids(settings),
     ):
         return True
 
@@ -118,7 +118,7 @@ async def _can_review_applications(interaction: discord.Interaction) -> bool:
         guild_owner_id=interaction.guild.owner_id,
         is_administrator=member.guild_permissions.administrator,
         can_manage_guild=member.guild_permissions.manage_guild,
-        member_role_ids={str(role.id) for role in member.roles},
+        member_role_ids={role.id for role in member.roles},
         admin_role_ids=admin_role_ids,
     ):
         return True
@@ -233,13 +233,6 @@ class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
 
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        if not await db.table_exists("host_applications"):
-            await interaction.followup.send(
-                embed=create_error_embed("Application Unavailable", "host_applications table is missing. Run migrations first."),
-                ephemeral=True,
-            )
-            return
-
         application_data = {
             "schedule": schedule,
             "experience": experience_notes or None,
@@ -405,17 +398,16 @@ async def register_persistent_application_review_views() -> None:
             )
         )
 
-    if await db.table_exists("host_applications"):
-        host_apps = await db.list_pending_host_applications()
-        for app in host_apps:
-            bot.add_view(
-                ApplicationReviewView(
-                    category="host99k",
-                    application_id=app["id"],
-                    applicant_discord_id=app["discord_id"],
-                    guild_id=app["guild_id"],
-                )
+    host_apps = await db.list_pending_host_applications()
+    for app in host_apps:
+        bot.add_view(
+            ApplicationReviewView(
+                category="host99k",
+                application_id=app["id"],
+                applicant_discord_id=app["discord_id"],
+                guild_id=app["guild_id"],
             )
+        )
 
 # ============================================================================
 # BOT EVENTS
@@ -1192,19 +1184,9 @@ async def cleanup_worker():
         db = get_database()
         
         # Clean up expired signup reservations
-        deleted_signups = await db.cleanup_expired_reservations()
+        deleted_signups = await db.cleanup_expired_signups()
         if deleted_signups > 0:
             log.info(f"Cleaned up {deleted_signups} expired signup reservations")
-        
-        # Clean up expired raffle entries
-        deleted_raffle = await db.cleanup_expired_raffle_entries()
-        if deleted_raffle > 0:
-            log.info(f"Cleaned up {deleted_raffle} expired raffle entry reservations")
-        
-        # Clean up expired coverage reservations
-        deleted_coverage = await db.cleanup_expired_coverage_reservations()
-        if deleted_coverage > 0:
-            log.info(f"Cleaned up {deleted_coverage} expired coverage reservations")
         
         # Auto-promote from waitlist for sessions with open spots
         sessions = await db.get_sessions_with_expired_signups()
