@@ -20,7 +20,17 @@ DB_PORT = int(os.getenv("DB_PORT", "6543"))
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
-DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Build DATABASE_URL from individual components if not provided directly
+# This supports both Railway (individual vars) and other platforms (single URL)
+_raw_db_url = os.getenv("DATABASE_URL")
+if _raw_db_url:
+    DATABASE_URL = _raw_db_url
+elif all([DB_USER, DB_PASSWORD, DB_HOST, DB_NAME]):
+    DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+else:
+    DATABASE_URL = None
+
 DB_SSL = os.getenv("DB_SSL", "disable")
 DB_SSL_CA_FILE = os.getenv("DB_SSL_CA_FILE")
 
@@ -149,12 +159,7 @@ PAYMENT_TYPES = {
 
 def validate_config() -> None:
     required = {
-        "DB_HOST": DB_HOST,
-        "DB_PORT": DB_PORT,
-        "DB_NAME": DB_NAME,
-        "DB_USER": DB_USER,
-        "DB_PASSWORD": DB_PASSWORD,
-        "DB_SSL": DB_SSL,
+        "DATABASE_URL": DATABASE_URL,  # Check for DATABASE_URL specifically
         "FERNET_KEY": FERNET_KEY,
         "DISCORD_TOKEN": DISCORD_TOKEN,
     }
