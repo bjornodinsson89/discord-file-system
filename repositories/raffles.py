@@ -4,11 +4,10 @@ from __future__ import annotations
 import json
 import random
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Any
 
 import asyncpg
-import aiohttp
 
 from .base import RepositoryBase
 
@@ -29,18 +28,26 @@ class RafflesRepository(RepositoryBase):
     ) -> int:
         """Create a new raffle with sell-out trigger support."""
         async with self.pool.acquire() as conn:
+            # Get creator's Torn ID for payment verification
+            creator = await conn.fetchrow(
+                "SELECT torn_user_id FROM user_api_keys WHERE discord_id = $1",
+                creator_discord_id
+            )
+            creator_torn_id = creator["torn_user_id"] if creator else None
+            
             row = await conn.fetchrow(
                 """
                 INSERT INTO raffles (
-                    guild_id, creator_discord_id, prize, ticket_payment_type,
+                    guild_id, creator_discord_id, creator_torn_id, prize, ticket_payment_type,
                     ticket_price, tickets_available, max_tickets_per_user,
                     end_time, end_trigger, hours_after_sold_out, status,
                     tickets_sold, created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', 0, NOW())
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', 0, NOW())
                 RETURNING raffle_id
                 """,
                 guild_id,
                 creator_discord_id,
+                creator_torn_id,
                 prize,
                 ticket_payment_type,
                 ticket_price,
@@ -52,31 +59,177 @@ class RafflesRepository(RepositoryBase):
             )
             return int(row["raffle_id"])
 
-    async def get_raffles_to_draw(self) -> list[dict[str, Any]]:
-        """Get raffles ready to draw (time-ended OR sell-out + delay passed)."""
+    async def get_pending_verifications(self) -> list[dict[str, Any]]:
+        """Get entries that need auto-verification (4:30+ minutes old, not verified)."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT raffle_id, guild_id, creator_discord_id, prize, 
-                       ticket_payment_type, ticket_price, tickets_available,
-                       max_tickets_per_user, status, winner_discord_id,
-                       end_time, end_trigger, hours_after_sold_out, 
-                       tickets_fully_sold_at, tickets_sold
-                FROM raffles 
-                WHERE status = 'active' 
-                AND (
-                    -- Time-based end
-                    (end_trigger = 'time' OR end_trigger IS NULL) 
-                    AND end_time <= NOW()
-                    OR
-                    -- Sell-out + delay end
-                    end_trigger = 'tickets_sold' 
-                    AND tickets_fully_sold_at IS NOT NULL
-                    AND tickets_fully_sold_at + (hours_after_sold_out || ' hours')::INTERVAL <= NOW()
-                )
+                SELECT 
+                    re.entry_id, re.raffle_id, re.discord_id, re.torn_user_id, 
+                    re.num_tickets, re.reserved_until, re.created_at,
+                    r.creator_torn_id, r.ticket_price, r.ticket_payment_type,
+                    u.api_key
+                FROM raffle_entries re
+                JOIN raffles r ON re.raffle_id = r.raffle_id
+                JOIN user_api_keys u ON re.discord_id = u.discord_id
+                WHERE re.payment_verified = FALSE
+                AND re.reserved_until > NOW()
+                AND re.created_at <= NOW() - INTERVAL '4 minutes 30 seconds'
+                AND r.creator_torn_id IS NOT NULL
                 """
             )
             return [dict(row) for row in rows]
+
+    async def verify_payment_via_api(
+        self, 
+        entry_id: int,
+        user_api_key: str,
+        creator_torn_id: int,
+        ticket_price: int,
+        num_tickets: int,
+        payment_type: str
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Verify payment by checking Torn API logs.
+        Returns (success, error_message).
+        """
+        from utils.torn_api import get_torn_api, TornAPIError
+        from cryptography.fernet import Fernet
+        import config
+        
+        # Get item ID based on payment type
+        item_id = config.XANAX_ITEM_ID if payment_type == "xanax" else config.DVD_ITEM_ID
+        total_required = ticket_price * num_tickets
+        
+        try:
+            # Decrypt API key
+            f = Fernet(config.FERNET_KEY)
+            api_key = f.decrypt(user_api_key.encode()).decode()
+            
+            # Get logs from last 10 minutes (to cover reservation period)
+            from_timestamp = int(time.time()) - (10 * 60)
+            
+            api = get_torn_api()
+            
+            # Get item_sent logs (2210)
+            logs = await api.get_user_logs(api_key, limit=50, log_types=[2210])
+            
+            for log_entry in logs:
+                # Check timestamp is after reservation
+                if log_entry.get("timestamp", 0) < from_timestamp:
+                    continue
+                
+                # Check if sent to creator
+                if str(log_entry.get("receiver_id")) != str(creator_torn_id):
+                    continue
+                
+                # Check item type
+                if str(log_entry.get("item_id")) != str(item_id):
+                    continue
+                
+                # Check amount
+                amount = log_entry.get("amount", 0)
+                if amount >= total_required:
+                    # Found valid payment!
+                    return True, None
+            
+            return False, f"Payment not found. Need {total_required} {payment_type} sent to creator."
+            
+        except TornAPIError as e:
+            return False, f"Torn API error: {e}"
+        except Exception as e:
+            return False, f"Verification error: {str(e)}"
+
+    async def verify_payment_and_check_sold_out(
+        self, entry_id: int, manual: bool = False
+    ) -> tuple[bool, Optional[int], Optional[str]]:
+        """
+        Verify payment via Torn API and check if raffle sold out.
+        Returns (success, raffle_id_if_sold_out, error_message).
+        """
+        async with self.pool.acquire() as conn:
+            # Get entry details with raffle info
+            entry = await conn.fetchrow(
+                """
+                SELECT 
+                    re.*, r.creator_torn_id, r.ticket_price, 
+                    r.ticket_payment_type, u.api_key
+                FROM raffle_entries re
+                JOIN raffles r ON re.raffle_id = r.raffle_id
+                JOIN user_api_keys u ON re.discord_id = u.discord_id
+                WHERE re.entry_id = $1
+                AND re.payment_verified = FALSE
+                """,
+                entry_id
+            )
+            
+            if not entry:
+                return False, None, "Entry not found or already verified"
+            
+            # Check if reservation expired (unless manual verification)
+            if not manual and entry["reserved_until"] < datetime.utcnow():
+                return False, None, "Reservation expired"
+            
+            # Verify via Torn API
+            success, error = await self.verify_payment_via_api(
+                entry_id=entry_id,
+                user_api_key=entry["api_key"],
+                creator_torn_id=entry["creator_torn_id"],
+                ticket_price=entry["ticket_price"],
+                num_tickets=entry["num_tickets"],
+                payment_type=entry["ticket_payment_type"]
+            )
+            
+            if not success:
+                return False, None, error
+            
+            # Payment verified! Update entry
+            await conn.execute(
+                """
+                UPDATE raffle_entries 
+                SET payment_verified = TRUE, 
+                    payment_verified_at = NOW(),
+                    reserved_until = NULL
+                WHERE entry_id = $1
+                """,
+                entry_id,
+            )
+            
+            raffle_id = entry["raffle_id"]
+            
+            # Check if this caused sell-out
+            sold_out = await conn.fetchrow(
+                """
+                UPDATE raffles 
+                SET tickets_fully_sold_at = NOW()
+                WHERE raffle_id = $1 
+                AND end_trigger = 'tickets_sold'
+                AND tickets_fully_sold_at IS NULL
+                AND (
+                    SELECT COALESCE(SUM(num_tickets), 0)
+                    FROM raffle_entries
+                    WHERE raffle_id = $1 AND payment_verified = TRUE
+                ) >= tickets_available
+                RETURNING raffle_id
+                """,
+                raffle_id,
+            )
+            
+            return True, raffle_id if sold_out else None, None
+
+    async def cancel_expired_reservation(self, entry_id: int) -> bool:
+        """Cancel an expired reservation and return tickets to pool."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM raffle_entries 
+                WHERE entry_id = $1 
+                AND payment_verified = FALSE 
+                AND reserved_until < NOW()
+                """,
+                entry_id
+            )
+            return "DELETE 1" in result
 
     async def draw_raffle_winner(
         self, raffle_id: int
@@ -84,7 +237,6 @@ class RafflesRepository(RepositoryBase):
         """Draw pure random winner (each entry has equal chance)."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                # Get raffle details including creator info
                 raffle = await conn.fetchrow(
                     """
                     SELECT r.*, u.torn_user_id as creator_torn_id
@@ -118,13 +270,10 @@ class RafflesRepository(RepositoryBase):
                     )
                     return None
                 
-                # PURE RANDOM: Each user has equal chance regardless of ticket count
+                # PURE RANDOM
                 winner = random.choice(entries)
+                winner_torn_name = f"User_{winner['torn_user_id']}"  # Simplified
                 
-                # Get winner's Torn name using your existing API client
-                winner_torn_name = await self._get_torn_name(winner["torn_user_id"])
-                
-                # Store winner info in raffle record
                 await conn.execute(
                     """
                     UPDATE raffles 
@@ -153,33 +302,7 @@ class RafflesRepository(RepositoryBase):
                     "prize": raffle["prize"],
                     "total_entries": len(entries),
                 }
-    
-    async def _get_torn_name(self, torn_id: int) -> str:
-        """Fetch Torn name using TornAPIClient."""
-        try:
-            from utils.torn_api import get_torn_api
-            # Use any available API key to lookup the name
-            # In practice, you might want to use the bot's own key if available
-            async with self.pool.acquire() as conn:
-                # Get any valid API key to make the lookup
-                key_row = await conn.fetchrow(
-                    "SELECT api_key FROM user_api_keys LIMIT 1"
-                )
-                if not key_row:
-                    return f"User_{torn_id}"
-                
-                # Decrypt the key
-                from cryptography.fernet import Fernet
-                import config
-                f = Fernet(config.FERNET_KEY)
-                api_key = f.decrypt(key_row["api_key"].encode()).decode()
-                
-                api = get_torn_api()
-                user_data = await api.get_user_data(api_key)
-                return user_data.get("profile", {}).get("name", f"User_{torn_id}")
-        except Exception:
-            return f"User_{torn_id}"
-    
+
     async def verify_prize_delivery(
         self, 
         raffle_id: int, 
@@ -188,7 +311,9 @@ class RafflesRepository(RepositoryBase):
         creator_torn_id: int,
     ) -> Optional[dict[str, Any]]:
         """Verify creator sent winner an item via Torn API logs using winner's API key."""
-        # Get winner's encrypted API key from database
+        from cryptography.fernet import Fernet
+        import config
+        
         async with self.pool.acquire() as conn:
             key_row = await conn.fetchrow(
                 "SELECT api_key FROM user_api_keys WHERE discord_id = $1",
@@ -198,30 +323,22 @@ class RafflesRepository(RepositoryBase):
             if not key_row:
                 return {"error": "Winner has no linked API key"}
             
-            # Decrypt the API key
-            from cryptography.fernet import Fernet
-            import config
             f = Fernet(config.FERNET_KEY)
             api_key = f.decrypt(key_row["api_key"].encode()).decode()
         
-        # Use existing TornAPIClient to check logs
         from utils.torn_api import get_torn_api, TornAPIError
         api = get_torn_api()
         
-        # Check logs from last 7 days
         timestamp = int(time.time()) - (7 * 24 * 3600)
         
         try:
-            # Get user logs using the winner's API key
-            logs = await api.get_user_logs(api_key, limit=200, log_types=[2211])  # 2211 = item_received
+            logs = await api.get_user_logs(api_key, limit=200, log_types=[2211])
             
             for log_entry in logs:
                 if log_entry.get("timestamp", 0) < timestamp:
                     continue
                 
-                # Check if sender is the creator
                 if str(log_entry.get("sender_id")) == str(creator_torn_id):
-                    # Found it! Mark as verified
                     async with self.pool.acquire() as conn:
                         await conn.execute(
                             """
@@ -235,7 +352,6 @@ class RafflesRepository(RepositoryBase):
                             raffle_id,
                         )
                         
-                        # Log to audit
                         await conn.execute(
                             """
                             INSERT INTO audit_log (
@@ -283,88 +399,27 @@ class RafflesRepository(RepositoryBase):
                     """
                     INSERT INTO raffle_entries 
                         (raffle_id, discord_id, torn_user_id, num_tickets, 
-                         reserved_until, payment_verified)
-                    VALUES ($1, $2, $3, $4, $5, FALSE)
+                         reserved_until, payment_verified, created_at)
+                    VALUES ($1, $2, $3, $4, $5, FALSE, NOW())
                     ON CONFLICT (raffle_id, discord_id) DO UPDATE
                     SET torn_user_id = EXCLUDED.torn_user_id,
                         num_tickets = EXCLUDED.num_tickets,
                         reserved_until = EXCLUDED.reserved_until,
-                        payment_verified = raffle_entries.payment_verified,
-                        payment_verified_at = raffle_entries.payment_verified_at
+                        payment_verified = FALSE,
+                        payment_verified_at = NULL,
+                        created_at = NOW()
                     RETURNING *
                     """,
                     raffle_id, discord_id, torn_user_id, num_tickets, reserved_until
                 )
-                
-                # Check if this completed the raffle
-                if row:
-                    await conn.execute(
-                        """
-                        UPDATE raffles 
-                        SET tickets_fully_sold_at = NOW()
-                        WHERE raffle_id = $1 
-                        AND end_trigger = 'tickets_sold'
-                        AND tickets_fully_sold_at IS NULL
-                        AND (
-                            SELECT COALESCE(SUM(num_tickets), 0)
-                            FROM raffle_entries
-                            WHERE raffle_id = $1 AND payment_verified = TRUE
-                        ) >= tickets_available
-                        """,
-                        raffle_id
-                    )
-                
                 return dict(row) if row else None
-
-    async def verify_payment_and_check_sold_out(
-        self, entry_id: int
-    ) -> tuple[bool, Optional[int]]:
-        """Verify payment and return (success, raffle_id_if_sold_out)."""
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    """
-                    UPDATE raffle_entries 
-                    SET payment_verified = TRUE, 
-                        payment_verified_at = NOW(),
-                        reserved_until = NULL
-                    WHERE entry_id = $1
-                    RETURNING raffle_id
-                    """,
-                    entry_id,
-                )
-                
-                if not row:
-                    return False, None
-                
-                raffle_id = row["raffle_id"]
-                
-                # Check if this caused sell-out
-                result = await conn.fetchrow(
-                    """
-                    UPDATE raffles 
-                    SET tickets_fully_sold_at = NOW()
-                    WHERE raffle_id = $1 
-                    AND end_trigger = 'tickets_sold'
-                    AND tickets_fully_sold_at IS NULL
-                    AND (
-                        SELECT COALESCE(SUM(num_tickets), 0)
-                        FROM raffle_entries
-                        WHERE raffle_id = $1 AND payment_verified = TRUE
-                    ) >= tickets_available
-                    RETURNING raffle_id
-                    """,
-                    raffle_id,
-                )
-                
-                return True, raffle_id if result else None
 
     async def get_raffle(self, raffle_id: int) -> Optional[dict[str, Any]]:
         """Get single raffle by ID."""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT raffle_id, guild_id, creator_discord_id, prize,
+                SELECT raffle_id, guild_id, creator_discord_id, creator_torn_id, prize,
                        ticket_payment_type, ticket_price, tickets_available,
                        max_tickets_per_user, status, winner_discord_id,
                        winner_torn_name, winner_torn_id, end_time, end_trigger, 
@@ -389,23 +444,6 @@ class RafflesRepository(RepositoryBase):
                 raffle_id,
             )
             return [dict(row) for row in rows]
-
-    async def update_raffle(self, raffle_id: int, **fields) -> bool:
-        """Update raffle fields dynamically."""
-        if not fields:
-            return False
-            
-        async with self.pool.acquire() as conn:
-            sets = []
-            values = []
-            for i, (key, value) in enumerate(fields.items(), 1):
-                sets.append(f"{key} = ${i}")
-                values.append(value)
-            values.append(raffle_id)
-            
-            query = f"UPDATE raffles SET {', '.join(sets)} WHERE raffle_id = ${len(values)}"
-            result = await conn.execute(query, *values)
-            return "UPDATE 1" in result
 
     async def cleanup_expired_raffle_entries(self) -> int:
         """Clean up expired unpaid reservations."""
@@ -449,3 +487,26 @@ class RafflesRepository(RepositoryBase):
                 )
             return [dict(row) for row in rows]
 
+    async def get_raffles_to_draw(self) -> list[dict[str, Any]]:
+        """Get raffles ready to draw."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT raffle_id, guild_id, creator_discord_id, prize, 
+                       ticket_payment_type, ticket_price, tickets_available,
+                       max_tickets_per_user, status, winner_discord_id,
+                       end_time, end_trigger, hours_after_sold_out, 
+                       tickets_fully_sold_at, tickets_sold
+                FROM raffles 
+                WHERE status = 'active' 
+                AND (
+                    (end_trigger = 'time' OR end_trigger IS NULL) 
+                    AND end_time <= NOW()
+                    OR
+                    end_trigger = 'tickets_sold' 
+                    AND tickets_fully_sold_at IS NOT NULL
+                    AND tickets_fully_sold_at + (hours_after_sold_out || ' hours')::INTERVAL <= NOW()
+                )
+                """
+            )
+            return [dict(row) for row in rows]
