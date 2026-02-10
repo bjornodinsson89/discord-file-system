@@ -26,16 +26,24 @@ class RaffleCreateModal(discord.ui.Modal):
         max_length=200
     )
 
-    ticket_price = discord.ui.TextInput(
-        label="💰 Ticket Price",
-        placeholder="Number of xanax/dvds per ticket (0 for free)",
+    payment_type = discord.ui.TextInput(
+        label="💰 Payment Type",
+        placeholder="free | xanax | erotic_dvd",
         required=True,
-        max_length=3,
+        max_length=20,
+        default="xanax"
+    )
+
+    ticket_price = discord.ui.TextInput(
+        label="💵 Ticket Price",
+        placeholder="Integer (ignored for free)",
+        required=True,
+        max_length=6,
         default="1"
     )
 
     tickets_available = discord.ui.TextInput(
-        label="🎟️ Total Tickets Available",
+        label="🎟️ Total Tickets",
         placeholder="Max tickets to sell (min 10)",
         required=True,
         max_length=4
@@ -44,27 +52,94 @@ class RaffleCreateModal(discord.ui.Modal):
     max_per_user = discord.ui.TextInput(
         label="📋 Max Tickets Per User",
         placeholder="0 = unlimited",
-        required=False,
+        required=True,
         max_length=3,
         default="0"
     )
 
-    def __init__(self, payment_type: str, end_trigger: str, hours: int, minutes: int):
+    end_trigger = discord.ui.TextInput(
+        label="⏰ End Trigger",
+        placeholder="time | tickets_sold",
+        required=True,
+        max_length=20,
+        default="time"
+    )
+
+    duration = discord.ui.TextInput(
+        label="⏳ Duration",
+        placeholder="H:M or minutes (required if trigger=time)",
+        required=False,
+        max_length=10,
+        default="60"
+    )
+
+    def __init__(self):
         super().__init__(title="🎉 Create Raffle")
-        self.payment_type = payment_type
-        self.end_trigger = end_trigger
-        self.hours = hours
-        self.minutes = minutes
+
+    @staticmethod
+    def _parse_duration(duration_text: str) -> Optional[timedelta]:
+        if not duration_text:
+            return None
+
+        value = duration_text.strip()
+        if not value:
+            return None
+
+        if ":" in value:
+            parts = value.split(":", 1)
+            if len(parts) != 2:
+                return None
+            hours = int(parts[0].strip())
+            minutes = int(parts[1].strip())
+            if hours < 0 or minutes < 0 or minutes > 59:
+                return None
+            total_minutes = (hours * 60) + minutes
+        else:
+            total_minutes = int(value)
+
+        if total_minutes <= 0:
+            return None
+
+        return timedelta(minutes=total_minutes)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
+            payment_type = (self.payment_type.value or "").strip().lower()
+            end_trigger = (self.end_trigger.value or "").strip().lower()
+
+            if payment_type not in {"free", "xanax", "erotic_dvd"}:
+                await interaction.response.send_message(
+                    "❌ Payment Type must be one of: free, xanax, erotic_dvd",
+                    ephemeral=True
+                )
+                return
+
+            if end_trigger not in {"time", "tickets_sold"}:
+                await interaction.response.send_message(
+                    "❌ End Trigger must be one of: time, tickets_sold",
+                    ephemeral=True
+                )
+                return
+
             price = int(self.ticket_price.value) if self.ticket_price.value else 0
             total = int(self.tickets_available.value)
             max_per = int(self.max_per_user.value or 0)
 
+            if price < 0:
+                await interaction.response.send_message(
+                    "❌ Ticket Price must be 0 or greater", ephemeral=True
+                )
+                return
+
             if total < 10:
                 await interaction.response.send_message(
                     "❌ Minimum 10 tickets required", ephemeral=True
+                )
+                return
+
+            if max_per < 0:
+                await interaction.response.send_message(
+                    "❌ Max Tickets Per User must be 0 or greater", ephemeral=True
                 )
                 return
 
@@ -75,15 +150,34 @@ class RaffleCreateModal(discord.ui.Modal):
             return
 
         # Calculate timing
-        if self.end_trigger == "time":
-            end_time = datetime.utcnow() + timedelta(hours=self.hours, minutes=self.minutes)
+        if end_trigger == "time":
+            try:
+                duration = self._parse_duration(self.duration.value or "")
+            except ValueError:
+                duration = None
+
+            if duration is None:
+                await interaction.response.send_message(
+                    "❌ Duration must be a positive value in H:M or minutes format",
+                    ephemeral=True
+                )
+                return
+
+            end_time = datetime.utcnow() + duration
             hours_after_sold_out = None
         else:
             end_time = datetime.utcnow() + timedelta(days=30)
-            hours_after_sold_out = self.hours + (self.minutes / 60)
+            hours_after_sold_out = None
 
         # Force price to 0 for free entries
-        actual_price = 0 if self.payment_type == "free" else price
+        actual_price = 0 if payment_type == "free" else price
+
+        if payment_type != "free" and actual_price <= 0:
+            await interaction.response.send_message(
+                "❌ Ticket Price must be greater than 0 unless Payment Type is free",
+                ephemeral=True
+            )
+            return
 
         repo = RafflesRepository(get_pool())
 
@@ -92,19 +186,19 @@ class RaffleCreateModal(discord.ui.Modal):
                 guild_id=interaction.guild_id,
                 creator_discord_id=interaction.user.id,
                 prize=self.prize.value,
-                ticket_payment_type=self.payment_type,
+                ticket_payment_type=payment_type,
                 ticket_price=actual_price,
                 tickets_available=total,
                 max_tickets_per_user=max_per,
                 end_time=end_time,
-                end_trigger=self.end_trigger,
+                end_trigger=end_trigger,
                 hours_after_sold_out=hours_after_sold_out
             )
 
             # Build display with emojis
-            if self.payment_type == "free":
+            if payment_type == "free":
                 price_display = "🎫 FREE"
-            elif self.payment_type == "xanax":
+            elif payment_type == "xanax":
                 price_display = f"💊 {actual_price} Xanax"
             else:
                 price_display = f"📀 {actual_price} Erotic DVD"
@@ -118,28 +212,30 @@ class RaffleCreateModal(discord.ui.Modal):
                 color=discord.Color.green()
             )
 
-            if self.end_trigger == "tickets_sold":
-                time_str = f"{self.hours}h {self.minutes}m" if self.minutes else f"{self.hours}h"
-                if self.hours == 0:
-                    time_str = f"{self.minutes}m"
+            if end_trigger == "tickets_sold":
                 embed.add_field(
                     name="⏰ End Condition",
-                    value=f"🎟️ When sold out + **{time_str}**",
+                    value="🎟️ When sold out + **30 seconds**",
                     inline=False
                 )
             else:
-                time_str = []
-                if self.hours > 0:
-                    time_str.append(f"{self.hours}h")
-                if self.minutes > 0:
-                    time_str.append(f"{self.minutes}m")
+                duration_seconds = max(0, int((end_time - datetime.utcnow()).total_seconds()))
+                duration_minutes = duration_seconds // 60
+                hours, minutes = divmod(duration_minutes, 60)
+                time_parts = []
+                if hours:
+                    time_parts.append(f"{hours}h")
+                if minutes:
+                    time_parts.append(f"{minutes}m")
+                if not time_parts:
+                    time_parts.append("<1m")
                 embed.add_field(
                     name="⏰ End Time",
-                    value=f"⏱️ {' '.join(time_str)} from now",
+                    value=f"⏱️ {' '.join(time_parts)} from now",
                     inline=False
                 )
 
-            if self.payment_type == "free":
+            if payment_type == "free":
                 embed.add_field(
                     name="✨ Free Entry",
                     value="🎫 No payment required! Click the button on the raffle card to enter.",
@@ -350,7 +446,7 @@ class PaymentVerificationView(discord.ui.View):
                 embed = discord.Embed(
                     title="🎉 RAFFLE SOLD OUT!",
                     description=f"🎁 **{raffle['prize']}**\n\n"
-                               f"All tickets sold! Drawing in **{raffle['hours_after_sold_out']} hours**.",
+                               "All tickets sold! Drawing in **30 seconds**.",
                     color=discord.Color.gold()
                 )
                 await interaction.followup.send(embed=embed)
@@ -392,58 +488,9 @@ class RafflesCog(commands.Cog):
     # SINGLE ADMIN-ONLY CREATE COMMAND WITH EMOJIS IN CHOICES
     @app_commands.command(name="raffle_create", description="🎉 Create a new raffle (Admin only)")
     @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(
-        payment_type="💰 Payment type for tickets",
-        payment_amount="💵 Price per ticket (set to 0 for free)",
-        ticket_amount="🎟️ Total tickets available (min 10)",
-        max_per_user="📋 Max tickets per user (0 = unlimited)",
-        prize="🎁 What is the prize?",
-        trigger="⏰ How the raffle ends",
-        hours="⏱️ Hours (duration for time, delay for sell-out)",
-        minutes="⏱️ Minutes (duration for time, delay for sell-out)"
-    )
-    @app_commands.choices(payment_type=[
-        app_commands.Choice(name="🎫 Free Entry", value="free"),
-        app_commands.Choice(name="💊 Xanax", value="xanax"),
-        app_commands.Choice(name="📀 Erotic DVD", value="erotic_dvd")
-    ])
-    @app_commands.choices(trigger=[
-        app_commands.Choice(name="⏰ Time Based", value="time"),
-        app_commands.Choice(name="🎟️ Sell Out + Delay", value="tickets_sold")
-    ])
-    async def raffle_create(
-        self,
-        interaction: discord.Interaction,
-        payment_type: app_commands.Choice[str],
-        payment_amount: app_commands.Range[int, 0, 1000],
-        ticket_amount: app_commands.Range[int, 10, 10000],
-        max_per_user: app_commands.Range[int, 0, 100],
-        prize: str,
-        trigger: app_commands.Choice[str],
-        hours: app_commands.Range[int, 0, 48],
-        minutes: app_commands.Range[int, 0, 59]
-    ):
+    async def raffle_create(self, interaction: discord.Interaction):
         """🎉 Create a raffle - Admin only."""
-        if hours == 0 and minutes == 0:
-            await interaction.response.send_message(
-                "❌ Please specify at least 1 hour or 1 minute", ephemeral=True
-            )
-            return
-
-        modal = RaffleCreateModal(
-            payment_type=payment_type.value,
-            end_trigger=trigger.value,
-            hours=hours,
-            minutes=minutes
-        )
-        
-        # Pre-fill the modal values from command args
-        modal.prize.default = prize
-        modal.ticket_price.default = str(payment_amount) if payment_type.value != "free" else "0"
-        modal.tickets_available.default = str(ticket_amount)
-        modal.max_per_user.default = str(max_per_user)
-        
-        await interaction.response.send_modal(modal)
+        await interaction.response.send_modal(RaffleCreateModal())
 
     @app_commands.command(name="raffle_draw", description="🎲 Draw a raffle winner (Admin only)")
     @app_commands.checks.has_permissions(administrator=True)
@@ -466,7 +513,7 @@ class RafflesCog(commands.Cog):
 
         embed = discord.Embed(
             title="🎉 RAFFLE WINNER!",
-            description=f"🏆 **Winner:** {result['torn_name']} [{result['torn_user_id']}]\n"
+            description=f"🏆 **Winner:** <@{result['discord_id']}>\n"
                        f"🎟️ **Total Entries:** {result['total_entries']}",
             color=discord.Color.gold()
         )
@@ -524,10 +571,7 @@ class RafflesCog(commands.Cog):
                 value += f"💰 Price: 📀 {raffle['ticket_price']} Erotic DVD"
 
             if raffle["end_trigger"] == "tickets_sold":
-                hours = int(raffle["hours_after_sold_out"])
-                mins = int((raffle["hours_after_sold_out"] % 1) * 60)
-                time_str = f"{hours}h {mins}m" if mins else f"{hours}h"
-                value += f"\n⏰ Trigger: 🎟️ Sell-out + {time_str}"
+                value += "\n⏰ Trigger: 🎟️ Sell-out + 30 seconds"
             else:
                 value += f"\n⏰ Ends: <t:{int(raffle['end_time'].timestamp())}:R>"
 
@@ -572,7 +616,7 @@ class RafflesCog(commands.Cog):
                                 embed = discord.Embed(
                                     title="🎉 RAFFLE SOLD OUT!",
                                     description=f"🎁 **{raffle['prize']}** is now sold out! "
-                                               f"Drawing in **{raffle['hours_after_sold_out']} hours**.",
+                                               "Drawing in **30 seconds**.",
                                     color=discord.Color.gold()
                                 )
                                 await guild.system_channel.send(embed=embed)
@@ -610,7 +654,7 @@ class RafflesCog(commands.Cog):
                             embed = discord.Embed(
                                 title="🎉 RAFFLE WINNER!",
                                 description=f"🎁 **{raffle['prize']}**\n\n"
-                                           f"🏆 Winner: {result['torn_name']} [{result['torn_user_id']}]\n"
+                                           f"🏆 Winner: <@{result['discord_id']}>\n"
                                            f"🎟️ Total Entries: {result['total_entries']}",
                                 color=discord.Color.gold()
                             )

@@ -110,11 +110,12 @@ class RafflesRepository(RepositoryBase):
                         raffle_id
                     )
                     
-                    # Check if sold out
+                    # Check if sold out and move to drawing once
                     await conn.execute(
                         """
                         UPDATE raffles 
-                        SET tickets_fully_sold_at = NOW()
+                        SET tickets_fully_sold_at = NOW(),
+                            status = 'drawing'
                         WHERE raffle_id = $1 
                         AND end_trigger = 'tickets_sold'
                         AND tickets_fully_sold_at IS NULL
@@ -243,15 +244,18 @@ class RafflesRepository(RepositoryBase):
                     )
                     
                     if total_sold >= raffle["tickets_available"]:
-                        await conn.execute(
+                        update_result = await conn.execute(
                             """
                             UPDATE raffles 
-                            SET tickets_fully_sold_at = NOW()
+                            SET tickets_fully_sold_at = NOW(),
+                                status = 'drawing'
                             WHERE raffle_id = $1
+                            AND tickets_fully_sold_at IS NULL
                             """,
                             entry["raffle_id"]
                         )
-                        sold_out_id = entry["raffle_id"]
+                        if update_result == "UPDATE 1":
+                            sold_out_id = entry["raffle_id"]
                 
                 return True, sold_out_id, None
 
@@ -327,13 +331,12 @@ class RafflesRepository(RepositoryBase):
             rows = await conn.fetch(
                 """
                 SELECT * FROM raffles
-                WHERE status = 'active'
-                AND (
-                    (end_trigger = 'time' AND end_time <= NOW())
+                WHERE (
+                    (status = 'active' AND end_trigger = 'time' AND end_time <= NOW())
                     OR 
-                    (end_trigger = 'tickets_sold' 
+                    (status = 'drawing' AND end_trigger = 'tickets_sold' 
                      AND tickets_fully_sold_at IS NOT NULL
-                     AND tickets_fully_sold_at + (hours_after_sold_out || ' hours')::INTERVAL <= NOW())
+                     AND tickets_fully_sold_at + INTERVAL '30 seconds' <= NOW())
                 )
                 """
             )
