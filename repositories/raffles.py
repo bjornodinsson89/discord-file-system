@@ -12,7 +12,7 @@ class RafflesRepository(RepositoryBase):
         guild_id: int,
         creator_discord_id: int,
         prize: str,
-        ticket_payment_type: str,  # Can now be "free"
+        ticket_payment_type: str,
         ticket_price: int,
         tickets_available: int,
         max_tickets_per_user: int,
@@ -43,13 +43,13 @@ class RafflesRepository(RepositoryBase):
                 creator_torn_id,
                 prize,
                 ticket_payment_type,
-                0 if ticket_payment_type == "free" else ticket_price,  # Force price to 0 if free
+                0 if ticket_payment_type == "free" else ticket_price,
                 tickets_available,
                 max_tickets_per_user,
                 end_time,
                 end_trigger,
                 hours_after_sold_out,
-                ticket_payment_type == "free"  # is_free boolean
+                ticket_payment_type == "free"
             )
             return int(row["raffle_id"])
 
@@ -96,7 +96,6 @@ class RafflesRepository(RepositoryBase):
                 )
                 
                 if row:
-                    # Update tickets_sold count for free entries
                     await conn.execute(
                         """
                         UPDATE raffles 
@@ -110,7 +109,6 @@ class RafflesRepository(RepositoryBase):
                         raffle_id
                     )
                     
-                    # Check if sold out (for free raffles too)
                     await conn.execute(
                         """
                         UPDATE raffles 
@@ -173,7 +171,6 @@ class RafflesRepository(RepositoryBase):
             return [dict(row) for row in rows]
 
     async def get_pending_verifications(self) -> list:
-        """Get entries that need auto-verification (reserved but not paid, not expired)."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -186,7 +183,6 @@ class RafflesRepository(RepositoryBase):
             return [dict(row) for row in rows]
 
     async def verify_payment_and_check_sold_out(self, entry_id: int, manual: bool = False):
-        """Verify payment for an entry. Returns (success, sold_out_raffle_id, error_message)."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 entry = await conn.fetchrow(
@@ -199,11 +195,9 @@ class RafflesRepository(RepositoryBase):
                 if entry["payment_verified"]:
                     return True, None, None
                 
-                # Check if reservation expired (unless manual verify)
                 if not manual and entry["reserved_until"] < datetime.utcnow():
                     return False, None, "Reservation expired"
                 
-                # Mark as verified
                 await conn.execute(
                     """
                     UPDATE raffle_entries 
@@ -213,7 +207,6 @@ class RafflesRepository(RepositoryBase):
                     entry_id
                 )
                 
-                # Update tickets_sold count
                 await conn.execute(
                     """
                     UPDATE raffles 
@@ -227,7 +220,6 @@ class RafflesRepository(RepositoryBase):
                     entry["raffle_id"]
                 )
                 
-                # Check if sold out
                 raffle = await conn.fetchrow(
                     "SELECT * FROM raffles WHERE raffle_id = $1",
                     entry["raffle_id"]
@@ -275,11 +267,9 @@ class RafflesRepository(RepositoryBase):
                 AND reserved_until < NOW()
                 """
             )
-            # Extract number from "DELETE 5"
             return int(result.split()[-1]) if result.split()[-1].isdigit() else 0
 
     async def draw_raffle_winner(self, raffle_id: int) -> Optional[dict]:
-        """Draw a winner for the raffle. Returns winner info or None."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 entries = await conn.fetch(
@@ -298,7 +288,6 @@ class RafflesRepository(RepositoryBase):
                     )
                     return None
                 
-                # Weighted random selection based on tickets
                 import random
                 pool = []
                 for entry in entries:
@@ -328,7 +317,6 @@ class RafflesRepository(RepositoryBase):
                 }
 
     async def get_raffles_to_draw(self) -> list:
-        """Get raffles that are ready to be drawn."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
