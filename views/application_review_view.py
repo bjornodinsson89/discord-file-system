@@ -37,9 +37,9 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Application"):
         self.review_view = review_view
 
     async def on_submit(self, interaction: discord.Interaction):
-        reason_text = str(self.reason.value).strip()
+        reason_text = self.reason.value.strip()
         if not reason_text:
-            await interaction.response.send_message("Reason is required.", ephemeral=True)
+            await interaction.response.send_message("Denial reason is required", ephemeral=True)
             return
         await self.review_view.handle_decision(interaction=interaction, decision="deny", reason=reason_text)
 
@@ -181,6 +181,10 @@ class ApplicationReviewView(discord.ui.View):
             )
         except RuntimeError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        except Exception:
+            log.exception("Failed to review application %s (%s)", self.application_id, self.category)
+            await interaction.followup.send("Something went wrong while processing that decision. Please try again.", ephemeral=True)
             return
 
         if not review:
