@@ -1378,19 +1378,29 @@ class DatabaseManager:
         guild_id: int,
         discord_id: int,
         torn_user_id: int,
-        display_name: str,
+        torn_name: Optional[str],
+        display_name: Optional[str],
         forum_url: str,
         application_data: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Create or update pending host application by guild/user."""
+        normalized_torn_name = (torn_name or "").strip()
+        normalized_display_name = (display_name or "").strip() or None
+
+        if not normalized_torn_name:
+            fallback_name = (normalized_display_name or "").strip()
+            if fallback_name:
+                normalized_torn_name = fallback_name
+
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 INSERT INTO host_applications
-                    (guild_id, discord_id, torn_user_id, display_name, forum_url, application_data, approval_status, approved_by, approved_at, denial_reason)
+                    (guild_id, discord_id, torn_user_id, torn_name, display_name, forum_url, application_data, approval_status, approved_by, approved_at, denial_reason)
                 VALUES
-                    ($1, $2, $3, $4, $5, $6::jsonb, 'pending', NULL, NULL, NULL)
+                    ($1, $2, $3, $4, $5, $6, $7::jsonb, 'pending', NULL, NULL, NULL)
                 ON CONFLICT (guild_id, discord_id) DO UPDATE SET
                     torn_user_id = EXCLUDED.torn_user_id,
+                    torn_name = EXCLUDED.torn_name,
                     display_name = EXCLUDED.display_name,
                     forum_url = EXCLUDED.forum_url,
                     application_data = EXCLUDED.application_data,
@@ -1399,7 +1409,7 @@ class DatabaseManager:
                     approved_at = NULL,
                     denial_reason = NULL
                 RETURNING *
-            """, guild_id, discord_id, torn_user_id, display_name, forum_url, json.dumps(application_data))
+            """, guild_id, discord_id, torn_user_id, normalized_torn_name, normalized_display_name, forum_url, json.dumps(application_data))
         return dict(row)
 
     async def get_host_application_by_id(self, application_id: int) -> Optional[Dict]:
@@ -1407,6 +1417,31 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM host_applications WHERE id = $1", application_id)
             return dict(row) if row else None
+
+
+    async def list_pending_insurer_applications(self, guild_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """List pending insurer applications for persistent review views."""
+        query = "SELECT provider_id, discord_id, guild_id FROM insurance_providers WHERE approval_status = 'pending'"
+        values = []
+        if guild_id is not None:
+            query += " AND guild_id = $1"
+            values.append(guild_id)
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, *values)
+        return [dict(row) for row in rows]
+
+    async def list_pending_host_applications(self, guild_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """List pending host99k applications for persistent review views."""
+        query = "SELECT id, discord_id, guild_id FROM host_applications WHERE approval_status = 'pending'"
+        values = []
+        if guild_id is not None:
+            query += " AND guild_id = $1"
+            values.append(guild_id)
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, *values)
+        return [dict(row) for row in rows]
 
     async def review_insurer_application(
         self,
