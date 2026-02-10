@@ -109,6 +109,9 @@ class GuildSettingsRepository:
     async def get_or_create(self, guild_id: int) -> Dict[str, Any]:
         return await self.get_settings(guild_id)
 
+    async def get_guild_settings(self, guild_id: int) -> Dict[str, Any]:
+        return await self.get_settings(guild_id)
+
     async def upsert_settings(self, guild_id: int, **fields: Any) -> Dict[str, Any]:
         if not fields:
             return await self.get_settings(guild_id)
@@ -143,6 +146,11 @@ class GuildSettingsRepository:
 
     async def upsert(self, guild_id: int, **fields: Any) -> Dict[str, Any]:
         return await self.upsert_settings(guild_id, **fields)
+
+    async def upsert_guild_settings(self, guild_id: int, updates_dict: Dict[str, Any] | None = None, **fields: Any) -> Dict[str, Any]:
+        updates = dict(updates_dict or {})
+        updates.update(fields)
+        return await self.upsert_settings(guild_id, **updates)
 
     async def set_announce_channel(self, guild_id: int, announce_channel_id: int) -> Dict[str, Any]:
         return await self.upsert_settings(guild_id, announce_channel_id=announce_channel_id)

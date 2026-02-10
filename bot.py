@@ -22,7 +22,13 @@ from utils.embeds import (
 from views import (
     ApiKeyIntroView, ConfirmRemoveKeyView, ApplicationReviewView
 )
-from setup_panel import send_setup_panel, has_setup_permission
+from setup_panel import (
+    DEFAULT_WELCOME_TEMPLATE,
+    detect_rules_channel,
+    has_setup_permission,
+    render_welcome_template,
+    send_setup_panel,
+)
 
 from bot_actions import handlers as admin_handlers
 from bot_actions.application_review import perform_application_review
@@ -294,6 +300,7 @@ class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
 # BOT SETUP
 # ============================================================================
 intents = discord.Intents.default()
+# Requires SERVER MEMBERS INTENT enabled in the Discord Developer Portal for this bot.
 intents.members = True
 intents.guilds = True
 
@@ -353,22 +360,6 @@ async def sync_application_commands() -> None:
         log.exception("Failed to sync commands")
     finally:
         await db.release_advisory_lock(lock_key)
-
-
-def render_welcome_message(template: str, member: discord.Member) -> str:
-    """Render a safe welcome template with supported placeholders only."""
-    placeholders = {
-        "{user}": member.mention,
-        "{username}": member.display_name,
-        "{guild}": member.guild.name,
-        "{member_count}": str(member.guild.member_count or 0),
-    }
-    rendered = template
-    for token, value in placeholders.items():
-        rendered = rendered.replace(token, value)
-    return rendered[:1900]
-
-
 
 
 async def _send_interaction_error(interaction: discord.Interaction, message: str):
@@ -490,29 +481,41 @@ async def on_guild_join(guild: discord.Guild):
 @bot.event
 async def on_member_join(member: discord.Member):
     """Send configured welcome message when enabled for the guild."""
+    if member.bot:
+        return
+
     db = get_database()
-    settings = await db.get_guild_settings(member.guild.id)
+    repo = GuildSettingsRepository(db)
+    settings = await repo.get_guild_settings(member.guild.id)
 
     if not settings.get("welcome_enabled"):
         return
 
-    welcome_channel_id = settings.get("welcome_channel_id") or settings.get("announce_channel_id")
+    welcome_channel_id = settings.get("welcome_channel_id")
     if not welcome_channel_id:
         return
 
-    channel = member.guild.get_channel(welcome_channel_id)
+    channel = member.guild.get_channel(int(welcome_channel_id))
     if channel is None:
         log.warning("Welcome channel %s not found in guild %s", welcome_channel_id, member.guild.id)
         return
 
-    template = settings.get("welcome_message_template") or "Welcome {user} to {guild}!"
-    message = render_welcome_message(template, member)
+    template = (settings.get("welcome_message_template") or "").strip()
+    if not template:
+        template = DEFAULT_WELCOME_TEMPLATE
+        try:
+            await repo.upsert_guild_settings(member.guild.id, welcome_message_template=DEFAULT_WELCOME_TEMPLATE)
+        except Exception:
+            log.exception("Failed to auto-save default welcome template for guild=%s", member.guild.id)
+
+    rules_channel = detect_rules_channel(member.guild)
+    message = render_welcome_template(template, member, rules_channel)
 
     try:
         await channel.send(message)
         log.info("Welcome message sent in guild=%s channel=%s user=%s", member.guild.id, channel.id, member.id)
-    except discord.Forbidden:
-        log.warning("Missing permission to send welcome message in guild=%s channel=%s", member.guild.id, channel.id)
+    except (discord.Forbidden, discord.NotFound):
+        log.warning("Unable to send welcome message in guild=%s channel=%s", member.guild.id, welcome_channel_id)
     except Exception:
         log.exception("Failed to send welcome message in guild=%s", member.guild.id)
 
