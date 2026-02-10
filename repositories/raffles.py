@@ -114,8 +114,7 @@ class RafflesRepository(RepositoryBase):
                     await conn.execute(
                         """
                         UPDATE raffles 
-                        SET tickets_fully_sold_at = NOW(),
-                            status = 'drawing'
+                        SET tickets_fully_sold_at = NOW()
                         WHERE raffle_id = $1 
                         AND end_trigger = 'tickets_sold'
                         AND tickets_fully_sold_at IS NULL
@@ -247,8 +246,7 @@ class RafflesRepository(RepositoryBase):
                         update_result = await conn.execute(
                             """
                             UPDATE raffles 
-                            SET tickets_fully_sold_at = NOW(),
-                                status = 'drawing'
+                            SET tickets_fully_sold_at = NOW()
                             WHERE raffle_id = $1
                             AND tickets_fully_sold_at IS NULL
                             """,
@@ -331,13 +329,10 @@ class RafflesRepository(RepositoryBase):
             rows = await conn.fetch(
                 """
                 SELECT * FROM raffles
-                WHERE (
-                    (status = 'active' AND end_trigger = 'time' AND end_time <= NOW())
-                    OR 
-                    (status = 'drawing' AND end_trigger = 'tickets_sold' 
-                     AND tickets_fully_sold_at IS NOT NULL
-                     AND tickets_fully_sold_at + INTERVAL '30 seconds' <= NOW())
-                )
+                WHERE status = 'active'
+                  AND end_trigger = 'tickets_sold'
+                  AND tickets_fully_sold_at IS NOT NULL
+                  AND NOW() >= tickets_fully_sold_at + INTERVAL '30 seconds'
                 """
             )
             return [dict(row) for row in rows]
