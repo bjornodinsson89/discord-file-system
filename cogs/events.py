@@ -10,6 +10,8 @@ import logging
 import asyncio
 import json
 from urllib.parse import urlparse
+from datetime import datetime
+from typing import Optional
 
 import config
 from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager, GuildSettingsRepository
@@ -37,13 +39,13 @@ from bot_actions.schemas import (
     CreateSessionRequest,
     CreateRaffleRequest,
     CreatePolicyRequest,
-    UpdateSettingsRequest
 )
 
-# REPOSITORY IMPORTS (Added for background workers)
+# REPOSITORY IMPORTS
 from repositories.insurance import InsuranceRepository
 from repositories.raffles import RafflesRepository
 from repositories.audit import AuditRepository
+from repositories.jumps import JumpsRepository
 
 log = logging.getLogger("happy_jumper")
 
@@ -284,7 +286,6 @@ class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
 # BOT SETUP
 # ============================================================================
 intents = discord.Intents.default()
-# Requires SERVER MEMBERS INTENT enabled in the Discord Developer Portal for this bot.
 intents.members = True
 intents.guilds = True
 
@@ -549,7 +550,6 @@ async def my_sessions(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     db = get_database()
     
-    # Get all active sessions in this guild
     sessions = await db.get_active_sessions(interaction.guild_id)
     
     user_signups = []
@@ -557,16 +557,13 @@ async def my_sessions(interaction: discord.Interaction):
     hosted_sessions = []
     
     for session in sessions:
-        # Check if hosting
         if session['host_discord_id'] == interaction.user.id:
             hosted_sessions.append(session)
         
-        # Check if signed up
         signup = await db.get_signup(session['id'], interaction.user.id)
         if signup:
             user_signups.append({'session': session, 'signup': signup})
         
-        # Check if on waitlist
         waitlist_pos = await db.get_waitlist_position(session['id'], interaction.user.id)
         if waitlist_pos:
             user_waitlist.append({'session': session, 'position': waitlist_pos})
@@ -778,12 +775,18 @@ async def session_complete(interaction: discord.Interaction, session_id: int):
     ticket_price="Ticket price",
     tickets_available="Total tickets available",
     max_tickets_per_user="Max tickets per user (0 = unlimited)",
-    duration_hours="Raffle duration in hours"
+    end_trigger="How raffle ends: after fixed time, or X hours after selling out",
+    duration_hours="Hours until raffle ends (for time-based)",
+    hours_after_sold_out="Hours to wait after sell-out before drawing (for sell-out based)",
 )
 @app_commands.choices(
     ticket_payment_type=[
         app_commands.Choice(name="Xanax", value="xanax"),
         app_commands.Choice(name="Erotic DVD", value="erotic_dvd"),
+    ],
+    end_trigger=[
+        app_commands.Choice(name="Time-based (ends after X hours)", value="time"),
+        app_commands.Choice(name="Sell-out based (ends X hours after all tickets sold)", value="tickets_sold"),
     ]
 )
 async def raffle_create(
@@ -793,11 +796,54 @@ async def raffle_create(
     ticket_price: int,
     tickets_available: int,
     max_tickets_per_user: int,
-    duration_hours: int
+    end_trigger: app_commands.Choice[str],
+    duration_hours: Optional[int] = None,
+    hours_after_sold_out: Optional[int] = None,
 ):
     await interaction.response.defer(ephemeral=True)
     if not await ensure_admin(interaction):
         return
+    
+    # Validate based on trigger type
+    if end_trigger.value == "time":
+        if duration_hours is None:
+            await interaction.followup.send(
+                embed=create_error_embed("Missing Parameter", "duration_hours is required for time-based raffles"),
+                ephemeral=True
+            )
+            return
+        if duration_hours < 1:
+            await interaction.followup.send(
+                embed=create_error_embed("Invalid Duration", "duration_hours must be at least 1"),
+                ephemeral=True
+            )
+            return
+        trigger_desc = f"Ends {duration_hours} hour(s) after creation"
+        
+    elif end_trigger.value == "tickets_sold":
+        if hours_after_sold_out is None:
+            await interaction.followup.send(
+                embed=create_error_embed("Missing Parameter", "hours_after_sold_out is required for sell-out raffles"),
+                ephemeral=True
+            )
+            return
+        if hours_after_sold_out < 0:
+            await interaction.followup.send(
+                embed=create_error_embed("Invalid Duration", "hours_after_sold_out must be 0 or greater"),
+                ephemeral=True
+            )
+            return
+        if hours_after_sold_out == 0:
+            trigger_desc = "Ends immediately when all tickets sold"
+        else:
+            trigger_desc = f"Ends {hours_after_sold_out} hour(s) after selling out"
+    else:
+        await interaction.followup.send(
+            embed=create_error_embed("Invalid Trigger", "end_trigger must be 'time' or 'tickets_sold'"),
+            ephemeral=True
+        )
+        return
+    
     try:
         request = CreateRaffleRequest(
             guild_id=interaction.guild_id,
@@ -806,14 +852,29 @@ async def raffle_create(
             ticket_price=ticket_price,
             tickets_available=tickets_available,
             max_tickets_per_user=max_tickets_per_user,
-            duration_hours=duration_hours
+            duration_hours=duration_hours,
+            hours_after_sold_out=hours_after_sold_out,
+            end_trigger=end_trigger.value,
         )
         response = await admin_handlers.create_raffle_handler(request, interaction.user.id)
+        
+        # Create success embed with trigger info
         embed = create_success_embed(
-            "Raffle Created",
-            f"Raffle #{response.raffle_id} created.\n{response.message_url or 'Announcement posted.'}"
+            "🎉 Raffle Created!",
+            f"**Raffle #{response.raffle_id}**\n\n"
+            f"**Prize:** {prize}\n"
+            f"**Tickets:** {tickets_available} available @ {ticket_price} {ticket_payment_type.value} each\n"
+            f"**End Condition:** {trigger_desc}\n\n"
+            f"Users can now buy tickets with `/raffle_buy` or buttons!"
         )
+        
+        if response.message_url:
+            embed.add_field(name="Announcement", value=f"[View Message]({response.message_url})", inline=False)
+        
         await interaction.followup.send(embed=embed, ephemeral=True)
+        
+    except ValueError as e:
+        await interaction.followup.send(embed=create_error_embed("Validation Error", str(e)), ephemeral=True)
     except Exception as e:
         log.exception(f"Raffle create failed: {e}")
         await interaction.followup.send(embed=create_error_embed("Raffle Create Failed", str(e)), ephemeral=True)
