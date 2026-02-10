@@ -12,6 +12,14 @@ from utils.embeds import create_error_embed, create_info_embed, create_success_e
 log = logging.getLogger("happy_jumper.setup_panel")
 
 SUPPORTED_PLACEHOLDERS = "`{user}` `{mention}` `{guild}` `{channel}` `{timestamp}`"
+WELCOME_SUPPORTED_PLACEHOLDERS = (
+    "`{user_mention}` `{user_name}` `{guild_name}` `{rules_channel_mention}` `{rules_channel_name}`"
+)
+DEFAULT_WELCOME_TEMPLATE = (
+    "👋 Welcome {user_mention}!\n\n"
+    "Please make sure you read {rules_channel_mention} so you know how everything works.\n\n"
+    "Glad to have you here — enjoy your stay!"
+)
 
 
 def has_setup_permission(
@@ -45,6 +53,44 @@ async def ensure_setup_permission(interaction: discord.Interaction, db) -> tuple
         admin_role_ids=[str(v) for v in (settings.get("admin_role_ids") or [])],
     )
     return allowed, settings
+
+
+def detect_rules_channel(guild: discord.Guild) -> discord.TextChannel | None:
+    exact = discord.utils.find(lambda channel: channel.name.lower() == "rules", guild.text_channels)
+    if exact:
+        return exact
+    return discord.utils.find(lambda channel: "rule" in channel.name.lower(), guild.text_channels)
+
+
+def render_welcome_template(template: str, member: discord.Member, rules_channel: discord.TextChannel | None) -> str:
+    channel_mention = rules_channel.mention if rules_channel else "the rules channel"
+    channel_name = rules_channel.name if rules_channel else "rules"
+    rendered = template
+    replacements = {
+        "{user_mention}": member.mention,
+        "{user_name}": member.display_name,
+        "{guild_name}": member.guild.name,
+        "{rules_channel_mention}": channel_mention,
+        "{rules_channel_name}": channel_name,
+    }
+    for token, value in replacements.items():
+        rendered = rendered.replace(token, value)
+    return rendered[:1900]
+
+
+def _can_manage_welcome_settings(member: discord.Member, settings: dict[str, Any]) -> bool:
+    allowed_role_ids = set(GuildSettingsRepository.resolve_admin_role_ids(settings))
+    member_role_ids = {str(role.id) for role in member.roles}
+    return bool(allowed_role_ids.intersection(member_role_ids))
+
+
+async def _ensure_welcome_permission(interaction: discord.Interaction, settings: dict[str, Any]) -> bool:
+    if not isinstance(interaction.user, discord.Member):
+        return False
+    if _can_manage_welcome_settings(interaction.user, settings):
+        return True
+    await interaction.response.send_message("No permission", ephemeral=True)
+    return False
 
 
 def _render_template(template: str, interaction: discord.Interaction) -> str:
@@ -222,7 +268,8 @@ class SetupPanelView(OwnerView):
             f"Auto complete: `{bool(s.get('auto_complete_enabled', True))}`\n"
             f"Reservation timeout: `{s.get('reservation_timeout_minutes', 5)}` minutes"
         ), inline=False)
-        embed.add_field(name="Placeholders", value=SUPPORTED_PLACEHOLDERS, inline=False)
+        embed.add_field(name="Session placeholders", value=SUPPORTED_PLACEHOLDERS, inline=False)
+        embed.add_field(name="Welcome placeholders", value=WELCOME_SUPPORTED_PLACEHOLDERS, inline=False)
         return embed
 
     def __init__(self, *, owner_id: int, db, settings: dict[str, Any], guild: discord.Guild):
@@ -256,6 +303,10 @@ class SetupPanelView(OwnerView):
         return resolved
 
     async def _set_channel(self, interaction: discord.Interaction, key: str, channel: Any):
+        if key == "welcome_channel_id":
+            if not isinstance(interaction.user, discord.Member) or not _can_manage_welcome_settings(interaction.user, self.settings):
+                await interaction.response.send_message("No permission", ephemeral=True)
+                return
         log.info(
             "Setup channel selection guild_id=%s key=%s selected_channel_id=%s selected_type=%s",
             interaction.guild_id,
@@ -309,10 +360,14 @@ class SetupPanelView(OwnerView):
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
-    @discord.ui.button(label="Announcements", style=discord.ButtonStyle.primary)
-    async def announcements_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+    @discord.ui.button(label="Welcome", style=discord.ButtonStyle.primary)
+    async def welcome_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
-            await _send_or_edit(interaction, create_info_embed("Announcements", f"Toggle and edit announcement templates. Supported: {SUPPORTED_PLACEHOLDERS}"), AnnouncementsView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+            await _send_or_edit(
+                interaction,
+                create_info_embed("Welcome", f"Configure welcome behavior. Supported: {WELCOME_SUPPORTED_PLACEHOLDERS}"),
+                WelcomeView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self),
+            )
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
@@ -358,7 +413,7 @@ class ChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, panel: SetupPanelView, key: str, placeholder: str):
         super().__init__(
             placeholder=placeholder,
-            min_values=1,
+            min_values=0,
             max_values=1,
             channel_types=[discord.ChannelType.text, discord.ChannelType.news],
         )
@@ -367,6 +422,9 @@ class ChannelSelect(discord.ui.ChannelSelect):
 
     async def callback(self, interaction: discord.Interaction):
         try:
+            if not self.values:
+                await self.panel.save_changes(interaction, {self.key: None})
+                return
             await self.panel._set_channel(interaction, self.key, self.values[0])
         except Exception as error:
             await _respond_callback_error(interaction, error)
@@ -419,18 +477,52 @@ class RolesView(BackView):
         self.add_item(SingleRoleSelect(self.panel, "insurer_role_id", "Set insurer role"))
 
 
-class AnnouncementsView(BackView):
+class WelcomeView(BackView):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.add_item(ChannelSelect(self.panel, "welcome_channel_id", "Set welcome channel (clear to set none)"))
+
     @discord.ui.button(label="Toggle Welcome", style=discord.ButtonStyle.primary)
     async def toggle_welcome(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
-            await self.panel.save_changes(interaction, {"welcome_enabled": not bool(self.settings.get("welcome_enabled"))})
+            if not await _ensure_welcome_permission(interaction, self.settings):
+                return
+            next_enabled = not bool(self.settings.get("welcome_enabled"))
+            updates = {"welcome_enabled": next_enabled}
+            if next_enabled and not (self.settings.get("welcome_message_template") or "").strip():
+                updates["welcome_message_template"] = DEFAULT_WELCOME_TEMPLATE
+            await self.panel.save_changes(interaction, updates)
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
-    @discord.ui.button(label="Edit Welcome Template", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Edit Welcome Message", style=discord.ButtonStyle.secondary)
     async def edit_welcome(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
-            await interaction.response.send_modal(TemplateModal(self.panel, "welcome_message_template", "Welcome message template", self.settings.get("welcome_message_template")))
+            if not await _ensure_welcome_permission(interaction, self.settings):
+                return
+            current_template = self.settings.get("welcome_message_template") or DEFAULT_WELCOME_TEMPLATE
+            await interaction.response.send_modal(TemplateModal(self.panel, "welcome_message_template", "Welcome message template", current_template))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="Preview Welcome Message", style=discord.ButtonStyle.success)
+    async def preview_welcome(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not await _ensure_welcome_permission(interaction, self.settings):
+                return
+            if not isinstance(interaction.user, discord.Member) or not interaction.guild:
+                await interaction.response.send_message(embed=create_error_embed("Preview unavailable", "This action can only be used in a server."), ephemeral=True)
+                return
+            rules_channel = detect_rules_channel(interaction.guild)
+            template = self.settings.get("welcome_message_template") or DEFAULT_WELCOME_TEMPLATE
+            preview_message = render_welcome_template(template, interaction.user, rules_channel)
+            preview_embed = create_info_embed("Welcome Preview", preview_message)
+            preview_embed.add_field(
+                name="Rules channel",
+                value=rules_channel.mention if rules_channel else "the rules channel",
+                inline=False,
+            )
+            await interaction.response.send_message(embed=preview_embed, ephemeral=True)
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
