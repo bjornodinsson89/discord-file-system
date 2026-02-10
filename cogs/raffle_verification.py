@@ -44,26 +44,13 @@ class VerifyPrizeButton(ui.Button):
                     ephemeral=True
                 )
                 return
-            
-            # Get winner's API key
-            winner_api = await conn.fetchrow(
-                "SELECT api_key FROM user_api_keys WHERE discord_id = $1",
-                interaction.user.id
-            )
-            
-            if not winner_api:
-                await interaction.followup.send(
-                    "❌ You need to link your Torn API key first! Use `/link` command.", 
-                    ephemeral=True
-                )
-                return
         
-        # Verify via Torn API
+        # Verify using winner's API key (decrypted from DB)
         result = await repo.verify_prize_delivery(
             raffle_id=self.raffle_id,
+            winner_discord_id=interaction.user.id,  # The person clicking is the winner
             winner_torn_id=raffle["winner_torn_id"],
             creator_torn_id=raffle["creator_torn_id"],
-            api_key=winner_api["api_key"]
         )
         
         if result.get("verified"):
@@ -74,8 +61,7 @@ class VerifyPrizeButton(ui.Button):
             )
             embed.add_field(
                 name="Log Details",
-                value=f"Time: <t:{result['timestamp']}:R>\n"
-                      f"Item: {result['log_entry'].get('title', 'Unknown')}",
+                value=f"Time: <t:{result['timestamp']}:R>\nItem: {result['log_entry'].get('title', 'Unknown')}",
                 inline=False
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -87,7 +73,7 @@ class VerifyPrizeButton(ui.Button):
             
         elif "error" in result:
             await interaction.followup.send(
-                f"❌ API Error: {result['error']}", 
+                f"❌ Error: {result['error']}", 
                 ephemeral=True
             )
         else:
@@ -140,4 +126,3 @@ class RaffleVerificationCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RaffleVerificationCog(bot))
-
