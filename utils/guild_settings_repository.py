@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, Iterable, Optional
 
 
@@ -98,13 +97,8 @@ class GuildSettingsRepository:
         return data
 
     async def get_settings(self, guild_id: int) -> Dict[str, Any]:
-        async with self._db.pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO guild_settings (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING",
-                guild_id,
-            )
-            row = await conn.fetchrow("SELECT * FROM guild_settings WHERE guild_id = $1", guild_id)
-            return self._merge_defaults(dict(row) if row else None, guild_id)
+        row = await self._db.create_or_update_guild_settings(guild_id)
+        return self._merge_defaults(dict(row) if row else None, guild_id)
 
     async def get_or_create(self, guild_id: int) -> Dict[str, Any]:
         return await self.get_settings(guild_id)
@@ -117,32 +111,10 @@ class GuildSettingsRepository:
             return await self.get_settings(guild_id)
 
         normalized = self._normalize_updates(fields)
-        columns = ["guild_id", *normalized.keys()]
-        values: list[Any] = [guild_id]
-        placeholders = ["$1"]
-        for idx, key in enumerate(normalized, start=2):
-            value = normalized[key]
-            if key == "admin_role_ids":
-                placeholders.append(f"${idx}::jsonb")
-                values.append(json.dumps(value) if value is not None else None)
-            else:
-                placeholders.append(f"${idx}")
-                values.append(value)
-
-        set_clauses = [f"{key} = EXCLUDED.{key}" for key in normalized]
-        set_clauses.append("updated_at = NOW()")
-
-        query = f"""
-            INSERT INTO guild_settings ({', '.join(columns)})
-            VALUES ({', '.join(placeholders)})
-            ON CONFLICT (guild_id) DO UPDATE SET
-                {', '.join(set_clauses)}
-            RETURNING *
-        """
-
-        async with self._db.pool.acquire() as conn:
-            row = await conn.fetchrow(query, *values)
-            return self._merge_defaults(dict(row) if row else None, guild_id)
+        row = await self._db.update_guild_settings(guild_id, **normalized)
+        if row is None:
+            row = await self._db.get_guild_settings(guild_id)
+        return self._merge_defaults(dict(row) if row else None, guild_id)
 
     async def upsert(self, guild_id: int, **fields: Any) -> Dict[str, Any]:
         return await self.upsert_settings(guild_id, **fields)
@@ -157,7 +129,6 @@ class GuildSettingsRepository:
 
     @staticmethod
     def resolve_admin_role_ids(settings: Dict[str, Any]) -> list[str]:
-        """Return normalized admin role IDs from admin_role_ids and legacy admin_role_id."""
         role_ids = [str(v) for v in (settings.get("admin_role_ids") or []) if v is not None]
         fallback_role_id = settings.get("admin_role_id")
         if fallback_role_id is not None:

@@ -8,6 +8,7 @@ import time
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 from utils import get_database, get_torn_api
+from services import RaffleService
 from bot_actions.schemas import *
 import config
 
@@ -356,19 +357,18 @@ async def create_raffle_handler(
 
     max_tickets_per_user = request.max_tickets_per_user if request.max_tickets_per_user > 0 else None
 
-    async with db.pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            INSERT INTO raffles (
-                guild_id, creator_discord_id, prize,
-                ticket_payment_type, ticket_price, ticket_payment_item_id,
-                tickets_available, max_tickets_per_user, status, end_time
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9)
-            RETURNING raffle_id
-        """, request.guild_id, admin_discord_id, request.prize,
-            request.ticket_payment_type, request.ticket_price, payment_item_id,
-            request.tickets_available, max_tickets_per_user, end_time
-        )
-        raffle_id = row['raffle_id']
+    raffle_id = await db.create_raffle(
+        guild_id=request.guild_id,
+        creator_discord_id=admin_discord_id,
+        prize=request.prize,
+        ticket_payment_type=request.ticket_payment_type,
+        ticket_price=request.ticket_price,
+        ticket_payment_item_id=payment_item_id,
+        tickets_available=request.tickets_available,
+        max_tickets_per_user=max_tickets_per_user,
+        end_time=end_time,
+        channel_id=channel_id,
+    )
 
     raffle_data = await _get_raffle(raffle_id)
 
@@ -380,11 +380,11 @@ async def create_raffle_handler(
     msg = await channel.send(embed=embed, view=view)
     message_id = int(msg.id)
 
-    async with db.pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE raffles SET announcement_message_id = $1, announcement_channel_id = $2 WHERE raffle_id = $3",
-            message_id, channel_id, raffle_id
-        )
+    await db.update_raffle(
+        raffle_id,
+        announcement_message_id=message_id,
+        announcement_channel_id=channel_id,
+    )
 
     await db.log_audit(
         admin_discord_id,
@@ -409,26 +409,13 @@ async def list_raffles_handler(
 ) -> RaffleListResponse:
     """List raffles for a guild with pagination and filtering."""
     db = get_database()
-    
-    query = "SELECT * FROM raffles WHERE guild_id = $1"
-    params = [guild_id]
-    
-    if status:
-        query += " AND status = $2"
-        params.append(status)
-    
-    query += " ORDER BY created_at DESC LIMIT $" + str(len(params) + 1)
-    params.append(per_page * page)
-    
-    async with db.pool.acquire() as conn:
-        rows = await conn.fetch(query, *params)
-        raffles = [dict(row) for row in rows]
-    
-    # Paginate
-    start = (page - 1) * per_page
-    end = start + per_page
-    paginated = raffles[start:end]
-    
+
+    raffles = await db.get_raffle_history(guild_id=guild_id, status=status, limit=per_page * page, page=1)
+
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    paginated = raffles[start_idx:end_idx]
+
     return RaffleListResponse(
         raffles=[RaffleResponse(**r) for r in paginated],
         total=len(raffles),
@@ -444,19 +431,9 @@ async def draw_raffle_handler(
 ) -> SuccessResponse:
     """Draw a winner for a raffle."""
     db = get_database()
-    raffle = await db.get_raffle(raffle_id)
-
-    if not raffle:
-        raise ValueError("Raffle not found")
-    if raffle['status'] != 'active':
-        raise ValueError("Raffle is not active")
-
-    winner = await db.draw_raffle_winner(raffle_id)
-    await db.log_audit(
-        actor_discord_id, "raffle_drawn", "raffle", raffle_id,
-        {"winner_discord_id": winner['discord_id'] if winner else None},
-        guild_id=raffle['guild_id'], source=source
-    )
+    result = await RaffleService(db).draw_raffle(raffle_id=raffle_id, actor_discord_id=actor_discord_id, source=source)
+    raffle = result["raffle"]
+    winner = result["winner"]
     await update_raffle_message(raffle_id, winner)
 
     if winner:
@@ -501,40 +478,28 @@ async def create_policy_handler(
     """Create an insurance policy for a provider."""
     db = get_database()
     
-    # Get or create provider
     provider = await db.get_provider(provider_discord_id)
     if not provider:
-        # Get Torn ID
         api_key_data = await db.get_user_api_key(provider_discord_id)
         if not api_key_data:
             raise ValueError("Provider must have API key registered")
-        
-        # Create provider
-        async with db.pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                INSERT INTO insurance_providers (discord_id, torn_user_id)
-                VALUES ($1, $2)
-                RETURNING provider_id
-            """, provider_discord_id, api_key_data['torn_user_id'])
-            provider_id = row['provider_id']
-    else:
-        provider_id = provider['provider_id']
-    
-    # Create policy
-    async with db.pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            INSERT INTO insurance_policies (
-                provider_id, name, description,
-                cost_type, cost_amount, coverage_type,
-                payout_description, payout_items, duration_hours, active
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, TRUE)
-            RETURNING policy_id
-        """, provider_id, request.policy_name, request.description,
-            request.cost_type, request.cost_amount, request.coverage_type,
-            request.payout_description, json.dumps(request.payout_items), request.duration_hours
+        provider = await db.create_or_update_provider(
+            discord_id=provider_discord_id,
+            torn_user_id=api_key_data['torn_user_id'],
         )
-        policy_id = row['policy_id']
-        
+
+    policy_id = await db.create_policy(
+        provider_id=provider['provider_id'],
+        name=request.policy_name,
+        description=request.description,
+        cost_type=request.cost_type,
+        cost_amount=request.cost_amount,
+        coverage_type=request.coverage_type,
+        payout_description=request.payout_description,
+        payout_items=request.payout_items,
+        duration_hours=request.duration_hours,
+    )
+
     
     # Log audit
     await db.log_audit(
@@ -542,7 +507,7 @@ async def create_policy_handler(
         "policy_created",
         "policy",
         policy_id,
-        {"provider_id": provider_id}
+        {"provider_id": provider["provider_id"]}
     )
     
     # Return response
@@ -710,17 +675,13 @@ async def _get_session_channel_id(session_id: int) -> Optional[int]:
 async def _get_raffle(raffle_id: int) -> Dict:
     """Get raffle data."""
     db = get_database()
-    async with db.pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM raffles WHERE raffle_id = $1", raffle_id)
-        return dict(row) if row else None
+    return await db.get_raffle(raffle_id)
 
 
 async def _get_policy(policy_id: int) -> Dict:
     """Get policy data."""
     db = get_database()
-    async with db.pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM insurance_policies WHERE policy_id = $1", policy_id)
-        return dict(row) if row else None
+    return await db.get_policy(policy_id)
 
 
 async def update_session_message(session_id: int):
@@ -762,7 +723,10 @@ async def update_session_message(session_id: int):
 
         embed = create_jump_session_embed(session, signups, readiness)
         view = JumpSessionView(session_id) if session['status'] in ('open', 'locked') else None
-        await message.edit(embed=embed, view=view)
+        try:
+            await message.edit(embed=embed, view=view)
+        except (discord.Forbidden, discord.HTTPException):
+            log.warning("Message edit failed guild=%s channel=%s message=%s", getattr(guild, "id", None), getattr(channel, "id", None), session.get("announcement_message_id"))
     except Exception as e:
         log.error(f"Error updating session message: {e}")
 
@@ -811,7 +775,10 @@ async def update_raffle_message(raffle_id: int, winner: Optional[Dict] = None):
             embed = create_raffle_embed(raffle, entries)
 
         view = RaffleView(raffle_id) if raffle['status'] == 'active' else None
-        await message.edit(embed=embed, view=view)
+        try:
+            await message.edit(embed=embed, view=view)
+        except (discord.Forbidden, discord.HTTPException):
+            log.warning("Message edit failed guild=%s channel=%s message=%s", getattr(guild, "id", None), getattr(channel, "id", None), raffle.get("announcement_message_id"))
 
         if winner:
             winner_embed = create_raffle_winner_embed(raffle, winner)
