@@ -98,11 +98,12 @@ class RaffleVerificationCog(commands.Cog):
                 description=f"You won: **{winner_data['prize']}**",
                 color=discord.Color.gold()
             )
+            winner_torn = winner_data.get('torn_name') or f"ID {winner_data.get('torn_user_id', 'N/A')}"
             embed.add_field(
                 name="Winner Details",
                 value=f"Winning Entry: #1\n"
-                      f"Your Torn: {winner_data['torn_name']} [{winner_data['torn_user_id']}]\n"
-                      f"Total Entries: {winner_data['total_entries']}",
+                      f"Your Torn: {winner_torn} [{winner_data.get('torn_user_id', 'N/A')}]\n"
+                      f"Total Entries: {winner_data.get('total_entries', 0)}",
                 inline=False
             )
             embed.add_field(
