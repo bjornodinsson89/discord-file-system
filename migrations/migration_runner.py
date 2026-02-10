@@ -199,7 +199,7 @@ class MigrationRunner:
             'happy_jump_signups', 'happy_jump_waitlist', 'happy_jump_readiness',
             'insurance_providers', 'insurance_policies', 'insurance_coverage',
             'insurance_claims', 'raffles', 'raffle_entries', 'audit_log',
-            'blacklist', 'host_reputation', 'host_ratings'
+            'blacklist', 'host_reputation', 'host_ratings', 'host_applications'
         ]
         
         all_good = True

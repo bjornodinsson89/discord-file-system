@@ -152,6 +152,28 @@ class DatabaseManager:
             "Run migrations/000_full_schema.sql (or equivalent ALTER TABLE statements in Supabase) and restart."
         )
     
+    async def table_exists(self, table_name: str) -> bool:
+        """Return True when a table exists in public schema."""
+        async with self.pool.acquire() as conn:
+            return bool(await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = $1
+                )
+            """, table_name))
+
+    async def column_exists(self, table_name: str, column_name: str) -> bool:
+        """Return True when a column exists in public schema table."""
+        async with self.pool.acquire() as conn:
+            return bool(await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+                )
+            """, table_name, column_name))
+
     async def apply_emergency_schema_fixes(self):
         """Apply emergency schema fixes for missing columns (PgBouncer-safe)."""
         try:
@@ -1252,6 +1274,237 @@ class DatabaseManager:
                 return []
             return [dict(row) for row in rows]
     
+    async def upsert_insurer_application(
+        self,
+        guild_id: int,
+        discord_id: int,
+        torn_user_id: int,
+        company_name: Optional[str],
+        application_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create or update pending insurer application by discord_id."""
+        has_guild_id = await self.column_exists("insurance_providers", "guild_id")
+        has_application_data = await self.column_exists("insurance_providers", "application_data")
+
+        async with self.pool.acquire() as conn:
+            if has_guild_id and has_application_data:
+                row = await conn.fetchrow("""
+                    INSERT INTO insurance_providers
+                        (discord_id, torn_user_id, guild_id, company_name, application_data, approval_status, verified, active, denial_reason, approved_by, approved_at)
+                    VALUES
+                        ($1, $2, $3, $4, $5::jsonb, 'pending', FALSE, FALSE, NULL, NULL, NULL)
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                        torn_user_id = EXCLUDED.torn_user_id,
+                        guild_id = EXCLUDED.guild_id,
+                        company_name = COALESCE(EXCLUDED.company_name, insurance_providers.company_name),
+                        application_data = EXCLUDED.application_data,
+                        approval_status = 'pending',
+                        verified = FALSE,
+                        active = FALSE,
+                        denial_reason = NULL,
+                        approved_by = NULL,
+                        approved_at = NULL
+                    RETURNING *
+                """, discord_id, torn_user_id, guild_id, company_name, json.dumps(application_data))
+            elif has_application_data:
+                row = await conn.fetchrow("""
+                    INSERT INTO insurance_providers
+                        (discord_id, torn_user_id, company_name, application_data, approval_status, verified, active, denial_reason, approved_by, approved_at)
+                    VALUES
+                        ($1, $2, $3, $4::jsonb, 'pending', FALSE, FALSE, NULL, NULL, NULL)
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                        torn_user_id = EXCLUDED.torn_user_id,
+                        company_name = COALESCE(EXCLUDED.company_name, insurance_providers.company_name),
+                        application_data = EXCLUDED.application_data,
+                        approval_status = 'pending',
+                        verified = FALSE,
+                        active = FALSE,
+                        denial_reason = NULL,
+                        approved_by = NULL,
+                        approved_at = NULL
+                    RETURNING *
+                """, discord_id, torn_user_id, company_name, json.dumps(application_data))
+            elif has_guild_id:
+                row = await conn.fetchrow("""
+                    INSERT INTO insurance_providers
+                        (discord_id, torn_user_id, guild_id, company_name, approval_status, verified, active, approved_by, approved_at)
+                    VALUES
+                        ($1, $2, $3, $4, 'pending', FALSE, FALSE, NULL, NULL)
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                        torn_user_id = EXCLUDED.torn_user_id,
+                        guild_id = EXCLUDED.guild_id,
+                        company_name = COALESCE(EXCLUDED.company_name, insurance_providers.company_name),
+                        approval_status = 'pending',
+                        verified = FALSE,
+                        active = FALSE,
+                        approved_by = NULL,
+                        approved_at = NULL
+                    RETURNING *
+                """, discord_id, torn_user_id, guild_id, company_name)
+            else:
+                row = await conn.fetchrow("""
+                    INSERT INTO insurance_providers
+                        (discord_id, torn_user_id, company_name, approval_status, verified, active, approved_by, approved_at)
+                    VALUES
+                        ($1, $2, $3, 'pending', FALSE, FALSE, NULL, NULL)
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                        torn_user_id = EXCLUDED.torn_user_id,
+                        company_name = COALESCE(EXCLUDED.company_name, insurance_providers.company_name),
+                        approval_status = 'pending',
+                        verified = FALSE,
+                        active = FALSE,
+                        approved_by = NULL,
+                        approved_at = NULL
+                    RETURNING *
+                """, discord_id, torn_user_id, company_name)
+
+        provider = dict(row)
+        if not has_application_data:
+            payload = dict(application_data)
+            payload["provider_id"] = provider["provider_id"]
+            await self.log_audit(
+                actor_id=discord_id,
+                action="insurer_application_submitted",
+                target_type="insurance_provider",
+                target_id=provider["provider_id"],
+                payload=payload,
+                guild_id=guild_id,
+                source="discord",
+            )
+        return provider
+
+    async def upsert_host_application(
+        self,
+        guild_id: int,
+        discord_id: int,
+        torn_user_id: int,
+        display_name: str,
+        forum_url: str,
+        application_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create or update pending host application by guild/user."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO host_applications
+                    (guild_id, discord_id, torn_user_id, display_name, forum_url, application_data, approval_status, approved_by, approved_at, denial_reason)
+                VALUES
+                    ($1, $2, $3, $4, $5, $6::jsonb, 'pending', NULL, NULL, NULL)
+                ON CONFLICT (guild_id, discord_id) DO UPDATE SET
+                    torn_user_id = EXCLUDED.torn_user_id,
+                    display_name = EXCLUDED.display_name,
+                    forum_url = EXCLUDED.forum_url,
+                    application_data = EXCLUDED.application_data,
+                    approval_status = 'pending',
+                    approved_by = NULL,
+                    approved_at = NULL,
+                    denial_reason = NULL
+                RETURNING *
+            """, guild_id, discord_id, torn_user_id, display_name, forum_url, json.dumps(application_data))
+        return dict(row)
+
+    async def get_host_application_by_id(self, application_id: int) -> Optional[Dict]:
+        """Get host application by id."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM host_applications WHERE id = $1", application_id)
+            return dict(row) if row else None
+
+    async def review_insurer_application(
+        self,
+        provider_id: int,
+        decision: str,
+        admin_discord_id: int,
+        reason: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Approve/deny insurer application."""
+        has_application_data = await self.column_exists("insurance_providers", "application_data")
+        has_denial_reason = await self.column_exists("insurance_providers", "denial_reason")
+
+        async with self.pool.acquire() as conn:
+            if decision == 'approve':
+                if has_denial_reason:
+                    query = """
+                        UPDATE insurance_providers
+                        SET approval_status = 'approved', verified = TRUE, active = TRUE,
+                            approved_by = $2, approved_at = NOW(), denial_reason = NULL
+                        WHERE provider_id = $1
+                        RETURNING *
+                    """
+                    row = await conn.fetchrow(query, provider_id, admin_discord_id)
+                else:
+                    query = """
+                        UPDATE insurance_providers
+                        SET approval_status = 'approved', verified = TRUE, active = TRUE,
+                            approved_by = $2, approved_at = NOW()
+                        WHERE provider_id = $1
+                        RETURNING *
+                    """
+                    row = await conn.fetchrow(query, provider_id, admin_discord_id)
+            else:
+                if has_application_data and has_denial_reason:
+                    row = await conn.fetchrow("""
+                        UPDATE insurance_providers
+                        SET approval_status = 'rejected', verified = FALSE, active = FALSE,
+                            approved_by = $2, approved_at = NOW(), denial_reason = $3,
+                            application_data = COALESCE(application_data, '{}'::jsonb) || jsonb_build_object('review_reason', $3)
+                        WHERE provider_id = $1
+                        RETURNING *
+                    """, provider_id, admin_discord_id, reason)
+                elif has_denial_reason:
+                    row = await conn.fetchrow("""
+                        UPDATE insurance_providers
+                        SET approval_status = 'rejected', verified = FALSE, active = FALSE,
+                            approved_by = $2, approved_at = NOW(), denial_reason = $3
+                        WHERE provider_id = $1
+                        RETURNING *
+                    """, provider_id, admin_discord_id, reason)
+                else:
+                    row = await conn.fetchrow("""
+                        UPDATE insurance_providers
+                        SET approval_status = 'rejected', verified = FALSE, active = FALSE,
+                            approved_by = $2, approved_at = NOW()
+                        WHERE provider_id = $1
+                        RETURNING *
+                    """, provider_id, admin_discord_id)
+
+        provider = dict(row) if row else None
+        if provider and (not has_application_data or not has_denial_reason) and reason:
+            await self.log_audit(
+                actor_id=admin_discord_id,
+                action="insurer_application_review_reason",
+                target_type="insurance_provider",
+                target_id=provider_id,
+                payload={"reason": reason, "decision": decision},
+                guild_id=provider.get("guild_id"),
+                source="discord",
+            )
+        return provider
+
+    async def review_host_application(
+        self,
+        application_id: int,
+        decision: str,
+        admin_discord_id: int,
+        reason: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Approve/deny host99k application."""
+        async with self.pool.acquire() as conn:
+            if decision == 'approve':
+                row = await conn.fetchrow("""
+                    UPDATE host_applications
+                    SET approval_status = 'approved', approved_by = $2, approved_at = NOW(), denial_reason = NULL
+                    WHERE id = $1
+                    RETURNING *
+                """, application_id, admin_discord_id)
+            else:
+                row = await conn.fetchrow("""
+                    UPDATE host_applications
+                    SET approval_status = 'rejected', approved_by = $2, approved_at = NOW(), denial_reason = $3,
+                        application_data = COALESCE(application_data, '{}'::jsonb) || jsonb_build_object('review_reason', $3)
+                    WHERE id = $1
+                    RETURNING *
+                """, application_id, admin_discord_id, reason)
+        return dict(row) if row else None
+
     # ========================================================================
     # INSURANCE POLICIES
     # ========================================================================

@@ -200,7 +200,10 @@ CREATE TABLE IF NOT EXISTS insurance_providers (
     provider_id SERIAL PRIMARY KEY,
     discord_id BIGINT UNIQUE NOT NULL,
     torn_user_id INTEGER NOT NULL,
+    guild_id BIGINT,
     company_name VARCHAR(100),
+    application_data JSONB,
+    denial_reason TEXT,
     -- Status
     verified BOOLEAN DEFAULT FALSE,
     active BOOLEAN DEFAULT FALSE,
@@ -212,6 +215,29 @@ CREATE TABLE IF NOT EXISTS insurance_providers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_providers_approval_status ON insurance_providers(approval_status);
+
+-- ============================================================================
+-- HOST 99K APPLICATIONS
+-- Hosting applications pending admin approval
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS host_applications (
+    id SERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL,
+    discord_id BIGINT NOT NULL,
+    torn_user_id INTEGER NOT NULL,
+    display_name VARCHAR(100) NOT NULL,
+    forum_url TEXT NOT NULL,
+    application_data JSONB,
+    approval_status VARCHAR(20) DEFAULT 'pending' CHECK (approval_status IN ('pending', 'approved', 'rejected')),
+    approved_by BIGINT,
+    approved_at TIMESTAMPTZ,
+    denial_reason TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(guild_id, discord_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_host_applications_guild_status
+ON host_applications(guild_id, approval_status);
 
 -- ============================================================================
 -- INSURANCE POLICIES
