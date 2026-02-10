@@ -20,14 +20,14 @@ class RaffleCreateModal(discord.ui.Modal):
     """Modal for creating a new raffle."""
 
     prize = discord.ui.TextInput(
-        label="Prize",
+        label="🎁 Prize",
         placeholder="What are you giving away?",
         required=True,
         max_length=200
     )
 
     ticket_price = discord.ui.TextInput(
-        label="Ticket Price",
+        label="💰 Ticket Price",
         placeholder="Number of xanax/dvds per ticket (0 for free)",
         required=True,
         max_length=3,
@@ -35,14 +35,14 @@ class RaffleCreateModal(discord.ui.Modal):
     )
 
     tickets_available = discord.ui.TextInput(
-        label="Total Tickets Available",
+        label="🎟️ Total Tickets Available",
         placeholder="Max tickets to sell (min 10)",
         required=True,
         max_length=4
     )
 
     max_per_user = discord.ui.TextInput(
-        label="Max Tickets Per User",
+        label="📋 Max Tickets Per User",
         placeholder="0 = unlimited",
         required=False,
         max_length=3,
@@ -50,7 +50,7 @@ class RaffleCreateModal(discord.ui.Modal):
     )
 
     def __init__(self, payment_type: str, end_trigger: str, hours: int, minutes: int):
-        super().__init__(title="Create Raffle")
+        super().__init__(title="🎉 Create Raffle")
         self.payment_type = payment_type
         self.end_trigger = end_trigger
         self.hours = hours
@@ -101,7 +101,7 @@ class RaffleCreateModal(discord.ui.Modal):
                 hours_after_sold_out=hours_after_sold_out
             )
 
-            # Build display
+            # Build display with emojis
             if self.payment_type == "free":
                 price_display = "🎫 FREE"
             elif self.payment_type == "xanax":
@@ -114,7 +114,7 @@ class RaffleCreateModal(discord.ui.Modal):
                 description=f"🎁 **Prize:** {self.prize.value}\n"
                            f"🎟️ **Tickets:** {total} available\n"
                            f"💰 **Price:** {price_display} per ticket\n"
-                           f"📋 **Max per user:** {'Unlimited' if max_per == 0 else max_per}",
+                           f"📋 **Max per user:** {'Unlimited ♾️' if max_per == 0 else max_per}",
                 color=discord.Color.green()
             )
 
@@ -159,14 +159,14 @@ class RaffleBuyModal(discord.ui.Modal):
     """Modal for buying raffle tickets."""
 
     quantity = discord.ui.TextInput(
-        label="Number of Tickets",
+        label="🎟️ Number of Tickets",
         placeholder="How many tickets?",
         required=True,
         max_length=2
     )
 
     def __init__(self, raffle_id: int, repo: RafflesRepository):
-        super().__init__(title="Buy Raffle Tickets")
+        super().__init__(title="🎫 Buy Raffle Tickets")
         self.raffle_id = raffle_id
         self.repo = repo
 
@@ -297,12 +297,12 @@ class RaffleBuyModal(discord.ui.Modal):
             )
             embed.add_field(
                 name="⏰ Payment Deadline",
-                value=f"Auto-verification at 4:30, expires at 5:00\nSend **{total_cost} {raffle['ticket_payment_type']}** to raffle creator in-game!",
+                value=f"⏱️ Auto-verification at 4:30, expires at 5:00\nSend **{total_cost} {raffle['ticket_payment_type']}** to raffle creator in-game!",
                 inline=False
             )
             embed.add_field(
-                name="How to Pay",
-                value="Send items via Torn, bot will auto-detect. Click 'Verify Now' to check early.",
+                name="💳 How to Pay",
+                value="📨 Send items via Torn, bot will auto-detect. Click '✅ Verify Now' to check early.",
                 inline=False
             )
 
@@ -389,7 +389,7 @@ class RafflesCog(commands.Cog):
         self.cleanup_expired.cancel()
         self.auto_verify_payments.cancel()
 
-    # SINGLE ADMIN-ONLY CREATE COMMAND WITH EMOJIS
+    # SINGLE ADMIN-ONLY CREATE COMMAND WITH EMOJIS IN CHOICES
     @app_commands.command(name="raffle_create", description="🎉 Create a new raffle (Admin only)")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
@@ -571,7 +571,7 @@ class RafflesCog(commands.Cog):
                             if guild and guild.system_channel:
                                 embed = discord.Embed(
                                     title="🎉 RAFFLE SOLD OUT!",
-                                    description=f"**{raffle['prize']}** is now sold out! "
+                                    description=f"🎁 **{raffle['prize']}** is now sold out! "
                                                f"Drawing in **{raffle['hours_after_sold_out']} hours**.",
                                     color=discord.Color.gold()
                                 )
@@ -609,9 +609,9 @@ class RafflesCog(commands.Cog):
                         if guild and guild.system_channel:
                             embed = discord.Embed(
                                 title="🎉 RAFFLE WINNER!",
-                                description=f"**{raffle['prize']}**\n\n"
-                                           f"Winner: {result['torn_name']} [{result['torn_user_id']}]\n"
-                                           f"Total Entries: {result['total_entries']}",
+                                description=f"🎁 **{raffle['prize']}**\n\n"
+                                           f"🏆 Winner: {result['torn_name']} [{result['torn_user_id']}]\n"
+                                           f"🎟️ Total Entries: {result['total_entries']}",
                                 color=discord.Color.gold()
                             )
                             await guild.system_channel.send(embed=embed)
@@ -636,4 +636,3 @@ class RafflesCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RafflesCog(bot))
-
