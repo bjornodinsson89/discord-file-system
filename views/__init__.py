@@ -150,10 +150,6 @@ class JumpSessionView(ui.View):
             max_energy = energy.get('maximum', 150)
             drug_cd = user_data.get('cooldowns', {}).get('drug', 0)
             
-            if current_energy < config.MIN_ENERGY_REQUIREMENT:
-                await interaction.followup.send(embed=create_warning_embed("Low Energy", f"Need {config.MIN_ENERGY_REQUIREMENT}, have {current_energy}"), ephemeral=True)
-                return
-            
             if drug_cd > 0:
                 await interaction.followup.send(embed=create_warning_embed("Drug Cooldown", f"{drug_cd}s remaining"), ephemeral=True)
                 return
@@ -169,9 +165,21 @@ class JumpSessionView(ui.View):
             await update_jump_embed(self.session_id, interaction.message)
             
             payment = f"${session['payment_amount']:,}" if session['payment_type'] == 'cash' else f"{session['payment_amount']}x DVD"
+            low_energy_note = ""
+            if current_energy < config.MIN_ENERGY_REQUIREMENT:
+                low_energy_note = (
+                    f"\n\n⚠️ Low energy right now ({current_energy}/{max_energy}). "
+                    "You may not be jump-ready yet."
+                )
+
             await interaction.followup.send(embed=create_success_embed(
                 "Reservation Created",
-                f"**Payment:** {payment}\n**Send to:** Torn ID `{session['host_torn_id']}`\n**Expires:** <t:{int(reserved_until.timestamp())}:R>"
+                (
+                    f"**Payment:** {payment}\n"
+                    f"**Send to:** Torn ID `{session['host_torn_id']}`\n"
+                    f"**Expires:** <t:{int(reserved_until.timestamp())}:R>"
+                    f"{low_energy_note}"
+                )
             ), view=PaymentView(self.session_id), ephemeral=True)
         except Exception as e:
             log.exception(f"Join error: {e}")
