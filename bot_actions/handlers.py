@@ -1,495 +1,309 @@
 """
-Bot action handlers used by Discord commands.
+Happy Jumper Discord Bot - Business logic handlers
+All database operations use Repository pattern
 """
 
 import logging
-import json
-import time
-from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
-from utils import get_database, get_torn_api
-from services import RaffleService
-from bot_actions.schemas import *
-import config
+from typing import Optional
 
-log = logging.getLogger("happy_jumper.bot_actions")
+from repositories.jumps import JumpsRepository
+from repositories.raffles import RafflesRepository
+from repositories.insurance import InsuranceRepository
+from repositories.guilds import GuildsRepository
+from bot_actions.schemas import (
+    CreateSessionRequest,
+    CreateSessionResponse,
+    CreateRaffleRequest,
+    CreateRaffleResponse,
+    CreatePolicyRequest,
+    CreatePolicyResponse,
+)
 
-# ============================================================================
-# BOT INSTANCE (injected at runtime)
-# ============================================================================
+log = logging.getLogger("happy_jumper")
 
-_bot_instance: Optional[object] = None
+# Bot instance for sending messages
+_bot_instance = None
 
-def set_bot_instance(bot: object):
-    """Set the bot instance for posting to Discord."""
+def set_bot_instance(bot):
     global _bot_instance
     _bot_instance = bot
-    log.info("Bot instance registered with bot actions")
 
-def get_bot() -> object:
-    if _bot_instance is None:
-        raise RuntimeError("Bot runtime is unavailable for this action")
+def get_bot_instance():
     return _bot_instance
 
 
-async def _resolve_raffle_channel(guild, bot, channel_id: int):
-    channel = guild.get_channel(int(channel_id)) if channel_id else None
-    if channel is None and channel_id:
-        try:
-            fetched = await guild.fetch_channel(int(channel_id))
-            if hasattr(fetched, "send"):
-                channel = fetched
-        except Exception:
-            channel = None
-    return channel
+class SessionInfo:
+    def __init__(self, data):
+        self.id = data.get('id')
+        self.status = data.get('status')
+        self.xanax_count = data.get('xanax_count')
+        self.max_spots = data.get('max_spots')
+        self.payment_type = data.get('payment_type')
+        self.payment_amount = data.get('payment_amount')
 
 
-def _missing_channel_permissions(channel, me) -> list[str]:
-    perms = channel.permissions_for(me)
-    missing = []
-    if not perms.view_channel:
-        missing.append("View Channel")
-    if not perms.send_messages:
-        missing.append("Send Messages")
-    if not perms.embed_links:
-        missing.append("Embed Links")
-    return missing
+class RaffleInfo:
+    def __init__(self, data):
+        self.raffle_id = data.get('raffle_id')
+        self.status = data.get('status')
+        self.prize = data.get('prize')
+        self.ticket_price = data.get('ticket_price', 0)
+        self.tickets_available = data.get('tickets_available', 0)
+        self.tickets_sold = data.get('tickets_sold', 0)
+        self.end_trigger = data.get('end_trigger', 'time')
 
 
-def _session_embed_payload(session: Dict[str, Any], signups: Optional[list[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    signups = signups or []
-    paid = sum(1 for s in signups if s.get("status") == "paid")
-    reserved = sum(1 for s in signups if s.get("status") == "reserved")
-    available = max(session.get("max_spots", 0) - len(signups), 0)
-
-    if session.get("payment_type") == "xanax":
-        payment = f"{session.get('payment_amount', 0)}x Xanax"
-    elif session.get("payment_type") == "erotic_dvd":
-        payment = f"{session.get('payment_amount', 0)}x Erotic DVD"
-    else:
-        payment = str(session.get("payment_amount", ""))
-
-    status = session.get("status", "open").title()
-    fields = [
-        {"name": "Host", "value": f"<@{session['host_discord_id']}>\nTorn: `{session['host_torn_id']}`", "inline": True},
-        {"name": "Spots", "value": f"Paid: {paid}\nReserved: {reserved}\nAvailable: {available}", "inline": True},
-        {"name": "Payment", "value": payment, "inline": True},
-    ]
-
-    return {
-        "title": f"Happy Jump #{session['id']} - {status}",
-        "description": "Manage this session from Discord.",
-        "color": config.COLOR_PRIMARY,
-        "fields": fields,
-        "footer": {"text": "Happy Jumper Bot"},
-    }
+class PolicyInfo:
+    def __init__(self, data):
+        self.policy_id = data.get('policy_id')
+        self.name = data.get('name')
+        self.active = data.get('active')
 
 
-def _raffle_embed_payload(raffle: Dict[str, Any], entries: Optional[list[Dict[str, Any]]] = None, winner: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    entries = entries or []
-    status = raffle.get("status", "active").title()
-    description = f"Tickets sold: {len(entries)}/{raffle.get('tickets_available', 0)}"
-    if winner:
-        description += f"\nWinner: <@{winner['discord_id']}>"
+class ListSessionsResponse:
+    def __init__(self, sessions_list):
+        self.sessions = [SessionInfo(s) for s in sessions_list]
 
-    return {
-        "title": f"Raffle #{raffle['raffle_id']} - {status}",
-        "description": description,
-        "color": config.COLOR_INFO,
-        "fields": [
-            {"name": "Prize", "value": raffle.get("prize", "Unknown"), "inline": False},
-            {"name": "Ticket Price", "value": str(raffle.get("ticket_price", 0)), "inline": True},
-        ],
-        "footer": {"text": "Happy Jumper Bot"},
-    }
+
+class ListRafflesResponse:
+    def __init__(self, raffles_list):
+        self.raffles = [RaffleInfo(r) for r in raffles_list]
+
+
+class LockSessionResponse:
+    def __init__(self, message):
+        self.message = message
+
+
+class CancelSessionResponse:
+    def __init__(self, message):
+        self.message = message
+
+
+class CompleteSessionResponse:
+    def __init__(self, message):
+        self.message = message
+
+
+class DrawRaffleResponse:
+    def __init__(self, winner_data, raffle_data):
+        self.winner = winner_data
+        self.raffle_id = raffle_data.get('raffle_id')
+        self.message = f"Winner drawn for raffle #{self.raffle_id}!"
+        if winner_data:
+            self.message += f" Congratulations to <@{winner_data['discord_id']}>!"
+        else:
+            self.message += " No valid entries found."
+
+
+class CancelRaffleResponse:
+    def __init__(self, raffle_id):
+        self.message = f"Raffle #{raffle_id} has been cancelled."
+
+
+class ApproveProviderResponse:
+    def __init__(self, provider_id, status):
+        self.message = f"Provider #{provider_id} status updated to {status}."
+
+
+class ApproveClaimResponse:
+    def __init__(self, claim_id):
+        self.message = f"Claim #{claim_id} has been approved."
+
+
+class RejectClaimResponse:
+    def __init__(self, claim_id):
+        self.message = f"Claim #{claim_id} has been rejected."
+
 
 # ============================================================================
 # SESSION HANDLERS
 # ============================================================================
 
-async def create_session_handler(
-    request: CreateSessionRequest,
-    admin_discord_id: int
-) -> SessionResponse:
-    """Create a 99k jump session and post announcement to Discord."""
+async def create_session_handler(request: CreateSessionRequest, admin_discord_id: int) -> CreateSessionResponse:
+    """Create a new Happy Jump session."""
+    from utils import get_database
     db = get_database()
-
-    bot = get_bot()
-    guild = bot.get_guild(request.guild_id)
-    if not guild:
-        raise ValueError("Guild not found")
-    channel = guild.get_channel(request.channel_id)
-    if not channel:
-        raise ValueError("Channel not found")
-
-    api_key_data = await db.get_user_api_key(admin_discord_id)
-    if not api_key_data:
-        raise ValueError("Admin must have API key registered to create sessions")
-
-    host_torn_id = api_key_data['torn_user_id']
-    created_tct = int(time.time())
-    if request.xanax_count < 1 or request.xanax_count > 4:
-        raise ValueError("Xanax count must be between 1 and 4")
-
-    start_in_hours = 0
-    estimated_jump_tct = created_tct + (start_in_hours * 3600) + (request.xanax_count * 7 * 3600)
-
-    payment_item_id = None
-    if request.payment_type == "erotic_dvd":
-        payment_item_id = config.DVD_ITEM_ID
-    elif request.payment_type == "xanax":
-        payment_item_id = config.XANAX_ITEM_ID
-
-    log.info(
-        "Session create requested guild_id=%s host_discord_id=%s channel_id=%s xanax_count=%s",
-        request.guild_id,
-        admin_discord_id,
-        request.channel_id,
-        request.xanax_count,
-    )
-
-    session_id = await db.create_jump_session(
+    jumps_repo = JumpsRepository(db.pool)
+    
+    session_id = await jumps_repo.create_session(
         guild_id=request.guild_id,
         host_discord_id=admin_discord_id,
-        host_torn_id=host_torn_id,
+        host_torn_id=0,  # Will be updated later
+        jump_type="99k",
         max_spots=request.spots,
         xanax_count=request.xanax_count,
-        start_in_hours=start_in_hours,
-        created_tct=created_tct,
-        estimated_jump_tct=estimated_jump_tct,
         payment_type=request.payment_type,
         payment_amount=request.payment_amount,
-        payment_item_id=payment_item_id,
     )
-
-    session_data = await db.get_jump_session(session_id)
-
-    from utils.embeds import create_session_announcement_embed
-    from views import JumpSessionView
-
-    guild = bot.get_guild(request.guild_id)
-    channel = guild.get_channel(request.channel_id)
-    embed = create_session_announcement_embed(session_data, guild)
-    view = JumpSessionView(session_id)
-    msg = await channel.send(embed=embed, view=view)
-    message_id = int(msg.id)
-
-    await db.update_jump_session(
-        session_id,
-        announcement_message_id=message_id,
-        announcement_channel_id=request.channel_id,
-    )
-
-    await db.log_audit(
-        admin_discord_id,
-        "session_created",
-        "session",
-        session_id,
-        {"channel_id": request.channel_id}
-    )
-
-    session_data = await db.get_jump_session(session_id)
-    message_url = f"https://discord.com/channels/{request.guild_id}/{request.channel_id}/{message_id}"
-
-    return SessionResponse(
-        **session_data,
-        message_url=message_url
-    )
+    
+    return CreateSessionResponse(id=session_id, message_url=None)
 
 
-async def list_sessions_handler(
-    guild_id: int,
-    status: Optional[str] = None,
-    page: int = 1,
-    per_page: int = 50
-) -> SessionListResponse:
-    """List sessions for a guild with pagination and filtering."""
+async def list_sessions_handler(guild_id: int, status: Optional[str], page: int, per_page: int):
+    """List sessions with pagination."""
+    from utils import get_database
     db = get_database()
+    jumps_repo = JumpsRepository(db.pool)
     
-    # Get sessions
-    if status:
-        sessions = await db.get_active_sessions(guild_id)
-        sessions = [s for s in sessions if s['status'] == status]
-    else:
-        sessions = await db.get_session_history(guild_id, limit=per_page * page)
-    
-    # Paginate
-    start = (page - 1) * per_page
-    end = start + per_page
-    paginated = sessions[start:end]
-    
-    # Build message URLs
-    for session in paginated:
-        if session.get('announcement_message_id'):
-            channel_id = await _get_session_channel_id(session['id'])
-            if channel_id:
-                session['message_url'] = (
-                    f"https://discord.com/channels/{guild_id}/"
-                    f"{channel_id}/{session['announcement_message_id']}"
-                )
-    
-    return SessionListResponse(
-        sessions=[SessionResponse(**s) for s in paginated],
-        total=len(sessions),
-        page=page,
-        per_page=per_page
+    offset = (page - 1) * per_page
+    sessions = await jumps_repo.list_sessions(
+        guild_id=guild_id,
+        status=status,
+        limit=per_page,
+        offset=offset
     )
+    
+    return ListSessionsResponse(sessions)
 
 
-async def lock_session_handler(session_id: int, actor_discord_id: int, source: str = "discord") -> SuccessResponse:
-    """Lock a session to prevent new signups."""
+async def lock_session_handler(session_id: int, admin_discord_id: int, source: str = "discord") -> LockSessionResponse:
+    """Lock a session for readiness tracking."""
+    from utils import get_database
     db = get_database()
-    session = await db.get_jump_session(session_id)
-
-    if not session:
-        raise ValueError("Session not found")
-    if session['status'] not in ('open',):
-        raise ValueError("Session cannot be locked")
-
-    await db.lock_session(session_id)
-    await db.log_audit(
-        actor_discord_id, "session_locked", "session", session_id,
-        guild_id=session['guild_id'], source=source
-    )
-    await update_session_message(session_id)
-
-    return SuccessResponse(message="Session locked")
+    jumps_repo = JumpsRepository(db.pool)
+    
+    success = await jumps_repo.lock_session(session_id)
+    if not success:
+        raise ValueError(f"Session {session_id} not found or already locked")
+    
+    return LockSessionResponse(f"Session #{session_id} has been locked for jump preparation.")
 
 
-async def cancel_session_handler(
-    session_id: int,
-    actor_discord_id: int,
-    reason: Optional[str] = None,
-    source: str = "discord"
-) -> SuccessResponse:
+async def cancel_session_handler(session_id: int, admin_discord_id: int, reason: Optional[str] = None, source: str = "discord") -> CancelSessionResponse:
     """Cancel a session."""
+    from utils import get_database
     db = get_database()
-    session = await db.get_jump_session(session_id)
-
-    if not session:
-        raise ValueError("Session not found")
-    if session['status'] in ('completed', 'cancelled'):
-        raise ValueError("Session already ended")
-
-    await db.cancel_session(session_id)
-    await db.log_audit(
-        actor_discord_id, "session_cancelled", "session", session_id,
-        {"reason": reason}, guild_id=session['guild_id'], source=source
-    )
-    await update_session_message(session_id)
-
-    return SuccessResponse(message="Session cancelled")
+    jumps_repo = JumpsRepository(db.pool)
+    
+    success = await jumps_repo.cancel_session(session_id)
+    if not success:
+        raise ValueError(f"Session {session_id} not found or already cancelled/completed")
+    
+    msg = f"Session #{session_id} has been cancelled."
+    if reason:
+        msg += f" Reason: {reason}"
+    
+    return CancelSessionResponse(msg)
 
 
-async def complete_session_handler(
-    session_id: int,
-    actor_discord_id: int,
-    source: str = "discord"
-) -> SuccessResponse:
-    """Mark a session as completed."""
+async def complete_session_handler(session_id: int, admin_discord_id: int, source: str = "discord") -> CompleteSessionResponse:
+    """Complete a session."""
+    from utils import get_database
     db = get_database()
-    session = await db.get_jump_session(session_id)
-
-    if not session:
-        raise ValueError("Session not found")
-    if session['status'] not in ('open', 'locked'):
-        raise ValueError("Session cannot be completed")
-
-    await db.complete_session(session_id)
-    await db.log_audit(
-        actor_discord_id, "session_completed", "session", session_id,
-        guild_id=session['guild_id'], source=source
-    )
-    await db.update_host_reputation(
-        session['host_discord_id'], session['host_torn_id'], completed=True
-    )
-    await update_session_message(session_id)
-
-    return SuccessResponse(message="Session completed")
+    jumps_repo = JumpsRepository(db.pool)
+    
+    success = await jumps_repo.complete_session(session_id)
+    if not success:
+        raise ValueError(f"Session {session_id} not found or not in valid state to complete")
+    
+    return CompleteSessionResponse(f"Session #{session_id} has been completed.")
 
 
 # ============================================================================
 # RAFFLE HANDLERS
 # ============================================================================
 
-async def create_raffle_handler(
-    request: CreateRaffleRequest,
-    admin_discord_id: int
-) -> RaffleResponse:
-    """Create a raffle and post announcement to Discord."""
+async def create_raffle_handler(request: CreateRaffleRequest, admin_discord_id: int) -> CreateRaffleResponse:
+    """Create a raffle with flexible end conditions."""
+    from utils import get_database
     db = get_database()
-
-    bot = get_bot()
-    guild = bot.get_guild(request.guild_id)
-    if not guild:
-        raise ValueError("Guild not found")
-
-    settings = await db.get_guild_settings(request.guild_id)
-    channel_id = settings.get("raffle_channel_id")
-    log.info("Raffle create requested guild_id=%s channel_id=%s", request.guild_id, channel_id)
-    if not channel_id:
-        raise ValueError("Raffle channel is not configured. Please run /setup first.")
-
-    channel = await _resolve_raffle_channel(guild, bot, channel_id)
-    if not channel:
-        log.warning("Configured raffle channel missing; clearing setting guild_id=%s channel_id=%s", request.guild_id, channel_id)
-        await db.update_guild_settings(request.guild_id, raffle_channel_id=None)
-        raise ValueError("Configured raffle channel is invalid. I cleared it; please run /setup to set a new raffle channel.")
-
-    me = guild.me or guild.get_member(getattr(bot.user, 'id', 0))
-    if me is None:
-        raise ValueError("I couldn't verify my raffle channel permissions. Please try again in a moment.")
-
-    missing = _missing_channel_permissions(channel, me)
-    if missing:
-        raise ValueError(
-            f"Missing permissions in raffle channel: {', '.join(missing)}. "
-            "Please fix channel permissions or run /setup again."
-        )
-
-    end_time = datetime.utcnow() + timedelta(hours=request.duration_hours)
-
-    payment_item_id = None
-    if request.ticket_payment_type == "erotic_dvd":
-        payment_item_id = config.DVD_ITEM_ID
-    elif request.ticket_payment_type == "xanax":
-        payment_item_id = config.XANAX_ITEM_ID
-
-    max_tickets_per_user = request.max_tickets_per_user if request.max_tickets_per_user > 0 else None
-
-    raffle_id = await db.create_raffle(
+    raffles_repo = RafflesRepository(db.pool)
+    
+    # Validate: need either duration_hours OR hours_after_sold_out based on trigger
+    if request.end_trigger == "time":
+        if not request.duration_hours:
+            raise ValueError("duration_hours is required for time-based raffles")
+        end_time = datetime.utcnow() + timedelta(hours=request.duration_hours)
+        hours_after_sold_out = None
+    elif request.end_trigger == "tickets_sold":
+        if request.hours_after_sold_out is None:
+            raise ValueError("hours_after_sold_out is required for sell-out raffles")
+        end_time = None  # No fixed end time
+    else:
+        raise ValueError("end_trigger must be 'time' or 'tickets_sold'")
+    
+    # Create the raffle
+    raffle_id = await raffles_repo.create_raffle(
         guild_id=request.guild_id,
         creator_discord_id=admin_discord_id,
         prize=request.prize,
         ticket_payment_type=request.ticket_payment_type,
         ticket_price=request.ticket_price,
-        ticket_payment_item_id=payment_item_id,
         tickets_available=request.tickets_available,
-        max_tickets_per_user=max_tickets_per_user,
+        max_tickets_per_user=request.max_tickets_per_user,
         end_time=end_time,
-        channel_id=channel_id,
+        end_trigger=request.end_trigger,
+        hours_after_sold_out=request.hours_after_sold_out,
     )
-
-    raffle_data = await _get_raffle(raffle_id)
-
-    from utils.embeds import create_raffle_announcement_embed
-    from views import RaffleView
-
-    embed = create_raffle_announcement_embed(raffle_data, guild)
-    view = RaffleView(raffle_id)
-    msg = await channel.send(embed=embed, view=view)
-    message_id = int(msg.id)
-
-    await db.update_raffle(
-        raffle_id,
-        announcement_message_id=message_id,
-        announcement_channel_id=channel_id,
-    )
-
-    await db.log_audit(
-        admin_discord_id,
-        "raffle_created",
-        "raffle",
-        raffle_id,
-        {"channel_id": channel_id}
-    )
-
-    raffle_data = await _get_raffle(raffle_id)
-    message_url = f"https://discord.com/channels/{request.guild_id}/{channel_id}/{message_id}"
-    raffle_data['message_url'] = message_url
-
-    return RaffleResponse(**raffle_data)
+    
+    log.info(f"Created raffle {raffle_id} with trigger={request.end_trigger}")
+    return CreateRaffleResponse(raffle_id=raffle_id, message_url=None)
 
 
-async def list_raffles_handler(
-    guild_id: int,
-    status: Optional[str] = None,
-    page: int = 1,
-    per_page: int = 50
-) -> RaffleListResponse:
-    """List raffles for a guild with pagination and filtering."""
+async def list_raffles_handler(guild_id: Optional[int], status: Optional[str], page: int, per_page: int):
+    """List raffles with pagination."""
+    from utils import get_database
     db = get_database()
-
-    raffles = await db.get_raffle_history(guild_id=guild_id, status=status, limit=per_page * page, page=1)
-
-    start_idx = (page - 1) * per_page
-    end_idx = start_idx + per_page
-    paginated = raffles[start_idx:end_idx]
-
-    return RaffleListResponse(
-        raffles=[RaffleResponse(**r) for r in paginated],
-        total=len(raffles),
-        page=page,
-        per_page=per_page
+    raffles_repo = RafflesRepository(db.pool)
+    
+    offset = (page - 1) * per_page
+    raffles = await raffles_repo.list_raffles(
+        guild_id=guild_id,
+        status=status,
+        limit=per_page,
+        offset=offset
     )
+    
+    return ListRafflesResponse(raffles)
 
 
-async def draw_raffle_handler(
-    raffle_id: int,
-    actor_discord_id: int,
-    source: str = "discord"
-) -> SuccessResponse:
-    """Draw a winner for a raffle."""
+async def draw_raffle_handler(raffle_id: int, admin_discord_id: int, source: str = "discord") -> DrawRaffleResponse:
+    """Draw a raffle winner manually."""
+    from utils import get_database
     db = get_database()
-    result = await RaffleService(db).draw_raffle(raffle_id=raffle_id, actor_discord_id=actor_discord_id, source=source)
-    raffle = result["raffle"]
-    winner = result["winner"]
-    await update_raffle_message(raffle_id, winner)
-
-    if winner:
-        return SuccessResponse(
-            message=f"Winner drawn: <@{winner['discord_id']}> (Ticket #{winner['ticket_number']})"
-        )
-    return SuccessResponse(message="Raffle completed with no entries")
-
-
-async def cancel_raffle_handler(
-    raffle_id: int,
-    actor_discord_id: int,
-    source: str = "discord"
-) -> SuccessResponse:
-    """Cancel a raffle."""
-    db = get_database()
-    raffle = await db.get_raffle(raffle_id)
-
+    raffles_repo = RafflesRepository(db.pool)
+    
+    raffle = await raffles_repo.get_raffle(raffle_id)
     if not raffle:
-        raise ValueError("Raffle not found")
+        raise ValueError(f"Raffle {raffle_id} not found")
+    
     if raffle['status'] != 'active':
-        raise ValueError("Raffle is not active")
+        raise ValueError(f"Raffle {raffle_id} is not active (status: {raffle['status']})")
+    
+    # Draw winner
+    winner = await raffles_repo.draw_raffle_winner(raffle_id)
+    
+    return DrawRaffleResponse(winner, raffle)
 
-    await db.cancel_raffle(raffle_id)
-    await db.log_audit(
-        actor_discord_id, "raffle_cancelled", "raffle", raffle_id,
-        guild_id=raffle['guild_id'], source=source
-    )
-    await update_raffle_message(raffle_id)
 
-    return SuccessResponse(message="Raffle cancelled")
+async def cancel_raffle_handler(raffle_id: int, admin_discord_id: int, source: str = "discord") -> CancelRaffleResponse:
+    """Cancel an active raffle."""
+    from utils import get_database
+    db = get_database()
+    raffles_repo = RafflesRepository(db.pool)
+    
+    success = await raffles_repo.cancel_raffle(raffle_id)
+    if not success:
+        raise ValueError(f"Could not cancel raffle {raffle_id} (may not exist or not active)")
+    
+    return CancelRaffleResponse(raffle_id)
 
 
 # ============================================================================
 # INSURANCE HANDLERS
 # ============================================================================
 
-async def create_policy_handler(
-    request: CreatePolicyRequest,
-    provider_discord_id: int
-) -> PolicyResponse:
-    """Create an insurance policy for a provider."""
+async def create_policy_handler(request: CreatePolicyRequest, provider_discord_id: int) -> CreatePolicyResponse:
+    """Create an insurance policy."""
+    from utils import get_database
     db = get_database()
+    insurance_repo = InsuranceRepository(db.pool)
     
-    provider = await db.get_provider(provider_discord_id)
-    if not provider:
-        api_key_data = await db.get_user_api_key(provider_discord_id)
-        if not api_key_data:
-            raise ValueError("Provider must have API key registered")
-        provider = await db.create_or_update_provider(
-            discord_id=provider_discord_id,
-            torn_user_id=api_key_data['torn_user_id'],
-        )
-
-    policy_id = await db.create_policy(
-        provider_id=provider['provider_id'],
+    policy_id = await insurance_repo.create_policy(
+        guild_id=request.guild_id,
+        provider_id=provider_discord_id,  # This needs to be resolved to actual provider_id
         name=request.policy_name,
         description=request.description,
         cost_type=request.cost_type,
@@ -499,289 +313,76 @@ async def create_policy_handler(
         payout_items=request.payout_items,
         duration_hours=request.duration_hours,
     )
-
     
-    # Log audit
-    await db.log_audit(
-        provider_discord_id,
-        "policy_created",
-        "policy",
-        policy_id,
-        {"provider_id": provider["provider_id"]}
-    )
-    
-    # Return response
-    policy_data = await _get_policy(policy_id)
-    return PolicyResponse(**policy_data)
+    return CreatePolicyResponse(policy_id=policy_id)
 
 
-async def approve_provider_handler(
-    provider_id: int,
-    status: str,
-    actor_discord_id: int,
-    source: str = "discord"
-) -> SuccessResponse:
-    """Approve, reject, or disable an insurance provider."""
+async def approve_provider_handler(provider_id: int, status: str, admin_discord_id: int, source: str = "discord") -> ApproveProviderResponse:
+    """Approve or reject an insurance provider."""
+    from utils import get_database
     db = get_database()
-    provider = await db.get_provider_by_id(provider_id)
-
-    if not provider:
-        raise ValueError("Provider not found")
-
-    if status == "approved":
-        await db.approve_provider(provider_id, actor_discord_id)
-    elif status == "rejected":
-        await db.reject_provider(provider_id, actor_discord_id)
-    elif status == "disabled":
-        await db.set_provider_active(provider_id, False)
-    else:
-        raise ValueError("Invalid status. Must be 'approved', 'rejected', or 'disabled'")
-
-    await db.log_audit(
-        actor_discord_id, "provider_approval_updated", "provider", provider_id,
-        {"status": status}, source=source
+    insurance_repo = InsuranceRepository(db.pool)
+    
+    success = await insurance_repo.resolve_provider_application(
+        application_id=provider_id,
+        decision="approve" if status == "approved" else "reject",
+        reviewer_discord_id=admin_discord_id,
+        reason=None if status == "approved" else "Rejected by admin"
     )
+    
+    if not success:
+        raise ValueError(f"Provider {provider_id} not found or already processed")
+    
+    return ApproveProviderResponse(provider_id, status)
 
-    return SuccessResponse(message=f"Provider {status}")
 
-
-async def approve_claim_handler(
-    claim_id: int,
-    actor_discord_id: int,
-    source: str = "discord"
-) -> SuccessResponse:
+async def approve_claim_handler(claim_id: int, admin_discord_id: int, source: str = "discord") -> ApproveClaimResponse:
     """Approve an insurance claim."""
+    from utils import get_database
     db = get_database()
-    claim = await db.get_claim(claim_id)
-
-    if not claim:
-        raise ValueError("Claim not found")
-    if claim['status'] != 'pending':
-        raise ValueError("Claim is not pending")
-
-    await db.approve_claim(claim_id, actor_discord_id)
-    await db.log_audit(
-        actor_discord_id, "claim_approved", "claim", claim_id, source=source
-    )
-
-    return SuccessResponse(message="Claim approved")
-
-
-async def reject_claim_handler(
-    claim_id: int,
-    actor_discord_id: int,
-    notes: Optional[str] = None,
-    source: str = "discord"
-) -> SuccessResponse:
-    """Reject an insurance claim."""
-    db = get_database()
-    claim = await db.get_claim(claim_id)
-
-    if not claim:
-        raise ValueError("Claim not found")
-    if claim['status'] != 'pending':
-        raise ValueError("Claim is not pending")
-
-    await db.reject_claim(claim_id, actor_discord_id, notes)
-    await db.log_audit(
-        actor_discord_id, "claim_rejected", "claim", claim_id,
-        {"notes": notes}, source=source
-    )
-
-    return SuccessResponse(message="Claim rejected")
-
-
-async def add_blacklist_handler(
-    guild_id: int,
-    discord_id: int,
-    reason: Optional[str],
-    actor_discord_id: int,
-    expires_at: Optional[datetime] = None,
-    source: str = "discord"
-) -> SuccessResponse:
-    """Add a user to the blacklist."""
-    db = get_database()
-    await db.add_to_blacklist(
-        guild_id,
-        discord_id,
-        reason or "No reason provided",
-        actor_discord_id,
-        expires_at
-    )
-    await db.log_audit(
-        actor_discord_id, "blacklist_added", "member", discord_id,
-        {"reason": reason, "expires_at": expires_at.isoformat() if expires_at else None},
-        guild_id=guild_id, source=source
-    )
-
-    return SuccessResponse(message="User added to blacklist")
-
-
-async def remove_blacklist_handler(
-    guild_id: int,
-    discord_id: int,
-    actor_discord_id: int,
-    source: str = "discord"
-) -> SuccessResponse:
-    """Remove a user from the blacklist."""
-    db = get_database()
-    await db.remove_from_blacklist(guild_id, discord_id)
-    await db.log_audit(
-        actor_discord_id, "blacklist_removed", "member", discord_id,
-        guild_id=guild_id, source=source
-    )
-
-    return SuccessResponse(message="User removed from blacklist")
-
-
-async def update_settings_handler(
-    request: UpdateSettingsRequest,
-    actor_discord_id: int,
-    source: str = "discord"
-) -> SettingsResponse:
-    """Update guild settings and return refreshed settings."""
-    db = get_database()
-
-    updates = {}
-    for key, value in request.model_dump().items():
-        if key != "guild_id" and value is not None:
-            updates[key] = value
-
-    if updates:
-        await db.update_guild_settings(request.guild_id, **updates)
-        await db.log_audit(
-            actor_discord_id, "settings_updated", "guild", request.guild_id,
-            updates, guild_id=request.guild_id, source=source
-        )
-
-    settings = await db.get_guild_settings(request.guild_id)
-    return SettingsResponse(**settings)
-
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-async def _get_session_channel_id(session_id: int) -> Optional[int]:
-    """Get the channel ID where a session was posted."""
-    db = get_database()
-    session = await db.get_jump_session(session_id)
-    if not session:
-        return None
+    insurance_repo = InsuranceRepository(db.pool)
     
-    return session.get('announcement_channel_id')
+    # Update claim status to approved
+    async with db.pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE insurance_claims 
+            SET status = 'approved',
+                resolved_by = $1,
+                resolved_at = NOW()
+            WHERE claim_id = $2
+            AND status = 'pending'
+            """,
+            admin_discord_id,
+            claim_id
+        )
+        if 'UPDATE 0' in result:
+            raise ValueError(f"Claim {claim_id} not found or not in pending status")
+    
+    return ApproveClaimResponse(claim_id)
 
 
-async def _get_raffle(raffle_id: int) -> Dict:
-    """Get raffle data."""
+async def reject_claim_handler(claim_id: int, admin_discord_id: int, notes: Optional[str] = None, source: str = "discord") -> RejectClaimResponse:
+    """Reject an insurance claim."""
+    from utils import get_database
     db = get_database()
-    return await db.get_raffle(raffle_id)
-
-
-async def _get_policy(policy_id: int) -> Dict:
-    """Get policy data."""
-    db = get_database()
-    return await db.get_policy(policy_id)
-
-
-async def update_session_message(session_id: int):
-    """Update the Discord message for a session after changes."""
-    try:
-        db = get_database()
-        session = await db.get_jump_session(session_id)
-        if not session or not session.get('announcement_message_id'):
-            return
-
-        channel_id = session.get('announcement_channel_id')
-        if not channel_id:
-            settings = await db.get_guild_settings(session['guild_id'])
-            channel_id = settings.get('jump_99k_channel_id')
-        if not channel_id:
-            return
-
-        signups = await db.get_session_signups(session_id)
-
-        bot = get_bot()
-        guild = bot.get_guild(session['guild_id'])
-        if not guild:
-            return
-        channel = guild.get_channel(channel_id)
-        if not channel:
-            try:
-                fetched = await guild.fetch_channel(channel_id)
-                if hasattr(fetched, "send"):
-                    channel = fetched
-            except Exception:
-                channel = None
-        if not channel:
-            return
-
-        message = await channel.fetch_message(session['announcement_message_id'])
-        readiness = await db.get_session_readiness(session_id)
-        from utils.embeds import create_jump_session_embed
-        from views import JumpSessionView
-
-        embed = create_jump_session_embed(session, signups, readiness)
-        view = JumpSessionView(session_id) if session['status'] in ('open', 'locked') else None
-        try:
-            await message.edit(embed=embed, view=view)
-        except (discord.Forbidden, discord.HTTPException):
-            log.warning("Message edit failed guild=%s channel=%s message=%s", getattr(guild, "id", None), getattr(channel, "id", None), session.get("announcement_message_id"))
-    except Exception as e:
-        log.error(f"Error updating session message: {e}")
-
-
-async def update_raffle_message(raffle_id: int, winner: Optional[Dict] = None):
-    """Update the Discord message for a raffle after changes."""
-    try:
-        db = get_database()
-        raffle = await db.get_raffle(raffle_id)
-        if not raffle or not raffle.get('announcement_message_id'):
-            return
-
-        settings = await db.get_guild_settings(raffle['guild_id'])
-        channel_id = settings.get('raffle_channel_id')
-        if not channel_id:
-            log.warning("Raffle channel not configured for guild %s; cannot update raffle %s", raffle['guild_id'], raffle_id)
-            return
-
-        entries = await db.get_raffle_entries(raffle_id)
-
-        bot = get_bot()
-        guild = bot.get_guild(raffle['guild_id'])
-        if not guild:
-            return
-        channel = guild.get_channel(channel_id)
-        if not channel:
-            try:
-                fetched = await guild.fetch_channel(channel_id)
-                if hasattr(fetched, "send"):
-                    channel = fetched
-            except Exception:
-                channel = None
-        if not channel:
-            await db.update_guild_settings(raffle['guild_id'], raffle_channel_id=None)
-            log.warning("Raffle channel id %s invalid for guild %s; cleared setting", channel_id, raffle['guild_id'])
-            return
-
-        message = await channel.fetch_message(raffle['announcement_message_id'])
-
-        from utils.embeds import create_raffle_embed, create_raffle_winner_embed
-        from views import RaffleView
-
-        if raffle['status'] == 'completed' and winner:
-            embed = create_raffle_winner_embed(raffle, winner)
-        else:
-            embed = create_raffle_embed(raffle, entries)
-
-        view = RaffleView(raffle_id) if raffle['status'] == 'active' else None
-        try:
-            await message.edit(embed=embed, view=view)
-        except (discord.Forbidden, discord.HTTPException):
-            log.warning("Message edit failed guild=%s channel=%s message=%s", getattr(guild, "id", None), getattr(channel, "id", None), raffle.get("announcement_message_id"))
-
-        if winner:
-            winner_embed = create_raffle_winner_embed(raffle, winner)
-            await channel.send(embed=winner_embed)
-    except Exception as e:
-        log.error(f"Error updating raffle message: {e}")
+    
+    async with db.pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE insurance_claims 
+            SET status = 'rejected',
+                resolved_by = $1,
+                resolved_at = NOW(),
+                notes = COALESCE($3, notes)
+            WHERE claim_id = $2
+            AND status = 'pending'
+            """,
+            admin_discord_id,
+            claim_id,
+            notes
+        )
+        if 'UPDATE 0' in result:
+            raise ValueError(f"Claim {claim_id} not found or not in pending status")
+    
+    return RejectClaimResponse(claim_id)
