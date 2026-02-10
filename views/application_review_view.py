@@ -109,7 +109,7 @@ class ApplicationReviewView(discord.ui.View):
             guild_owner_id=interaction.guild.owner_id,
             is_administrator=interaction.user.guild_permissions.administrator,
             can_manage_guild=interaction.user.guild_permissions.manage_guild,
-            member_role_ids={str(role.id) for role in interaction.user.roles},
+            member_role_ids={role.id for role in interaction.user.roles},
             admin_role_ids=admin_role_ids,
         )
         if not allowed:

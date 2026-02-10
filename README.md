@@ -10,12 +10,9 @@ python bot.py
 
 ## Database schema setup
 
-Use `migration_runner.py` for all schema setup and updates:
-
 - Fresh database install:
 
 ```bash
-python migrations/migration_runner.py fresh
 ```
 
   This applies `migrations/000_full_schema.sql`.
@@ -23,7 +20,6 @@ python migrations/migration_runner.py fresh
 - Existing database updates:
 
 ```bash
-python migrations/migration_runner.py migrate
 ```
 
   This applies numbered incremental migrations after `000_full_schema.sql`.
@@ -57,8 +53,6 @@ If startup schema validation fails, run the full schema SQL in Supabase SQL edit
 Optional:
 - `GUILD_ID` (faster guild-scoped slash sync in dev)
 - `CLEAN_COMMANDS`
-- `RUN_MIGRATIONS`
-- `RUN_EMERGENCY_SCHEMA_FIXES`
 
 ## Discord-only configuration
 

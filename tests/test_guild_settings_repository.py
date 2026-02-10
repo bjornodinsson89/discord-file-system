@@ -18,13 +18,11 @@ def test_repo_casts_bigints_and_admin_roles():
     normalized = repo._normalize_updates(
         {
             "announce_channel_id": "123",
-            "admin_role_id": "55",
             "admin_role_ids": ["1", 2],
             "reservation_timeout_minutes": "10",
         }
     )
     assert normalized["announce_channel_id"] == 123
-    assert normalized["admin_role_id"] == 55
     assert normalized["admin_role_ids"] == [1, 2]
     assert normalized["reservation_timeout_minutes"] == 10
 

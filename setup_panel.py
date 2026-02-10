@@ -27,14 +27,14 @@ def has_setup_permission(
     guild_owner_id: int,
     is_administrator: bool,
     can_manage_guild: bool,
-    member_role_ids: set[str],
-    admin_role_ids: list[str],
+    member_role_ids: set[int],
+    admin_role_ids: list[int],
 ) -> bool:
     if member_id == guild_owner_id:
         return True
     if is_administrator or can_manage_guild:
         return True
-    return any(str(role_id) in member_role_ids for role_id in (admin_role_ids or []))
+    return any(role_id in member_role_ids for role_id in (admin_role_ids or []))
 
 
 async def ensure_setup_permission(interaction: discord.Interaction, db) -> tuple[bool, dict[str, Any] | None]:
@@ -49,8 +49,8 @@ async def ensure_setup_permission(interaction: discord.Interaction, db) -> tuple
         guild_owner_id=interaction.guild.owner_id,
         is_administrator=member.guild_permissions.administrator,
         can_manage_guild=member.guild_permissions.manage_guild,
-        member_role_ids={str(role.id) for role in member.roles},
-        admin_role_ids=[str(v) for v in (settings.get("admin_role_ids") or [])],
+        member_role_ids={role.id for role in member.roles},
+        admin_role_ids=GuildSettingsRepository.resolve_admin_role_ids(settings),
     )
     return allowed, settings
 
@@ -80,7 +80,7 @@ def render_welcome_template(template: str, member: discord.Member, rules_channel
 
 def _can_manage_welcome_settings(member: discord.Member, settings: dict[str, Any]) -> bool:
     allowed_role_ids = set(GuildSettingsRepository.resolve_admin_role_ids(settings))
-    member_role_ids = {str(role.id) for role in member.roles}
+    member_role_ids = {role.id for role in member.roles}
     return bool(allowed_role_ids.intersection(member_role_ids))
 
 
@@ -246,11 +246,6 @@ class SetupPanelView(OwnerView):
             role = guild.get_role(int(rid)) if str(rid).isdigit() else None
             if role:
                 admin_mentions.append(role.mention)
-        if not admin_mentions and s.get("admin_role_id"):
-            role = guild.get_role(int(s["admin_role_id"]))
-            if role:
-                admin_mentions.append(role.mention)
-
         embed = create_info_embed("Setup Panel", "Configure channels, roles, templates, toggles, and tests from one place.")
         embed.add_field(name="Channels", value=(
             f"Jump: {channel_name('jump_99k_channel_id')}\n"
@@ -447,7 +442,7 @@ class AdminRoleSelect(discord.ui.RoleSelect):
     async def callback(self, interaction: discord.Interaction):
         try:
             role_ids = [int(role.id) for role in self.values if not role.is_default()]
-            await self.panel.save_changes(interaction, {"admin_role_ids": role_ids, "admin_role_id": role_ids[0] if role_ids else None})
+            await self.panel.save_changes(interaction, {"admin_role_ids": role_ids})
         except Exception as error:
             await _respond_callback_error(interaction, error)
 

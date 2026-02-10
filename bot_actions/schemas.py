@@ -223,7 +223,7 @@ class UpdateSettingsRequest(BaseModel):
     guild_id: int
     host99k_role_id: Optional[int] = None
     insurer_role_id: Optional[int] = None
-    admin_role_id: Optional[int] = None
+    admin_role_ids: Optional[List[int]] = None
     jump_99k_channel_id: Optional[int] = None
     insurance_channel_id: Optional[int] = None
     raffle_channel_id: Optional[int] = None
@@ -239,7 +239,7 @@ class SettingsResponse(BaseModel):
     guild_id: int
     host99k_role_id: Optional[int] = None
     insurer_role_id: Optional[int] = None
-    admin_role_id: Optional[int] = None
+    admin_role_ids: Optional[List[int]] = None
     jump_99k_channel_id: Optional[int] = None
     insurance_channel_id: Optional[int] = None
     raffle_channel_id: Optional[int] = None
