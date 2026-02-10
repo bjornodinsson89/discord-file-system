@@ -15,8 +15,9 @@ from utils.database import get_pool
 
 log = logging.getLogger("happy_jumper.raffles")
 
+
 class RaffleCreateModal(discord.ui.Modal):
-    """Modal for creating a new raffle with hours + minutes."""
+    """Modal for creating a new raffle."""
 
     prize = discord.ui.TextInput(
         label="Prize",
@@ -27,8 +28,8 @@ class RaffleCreateModal(discord.ui.Modal):
 
     ticket_price = discord.ui.TextInput(
         label="Ticket Price",
-        placeholder="Number of xanax/dvds per ticket (ignored for free)",
-        required=False,
+        placeholder="Number of xanax/dvds per ticket (0 for free)",
+        required=True,
         max_length=3,
         default="1"
     )
@@ -48,28 +49,16 @@ class RaffleCreateModal(discord.ui.Modal):
         default="0"
     )
 
-    def __init__(self, payment_type: str, end_trigger: str,
-                 hours_after_sold_out: Optional[float] = None,
-                 duration_hours: int = 0,
-                 duration_minutes: int = 0):
+    def __init__(self, payment_type: str, end_trigger: str, hours: int, minutes: int):
         super().__init__(title="Create Raffle")
         self.payment_type = payment_type
         self.end_trigger = end_trigger
-        self.hours_after_sold_out = hours_after_sold_out
-        self.duration_hours = duration_hours
-        self.duration_minutes = duration_minutes
-
-        if end_trigger == "time":
-            self.end_time = datetime.utcnow() + timedelta(
-                hours=duration_hours,
-                minutes=duration_minutes
-            )
-        else:
-            self.end_time = datetime.utcnow() + timedelta(days=30)
+        self.hours = hours
+        self.minutes = minutes
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            price = int(self.ticket_price.value) if self.ticket_price.value else 1
+            price = int(self.ticket_price.value) if self.ticket_price.value else 0
             total = int(self.tickets_available.value)
             max_per = int(self.max_per_user.value or 0)
 
@@ -85,6 +74,14 @@ class RaffleCreateModal(discord.ui.Modal):
             )
             return
 
+        # Calculate timing
+        if self.end_trigger == "time":
+            end_time = datetime.utcnow() + timedelta(hours=self.hours, minutes=self.minutes)
+            hours_after_sold_out = None
+        else:
+            end_time = datetime.utcnow() + timedelta(days=30)
+            hours_after_sold_out = self.hours + (self.minutes / 60)
+
         # Force price to 0 for free entries
         actual_price = 0 if self.payment_type == "free" else price
 
@@ -99,12 +96,12 @@ class RaffleCreateModal(discord.ui.Modal):
                 ticket_price=actual_price,
                 tickets_available=total,
                 max_tickets_per_user=max_per,
-                end_time=self.end_time,
+                end_time=end_time,
                 end_trigger=self.end_trigger,
-                hours_after_sold_out=self.hours_after_sold_out
+                hours_after_sold_out=hours_after_sold_out
             )
 
-            # Build price display
+            # Build display
             if self.payment_type == "free":
                 price_display = "FREE"
             else:
@@ -119,17 +116,10 @@ class RaffleCreateModal(discord.ui.Modal):
                 color=discord.Color.green()
             )
 
-            if self.payment_type == "free":
-                embed.add_field(
-                    name="🎫 Free Entry",
-                    value="No payment required! Click the button to enter.",
-                    inline=False
-                )
-
             if self.end_trigger == "tickets_sold":
-                hours = int(self.hours_after_sold_out) if self.hours_after_sold_out else 0
-                minutes = int((self.hours_after_sold_out % 1) * 60) if self.hours_after_sold_out else 0
-                time_str = f"{hours}h {minutes}m" if minutes else f"{hours}h"
+                time_str = f"{self.hours}h {self.minutes}m" if self.minutes else f"{self.hours}h"
+                if self.hours == 0:
+                    time_str = f"{self.minutes}m"
                 embed.add_field(
                     name="⏰ End Condition",
                     value=f"When sold out + **{time_str}**",
@@ -137,22 +127,22 @@ class RaffleCreateModal(discord.ui.Modal):
                 )
             else:
                 time_str = []
-                if self.duration_hours > 0:
-                    time_str.append(f"{self.duration_hours} hour{'s' if self.duration_hours != 1 else ''}")
-                if self.duration_minutes > 0:
-                    time_str.append(f"{self.duration_minutes} minute{'s' if self.duration_minutes != 1 else ''}")
-
+                if self.hours > 0:
+                    time_str.append(f"{self.hours} hour{'s' if self.hours != 1 else ''}")
+                if self.minutes > 0:
+                    time_str.append(f"{self.minutes} minute{'s' if self.minutes != 1 else ''}")
                 embed.add_field(
                     name="⏰ End Time",
                     value=f"{' '.join(time_str)} from now",
                     inline=False
                 )
 
-            embed.add_field(
-                name="🎫 How to Enter",
-                value=f"Click the **Buy Tickets** button on the raffle card!",
-                inline=False
-            )
+            if self.payment_type == "free":
+                embed.add_field(
+                    name="🎫 Free Entry",
+                    value="No payment required! Click the button on the raffle card to enter.",
+                    inline=False
+                )
 
             await interaction.response.send_message(embed=embed)
 
@@ -161,6 +151,7 @@ class RaffleCreateModal(discord.ui.Modal):
             await interaction.response.send_message(
                 "❌ Failed to create raffle", ephemeral=True
             )
+
 
 class RaffleBuyModal(discord.ui.Modal):
     """Modal for buying raffle tickets."""
@@ -188,7 +179,7 @@ class RaffleBuyModal(discord.ui.Modal):
             )
             return
 
-        # Check raffle exists and is active
+        # Check raffle
         raffle = await self.repo.get_raffle(self.raffle_id)
         if not raffle:
             await interaction.response.send_message(
@@ -254,11 +245,6 @@ class RaffleBuyModal(discord.ui.Modal):
                                f"Price: **FREE**",
                     color=discord.Color.green()
                 )
-                embed.add_field(
-                    name="Status",
-                    value="Your entry is confirmed! Good luck!",
-                    inline=False
-                )
                 
                 # Check if sold out
                 updated_raffle = await self.repo.get_raffle(self.raffle_id)
@@ -279,7 +265,7 @@ class RaffleBuyModal(discord.ui.Modal):
                 )
                 return
 
-        # PAID ENTRY (existing logic)
+        # PAID ENTRY
         reserved_until = datetime.utcnow() + timedelta(minutes=5)
 
         try:
@@ -328,6 +314,7 @@ class RaffleBuyModal(discord.ui.Modal):
             await interaction.response.send_message(
                 "❌ Failed to reserve tickets", ephemeral=True
             )
+
 
 class PaymentVerificationView(discord.ui.View):
     """View for manually verifying raffle payment."""
@@ -384,6 +371,7 @@ class PaymentVerificationView(discord.ui.View):
         )
         self.stop()
 
+
 class RafflesCog(commands.Cog):
     """Raffle commands with sell-out trigger support."""
 
@@ -398,141 +386,117 @@ class RafflesCog(commands.Cog):
         self.cleanup_expired.cancel()
         self.auto_verify_payments.cancel()
 
-    raffle_group = app_commands.Group(
-        name="raffle",
-        description="Raffle management commands"
-    )
-
-    # SINGLE CREATE COMMAND - replaces create_time and create_sellout
-    @raffle_group.command(name="create", description="Create a new raffle")
+    # SINGLE ADMIN-ONLY CREATE COMMAND
+    @app_commands.command(name="raffle_create", description="Create a new raffle (Admin only)")
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         payment_type="Payment type for tickets",
-        end_trigger="How the raffle ends",
-        hours="Hours (duration for time trigger, delay for sell-out)",
-        minutes="Minutes (duration for time trigger, delay for sell-out)"
+        payment_amount="Price per ticket (ignored for free)",
+        ticket_amount="Total tickets available (min 10)",
+        max_per_user="Max tickets per user (0 = unlimited)",
+        prize="What is the prize?",
+        trigger="How the raffle ends",
+        hours="Hours (duration for time, delay for sell-out)",
+        minutes="Minutes (duration for time, delay for sell-out)"
     )
     @app_commands.choices(payment_type=[
         app_commands.Choice(name="🎫 Free Entry", value="free"),
         app_commands.Choice(name="💊 Xanax", value="xanax"),
         app_commands.Choice(name="📀 Erotic DVD", value="erotic_dvd")
     ])
-    @app_commands.choices(end_trigger=[
+    @app_commands.choices(trigger=[
         app_commands.Choice(name="⏰ Time Based", value="time"),
         app_commands.Choice(name="🎟️ Sell Out + Delay", value="tickets_sold")
     ])
-    async def create_raffle(
+    async def raffle_create(
         self,
         interaction: discord.Interaction,
         payment_type: app_commands.Choice[str],
-        end_trigger: app_commands.Choice[str],
+        payment_amount: app_commands.Range[int, 0, 1000],
+        ticket_amount: app_commands.Range[int, 10, 10000],
+        max_per_user: app_commands.Range[int, 0, 100],
+        prize: str,
+        trigger: app_commands.Choice[str],
         hours: app_commands.Range[int, 0, 48],
         minutes: app_commands.Range[int, 0, 59]
     ):
-        """Create a raffle."""
+        """Create a raffle - Admin only."""
         if hours == 0 and minutes == 0:
             await interaction.response.send_message(
                 "❌ Please specify at least 1 hour or 1 minute", ephemeral=True
             )
             return
 
-        # Convert to modal parameters
-        if end_trigger.value == "time":
-            modal = RaffleCreateModal(
-                payment_type=payment_type.value,
-                end_trigger="time",
-                duration_hours=hours,
-                duration_minutes=minutes
-            )
-        else:
-            total_hours = hours + (minutes / 60)
-            modal = RaffleCreateModal(
-                payment_type=payment_type.value,
-                end_trigger="tickets_sold",
-                hours_after_sold_out=total_hours
-            )
+        modal = RaffleCreateModal(
+            payment_type=payment_type.value,
+            end_trigger=trigger.value,
+            hours=hours,
+            minutes=minutes
+        )
+        
+        # Pre-fill the modal values from command args
+        modal.prize.default = prize
+        modal.ticket_price.default = str(payment_amount) if payment_type.value != "free" else "0"
+        modal.tickets_available.default = str(ticket_amount)
+        modal.max_per_user.default = str(max_per_user)
         
         await interaction.response.send_modal(modal)
 
-    # REMOVED: buy command - tickets only via buttons now
+    @app_commands.command(name="raffle_draw", description="Draw a raffle winner (Admin only)")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(raffle_id="ID of the raffle to draw")
+    async def raffle_draw(self, interaction: discord.Interaction, raffle_id: int):
+        """Manually trigger a raffle draw - Admin only."""
+        await interaction.response.defer()
 
-    @raffle_group.command(name="view", description="View raffle details")
-    @app_commands.describe(raffle_id="Raffle ID to view")
-    async def view_raffle(self, interaction: discord.Interaction, raffle_id: int):
-        """View details of a specific raffle."""
         repo = RafflesRepository(get_pool())
-        raffle = await repo.get_raffle(raffle_id)
+        result = await repo.draw_raffle_winner(raffle_id)
 
-        if not raffle:
-            await interaction.response.send_message(
-                "❌ Raffle not found", ephemeral=True
-            )
+        if not result:
+            await interaction.followup.send("❌ No entries or raffle not found")
             return
 
+        # Send winner notification
+        verification_cog = self.bot.get_cog("RaffleVerificationCog")
+        if verification_cog:
+            await verification_cog.send_winner_notification(result)
+
         embed = discord.Embed(
-            title=f"🎉 {raffle['prize']}",
-            color=discord.Color.blue()
+            title="🎉 RAFFLE WINNER!",
+            description=f"Winner: {result['torn_name']} [{result['torn_user_id']}]\n"
+                       f"Total Entries: {result['total_entries']}",
+            color=discord.Color.gold()
         )
 
-        embed.add_field(
-            name="Status",
-            value=raffle["status"].title(),
-            inline=True
-        )
-        embed.add_field(
-            name="Tickets",
-            value=f"{raffle['tickets_sold']}/{raffle['tickets_available']}",
-            inline=True
-        )
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="raffle_cancel", description="Cancel a raffle (Admin only)")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(raffle_id="ID of the raffle to cancel")
+    async def raffle_cancel(self, interaction: discord.Interaction, raffle_id: int):
+        """Cancel an active raffle - Admin only."""
+        repo = RafflesRepository(get_pool())
         
-        # Show FREE or price
-        if raffle.get("is_free") or raffle["ticket_payment_type"] == "free":
-            embed.add_field(name="Price", value="FREE", inline=True)
-        else:
-            embed.add_field(
-                name="Price",
-                value=f"{raffle['ticket_price']} {raffle['ticket_payment_type']}",
-                inline=True
+        async with repo.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE raffles SET status = 'cancelled' WHERE raffle_id = $1 AND status = 'active'",
+                raffle_id
             )
-
-        if raffle["end_trigger"] == "tickets_sold":
-            if raffle["tickets_fully_sold_at"]:
-                draw_time = raffle["tickets_fully_sold_at"] + timedelta(
-                    hours=raffle["hours_after_sold_out"]
+            
+            if result == "UPDATE 0":
+                await interaction.response.send_message(
+                    "❌ Raffle not found or already completed/cancelled", ephemeral=True
                 )
-                embed.add_field(
-                    name="⏰ Drawing",
-                    value=f"<t:{int(draw_time.timestamp())}:R>",
-                    inline=False
-                )
-            else:
-                hours = int(raffle["hours_after_sold_out"])
-                mins = int((raffle["hours_after_sold_out"] % 1) * 60)
-                time_str = f"{hours}h {mins}m" if mins else f"{hours}h"
-                embed.add_field(
-                    name="⏰ Drawing",
-                    value=f"{time_str} after sell-out",
-                    inline=False
-                )
-        else:
-            embed.add_field(
-                name="⏰ Ends",
-                value=f"<t:{int(raffle['end_time'].timestamp())}:R>",
-                inline=False
-            )
+                return
+        
+        await interaction.response.send_message(
+            f"✅ Raffle #{raffle_id} has been cancelled.", ephemeral=True
+        )
 
-        if raffle["winner_discord_id"]:
-            winner_name = raffle.get("winner_torn_name", "Unknown")
-            embed.add_field(
-                name="🏆 Winner",
-                value=f"{winner_name} [{raffle['winner_torn_id']}]",
-                inline=False
-            )
-
-        await interaction.response.send_message(embed=embed)
-
-    @raffle_group.command(name="list", description="List active raffles")
-    async def list_raffles(self, interaction: discord.Interaction):
-        """List all active raffles in this guild."""
+    @app_commands.command(name="raffle_list", description="List raffles (Admin only)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def raffle_list(self, interaction: discord.Interaction):
+        """List all raffles - Admin only."""
         repo = RafflesRepository(get_pool())
         raffles = await repo.get_active_raffles(interaction.guild_id)
 
@@ -549,7 +513,6 @@ class RafflesCog(commands.Cog):
 
         for raffle in raffles:
             value = f"Tickets: {raffle['tickets_sold']}/{raffle['tickets_available']}\n"
-            
             if raffle.get("is_free") or raffle["ticket_payment_type"] == "free":
                 value += "Price: FREE"
             else:
@@ -569,33 +532,7 @@ class RafflesCog(commands.Cog):
                 inline=False
             )
 
-        await interaction.response.send_message(embed=embed)
-
-    @raffle_group.command(name="draw", description="Manually draw a raffle winner (Admin)")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def manual_draw(self, interaction: discord.Interaction, raffle_id: int):
-        """Manually trigger a raffle draw."""
-        await interaction.response.defer()
-
-        repo = RafflesRepository(get_pool())
-        result = await repo.draw_raffle_winner(raffle_id)
-
-        if not result:
-            await interaction.followup.send("❌ No entries or raffle not found")
-            return
-
-        verification_cog = self.bot.get_cog("RaffleVerificationCog")
-        if verification_cog:
-            await verification_cog.send_winner_notification(result)
-
-        embed = discord.Embed(
-            title="🎉 RAFFLE WINNER!",
-            description=f"Winner: {result['torn_name']} [{result['torn_user_id']}]\n"
-                       f"Total Entries: {result['total_entries']}",
-            color=discord.Color.gold()
-        )
-
-        await interaction.followup.send(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @tasks.loop(seconds=30)
     async def auto_verify_payments(self):
@@ -690,6 +627,7 @@ class RafflesCog(commands.Cog):
                 log.info(f"Cleaned up {count} expired raffle entries")
         except Exception as e:
             log.error(f"Error cleaning up expired entries: {e}")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RafflesCog(bot))
