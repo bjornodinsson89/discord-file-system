@@ -4,6 +4,7 @@ import discord
 from typing import Optional, List, Dict
 from datetime import datetime, timezone
 import config
+from utils.payouts import payout_items_to_human
 
 
 def create_base_embed(title: str, description: Optional[str] = None, color: int = config.COLOR_PRIMARY) -> discord.Embed:
@@ -108,7 +109,8 @@ def create_claim_embed(claim: Dict) -> discord.Embed:
                               color=status_colors.get(claim['status'], config.COLOR_SECONDARY))
     embed.add_field(name="Policy", value=f"{claim['policy_name']} ({claim['company_name']})", inline=False)
     embed.add_field(name="User", value=f"<@{claim['user_discord_id']}> (Torn: {claim['user_torn_id']})", inline=True)
-    embed.add_field(name="Payout", value=f"${claim['payout_amount']:,}", inline=True)
+    payout_line = payout_items_to_human(claim.get("payout_items") or [])
+    embed.add_field(name="Payout", value=payout_line if payout_line != "Not set" else f"${claim['payout_amount']:,}", inline=True)
     embed.add_field(name="Status", value=claim['status'].upper(), inline=True)
     if claim.get('denial_reason'):
         embed.add_field(name="Denial Reason", value=claim['denial_reason'], inline=False)
@@ -433,7 +435,14 @@ def create_policy_announcement_embed(policy: Dict, guild) -> discord.Embed:
         inline=True
     )
     
-    if policy.get('payout_description'):
+    payout_text = payout_items_to_human(policy.get("payout_items") or [])
+    if payout_text != "Not set":
+        embed.add_field(
+            name=f"{config.EMOJI_TROPHY} Payout",
+            value=f"Payout: {payout_text}",
+            inline=False
+        )
+    elif policy.get('payout_description'):
         embed.add_field(
             name=f"{config.EMOJI_TROPHY} Payout",
             value=policy['payout_description'],
@@ -489,8 +498,8 @@ def create_claim_notification_embed(claim: Dict, coverage: Dict) -> discord.Embe
     )
     
     embed.add_field(
-        name="Payout Amount",
-        value=f"{claim['payout_amount']}x items",
+        name="Payout",
+        value=payout_items_to_human(claim.get("payout_items") or []),
         inline=True
     )
     

@@ -3,6 +3,7 @@ Bot action handlers used by Discord commands.
 """
 
 import logging
+import json
 import time
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
@@ -525,12 +526,12 @@ async def create_policy_handler(
             INSERT INTO insurance_policies (
                 provider_id, name, description,
                 cost_type, cost_amount, coverage_type,
-                payout_description, duration_hours, active
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+                payout_description, payout_items, duration_hours, active
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, TRUE)
             RETURNING policy_id
         """, provider_id, request.policy_name, request.description,
             request.cost_type, request.cost_amount, request.coverage_type,
-            request.payout_description, request.duration_hours
+            request.payout_description, json.dumps(request.payout_items), request.duration_hours
         )
         policy_id = row['policy_id']
         

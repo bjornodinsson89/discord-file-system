@@ -22,6 +22,7 @@ from utils.embeds import (
 from views import (
     ApiKeyIntroView, ConfirmRemoveKeyView, ApplicationReviewView, InsurerBrowserView
 )
+from utils.payouts import parse_payout_string, payout_items_to_human, PayoutParseError
 from setup_panel import (
     DEFAULT_WELCOME_TEMPLATE,
     detect_rules_channel,
@@ -916,7 +917,7 @@ async def raffle_cancel(interaction: discord.Interaction, raffle_id: int):
     cost_type="Premium payment type",
     cost_amount="Premium amount",
     coverage_type="Coverage type",
-    payout_description="Payout terms",
+    payout_description="Payout (items), e.g. xanax=4, edvd=6, ecstasy=1",
     duration_hours="Policy duration in hours"
 )
 @app_commands.choices(
@@ -945,6 +946,9 @@ async def policy_create(
     if not await ensure_admin(interaction):
         return
     try:
+        payout_items = parse_payout_string(payout_description)
+        if not payout_items:
+            raise PayoutParseError("Payout cannot be empty. Example: xanax=4, edvd=6, ecstasy=1")
         request = CreatePolicyRequest(
             guild_id=interaction.guild_id,
             provider_discord_id=provider.id,
@@ -953,12 +957,15 @@ async def policy_create(
             cost_type=cost_type.value,
             cost_amount=cost_amount,
             coverage_type=coverage_type.value,
-            payout_description=payout_description,
+            payout_description=f"Payout: {payout_items_to_human(payout_items)}",
+            payout_items=payout_items,
             duration_hours=duration_hours
         )
         response = await admin_handlers.create_policy_handler(request, provider.id)
         embed = create_success_embed("Policy Created", f"Policy #{response.policy_id} created.")
         await interaction.followup.send(embed=embed, ephemeral=True)
+    except PayoutParseError as e:
+        await interaction.followup.send(embed=create_error_embed("Invalid Payout String", f"{e}\nExamples: `xanax=4, edvd=6, ecstasy=1` or `xanax:4,edvd:6`"), ephemeral=True)
     except Exception as e:
         log.exception(f"Policy create failed: {e}")
         await interaction.followup.send(embed=create_error_embed("Policy Create Failed", str(e)), ephemeral=True)
@@ -1444,6 +1451,7 @@ async def _create_insurance_claim(coverage: dict, od_event: dict, raw_log: dict)
             claim_type=claim_type,
             xanax_lost=xanax_lost,
             payout_amount=payout_amount,
+            payout_items=policy.get('payout_items') or [],
             torn_log_id=od_event.get('log_id'),
             torn_log_timestamp=od_event.get('timestamp'),
             torn_log_evidence=json.dumps(raw_log)
