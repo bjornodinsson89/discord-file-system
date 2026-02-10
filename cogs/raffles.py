@@ -17,7 +17,7 @@ log = logging.getLogger("happy_jumper.raffles")
 
 
 class RaffleCreateModal(discord.ui.Modal):
-    """Modal for creating a new raffle."""
+    """Modal for creating a new raffle with hours + minutes."""
     
     prize = discord.ui.TextInput(
         label="Prize",
@@ -50,15 +50,20 @@ class RaffleCreateModal(discord.ui.Modal):
     
     def __init__(self, payment_type: str, end_trigger: str, 
                  hours_after_sold_out: Optional[int] = None,
-                 duration_hours: Optional[int] = None):
+                 duration_hours: int = 0,
+                 duration_minutes: int = 0):
         super().__init__(title="Create Raffle")
         self.payment_type = payment_type
         self.end_trigger = end_trigger
         self.hours_after_sold_out = hours_after_sold_out
         self.duration_hours = duration_hours
+        self.duration_minutes = duration_minutes
         
         if end_trigger == "time":
-            self.end_time = datetime.utcnow() + timedelta(hours=duration_hours)
+            self.end_time = datetime.utcnow() + timedelta(
+                hours=duration_hours, 
+                minutes=duration_minutes
+            )
         else:
             self.end_time = datetime.utcnow() + timedelta(days=30)
 
@@ -112,9 +117,15 @@ class RaffleCreateModal(discord.ui.Modal):
                     inline=False
                 )
             else:
+                time_str = []
+                if self.duration_hours > 0:
+                    time_str.append(f"{self.duration_hours} hour{'s' if self.duration_hours != 1 else ''}")
+                if self.duration_minutes > 0:
+                    time_str.append(f"{self.duration_minutes} minute{'s' if self.duration_minutes != 1 else ''}")
+                
                 embed.add_field(
                     name="⏰ End Time",
-                    value=f"<t:{int(self.end_time.timestamp())}:R>",
+                    value=f"{' '.join(time_str)} from now (<t:{int(self.end_time.timestamp())}:R>)",
                     inline=False
                 )
             
@@ -317,7 +328,7 @@ class RafflesCog(commands.Cog):
         self.bot = bot
         self.check_raffles.start()
         self.cleanup_expired.start()
-        self.auto_verify_payments.start()  # NEW: Auto-polling task
+        self.auto_verify_payments.start()
     
     def cog_unload(self):
         self.check_raffles.cancel()
@@ -331,7 +342,8 @@ class RafflesCog(commands.Cog):
     
     @raffle_group.command(name="create_time", description="Create a time-based raffle")
     @app_commands.describe(
-        duration_hours="How many hours until draw",
+        hours="Hours until raffle ends (0-23)",
+        minutes="Minutes until raffle ends (0-59)",
         payment_type="Payment item type"
     )
     @app_commands.choices(payment_type=[
@@ -341,20 +353,31 @@ class RafflesCog(commands.Cog):
     async def create_time_raffle(
         self,
         interaction: discord.Interaction,
-        duration_hours: app_commands.Range[int, 1, 168],
+        hours: app_commands.Range[int, 0, 23],
+        minutes: app_commands.Range[int, 0, 59],
         payment_type: app_commands.Choice[str]
     ):
-        """Create a raffle that ends at a specific time."""
+        """Create a raffle that ends after specified hours and minutes."""
+        # Validate at least one is > 0
+        if hours == 0 and minutes == 0:
+            await interaction.response.send_message(
+                "❌ Please specify at least 1 hour or 1 minute for the raffle duration.",
+                ephemeral=True
+            )
+            return
+        
         modal = RaffleCreateModal(
             payment_type=payment_type.value,
             end_trigger="time",
-            duration_hours=duration_hours
+            duration_hours=hours,
+            duration_minutes=minutes
         )
         await interaction.response.send_modal(modal)
     
     @raffle_group.command(name="create_sellout", description="Create a sell-out trigger raffle")
     @app_commands.describe(
-        hours_after_sold="Hours to wait after sell-out before drawing",
+        hours_after_sold="Hours to wait after sell-out before drawing (0-48)",
+        minutes_after_sold="Additional minutes to wait (0-59)",
         payment_type="Payment item type"
     )
     @app_commands.choices(payment_type=[
@@ -364,14 +387,25 @@ class RafflesCog(commands.Cog):
     async def create_sellout_raffle(
         self,
         interaction: discord.Interaction,
-        hours_after_sold: app_commands.Range[int, 1, 48],
+        hours_after_sold: app_commands.Range[int, 0, 48],
+        minutes_after_sold: app_commands.Range[int, 0, 59],
         payment_type: app_commands.Choice[str]
     ):
-        """Create a raffle that triggers draw X hours after selling out."""
+        """Create a raffle that triggers draw X hours/minutes after selling out."""
+        if hours_after_sold == 0 and minutes_after_sold == 0:
+            await interaction.response.send_message(
+                "❌ Please specify at least 1 hour or 1 minute for the delay.",
+                ephemeral=True
+            )
+            return
+        
+        # Convert to decimal hours for storage
+        total_hours = hours_after_sold + (minutes_after_sold / 60)
+        
         modal = RaffleCreateModal(
             payment_type=payment_type.value,
             end_trigger="tickets_sold",
-            hours_after_sold_out=hours_after_sold
+            hours_after_sold_out=total_hours
         )
         await interaction.response.send_modal(modal)
     
@@ -511,7 +545,7 @@ class RafflesCog(commands.Cog):
         
         await interaction.followup.send(embed=embed)
     
-    @tasks.loop(seconds=30)  # Check every 30 seconds
+    @tasks.loop(seconds=30)
     async def auto_verify_payments(self):
         """Auto-poll Torn API for payment verification at 4:30 mark."""
         await self.bot.wait_until_ready()
@@ -529,7 +563,6 @@ class RafflesCog(commands.Cog):
                     if success:
                         log.info(f"Auto-verified payment for entry {entry['entry_id']}")
                         
-                        # Notify user via DM if possible
                         try:
                             user = await self.bot.fetch_user(entry["discord_id"])
                             await user.send(
@@ -538,7 +571,6 @@ class RafflesCog(commands.Cog):
                         except:
                             pass
                             
-                        # If sold out, announce
                         if sold_out_id:
                             raffle = await repo.get_raffle(sold_out_id)
                             guild = self.bot.get_guild(raffle["guild_id"])
@@ -552,7 +584,6 @@ class RafflesCog(commands.Cog):
                                 await guild.system_channel.send(embed=embed)
                     
                     elif error and "expired" in error.lower():
-                        # Cancel expired reservation
                         await repo.cancel_expired_reservation(entry["entry_id"])
                         log.info(f"Cancelled expired reservation {entry['entry_id']}")
                         
@@ -576,12 +607,10 @@ class RafflesCog(commands.Cog):
                     result = await repo.draw_raffle_winner(raffle["raffle_id"])
                     
                     if result:
-                        # Send winner notification
                         verification_cog = self.bot.get_cog("RaffleVerificationCog")
                         if verification_cog:
                             await verification_cog.send_winner_notification(result)
                         
-                        # Announce in guild
                         guild = self.bot.get_guild(raffle["guild_id"])
                         if guild and guild.system_channel:
                             embed = discord.Embed(
