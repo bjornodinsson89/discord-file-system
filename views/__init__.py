@@ -113,6 +113,7 @@ class JumpSessionView(ui.View):
     @ui.button(label="Join Jump", style=discord.ButtonStyle.success, emoji=config.EMOJI_JUMP, custom_id="jump_join")
     async def join(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
+        reservation_created = False
         try:
             db = get_database()
             
@@ -165,8 +166,17 @@ class JumpSessionView(ui.View):
             await db.create_signup(self.session_id, interaction.user.id, key_data['torn_user_id'], reserved_until)
             await db.update_readiness(self.session_id, interaction.user.id, current_energy, max_energy, drug_cd, "ready")
             await db.log_audit(interaction.user.id, "jump_signup", "session", self.session_id)
+            reservation_created = True
             
-            await update_jump_embed(self.session_id, interaction.message)
+            embed_update_status = await update_jump_embed(self.session_id, interaction.message)
+
+            if embed_update_status == "missing_access":
+                await interaction.followup.send(
+                    "I reserved your spot, but I can't update the session message due to missing channel permissions. "
+                    "An admin should grant me View Channel, Send Messages, Read Message History, and Embed Links in "
+                    "the 99k-jumps channel (and thread if applicable).",
+                    ephemeral=True,
+                )
             
             payment = f"${session['payment_amount']:,}" if session['payment_type'] == 'cash' else f"{session['payment_amount']}x DVD"
             low_energy_note = ""
@@ -185,9 +195,20 @@ class JumpSessionView(ui.View):
                     f"{low_energy_note}"
                 )
             ), view=PaymentView(self.session_id), ephemeral=True)
+        except discord.Forbidden:
+            if reservation_created:
+                await interaction.followup.send(
+                    "I reserved your spot, but I can't update the session message due to missing channel permissions. "
+                    "An admin should grant me View Channel, Send Messages, Read Message History, and Embed Links in "
+                    "the 99k-jumps channel (and thread if applicable).",
+                    ephemeral=True,
+                )
+                return
+            log.exception("Join failed with forbidden before reservation completed")
+            await interaction.followup.send(embed=create_error_embed("Unable to join session"), ephemeral=True)
         except Exception as e:
             log.exception(f"Join error: {e}")
-            await interaction.followup.send(embed=create_error_embed("Error", str(e)), ephemeral=True)
+            await interaction.followup.send(embed=create_error_embed("Unable to join session"), ephemeral=True)
     
     @ui.button(label="Leave Jump", style=discord.ButtonStyle.danger, emoji=config.EMOJI_CROSS, custom_id="jump_leave")
     async def leave(self, interaction: discord.Interaction, button: ui.Button):
@@ -1252,18 +1273,74 @@ class SessionSelectMenu(ui.Select):
 # HELPER FUNCTIONS
 # ============================================================================
 
-async def update_jump_embed(session_id: int, message: discord.Message):
+async def update_jump_embed(session_id: int, message: discord.Message) -> str:
+    db = get_database()
+    session = await db.get_jump_session(session_id)
+    if not session:
+        return "error"
+
+    signups = await db.get_session_signups(session_id)
+    readiness = await db.get_session_readiness(session_id)
+    embed = create_jump_session_embed(session, signups, readiness)
+
     try:
-        db = get_database()
-        session = await db.get_jump_session(session_id)
-        if not session:
-            return
-        signups = await db.get_session_signups(session_id)
-        readiness = await db.get_session_readiness(session_id)
-        embed = create_jump_session_embed(session, signups, readiness)
         await message.edit(embed=embed, view=JumpSessionView(session_id))
+        return "ok"
+    except discord.Forbidden:
+        log.warning(
+            "Update embed missing access guild_id=%s channel_id=%s message_id=%s session_id=%s",
+            getattr(getattr(message, "guild", None), "id", None),
+            getattr(getattr(message, "channel", None), "id", None),
+            getattr(message, "id", None),
+            session_id,
+        )
+    except discord.HTTPException:
+        log.warning(
+            "Update embed http error channel_id=%s message_id=%s session_id=%s",
+            getattr(getattr(message, "channel", None), "id", None),
+            getattr(message, "id", None),
+            session_id,
+            exc_info=True,
+        )
     except Exception as e:
         log.exception(f"Update embed error: {e}")
+        return "error"
+
+    try:
+        channel_id = session.get('announcement_channel_id')
+        announcement_message_id = session.get('announcement_message_id')
+        guild = getattr(message, 'guild', None)
+        if not (guild and channel_id and announcement_message_id):
+            return "missing_access"
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            channel = await guild.fetch_channel(channel_id)
+
+        announcement_message = await channel.fetch_message(announcement_message_id)
+        await announcement_message.edit(embed=embed, view=JumpSessionView(session_id))
+        return "ok"
+    except discord.Forbidden:
+        log.warning(
+            "Update embed missing access guild_id=%s channel_id=%s message_id=%s session_id=%s",
+            getattr(getattr(message, "guild", None), "id", None),
+            session.get('announcement_channel_id'),
+            session.get('announcement_message_id'),
+            session_id,
+        )
+        return "missing_access"
+    except discord.HTTPException:
+        log.warning(
+            "Update embed fallback http error channel_id=%s message_id=%s session_id=%s",
+            session.get('announcement_channel_id'),
+            session.get('announcement_message_id'),
+            session_id,
+            exc_info=True,
+        )
+        return "error"
+    except Exception as e:
+        log.exception(f"Update embed fallback error: {e}")
+        return "error"
 
 
 async def update_raffle_embed(raffle_id: int, guild: discord.Guild, settings: dict):
