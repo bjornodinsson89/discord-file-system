@@ -1476,19 +1476,20 @@ class DatabaseManager:
                     row = await conn.fetchrow(query, provider_id, admin_discord_id)
             else:
                 if has_application_data and has_denial_reason:
+                    reason_payload = json.dumps({"review_reason": reason})
                     row = await conn.fetchrow("""
                         UPDATE insurance_providers
                         SET approval_status = 'rejected', verified = FALSE, active = FALSE,
-                            approved_by = $2, approved_at = NOW(), denial_reason = $3,
-                            application_data = COALESCE(application_data, '{}'::jsonb) || jsonb_build_object('review_reason', $3)
+                            approved_by = $2, approved_at = NOW(), denial_reason = $3::text,
+                            application_data = COALESCE(application_data, '{}'::jsonb) || $4::jsonb
                         WHERE provider_id = $1
                         RETURNING *
-                    """, provider_id, admin_discord_id, reason)
+                    """, provider_id, admin_discord_id, reason, reason_payload)
                 elif has_denial_reason:
                     row = await conn.fetchrow("""
                         UPDATE insurance_providers
                         SET approval_status = 'rejected', verified = FALSE, active = FALSE,
-                            approved_by = $2, approved_at = NOW(), denial_reason = $3
+                            approved_by = $2, approved_at = NOW(), denial_reason = $3::text
                         WHERE provider_id = $1
                         RETURNING *
                     """, provider_id, admin_discord_id, reason)
@@ -1531,13 +1532,14 @@ class DatabaseManager:
                     RETURNING *
                 """, application_id, admin_discord_id)
             else:
+                reason_payload = json.dumps({"review_reason": reason})
                 row = await conn.fetchrow("""
                     UPDATE host_applications
-                    SET approval_status = 'rejected', approved_by = $2, approved_at = NOW(), denial_reason = $3,
-                        application_data = COALESCE(application_data, '{}'::jsonb) || jsonb_build_object('review_reason', $3)
+                    SET approval_status = 'rejected', approved_by = $2, approved_at = NOW(), denial_reason = $3::text,
+                        application_data = COALESCE(application_data, '{}'::jsonb) || $4::jsonb
                     WHERE id = $1
                     RETURNING *
-                """, application_id, admin_discord_id, reason)
+                """, application_id, admin_discord_id, reason, reason_payload)
         return dict(row) if row else None
 
     # ========================================================================
