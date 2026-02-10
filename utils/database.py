@@ -14,12 +14,18 @@ log = logging.getLogger("happy_jumper.database")
 # Database pool singleton
 _pool: Optional[asyncpg.Pool] = None
 
+# Track if shim warning has been logged (suppress spam from background workers)
+_shim_warning_logged = False
+
 class DatabaseManager:
     """Legacy database manager - delegates to repositories."""
     
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
-        log.warning("utils.database is a compatibility shim; migrate callers to repositories/* modules")
+        global _shim_warning_logged
+        if not _shim_warning_logged:
+            log.warning("utils.database is a compatibility shim; migrate callers to repositories/* modules")
+            _shim_warning_logged = True
     
     # ============================================================================
     # RAFFLE METHODS (NEW - for sell-out trigger feature)
