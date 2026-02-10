@@ -139,25 +139,34 @@ class RequestInsurerModal(discord.ui.Modal, title="Insurer Application"):
     torn_name = discord.ui.TextInput(label="Torn Name", required=True, max_length=100)
     forum_url = discord.ui.TextInput(label="Torn Forum Thread URL", required=True, max_length=500)
     company_name = discord.ui.TextInput(label="Company/Service Name", required=False, max_length=100)
-    description_terms = discord.ui.TextInput(label="Description/Terms", required=True, style=discord.TextStyle.paragraph, max_length=1500)
-    proof_vouches = discord.ui.TextInput(label="Proof/Vouches", required=False, style=discord.TextStyle.paragraph, max_length=1500)
+    description_terms_vouches = discord.ui.TextInput(
+        label="Description/Terms + Proof/Vouches",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=3000,
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         raw_torn_id = str(self.torn_id.value).strip()
         torn_name = str(self.torn_name.value).strip()
         forum_url = str(self.forum_url.value).strip()
         company_name = str(self.company_name.value).strip() or None
-        description_terms = str(self.description_terms.value).strip()
-        proof_vouches = str(self.proof_vouches.value).strip()
+        description_terms_vouches = str(self.description_terms_vouches.value).strip()
 
-        if not raw_torn_id.isdigit():
-            await interaction.response.send_message(embed=create_error_embed("Invalid Torn ID", "Torn ID must be numeric."), ephemeral=True)
+        if not raw_torn_id.isdigit() or int(raw_torn_id) <= 0:
+            await interaction.response.send_message(
+                embed=create_error_embed("Invalid Torn ID", "Enter a valid numeric Torn ID (digits only, greater than 0)."),
+                ephemeral=True,
+            )
             return
-        if not torn_name or not description_terms:
+        if not torn_name or not description_terms_vouches:
             await interaction.response.send_message(embed=create_error_embed("Missing Fields", "Please complete all required fields."), ephemeral=True)
             return
         if not _is_valid_torn_url(forum_url):
-            await interaction.response.send_message(embed=create_error_embed("Invalid URL", "URL must start with http and contain torn.com."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=create_error_embed("Invalid URL", "Enter a full Torn forum URL (e.g., https://www.torn.com/...)."),
+                ephemeral=True,
+            )
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -165,8 +174,8 @@ class RequestInsurerModal(discord.ui.Modal, title="Insurer Application"):
         application_data = {
             "torn_name": torn_name,
             "forum_url": forum_url,
-            "description_terms": description_terms,
-            "proof_vouches": proof_vouches or None,
+            "description_terms": description_terms_vouches,
+            "proof_vouches": None,
         }
         provider = await db.upsert_insurer_application(
             guild_id=interaction.guild_id,
@@ -185,7 +194,7 @@ class RequestInsurerModal(discord.ui.Modal, title="Insurer Application"):
                 f"Torn: `{raw_torn_id}` • **{torn_name}**",
                 f"Forum URL: {forum_url}",
                 f"Company: {company_name or 'N/A'}",
-                f"Description excerpt: {_excerpt(description_terms)}",
+                f"Description excerpt: {_excerpt(description_terms_vouches)}",
                 f"Application ID: `{provider_id}`",
                 "",
                 f"Review with: `/application_review category:insurer application_id:{provider_id} decision:approve|deny reason:<optional>`",
@@ -203,25 +212,29 @@ class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
     torn_name = discord.ui.TextInput(label="Torn Name", required=True, max_length=100)
     forum_url = discord.ui.TextInput(label="Hosting Thread/Forum URL", required=True, max_length=500)
     schedule = discord.ui.TextInput(label="Schedule/Availability", required=True, style=discord.TextStyle.paragraph, max_length=1000)
-    experience = discord.ui.TextInput(label="Experience", required=False, style=discord.TextStyle.paragraph, max_length=1000)
-    notes_rules = discord.ui.TextInput(label="Notes/Rules", required=False, style=discord.TextStyle.paragraph, max_length=1000)
+    experience_notes = discord.ui.TextInput(label="Experience + Notes", required=False, style=discord.TextStyle.paragraph, max_length=2000)
 
     async def on_submit(self, interaction: discord.Interaction):
         raw_torn_id = str(self.torn_id.value).strip()
         torn_name = str(self.torn_name.value).strip()
         forum_url = str(self.forum_url.value).strip()
         schedule = str(self.schedule.value).strip()
-        experience = str(self.experience.value).strip()
-        notes_rules = str(self.notes_rules.value).strip()
+        experience_notes = str(self.experience_notes.value).strip()
 
-        if not raw_torn_id.isdigit():
-            await interaction.response.send_message(embed=create_error_embed("Invalid Torn ID", "Torn ID must be numeric."), ephemeral=True)
+        if not raw_torn_id.isdigit() or int(raw_torn_id) <= 0:
+            await interaction.response.send_message(
+                embed=create_error_embed("Invalid Torn ID", "Enter a valid numeric Torn ID (digits only, greater than 0)."),
+                ephemeral=True,
+            )
             return
         if not torn_name or not schedule:
             await interaction.response.send_message(embed=create_error_embed("Missing Fields", "Please complete all required fields."), ephemeral=True)
             return
         if not _is_valid_torn_url(forum_url):
-            await interaction.response.send_message(embed=create_error_embed("Invalid URL", "URL must start with http and contain torn.com."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=create_error_embed("Invalid URL", "Enter a full Torn host thread URL (e.g., https://www.torn.com/...)."),
+                ephemeral=True,
+            )
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -235,8 +248,8 @@ class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
 
         application_data = {
             "schedule": schedule,
-            "experience": experience or None,
-            "notes_rules": notes_rules or None,
+            "experience": experience_notes or None,
+            "notes_rules": None,
         }
         host_application = await db.upsert_host_application(
             guild_id=interaction.guild_id,
