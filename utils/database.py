@@ -1254,6 +1254,113 @@ class DatabaseManager:
                 ORDER BY created_at
             """)
             return [dict(row) for row in rows]
+
+    async def get_approved_providers_for_browser(
+        self,
+        guild_id: int,
+        active_only: bool = True,
+        coverage_type: Optional[str] = None,
+        jump_type: Optional[str] = "99k",
+    ) -> List[Dict]:
+        """Get approved providers for guild browser list with policy summary."""
+        async with self.pool.acquire() as conn:
+            provider_rows = await conn.fetch(
+                """
+                SELECT provider_id, discord_id, torn_user_id, company_name, application_data
+                FROM insurance_providers
+                WHERE guild_id = $1
+                  AND approval_status = 'approved'
+                  AND (active = TRUE OR $2 = FALSE)
+                ORDER BY provider_id DESC
+                """,
+                guild_id,
+                active_only,
+            )
+
+            providers = [dict(row) for row in provider_rows]
+            if not providers:
+                return []
+
+            provider_ids = [int(row["provider_id"]) for row in providers]
+
+            summary_query = """
+                SELECT provider_id,
+                       array_agg(DISTINCT coverage_type) AS types,
+                       COUNT(*) FILTER (WHERE active = TRUE) AS active_policy_count,
+                       COUNT(*) AS total_policy_count
+                FROM insurance_policies
+                WHERE guild_id = $1
+                  AND provider_id = ANY($2::int[])
+            """
+            summary_params: List = [guild_id, provider_ids]
+            idx = 3
+
+            if coverage_type:
+                summary_query += f" AND coverage_type = ${idx}"
+                summary_params.append(coverage_type)
+                idx += 1
+
+            if jump_type:
+                summary_query += f" AND ${idx} = ANY(covered_jump_types)"
+                summary_params.append(jump_type)
+
+            summary_query += " GROUP BY provider_id"
+            summary_rows = await conn.fetch(summary_query, *summary_params)
+            summary_by_provider = {
+                int(row["provider_id"]): {
+                    "types": [t for t in (row["types"] or []) if t],
+                    "active_policy_count": int(row["active_policy_count"] or 0),
+                    "total_policy_count": int(row["total_policy_count"] or 0),
+                }
+                for row in summary_rows
+            }
+
+            filtered: List[Dict] = []
+            for provider in providers:
+                provider_id = int(provider["provider_id"])
+                summary = summary_by_provider.get(provider_id)
+                if (coverage_type or jump_type) and not summary:
+                    continue
+                provider["policy_types"] = (summary or {}).get("types", [])
+                provider["active_policy_count"] = (summary or {}).get("active_policy_count", 0)
+                provider["total_policy_count"] = (summary or {}).get("total_policy_count", 0)
+                filtered.append(provider)
+
+            return filtered
+
+    async def get_provider_policies_for_browser(
+        self,
+        guild_id: int,
+        provider_id: int,
+        active_only: bool = True,
+        coverage_type: Optional[str] = None,
+        jump_type: Optional[str] = "99k",
+    ) -> List[Dict]:
+        """Get provider policies for insurer card view."""
+        query = """
+            SELECT *
+            FROM insurance_policies
+            WHERE guild_id = $1
+              AND provider_id = $2
+              AND (active = TRUE OR $3 = FALSE)
+        """
+        params: List = [guild_id, provider_id, active_only]
+        idx = 4
+
+        if coverage_type:
+            query += f" AND coverage_type = ${idx}"
+            params.append(coverage_type)
+            idx += 1
+
+        if jump_type:
+            query += f" AND ${idx} = ANY(covered_jump_types)"
+            params.append(jump_type)
+
+        query += " ORDER BY policy_id DESC"
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+            return [dict(row) for row in rows]
     
     async def get_all_providers(self, approval_status: Optional[str] = None) -> List[Dict]:
         """Get all providers with optional status filter."""

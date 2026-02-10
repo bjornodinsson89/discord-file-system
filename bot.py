@@ -20,7 +20,7 @@ from utils.embeds import (
     create_raffle_embed, create_raffle_winner_embed, create_claim_notification_embed
 )
 from views import (
-    ApiKeyIntroView, ConfirmRemoveKeyView, ApplicationReviewView
+    ApiKeyIntroView, ConfirmRemoveKeyView, ApplicationReviewView, InsurerBrowserView
 )
 from setup_panel import (
     DEFAULT_WELCOME_TEMPLATE,
@@ -1029,6 +1029,46 @@ async def claim_reject(interaction: discord.Interaction, claim_id: int, notes: s
         log.exception(f"Claim reject failed: {e}")
         await interaction.followup.send(embed=create_error_embed("Claim Reject Failed", str(e)), ephemeral=True)
 
+
+
+
+@bot.tree.command(name="insurers", description="Browse approved insurers in this server")
+@app_commands.describe(
+    active_only="Show only active insurers and active policies",
+    coverage_type="Filter insurer policies by coverage type",
+    jump_type="Filter policies by covered jump type (default: 99k)",
+)
+@app_commands.choices(
+    coverage_type=[
+        app_commands.Choice(name="Xanax Stack", value="xanax_stack"),
+        app_commands.Choice(name="Ecstasy After Stack", value="ecstasy_after_stack"),
+        app_commands.Choice(name="All Drugs", value="all_drugs"),
+    ]
+)
+async def insurers(
+    interaction: discord.Interaction,
+    active_only: bool = True,
+    coverage_type: app_commands.Choice[str] = None,
+    jump_type: str = "99k",
+):
+    if not interaction.guild_id:
+        await interaction.response.send_message(embed=create_error_embed("Unavailable", "This command only works in a server."), ephemeral=True)
+        return
+
+    normalized_jump = (jump_type or "99k").strip()
+    normalized_coverage = coverage_type.value if coverage_type else None
+    if normalized_coverage == "xanax_stack":
+        normalized_coverage = "xanax"
+
+    view = InsurerBrowserView(
+        guild_id=interaction.guild_id,
+        active_only=active_only,
+        coverage_type=normalized_coverage,
+        jump_type=normalized_jump,
+        timeout=300,
+    )
+    embed = await view.build_embed(bot)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 @bot.tree.command(name="request_insurer", description="Submit an insurer approval application")
 async def request_insurer(interaction: discord.Interaction):
