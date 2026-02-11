@@ -453,9 +453,48 @@ class ChannelsView(BackView):
         self.add_item(ChannelSelect(self.panel, "jump_99k_channel_id", "Set jump (99k) channel"))
         self.add_item(ChannelSelect(self.panel, "raffle_channel_id", "Set raffle channel (legacy fallback)"))
         self.add_item(ChannelSelect(self.panel, "raffle_announcement_channel_id", "Set raffle announcement channel"))
+
+    @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
+    async def next_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await _send_or_edit(
+                interaction,
+                create_info_embed("Channels", "Use buttons below to pick each channel."),
+                ChannelsViewPage2(
+                    owner_id=self.owner_id,
+                    db=self.db,
+                    settings=self.settings,
+                    guild=self.guild,
+                    panel=self.panel,
+                ),
+            )
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+
+class ChannelsViewPage2(BackView):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.add_item(ChannelSelect(self.panel, "raffle_purchase_channel_id", "Set raffle purchase panel channel"))
         self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Set insurance channel"))
         self.add_item(ChannelSelect(self.panel, "welcome_channel_id", "Set welcome channel"))
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
+    async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await _send_or_edit(
+                interaction,
+                create_info_embed("Channels", "Use buttons below to pick each channel."),
+                ChannelsView(
+                    owner_id=self.owner_id,
+                    db=self.db,
+                    settings=self.settings,
+                    guild=self.guild,
+                    panel=self.panel,
+                ),
+            )
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
 
 class AdminRoleSelect(discord.ui.RoleSelect):

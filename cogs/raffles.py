@@ -1,7 +1,6 @@
 """
 Raffle system with sell-out trigger support and automatic payment verification.
 """
-import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -244,7 +243,8 @@ class RaffleCreateModal(discord.ui.Modal):
                     bot=self.bot,
                     raffle_id=raffle_id,
                     creator_discord_id=interaction.user.id,
-                    invoke_channel_id=interaction.channel_id,
+                    purchase_panel_channel_id=purchase_channel.id,
+                    purchase_panel_message_id=panel_message.id,
                 ),
             )
 
@@ -571,112 +571,117 @@ class PaymentVerificationView(discord.ui.View):
         self.stop()
 
 
-class RafflePrizeImagePromptView(discord.ui.View):
-    """Prompt the creator to optionally upload a prize image in the invoking channel."""
+class RafflePrizeImageUrlModal(discord.ui.Modal):
+    """Modal for setting or replacing raffle prize image URL."""
 
-    def __init__(self, bot: commands.Bot, raffle_id: int, creator_discord_id: int, invoke_channel_id: int):
-        super().__init__(timeout=600)
+    prize_image_url = discord.ui.TextInput(
+        label="Prize Image URL",
+        placeholder="https://i.imgur.com/example.png",
+        required=True,
+        max_length=1000,
+    )
+
+    def __init__(self, prompt_view: "RafflePrizeImagePromptView"):
+        super().__init__(title="📷 Add Prize Image (optional)")
+        self.prompt_view = prompt_view
+
+    @staticmethod
+    def _is_valid_url(url: str) -> bool:
+        normalized = url.strip().lower()
+        if not (normalized.startswith("http://") or normalized.startswith("https://")):
+            return False
+        return (
+            normalized.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+            or "imgur.com" in normalized
+        )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.prompt_view.creator_discord_id:
+            await interaction.response.send_message(
+                "❌ Only the raffle creator can set the prize image.",
+                ephemeral=True,
+            )
+            return
+
+        image_url = str(self.prize_image_url.value).strip()
+        if not self._is_valid_url(image_url):
+            await interaction.response.send_message(
+                "❌ Invalid image URL. Use http(s) and either an image extension or imgur.com URL.",
+                ephemeral=True,
+            )
+            return
+
+        await self.prompt_view.repo.set_prize_image_url(self.prompt_view.raffle_id, image_url)
+        await self.prompt_view.update_purchase_panel_image(image_url)
+
+        await interaction.response.send_message("✅ Prize image added", ephemeral=True)
+
+
+class RafflePrizeImagePromptView(discord.ui.View):
+    """Prompt the raffle creator to optionally add a prize image URL."""
+
+    def __init__(
+        self,
+        bot: commands.Bot,
+        raffle_id: int,
+        creator_discord_id: int,
+        purchase_panel_channel_id: int,
+        purchase_panel_message_id: int,
+    ):
+        super().__init__(timeout=3600)
         self.bot = bot
         self.raffle_id = raffle_id
         self.creator_discord_id = creator_discord_id
-        self.invoke_channel_id = invoke_channel_id
+        self.purchase_panel_channel_id = purchase_panel_channel_id
+        self.purchase_panel_message_id = purchase_panel_message_id
         self.repo = RafflesRepository(get_pool())
 
-    @staticmethod
-    def _is_valid_image(attachment: discord.Attachment) -> bool:
-        content_type = (attachment.content_type or "").lower()
-        filename = (attachment.filename or "").lower()
-        return content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".webp"))
+    async def update_purchase_panel_image(self, image_url: str) -> None:
+        panel_channel = self.bot.get_channel(int(self.purchase_panel_channel_id))
+        if panel_channel is None:
+            try:
+                panel_channel = await self.bot.fetch_channel(int(self.purchase_panel_channel_id))
+            except Exception:
+                panel_channel = None
 
-    @staticmethod
-    def _extract_image_url(message: discord.Message) -> str | None:
-        if message.attachments:
-            if len(message.attachments) != 1:
-                return None
-            attachment = message.attachments[0]
-            if not RafflePrizeImagePromptView._is_valid_image(attachment):
-                return None
-            return attachment.url
-
-        for embed in message.embeds:
-            if embed.image and embed.image.url:
-                return embed.image.url
-            if embed.thumbnail and embed.thumbnail.url:
-                return embed.thumbnail.url
-            if embed.url and str(embed.url).lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
-                return str(embed.url)
-
-        return None
-
-    async def _wait_for_image(self, interaction: discord.Interaction) -> str | None:
-        def _check(message: discord.Message) -> bool:
-            if message.author.id != interaction.user.id:
-                return False
-            if message.channel.id != self.invoke_channel_id:
-                return False
-            return self._extract_image_url(message) is not None
+        if panel_channel is None:
+            log.warning(
+                "Prize image set but purchase panel channel unavailable raffle_id=%s channel_id=%s",
+                self.raffle_id,
+                self.purchase_panel_channel_id,
+            )
+            return
 
         try:
-            upload_msg = await self.bot.wait_for("message", timeout=90, check=_check)
-        except asyncio.TimeoutError:
-            return None
-
-        return self._extract_image_url(upload_msg)
-
-    def _is_allowed(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.creator_discord_id:
-            return True
-        return bool(getattr(interaction.user, "guild_permissions", None) and interaction.user.guild_permissions.administrator)
+            panel_message = await panel_channel.fetch_message(int(self.purchase_panel_message_id))
+            if panel_message.embeds:
+                embed = panel_message.embeds[0].copy()
+            else:
+                embed = discord.Embed(title=f"🎟️ Raffle #{self.raffle_id}")
+            embed.set_image(url=image_url)
+            await panel_message.edit(embed=embed, view=RafflePurchasePanelView(raffle_id=self.raffle_id))
+        except Exception as e:
+            log.error(f"Failed to update purchase panel image for raffle {self.raffle_id}: {e}")
 
     @discord.ui.button(label="📷 Add Prize Image (optional)", style=discord.ButtonStyle.primary)
     async def add_prize_image(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._is_allowed(interaction):
-            await interaction.response.send_message("❌ Only the raffle creator or an admin can upload the prize image.", ephemeral=True)
+        if interaction.user.id != self.creator_discord_id:
+            await interaction.response.send_message(
+                "❌ Only the raffle creator can set the prize image.",
+                ephemeral=True,
+            )
             return
-
-        await interaction.response.send_message(
-            "Upload ONE image in THIS CHANNEL within 90 seconds.",
-            ephemeral=True,
-        )
-
-        prize_image_url = await self._wait_for_image(interaction)
-        if not prize_image_url:
-            await interaction.followup.send("⏱️ Timed out waiting for image upload.", ephemeral=True)
-            return
-
-        await self.repo.set_prize_image_url(self.raffle_id, prize_image_url)
-
-        panel_ref = await self.repo.get_purchase_panel_ref(self.raffle_id)
-        if panel_ref and panel_ref.get("purchase_panel_channel_id") and panel_ref.get("purchase_panel_message_id"):
-            panel_channel = self.bot.get_channel(int(panel_ref["purchase_panel_channel_id"]))
-            if panel_channel is None:
-                try:
-                    panel_channel = await self.bot.fetch_channel(int(panel_ref["purchase_panel_channel_id"]))
-                except Exception:
-                    panel_channel = None
-
-            if panel_channel is not None:
-                try:
-                    panel_message = await panel_channel.fetch_message(int(panel_ref["purchase_panel_message_id"]))
-                    if panel_message.embeds:
-                        embed = panel_message.embeds[0].copy()
-                    else:
-                        embed = discord.Embed(title=f"🎟️ Raffle #{self.raffle_id}")
-                    embed.set_image(url=prize_image_url)
-                    await panel_message.edit(embed=embed, view=RafflePurchasePanelView(raffle_id=self.raffle_id))
-                except Exception as e:
-                    log.error(f"Failed to update purchase panel image for raffle {self.raffle_id}: {e}")
-
-        await interaction.followup.send("✅ Prize image uploaded and purchase panel updated.", ephemeral=True)
-        self.stop()
+        await interaction.response.send_modal(RafflePrizeImageUrlModal(self))
 
     @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary)
     async def skip_upload(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._is_allowed(interaction):
-            await interaction.response.send_message("❌ Only the raffle creator or an admin can skip for this raffle.", ephemeral=True)
+        if interaction.user.id != self.creator_discord_id:
+            await interaction.response.send_message(
+                "❌ Only the raffle creator can skip for this raffle.",
+                ephemeral=True,
+            )
             return
-        await interaction.response.send_message("👌 Skipped prize image upload.", ephemeral=True)
-        self.stop()
+        await interaction.response.send_message("👌 Skipped prize image.", ephemeral=True)
 
 
 class RafflesCog(commands.Cog):
