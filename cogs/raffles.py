@@ -448,12 +448,12 @@ class RafflePurchasePanelView(discord.ui.View):
         self.add_item(discord.ui.Button(
             label="🎟️ Buy Tickets",
             style=discord.ButtonStyle.success,
-            custom_id=f"raffle:{raffle_id}:buy",
+            custom_id=f"raffle:buy:{raffle_id}",
         ))
         self.add_item(discord.ui.Button(
             label="ℹ️ My Tickets",
             style=discord.ButtonStyle.secondary,
-            custom_id=f"raffle:{raffle_id}:mine",
+            custom_id=f"raffle:my:{raffle_id}",
         ))
 
         self.children[0].callback = self.buy_tickets
@@ -464,34 +464,31 @@ class RafflePurchasePanelView(discord.ui.View):
             repo = RafflesRepository(get_pool())
             await interaction.response.send_modal(RaffleBuyModal(self.raffle_id, repo))
         except RuntimeError as e:
+            message = "❌ Something went wrong opening ticket purchase. Please try again."
             if "Database not initialized" in str(e):
-                await interaction.response.send_message(
-                    "⚠️ Bot is starting up, try again in a few seconds.",
-                    ephemeral=True,
-                )
-                return
+                message = "⚠️ Bot is starting up, try again in a few seconds."
             log.exception("Runtime error handling buy_tickets for raffle %s: %s", self.raffle_id, e)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ Something went wrong opening ticket purchase. Please try again.",
-                    ephemeral=True,
-                )
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
         except Exception as e:
             log.exception("Error handling buy_tickets for raffle %s: %s", self.raffle_id, e)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ Something went wrong opening ticket purchase. Please try again.",
-                    ephemeral=True,
-                )
+            message = "❌ Something went wrong opening ticket purchase. Please try again."
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
 
     async def my_tickets(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         try:
             repo = RafflesRepository(get_pool())
             entries = await repo.get_raffle_entries(self.raffle_id)
             mine = [e for e in entries if e.get("discord_id") == interaction.user.id]
 
             if not mine:
-                await interaction.response.send_message("ℹ️ You have no tickets in this raffle yet.", ephemeral=True)
+                await interaction.followup.send("ℹ️ You have no tickets in this raffle yet.", ephemeral=True)
                 return
 
             paid = sum(int(e.get("num_tickets", 0)) for e in mine if e.get("payment_verified"))
@@ -502,27 +499,19 @@ class RafflePurchasePanelView(discord.ui.View):
             if reserved:
                 info += f"\n⏳ **Reserved (unverified):** {reserved}"
 
-            await interaction.response.send_message(info, ephemeral=True)
+            await interaction.followup.send(info, ephemeral=True)
         except RuntimeError as e:
+            message = "❌ Something went wrong fetching your tickets. Please try again."
             if "Database not initialized" in str(e):
-                await interaction.response.send_message(
-                    "⚠️ Bot is starting up, try again in a few seconds.",
-                    ephemeral=True,
-                )
-                return
+                message = "⚠️ Bot is starting up, try again in a few seconds."
             log.exception("Runtime error handling my_tickets for raffle %s: %s", self.raffle_id, e)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ Something went wrong fetching your tickets. Please try again.",
-                    ephemeral=True,
-                )
+            await interaction.followup.send(message, ephemeral=True)
         except Exception as e:
             log.exception("Error handling my_tickets for raffle %s: %s", self.raffle_id, e)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ Something went wrong fetching your tickets. Please try again.",
-                    ephemeral=True,
-                )
+            await interaction.followup.send(
+                "❌ Something went wrong fetching your tickets. Please try again.",
+                ephemeral=True,
+            )
 
 
 class PaymentVerificationView(discord.ui.View):
@@ -708,14 +697,26 @@ class RafflesCog(commands.Cog):
         """Register persistent raffle purchase views for existing panel messages."""
         try:
             repo = RafflesRepository(get_pool())
-            raffles = await repo.get_active_raffles_with_panels()
-            for raffle in raffles:
+            panel_raffles = await repo.get_active_raffles_with_panels()
+            for raffle in panel_raffles:
                 self.bot.add_view(
                     RafflePurchasePanelView(raffle_id=int(raffle["raffle_id"])),
                     message_id=int(raffle["purchase_panel_message_id"]),
                 )
-            if raffles:
-                log.info("Registered %s persistent raffle purchase views", len(raffles))
+
+            active_raffles = await repo.get_all_active_raffle_ids()
+            panel_raffle_ids = {int(r["raffle_id"]) for r in panel_raffles}
+            for raffle_id in active_raffles:
+                if raffle_id in panel_raffle_ids:
+                    continue
+                self.bot.add_view(RafflePurchasePanelView(raffle_id=raffle_id))
+
+            if panel_raffles or active_raffles:
+                log.info(
+                    "Registered %s message-bound and %s fallback raffle purchase views",
+                    len(panel_raffles),
+                    max(len(active_raffles) - len(panel_raffle_ids), 0),
+                )
         except Exception as e:
             log.error("Failed registering persistent raffle views: %s", e)
 

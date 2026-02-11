@@ -281,7 +281,75 @@ class DatabaseManager:
                 "SELECT * FROM user_api_keys WHERE discord_id = $1",
                 discord_id
             )
-            return dict(row) if row else None
+            if not row:
+                return None
+
+            data = dict(row)
+            # Compatibility: some environments use api_key_encrypted, others encrypted_key.
+            if "encrypted_key" not in data and "api_key_encrypted" in data:
+                data["encrypted_key"] = data["api_key_encrypted"]
+            elif "api_key_encrypted" not in data and "encrypted_key" in data:
+                data["api_key_encrypted"] = data["encrypted_key"]
+            return data
+
+    async def set_user_api_key(
+        self,
+        discord_id: int,
+        torn_user_id: int,
+        encrypted_key: str,
+        guild_id: Optional[int] = None,
+    ):
+        """Upsert user's encrypted API key into user_api_keys."""
+        async with self.pool.acquire() as conn:
+            columns = await conn.fetch(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'user_api_keys'
+                """
+            )
+            available = {row["column_name"] for row in columns}
+            encrypted_column = "api_key_encrypted" if "api_key_encrypted" in available else "encrypted_key"
+            has_guild_id = "guild_id" in available
+
+            if has_guild_id:
+                await conn.execute(
+                    f"""
+                    INSERT INTO user_api_keys (discord_id, torn_user_id, {encrypted_column}, guild_id)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                        torn_user_id = EXCLUDED.torn_user_id,
+                        {encrypted_column} = EXCLUDED.{encrypted_column},
+                        guild_id = COALESCE(EXCLUDED.guild_id, user_api_keys.guild_id),
+                        updated_at = NOW()
+                    """,
+                    discord_id,
+                    torn_user_id,
+                    encrypted_key,
+                    guild_id,
+                )
+            else:
+                await conn.execute(
+                    f"""
+                    INSERT INTO user_api_keys (discord_id, torn_user_id, {encrypted_column})
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                        torn_user_id = EXCLUDED.torn_user_id,
+                        {encrypted_column} = EXCLUDED.{encrypted_column},
+                        updated_at = NOW()
+                    """,
+                    discord_id,
+                    torn_user_id,
+                    encrypted_key,
+                )
+
+            log.info("Stored API key for discord_id=%s torn_user_id=%s", discord_id, torn_user_id)
+
+    async def delete_user_api_key(self, discord_id: int):
+        """Delete user's API key from user_api_keys."""
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM user_api_keys WHERE discord_id = $1", discord_id)
+        log.info("Deleted API key for discord_id=%s", discord_id)
     
     async def update_readiness(self, session_id: int, discord_id: int, **kwargs):
         """Update readiness status."""
