@@ -50,7 +50,7 @@ async def perform_application_review(
         raise ValueError(f"Unsupported category: {category}")
 
     await db.log_audit(
-        actor_id=admin_discord_id,
+        actor_discord_id=admin_discord_id,
         action=action,
         target_type=target_type,
         target_id=application_id,
