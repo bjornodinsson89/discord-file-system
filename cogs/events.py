@@ -680,9 +680,18 @@ async def refresh_item_icons(interaction: discord.Interaction):
         return
 
     items = data.get("items") if isinstance(data, dict) else None
-    if not isinstance(items, dict):
+    if not isinstance(items, (dict, list)):
+        top_level_keys = list(data.keys()) if isinstance(data, dict) else []
+        details: list[str] = [
+            "Unexpected Torn API response: missing or invalid `items` payload.",
+            f"Top-level keys: `{top_level_keys}`",
+        ]
+        if isinstance(data, dict):
+            api_error = data.get("message") or data.get("error")
+            if api_error is not None:
+                details.append(f"API message: `{str(api_error)[:300]}`")
         await interaction.followup.send(
-            embed=create_error_embed("Refresh Failed", "Unexpected Torn API response: missing items payload."),
+            embed=create_error_embed("Refresh Failed", "\n".join(details)),
             ephemeral=True,
         )
         return
@@ -712,7 +721,12 @@ async def refresh_item_icons(interaction: discord.Interaction):
     rows: list[tuple[int, str, str, str]] = []
     name_to_item_id: dict[str, int] = {}
 
-    for id_key, item in items.items():
+    if isinstance(items, dict):
+        item_entries = items.items()
+    else:
+        item_entries = [(None, item) for item in items]
+
+    for id_key, item in item_entries:
         if not isinstance(item, dict):
             continue
 
@@ -720,8 +734,12 @@ async def refresh_item_icons(interaction: discord.Interaction):
         if not isinstance(raw_name, str) or not raw_name.strip():
             continue
 
+        item_id = item.get("id") or item.get("item_id") or item.get("ID")
+        if item_id is None and id_key is not None:
+            item_id = id_key
+
         try:
-            item_id = int(item.get("id") or item.get("item_id") or item.get("ID") or id_key)
+            item_id = int(item_id)
         except (TypeError, ValueError):
             continue
 
@@ -732,7 +750,8 @@ async def refresh_item_icons(interaction: discord.Interaction):
 
         image_url = _pick_image_url(item, item_id)
         rows.append((item_id, name, normalized, image_url))
-        name_to_item_id[normalized] = item_id
+        if normalized not in name_to_item_id:
+            name_to_item_id[normalized] = item_id
 
     if not rows:
         await interaction.followup.send(
