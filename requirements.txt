@@ -5,3 +5,4 @@ cryptography==42.0.8
 pydantic==2.5.3
 aiohttp
 
+Pillow==10.4.0

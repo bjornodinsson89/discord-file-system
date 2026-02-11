@@ -19,6 +19,8 @@ class RafflesRepository(RepositoryBase):
         end_time: Optional[datetime],
         end_trigger: str,
         hours_after_sold_out: Optional[float],
+        is_bundle: bool = False,
+        bundle_text: Optional[str] = None,
     ) -> int:
         """Create a new raffle."""
         async with self.pool.acquire() as conn:
@@ -34,8 +36,8 @@ class RafflesRepository(RepositoryBase):
                     guild_id, creator_discord_id, creator_torn_id, prize, ticket_payment_type,
                     ticket_price, tickets_available, max_tickets_per_user,
                     end_time, end_trigger, hours_after_sold_out, status, is_free,
-                    tickets_sold, created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $12, 0, NOW())
+                    tickets_sold, is_bundle, bundle_text, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $12, 0, $13, $14, NOW())
                 RETURNING raffle_id
                 """,
                 guild_id,
@@ -49,7 +51,9 @@ class RafflesRepository(RepositoryBase):
                 end_time,
                 end_trigger,
                 hours_after_sold_out,
-                ticket_payment_type == "free"
+                ticket_payment_type == "free",
+                is_bundle,
+                bundle_text,
             )
             return int(row["raffle_id"])
 

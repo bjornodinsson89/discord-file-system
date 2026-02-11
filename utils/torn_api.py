@@ -124,6 +124,10 @@ class TornAPIClient:
     
     async def get_torn_timestamp(self, api_key: str) -> int:
         return await self.get_torn_time()
+
+    async def get_torn_items(self, api_key: str) -> Dict:
+        """Fetch Torn item index (names + images) from Torn API v2."""
+        return await self._request("/torn", {"selections": "items", "key": api_key})
     
     async def verify_payment(self, api_key: str, recipient_torn_id: int,
                              payment_type: str, amount: int,
