@@ -4,14 +4,14 @@ Raffle system with sell-out trigger support and automatic payment verification.
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
 from repositories.raffles import RafflesRepository
-from utils.database import get_pool
+from utils import GuildSettingsRepository
+from utils.database import get_database, get_pool
 
 log = logging.getLogger("happy_jumper.raffles")
 
@@ -44,79 +44,29 @@ class RaffleCreateModal(discord.ui.Modal):
 
     tickets_available = discord.ui.TextInput(
         label="🎟️ Total Tickets",
-        placeholder="Max tickets to sell (min 10)",
+        placeholder="Total tickets to sell (minimum 1)",
         required=True,
-        max_length=4
+        max_length=10
     )
 
     max_per_user = discord.ui.TextInput(
-        label="📋 Max Tickets Per User",
+        label="📋 Max Per User (0 = unlimited)",
         placeholder="0 = unlimited",
         required=True,
         max_length=3,
         default="0"
     )
 
-    end_trigger = discord.ui.TextInput(
-        label="⏰ End Trigger",
-        placeholder="time | tickets_sold",
-        required=True,
-        max_length=20,
-        default="time"
-    )
-
-    duration = discord.ui.TextInput(
-        label="⏳ Duration",
-        placeholder="H:M or minutes (required if trigger=time)",
-        required=False,
-        max_length=10,
-        default="60"
-    )
-
     def __init__(self):
         super().__init__(title="🎉 Create Raffle")
-
-    @staticmethod
-    def _parse_duration(duration_text: str) -> Optional[timedelta]:
-        if not duration_text:
-            return None
-
-        value = duration_text.strip()
-        if not value:
-            return None
-
-        if ":" in value:
-            parts = value.split(":", 1)
-            if len(parts) != 2:
-                return None
-            hours = int(parts[0].strip())
-            minutes = int(parts[1].strip())
-            if hours < 0 or minutes < 0 or minutes > 59:
-                return None
-            total_minutes = (hours * 60) + minutes
-        else:
-            total_minutes = int(value)
-
-        if total_minutes <= 0:
-            return None
-
-        return timedelta(minutes=total_minutes)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
             payment_type = (self.payment_type.value or "").strip().lower()
-            end_trigger = (self.end_trigger.value or "").strip().lower()
 
             if payment_type not in {"free", "xanax", "erotic_dvd"}:
                 await interaction.response.send_message(
                     "❌ Payment Type must be one of: free, xanax, erotic_dvd",
-                    ephemeral=True
-                )
-                return
-
-            if end_trigger not in {"time", "tickets_sold"}:
-                await interaction.response.send_message(
-                    "❌ End Trigger must be one of: time, tickets_sold",
                     ephemeral=True
                 )
                 return
@@ -131,9 +81,9 @@ class RaffleCreateModal(discord.ui.Modal):
                 )
                 return
 
-            if total < 10:
+            if total < 1:
                 await interaction.response.send_message(
-                    "❌ Minimum 10 tickets required", ephemeral=True
+                    "❌ Total Tickets must be 1 or greater", ephemeral=True
                 )
                 return
 
@@ -149,25 +99,9 @@ class RaffleCreateModal(discord.ui.Modal):
             )
             return
 
-        # Calculate timing
-        if end_trigger == "time":
-            try:
-                duration = self._parse_duration(self.duration.value or "")
-            except ValueError:
-                duration = None
-
-            if duration is None:
-                await interaction.response.send_message(
-                    "❌ Duration must be a positive value in H:M or minutes format",
-                    ephemeral=True
-                )
-                return
-
-            end_time = datetime.utcnow() + duration
-            hours_after_sold_out = None
-        else:
-            end_time = datetime.utcnow() + timedelta(days=30)
-            hours_after_sold_out = None
+        end_time = datetime.utcnow() + timedelta(days=30)
+        end_trigger = "tickets_sold"
+        hours_after_sold_out = None
 
         # Force price to 0 for free entries
         actual_price = 0 if payment_type == "free" else price
@@ -208,32 +142,10 @@ class RaffleCreateModal(discord.ui.Modal):
                 description=f"🎁 **Prize:** {self.prize.value}\n"
                            f"🎟️ **Tickets:** {total} available\n"
                            f"💰 **Price:** {price_display} per ticket\n"
-                           f"📋 **Max per user:** {'Unlimited ♾️' if max_per == 0 else max_per}",
+                           f"📋 **Max per user:** {'Unlimited ♾️' if max_per == 0 else max_per}\n"
+                           "⏰ **Draw occurs 30 seconds after sellout.**",
                 color=discord.Color.green()
             )
-
-            if end_trigger == "tickets_sold":
-                embed.add_field(
-                    name="⏰ End Condition",
-                    value="🎟️ When sold out + **30 seconds**",
-                    inline=False
-                )
-            else:
-                duration_seconds = max(0, int((end_time - datetime.utcnow()).total_seconds()))
-                duration_minutes = duration_seconds // 60
-                hours, minutes = divmod(duration_minutes, 60)
-                time_parts = []
-                if hours:
-                    time_parts.append(f"{hours}h")
-                if minutes:
-                    time_parts.append(f"{minutes}m")
-                if not time_parts:
-                    time_parts.append("<1m")
-                embed.add_field(
-                    name="⏰ End Time",
-                    value=f"⏱️ {' '.join(time_parts)} from now",
-                    inline=False
-                )
 
             if payment_type == "free":
                 embed.add_field(
@@ -242,7 +154,72 @@ class RaffleCreateModal(discord.ui.Modal):
                     inline=False
                 )
 
-            await interaction.response.send_message(embed=embed)
+            db = get_database()
+            settings_repo = GuildSettingsRepository(db)
+            settings = await settings_repo.get_or_create(interaction.guild_id)
+
+            purchase_channel_id = settings.get("raffle_purchase_channel_id") or settings.get("raffle_channel_id")
+            if not purchase_channel_id:
+                await interaction.response.send_message(
+                    "❌ Configure **raffle purchase panel channel** in `/setup` before creating raffles.",
+                    ephemeral=True,
+                )
+                return
+
+            guild = interaction.guild
+            purchase_channel = guild.get_channel(int(purchase_channel_id)) if guild else None
+            if purchase_channel is None and guild:
+                try:
+                    fetched = await guild.fetch_channel(int(purchase_channel_id))
+                    if hasattr(fetched, "send"):
+                        purchase_channel = fetched
+                except Exception:
+                    purchase_channel = None
+
+            if purchase_channel is None:
+                await interaction.response.send_message(
+                    "❌ Raffle purchase panel channel is invalid or inaccessible. Update it in `/setup`.",
+                    ephemeral=True,
+                )
+                return
+
+            purchase_panel_embed = discord.Embed(
+                title=f"🎟️ Raffle #{raffle_id}: {self.prize.value}",
+                description="Use the buttons below to buy tickets or check your entry.\n"
+                            "⏰ **Draw occurs 30 seconds after sellout.**",
+                color=discord.Color.blurple(),
+            )
+            purchase_panel_embed.add_field(name="Price", value=price_display, inline=True)
+            purchase_panel_embed.add_field(name="Tickets", value=f"{total}", inline=True)
+            purchase_panel_embed.add_field(
+                name="Max per user",
+                value="Unlimited ♾️" if max_per == 0 else str(max_per),
+                inline=True,
+            )
+
+            panel_message = await purchase_channel.send(
+                embed=purchase_panel_embed,
+                view=RafflePurchasePanelView(raffle_id=raffle_id),
+            )
+
+            if bool(settings.get("raffle_announce_enabled", True)):
+                announce_channel_id = settings.get("raffle_announcement_channel_id")
+                if announce_channel_id:
+                    announce_channel = guild.get_channel(int(announce_channel_id)) if guild else None
+                    if announce_channel is None and guild:
+                        try:
+                            fetched = await guild.fetch_channel(int(announce_channel_id))
+                            if hasattr(fetched, "send"):
+                                announce_channel = fetched
+                        except Exception:
+                            announce_channel = None
+                    if announce_channel is not None:
+                        await announce_channel.send(embed=embed)
+
+            await interaction.response.send_message(
+                f"✅ Raffle created. Purchase panel posted in {purchase_channel.mention}.\n{panel_message.jump_url}",
+                ephemeral=True,
+            )
 
         except Exception as e:
             log.error(f"Failed to create raffle: {e}")
@@ -258,7 +235,7 @@ class RaffleBuyModal(discord.ui.Modal):
         label="🎟️ Number of Tickets",
         placeholder="How many tickets?",
         required=True,
-        max_length=2
+        max_length=10
     )
 
     def __init__(self, raffle_id: int, repo: RafflesRepository):
@@ -413,6 +390,39 @@ class RaffleBuyModal(discord.ui.Modal):
             await interaction.response.send_message(
                 "❌ Failed to reserve tickets", ephemeral=True
             )
+
+
+class RafflePurchasePanelView(discord.ui.View):
+    """Persistent purchase panel for raffle interactions."""
+
+    def __init__(self, raffle_id: int):
+        super().__init__(timeout=None)
+        self.raffle_id = raffle_id
+
+    @discord.ui.button(label="🎟️ Buy Tickets", style=discord.ButtonStyle.success)
+    async def buy_tickets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        repo = RafflesRepository(get_pool())
+        await interaction.response.send_modal(RaffleBuyModal(self.raffle_id, repo))
+
+    @discord.ui.button(label="ℹ️ My Tickets", style=discord.ButtonStyle.secondary)
+    async def my_tickets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        repo = RafflesRepository(get_pool())
+        entries = await repo.get_raffle_entries(self.raffle_id)
+        mine = [e for e in entries if e.get("discord_id") == interaction.user.id]
+
+        if not mine:
+            await interaction.response.send_message("ℹ️ You have no tickets in this raffle yet.", ephemeral=True)
+            return
+
+        paid = sum(int(e.get("num_tickets", 0)) for e in mine if e.get("payment_verified"))
+        reserved = sum(int(e.get("num_tickets", 0)) for e in mine if not e.get("payment_verified"))
+        total = paid + reserved
+
+        info = f"🎟️ **Total tickets:** {total}\n✅ **Confirmed:** {paid}"
+        if reserved:
+            info += f"\n⏳ **Reserved (unverified):** {reserved}"
+
+        await interaction.response.send_message(info, ephemeral=True)
 
 
 class PaymentVerificationView(discord.ui.View):
@@ -570,10 +580,7 @@ class RafflesCog(commands.Cog):
             else:
                 value += f"💰 Price: 📀 {raffle['ticket_price']} Erotic DVD"
 
-            if raffle["end_trigger"] == "tickets_sold":
-                value += "\n⏰ Trigger: 🎟️ Sell-out + 30 seconds"
-            else:
-                value += f"\n⏰ Ends: <t:{int(raffle['end_time'].timestamp())}:R>"
+            value += "\n⏰ Draw occurs 30 seconds after sellout."
 
             embed.add_field(
                 name=f"#{raffle['raffle_id']}: {raffle['prize'][:50]}",
