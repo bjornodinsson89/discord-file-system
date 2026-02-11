@@ -137,22 +137,19 @@ class RaffleCreateModal(discord.ui.Modal):
             else:
                 price_display = f"📀 {actual_price} Erotic DVD"
 
+            # Announcement embed (NO "draw occurs" line; we add CTA after resolving purchase_channel)
             embed = discord.Embed(
                 title="🎉 New Raffle Created!",
                 description=f"🎁 **Prize:** {self.prize.value}\n"
                            f"🎟️ **Tickets:** {total} available\n"
                            f"💰 **Price:** {price_display} per ticket\n"
-                           f"📋 **Max per user:** {'Unlimited ♾️' if max_per == 0 else max_per}\n"
-                           "⏰ **Draw occurs 30 seconds after sellout.**",
+                           f"📋 **Max per user:** {'Unlimited ♾️' if max_per == 0 else max_per}",
                 color=discord.Color.green()
             )
 
-            if payment_type == "free":
-                embed.add_field(
-                    name="✨ Free Entry",
-                    value="🎫 No payment required! Click the button on the raffle card to enter.",
-                    inline=False
-                )
+            # NOTE: We intentionally do NOT add a "free entry" announcement field yet,
+            # because the announcement message has no buttons. We'll add a correct one
+            # after we resolve the purchase channel (so it can link users there).
 
             db = get_database()
             settings_repo = GuildSettingsRepository(db)
@@ -182,6 +179,20 @@ class RaffleCreateModal(discord.ui.Modal):
                     ephemeral=True,
                 )
                 return
+
+            # ✅ Announcement CTA uses the same channel the purchase panel is posted to
+            if embed.description:
+                embed.description = (
+                    f"{embed.description}\n\n👉 Head to {purchase_channel.mention} to purchase your ticket."
+                )
+
+            # ✅ If FREE raffle, add accurate announcement text (no buttons on announcement)
+            if payment_type == "free":
+                embed.add_field(
+                    name="🎫 FREE Raffle!!",
+                    value=f"Head to {purchase_channel.mention} to enter.",
+                    inline=False,
+                )
 
             purchase_panel_embed = discord.Embed(
                 title=f"🎟️ Raffle #{raffle_id}: {self.prize.value}",
@@ -306,13 +317,13 @@ class RaffleBuyModal(discord.ui.Modal):
                     torn_user_id=0,
                     num_tickets=quantity
                 )
-                
+
                 if not entry:
                     await interaction.response.send_message(
                         "❌ Failed to enter raffle", ephemeral=True
                     )
                     return
-                
+
                 embed = discord.Embed(
                     title="✅ Entry Confirmed!",
                     description=f"🎁 **Raffle:** {raffle['prize']}\n"
@@ -320,7 +331,7 @@ class RaffleBuyModal(discord.ui.Modal):
                                f"💰 **Price:** 🎫 FREE",
                     color=discord.Color.green()
                 )
-                
+
                 # Check if sold out
                 updated_raffle = await self.repo.get_raffle(self.raffle_id)
                 if updated_raffle["tickets_fully_sold_at"]:
@@ -329,10 +340,10 @@ class RaffleBuyModal(discord.ui.Modal):
                         value="This raffle is now full! Drawing soon.",
                         inline=False
                     )
-                
+
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
-                
+
             except Exception as e:
                 log.error(f"Failed free entry: {e}")
                 await interaction.response.send_message(
@@ -536,19 +547,19 @@ class RafflesCog(commands.Cog):
     async def raffle_cancel(self, interaction: discord.Interaction, raffle_id: int):
         """❌ Cancel an active raffle - Admin only."""
         repo = RafflesRepository(get_pool())
-        
+
         async with repo.pool.acquire() as conn:
             result = await conn.execute(
                 "UPDATE raffles SET status = 'cancelled' WHERE raffle_id = $1 AND status = 'active'",
                 raffle_id
             )
-            
+
             if result == "UPDATE 0":
                 await interaction.response.send_message(
                     "❌ Raffle not found or already completed/cancelled", ephemeral=True
                 )
                 return
-        
+
         await interaction.response.send_message(
             f"✅ Raffle #{raffle_id} has been cancelled.", ephemeral=True
         )
