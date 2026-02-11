@@ -10,7 +10,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from repositories.raffles import RafflesRepository
-from utils.database import get_pool
+from utils import GuildSettingsRepository
+from utils.database import get_database, get_pool
 
 log = logging.getLogger("happy_jumper.raffles")
 
@@ -153,7 +154,72 @@ class RaffleCreateModal(discord.ui.Modal):
                     inline=False
                 )
 
-            await interaction.response.send_message(embed=embed)
+            db = get_database()
+            settings_repo = GuildSettingsRepository(db)
+            settings = await settings_repo.get_or_create(interaction.guild_id)
+
+            purchase_channel_id = settings.get("raffle_purchase_channel_id") or settings.get("raffle_channel_id")
+            if not purchase_channel_id:
+                await interaction.response.send_message(
+                    "❌ Configure **raffle purchase panel channel** in `/setup` before creating raffles.",
+                    ephemeral=True,
+                )
+                return
+
+            guild = interaction.guild
+            purchase_channel = guild.get_channel(int(purchase_channel_id)) if guild else None
+            if purchase_channel is None and guild:
+                try:
+                    fetched = await guild.fetch_channel(int(purchase_channel_id))
+                    if hasattr(fetched, "send"):
+                        purchase_channel = fetched
+                except Exception:
+                    purchase_channel = None
+
+            if purchase_channel is None:
+                await interaction.response.send_message(
+                    "❌ Raffle purchase panel channel is invalid or inaccessible. Update it in `/setup`.",
+                    ephemeral=True,
+                )
+                return
+
+            purchase_panel_embed = discord.Embed(
+                title=f"🎟️ Raffle #{raffle_id}: {self.prize.value}",
+                description="Use the buttons below to buy tickets or check your entry.\n"
+                            "⏰ **Draw occurs 30 seconds after sellout.**",
+                color=discord.Color.blurple(),
+            )
+            purchase_panel_embed.add_field(name="Price", value=price_display, inline=True)
+            purchase_panel_embed.add_field(name="Tickets", value=f"{total}", inline=True)
+            purchase_panel_embed.add_field(
+                name="Max per user",
+                value="Unlimited ♾️" if max_per == 0 else str(max_per),
+                inline=True,
+            )
+
+            panel_message = await purchase_channel.send(
+                embed=purchase_panel_embed,
+                view=RafflePurchasePanelView(raffle_id=raffle_id),
+            )
+
+            if bool(settings.get("raffle_announce_enabled", True)):
+                announce_channel_id = settings.get("raffle_announcement_channel_id")
+                if announce_channel_id:
+                    announce_channel = guild.get_channel(int(announce_channel_id)) if guild else None
+                    if announce_channel is None and guild:
+                        try:
+                            fetched = await guild.fetch_channel(int(announce_channel_id))
+                            if hasattr(fetched, "send"):
+                                announce_channel = fetched
+                        except Exception:
+                            announce_channel = None
+                    if announce_channel is not None:
+                        await announce_channel.send(embed=embed)
+
+            await interaction.response.send_message(
+                f"✅ Raffle created. Purchase panel posted in {purchase_channel.mention}.\n{panel_message.jump_url}",
+                ephemeral=True,
+            )
 
         except Exception as e:
             log.error(f"Failed to create raffle: {e}")
@@ -324,6 +390,39 @@ class RaffleBuyModal(discord.ui.Modal):
             await interaction.response.send_message(
                 "❌ Failed to reserve tickets", ephemeral=True
             )
+
+
+class RafflePurchasePanelView(discord.ui.View):
+    """Persistent purchase panel for raffle interactions."""
+
+    def __init__(self, raffle_id: int):
+        super().__init__(timeout=None)
+        self.raffle_id = raffle_id
+
+    @discord.ui.button(label="🎟️ Buy Tickets", style=discord.ButtonStyle.success)
+    async def buy_tickets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        repo = RafflesRepository(get_pool())
+        await interaction.response.send_modal(RaffleBuyModal(self.raffle_id, repo))
+
+    @discord.ui.button(label="ℹ️ My Tickets", style=discord.ButtonStyle.secondary)
+    async def my_tickets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        repo = RafflesRepository(get_pool())
+        entries = await repo.get_raffle_entries(self.raffle_id)
+        mine = [e for e in entries if e.get("discord_id") == interaction.user.id]
+
+        if not mine:
+            await interaction.response.send_message("ℹ️ You have no tickets in this raffle yet.", ephemeral=True)
+            return
+
+        paid = sum(int(e.get("num_tickets", 0)) for e in mine if e.get("payment_verified"))
+        reserved = sum(int(e.get("num_tickets", 0)) for e in mine if not e.get("payment_verified"))
+        total = paid + reserved
+
+        info = f"🎟️ **Total tickets:** {total}\n✅ **Confirmed:** {paid}"
+        if reserved:
+            info += f"\n⏳ **Reserved (unverified):** {reserved}"
+
+        await interaction.response.send_message(info, ephemeral=True)
 
 
 class PaymentVerificationView(discord.ui.View):
