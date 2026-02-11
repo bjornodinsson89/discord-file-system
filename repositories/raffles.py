@@ -170,6 +170,19 @@ class RafflesRepository(RepositoryBase):
             )
             return [dict(row) for row in rows]
 
+
+    async def get_all_active_raffle_ids(self) -> list[int]:
+        """Get raffle IDs for all active raffles."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT raffle_id
+                FROM raffles
+                WHERE status = 'active'
+                """
+            )
+            return [int(row["raffle_id"]) for row in rows]
+
     async def get_active_raffles_with_panels(self) -> list:
         """Get active raffles that already have purchase panel message references."""
         async with self.pool.acquire() as conn:
