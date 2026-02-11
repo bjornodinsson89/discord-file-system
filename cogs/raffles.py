@@ -148,6 +148,7 @@ class RaffleCreateModal(discord.ui.Modal):
             else:
                 price_display = f"📀 {actual_price} Erotic DVD"
 
+            # Announcement embed (NO "draw occurs" line; we add CTA after resolving purchase_channel)
             embed = discord.Embed(
                 title="🎉 New Raffle Created!",
                 description=f"🎁 **Prize:** {self.prize.value}\n"
@@ -160,9 +161,9 @@ class RaffleCreateModal(discord.ui.Modal):
 
             if payment_type == "free":
                 embed.add_field(
-                    name="✨ Free Entry",
-                    value="🎫 No payment required! Click the button on the raffle card to enter.",
-                    inline=False
+                    name="🎫 FREE Raffle!!",
+                    value=f"Head to {purchase_channel.mention} to enter.",
+                    inline=False,
                 )
 
             db = get_database()
@@ -317,13 +318,13 @@ class RaffleBuyModal(discord.ui.Modal):
                     torn_user_id=0,
                     num_tickets=quantity
                 )
-                
+
                 if not entry:
                     await interaction.response.send_message(
                         "❌ Failed to enter raffle", ephemeral=True
                     )
                     return
-                
+
                 embed = discord.Embed(
                     title="✅ Entry Confirmed!",
                     description=f"🎁 **Raffle:** {raffle['prize']}\n"
@@ -331,7 +332,7 @@ class RaffleBuyModal(discord.ui.Modal):
                                f"💰 **Price:** 🎫 FREE",
                     color=discord.Color.green()
                 )
-                
+
                 # Check if sold out
                 updated_raffle = await self.repo.get_raffle(self.raffle_id)
                 if updated_raffle["tickets_fully_sold_at"]:
@@ -340,10 +341,10 @@ class RaffleBuyModal(discord.ui.Modal):
                         value="This raffle is now full! Drawing soon.",
                         inline=False
                     )
-                
+
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
-                
+
             except Exception as e:
                 log.error(f"Failed free entry: {e}")
                 await interaction.response.send_message(
@@ -568,19 +569,19 @@ class RafflesCog(commands.Cog):
     async def raffle_cancel(self, interaction: discord.Interaction, raffle_id: int):
         """❌ Cancel an active raffle - Admin only."""
         repo = RafflesRepository(get_pool())
-        
+
         async with repo.pool.acquire() as conn:
             result = await conn.execute(
                 "UPDATE raffles SET status = 'cancelled' WHERE raffle_id = $1 AND status = 'active'",
                 raffle_id
             )
-            
+
             if result == "UPDATE 0":
                 await interaction.response.send_message(
                     "❌ Raffle not found or already completed/cancelled", ephemeral=True
                 )
                 return
-        
+
         await interaction.response.send_message(
             f"✅ Raffle #{raffle_id} has been cancelled.", ephemeral=True
         )
