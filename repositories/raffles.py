@@ -57,14 +57,20 @@ class RafflesRepository(RepositoryBase):
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO raffle_entries (raffle_id, discord_id, torn_user_id, num_tickets, reserved_until, payment_verified)
-                VALUES ($1, $2, $3, $4, $5, FALSE)
+                INSERT INTO raffle_entries (
+                    raffle_id,
+                    discord_id,
+                    torn_user_id,
+                    num_tickets,
+                    reserved_until,
+                    payment_verified,
+                    created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, FALSE, NOW())
                 ON CONFLICT (raffle_id, discord_id) DO UPDATE
                 SET torn_user_id = EXCLUDED.torn_user_id,
                     num_tickets = EXCLUDED.num_tickets,
-                    reserved_until = EXCLUDED.reserved_until,
-                    payment_verified = raffle_entries.payment_verified,
-                    payment_verified_at = raffle_entries.payment_verified_at
+                    reserved_until = EXCLUDED.reserved_until
                 RETURNING *
                 """,
                 raffle_id,
@@ -185,7 +191,7 @@ class RafflesRepository(RepositoryBase):
             )
             return [dict(row) for row in rows]
 
-    async def get_entry_for_verification(self, entry_id: int) -> Optional[dict]:
+    async def get_entry_with_raffle(self, entry_id: int) -> Optional[dict]:
         """Fetch reservation and raffle details used for payment verification."""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -217,6 +223,10 @@ class RafflesRepository(RepositoryBase):
             )
             return dict(row) if row else None
 
+    async def get_entry_for_verification(self, entry_id: int) -> Optional[dict]:
+        """Backward-compatible alias for entry+raffle verification lookup."""
+        return await self.get_entry_with_raffle(entry_id)
+
     async def mark_entry_verified(self, entry_id: int) -> bool:
         """Mark a reservation as paid after external verification succeeds."""
         async with self.pool.acquire() as conn:
@@ -232,7 +242,7 @@ class RafflesRepository(RepositoryBase):
             )
             return result == "UPDATE 1"
 
-    async def recompute_tickets_sold_and_set_sold_out(self, raffle_id: int) -> Optional[int]:
+    async def recompute_tickets_sold_and_maybe_set_sold_out(self, raffle_id: int) -> Optional[int]:
         """Recompute verified ticket totals and set sold-out timestamp when threshold is reached."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -280,6 +290,48 @@ class RafflesRepository(RepositoryBase):
 
                 return None
 
+    async def recompute_tickets_sold_and_set_sold_out(self, raffle_id: int) -> Optional[int]:
+        """Backward-compatible alias for sold-out recompute logic."""
+        return await self.recompute_tickets_sold_and_maybe_set_sold_out(raffle_id)
+
+    async def set_purchase_panel_ref(self, raffle_id: int, channel_id: int, message_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE raffles
+                SET purchase_panel_channel_id = $2,
+                    purchase_panel_message_id = $3
+                WHERE raffle_id = $1
+                """,
+                raffle_id,
+                channel_id,
+                message_id,
+            )
+
+    async def get_purchase_panel_ref(self, raffle_id: int) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT raffle_id, purchase_panel_channel_id, purchase_panel_message_id
+                FROM raffles
+                WHERE raffle_id = $1
+                """,
+                raffle_id,
+            )
+            return dict(row) if row else None
+
+    async def set_prize_image_url(self, raffle_id: int, url: str) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE raffles
+                SET prize_image_url = $2
+                WHERE raffle_id = $1
+                """,
+                raffle_id,
+                url,
+            )
+
     async def cancel_expired_reservation(self, entry_id: int):
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -302,6 +354,28 @@ class RafflesRepository(RepositoryBase):
         """Draw a winner for the raffle."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                raffle = await conn.fetchrow(
+                    """
+                    SELECT raffle_id, status, tickets_available,
+                           COALESCE((
+                               SELECT SUM(num_tickets)
+                               FROM raffle_entries
+                               WHERE raffle_id = $1 AND payment_verified = TRUE
+                           ), 0) AS verified_total
+                    FROM raffles
+                    WHERE raffle_id = $1
+                    """,
+                    raffle_id,
+                )
+                if not raffle:
+                    return None
+
+                if raffle["status"] != "active":
+                    return None
+
+                if int(raffle["verified_total"] or 0) < int(raffle["tickets_available"] or 0):
+                    return None
+
                 entries = await conn.fetch(
                     """
                     SELECT discord_id, torn_user_id, num_tickets
