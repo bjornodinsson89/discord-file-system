@@ -12,6 +12,9 @@ class GuildSettingsRepository:
         "announce_channel_id",
         "jump_99k_channel_id",
         "raffle_channel_id",
+        "raffle_announcement_channel_id",
+        "raffle_purchase_channel_id",
+        "raffle_announce_enabled",
         "insurance_channel_id",
         "welcome_channel_id",
         "admin_role_ids",
@@ -37,11 +40,14 @@ class GuildSettingsRepository:
         "jump_99k_channel_id": None,
         "raffle_channel_id": None,
         "insurance_channel_id": None,
+        "raffle_announcement_channel_id": None,
+        "raffle_purchase_channel_id": None,
         "welcome_channel_id": None,
         "admin_role_ids": None,
         "host99k_role_id": None,
         "insurer_role_id": None,
         "welcome_enabled": False,
+        "raffle_announce_enabled": True,
         "welcome_message_template": None,
         "auto_complete_enabled": True,
         "reservation_timeout_minutes": 5,
@@ -93,9 +99,56 @@ class GuildSettingsRepository:
             data.update(row)
         return data
 
+
+    async def _db_insert_or_get_settings(self, guild_id: int) -> Optional[dict[str, Any]]:
+        if not hasattr(self._db, "pool"):
+            return None
+        async with self._db.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO guild_settings (guild_id)
+                VALUES ($1)
+                ON CONFLICT (guild_id) DO UPDATE SET guild_id = EXCLUDED.guild_id
+                RETURNING *
+                """,
+                guild_id,
+            )
+            return dict(row) if row else None
+
+    async def _db_update_settings(self, guild_id: int, fields: Dict[str, Any]) -> Optional[dict[str, Any]]:
+        if not hasattr(self._db, "pool"):
+            return None
+        async with self._db.pool.acquire() as conn:
+            sets = []
+            values = []
+            for i, (key, value) in enumerate(fields.items(), 1):
+                sets.append(f"{key} = ${i}")
+                values.append(value)
+            values.append(guild_id)
+            row = await conn.fetchrow(
+                f"UPDATE guild_settings SET {', '.join(sets)} WHERE guild_id = ${len(values)} RETURNING *",
+                *values,
+            )
+            return dict(row) if row else None
+
     async def get_settings(self, guild_id: int) -> Dict[str, Any]:
-        row = await self._db.create_or_update_guild_settings(guild_id)
-        return self._merge_defaults(dict(row) if row else None, guild_id)
+        if hasattr(self._db, "create_or_update_guild_settings"):
+            row = await self._db.create_or_update_guild_settings(guild_id)
+            return self._merge_defaults(dict(row) if row else None, guild_id)
+
+        row = None
+        if hasattr(self._db, "get_guild_settings"):
+            row = await self._db.get_guild_settings(guild_id)
+        if row:
+            return self._merge_defaults(dict(row), guild_id)
+
+        if hasattr(self._db, "update_guild_settings"):
+            maybe = await self._db.update_guild_settings(guild_id)
+            if maybe:
+                return self._merge_defaults(dict(maybe), guild_id)
+
+        fallback = await self._db_insert_or_get_settings(guild_id)
+        return self._merge_defaults(fallback, guild_id)
 
     async def get_or_create(self, guild_id: int) -> Dict[str, Any]:
         return await self.get_settings(guild_id)
@@ -108,9 +161,14 @@ class GuildSettingsRepository:
             return await self.get_settings(guild_id)
 
         normalized = self._normalize_updates(fields)
-        row = await self._db.update_guild_settings(guild_id, **normalized)
-        if row is None:
-            row = await self._db.get_guild_settings(guild_id)
+        row = None
+        if hasattr(self._db, "update_guild_settings"):
+            row = await self._db.update_guild_settings(guild_id, **normalized)
+            if row is None and hasattr(self._db, "get_guild_settings"):
+                row = await self._db.get_guild_settings(guild_id)
+        else:
+            await self._db_insert_or_get_settings(guild_id)
+            row = await self._db_update_settings(guild_id, normalized)
         return self._merge_defaults(dict(row) if row else None, guild_id)
 
     async def upsert(self, guild_id: int, **fields: Any) -> Dict[str, Any]:

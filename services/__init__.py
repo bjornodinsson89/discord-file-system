@@ -1,6 +1,7 @@
 from .errors import AlreadyExists, BusinessRuleViolation, DomainError, InvalidInput, NotFound, PermissionDenied
 from .insurance_service import InsuranceService
 from .jump_service import JumpService
+from .raffle_payment import RafflePaymentService
 from .raffle_service import RaffleService
 
 __all__ = [
@@ -13,4 +14,5 @@ __all__ = [
     "JumpService",
     "InsuranceService",
     "RaffleService",
+    "RafflePaymentService",
 ]

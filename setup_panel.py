@@ -27,14 +27,28 @@ def has_setup_permission(
     guild_owner_id: int,
     is_administrator: bool,
     can_manage_guild: bool,
-    member_role_ids: set[int],
-    admin_role_ids: list[int],
+    member_role_ids: set[int] | set[str],
+    admin_role_ids: list[int] | list[str],
 ) -> bool:
     if member_id == guild_owner_id:
         return True
     if is_administrator or can_manage_guild:
         return True
-    return any(role_id in member_role_ids for role_id in (admin_role_ids or []))
+
+    normalized_member_roles: set[int] = set()
+    for role_id in (member_role_ids or set()):
+        try:
+            normalized_member_roles.add(int(role_id))
+        except (TypeError, ValueError):
+            continue
+
+    for role_id in (admin_role_ids or []):
+        try:
+            if int(role_id) in normalized_member_roles:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 async def ensure_setup_permission(interaction: discord.Interaction, db) -> tuple[bool, dict[str, Any] | None]:
@@ -249,7 +263,9 @@ class SetupPanelView(OwnerView):
         embed = create_info_embed("Setup Panel", "Configure channels, roles, templates, toggles, and tests from one place.")
         embed.add_field(name="Channels", value=(
             f"Jump: {channel_name('jump_99k_channel_id')}\n"
-            f"Raffle: {channel_name('raffle_channel_id')}\n"
+            f"Raffle (legacy): {channel_name('raffle_channel_id')}\n"
+            f"Raffle announcement: {channel_name('raffle_announcement_channel_id')}\n"
+            f"Raffle purchase panel: {channel_name('raffle_purchase_channel_id')}\n"
             f"Insurance: {channel_name('insurance_channel_id')}\n"
             f"Welcome: {channel_name('welcome_channel_id')}"
         ), inline=False)
@@ -260,6 +276,7 @@ class SetupPanelView(OwnerView):
         ), inline=False)
         embed.add_field(name="Feature Toggles", value=(
             f"Welcome enabled: `{bool(s.get('welcome_enabled'))}`\n"
+            f"Raffle announcement enabled: `{bool(s.get('raffle_announce_enabled', True))}`\n"
             f"Auto complete: `{bool(s.get('auto_complete_enabled', True))}`\n"
             f"Reservation timeout: `{s.get('reservation_timeout_minutes', 5)}` minutes"
         ), inline=False)
@@ -429,7 +446,9 @@ class ChannelsView(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_item(ChannelSelect(self.panel, "jump_99k_channel_id", "Set jump (99k) channel"))
-        self.add_item(ChannelSelect(self.panel, "raffle_channel_id", "Set raffle channel"))
+        self.add_item(ChannelSelect(self.panel, "raffle_channel_id", "Set raffle channel (legacy fallback)"))
+        self.add_item(ChannelSelect(self.panel, "raffle_announcement_channel_id", "Set raffle announcement channel"))
+        self.add_item(ChannelSelect(self.panel, "raffle_purchase_channel_id", "Set raffle purchase panel channel"))
         self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Set insurance channel"))
         self.add_item(ChannelSelect(self.panel, "welcome_channel_id", "Set welcome channel"))
 
@@ -527,6 +546,14 @@ class FeatureTogglesView(BackView):
     async def toggle_auto_complete(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             await self.panel.save_changes(interaction, {"auto_complete_enabled": not bool(self.settings.get("auto_complete_enabled", True))})
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+
+    @discord.ui.button(label="Toggle Raffle Announcement", style=discord.ButtonStyle.primary)
+    async def toggle_raffle_announce(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await self.panel.save_changes(interaction, {"raffle_announce_enabled": not bool(self.settings.get("raffle_announce_enabled", True))})
         except Exception as error:
             await _respond_callback_error(interaction, error)
 

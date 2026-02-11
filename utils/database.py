@@ -300,6 +300,20 @@ class DatabaseManager:
             """
             await conn.execute(query, *values)
     
+    async def create_or_update_guild_settings(self, guild_id: int):
+        """Ensure guild settings row exists and return it."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO guild_settings (guild_id)
+                VALUES ($1)
+                ON CONFLICT (guild_id) DO UPDATE SET guild_id = EXCLUDED.guild_id
+                RETURNING *
+                """,
+                guild_id,
+            )
+            return dict(row) if row else None
+
     async def get_guild_settings(self, guild_id: int):
         """Get guild settings."""
         async with self.pool.acquire() as conn:
@@ -310,7 +324,12 @@ class DatabaseManager:
             return dict(row) if row else {}
     
     async def update_guild_settings(self, guild_id: int, **fields):
-        """Update guild settings."""
+        """Update guild settings and return updated row."""
+        if not fields:
+            return await self.get_guild_settings(guild_id)
+
+        await self.create_or_update_guild_settings(guild_id)
+
         async with self.pool.acquire() as conn:
             sets = []
             values = []
@@ -318,9 +337,10 @@ class DatabaseManager:
                 sets.append(f"{key} = ${i}")
                 values.append(value)
             values.append(guild_id)
-            
-            query = f"UPDATE guild_settings SET {', '.join(sets)} WHERE guild_id = ${len(values)}"
-            await conn.execute(query, *values)
+
+            query = f"UPDATE guild_settings SET {', '.join(sets)} WHERE guild_id = ${len(values)} RETURNING *"
+            row = await conn.fetchrow(query, *values)
+            return dict(row) if row else None
     
     async def get_guild_statistics(self, guild_id: int):
         """Get guild statistics."""
