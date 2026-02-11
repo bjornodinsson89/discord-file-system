@@ -60,8 +60,11 @@ class CreatePolicyResponse:
 class UpdateSettingsRequest:
     host99k_role_id: Optional[int] = None
     insurer_role_id: Optional[int] = None
-    admin_role_id: Optional[int] = None
+    admin_role_ids: Optional[List[int]] = None
     jump_99k_channel_id: Optional[int] = None
     insurance_channel_id: Optional[int] = None
     raffle_channel_id: Optional[int] = None
+    raffle_announcement_channel_id: Optional[int] = None
+    raffle_purchase_channel_id: Optional[int] = None
+    raffle_announce_enabled: Optional[bool] = None
     reservation_timeout_minutes: Optional[int] = None

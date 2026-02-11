@@ -114,8 +114,7 @@ class RafflesRepository(RepositoryBase):
                     await conn.execute(
                         """
                         UPDATE raffles 
-                        SET tickets_fully_sold_at = NOW(),
-                            status = 'drawing'
+                        SET tickets_fully_sold_at = NOW()
                         WHERE raffle_id = $1 
                         AND end_trigger = 'tickets_sold'
                         AND tickets_fully_sold_at IS NULL
@@ -186,78 +185,100 @@ class RafflesRepository(RepositoryBase):
             )
             return [dict(row) for row in rows]
 
-    async def verify_payment_and_check_sold_out(self, entry_id: int, manual: bool = False):
-        """Verify payment for an entry."""
+    async def get_entry_for_verification(self, entry_id: int) -> Optional[dict]:
+        """Fetch reservation and raffle details used for payment verification."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    e.entry_id,
+                    e.raffle_id,
+                    e.discord_id,
+                    e.torn_user_id,
+                    e.num_tickets,
+                    e.reserved_until,
+                    e.payment_verified,
+                    e.created_at,
+                    r.creator_discord_id,
+                    r.creator_torn_id,
+                    COALESCE(r.creator_torn_id, u.torn_user_id) AS effective_creator_torn_id,
+                    r.ticket_payment_type,
+                    r.ticket_price,
+                    r.tickets_available,
+                    r.end_trigger,
+                    r.tickets_fully_sold_at,
+                    r.status
+                FROM raffle_entries e
+                JOIN raffles r ON r.raffle_id = e.raffle_id
+                LEFT JOIN user_api_keys u ON u.discord_id = r.creator_discord_id
+                WHERE e.entry_id = $1
+                """,
+                entry_id,
+            )
+            return dict(row) if row else None
+
+    async def mark_entry_verified(self, entry_id: int) -> bool:
+        """Mark a reservation as paid after external verification succeeds."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE raffle_entries
+                SET payment_verified = TRUE,
+                    payment_verified_at = NOW()
+                WHERE entry_id = $1
+                  AND payment_verified = FALSE
+                """,
+                entry_id,
+            )
+            return result == "UPDATE 1"
+
+    async def recompute_tickets_sold_and_set_sold_out(self, raffle_id: int) -> Optional[int]:
+        """Recompute verified ticket totals and set sold-out timestamp when threshold is reached."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                entry = await conn.fetchrow(
-                    "SELECT * FROM raffle_entries WHERE entry_id = $1",
-                    entry_id
-                )
-                if not entry:
-                    return False, None, "Entry not found"
-                
-                if entry["payment_verified"]:
-                    return True, None, None
-                
-                if not manual and entry["reserved_until"] < datetime.utcnow():
-                    return False, None, "Reservation expired"
-                
                 await conn.execute(
                     """
-                    UPDATE raffle_entries 
-                    SET payment_verified = TRUE, payment_verified_at = NOW()
-                    WHERE entry_id = $1
-                    """,
-                    entry_id
-                )
-                
-                await conn.execute(
-                    """
-                    UPDATE raffles 
+                    UPDATE raffles
                     SET tickets_sold = (
                         SELECT COALESCE(SUM(num_tickets), 0)
                         FROM raffle_entries
-                        WHERE raffle_id = $1 AND payment_verified = TRUE
+                        WHERE raffle_id = $1
+                          AND payment_verified = TRUE
                     )
                     WHERE raffle_id = $1
                     """,
-                    entry["raffle_id"]
+                    raffle_id,
                 )
-                
-                raffle = await conn.fetchrow(
-                    "SELECT * FROM raffles WHERE raffle_id = $1",
-                    entry["raffle_id"]
+
+                row = await conn.fetchrow(
+                    """
+                    SELECT raffle_id, tickets_available, tickets_sold, end_trigger, tickets_fully_sold_at
+                    FROM raffles
+                    WHERE raffle_id = $1
+                    """,
+                    raffle_id,
                 )
-                
-                sold_out_id = None
-                if (raffle["end_trigger"] == "tickets_sold" and 
-                    raffle["tickets_fully_sold_at"] is None):
-                    
-                    total_sold = await conn.fetchval(
+                if not row:
+                    return None
+
+                if (
+                    row["end_trigger"] == "tickets_sold"
+                    and row["tickets_fully_sold_at"] is None
+                    and int(row["tickets_sold"] or 0) >= int(row["tickets_available"] or 0)
+                ):
+                    result = await conn.execute(
                         """
-                        SELECT COALESCE(SUM(num_tickets), 0)
-                        FROM raffle_entries
-                        WHERE raffle_id = $1 AND payment_verified = TRUE
+                        UPDATE raffles
+                        SET tickets_fully_sold_at = NOW()
+                        WHERE raffle_id = $1
+                          AND tickets_fully_sold_at IS NULL
                         """,
-                        entry["raffle_id"]
+                        raffle_id,
                     )
-                    
-                    if total_sold >= raffle["tickets_available"]:
-                        update_result = await conn.execute(
-                            """
-                            UPDATE raffles 
-                            SET tickets_fully_sold_at = NOW(),
-                                status = 'drawing'
-                            WHERE raffle_id = $1
-                            AND tickets_fully_sold_at IS NULL
-                            """,
-                            entry["raffle_id"]
-                        )
-                        if update_result == "UPDATE 1":
-                            sold_out_id = entry["raffle_id"]
-                
-                return True, sold_out_id, None
+                    if result == "UPDATE 1":
+                        return raffle_id
+
+                return None
 
     async def cancel_expired_reservation(self, entry_id: int):
         async with self.pool.acquire() as conn:
@@ -331,13 +352,10 @@ class RafflesRepository(RepositoryBase):
             rows = await conn.fetch(
                 """
                 SELECT * FROM raffles
-                WHERE (
-                    (status = 'active' AND end_trigger = 'time' AND end_time <= NOW())
-                    OR 
-                    (status = 'drawing' AND end_trigger = 'tickets_sold' 
-                     AND tickets_fully_sold_at IS NOT NULL
-                     AND tickets_fully_sold_at + INTERVAL '30 seconds' <= NOW())
-                )
+                WHERE status = 'active'
+                  AND end_trigger = 'tickets_sold'
+                  AND tickets_fully_sold_at IS NOT NULL
+                  AND NOW() >= tickets_fully_sold_at + INTERVAL '30 seconds'
                 """
             )
             return [dict(row) for row in rows]

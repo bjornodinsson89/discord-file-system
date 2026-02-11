@@ -143,19 +143,47 @@ class DatabaseManager:
     # GUILD SETTINGS
     # ========================================================================
     
-    async def get_guild_settings(self, guild_id: int) -> Dict:
-        """Get guild settings, creating default entry if needed."""
-        from .guild_settings_repository import GuildSettingsRepository
+    async def create_or_update_guild_settings(self, guild_id: int) -> Dict:
+        """Ensure guild settings row exists and return it."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO guild_settings (guild_id)
+                VALUES ($1)
+                ON CONFLICT (guild_id) DO UPDATE SET guild_id = EXCLUDED.guild_id
+                RETURNING *
+                """,
+                guild_id,
+            )
+            return dict(row) if row else {}
 
-        repo = GuildSettingsRepository(self)
-        return await repo.get_settings(guild_id)
+    async def get_guild_settings(self, guild_id: int) -> Dict:
+        """Get guild settings."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM guild_settings WHERE guild_id = $1",
+                guild_id,
+            )
+            return dict(row) if row else {}
     
     async def update_guild_settings(self, guild_id: int, **kwargs):
-        """Update guild settings."""
-        from .guild_settings_repository import GuildSettingsRepository
+        """Update guild settings and return updated row."""
+        if not kwargs:
+            return await self.get_guild_settings(guild_id)
 
-        repo = GuildSettingsRepository(self)
-        await repo.upsert_settings(guild_id, **kwargs)
+        await self.create_or_update_guild_settings(guild_id)
+
+        async with self.pool.acquire() as conn:
+            sets = []
+            values = []
+            for i, (key, value) in enumerate(kwargs.items(), 1):
+                sets.append(f"{key} = ${i}")
+                values.append(value)
+            values.append(guild_id)
+
+            query = f"UPDATE guild_settings SET {', '.join(sets)} WHERE guild_id = ${len(values)} RETURNING *"
+            row = await conn.fetchrow(query, *values)
+            return dict(row) if row else {}
 
     @staticmethod
     def normalize_xanax_count(value: Optional[object]) -> int:
