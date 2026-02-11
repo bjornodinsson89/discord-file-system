@@ -10,7 +10,7 @@ import logging
 import asyncio
 import json
 from urllib.parse import urlparse
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import config
@@ -24,6 +24,7 @@ from views import (
     ApiKeyIntroView, ConfirmRemoveKeyView, ApplicationReviewView, InsurerBrowserView
 )
 from utils.payouts import parse_payout_string, payout_items_to_human, PayoutParseError
+from utils.torn_api import TornAPIError
 from setup_panel import (
     DEFAULT_WELCOME_TEMPLATE,
     detect_rules_channel,
@@ -46,6 +47,7 @@ from repositories.insurance import InsuranceRepository
 from repositories.raffles import RafflesRepository
 from repositories.audit import AuditRepository
 from repositories.jumps import JumpsRepository
+from repositories.torn_items import TornItemsRepository, norm_name
 
 log = logging.getLogger("happy_jumper")
 
@@ -625,6 +627,150 @@ async def stats(interaction: discord.Interaction):
 # ============================================================================
 # SLASH COMMANDS - ADMIN ACTIONS
 # ============================================================================
+
+@bot.tree.command(name="refresh_item_icons", description="Refresh Torn item icon index (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def refresh_item_icons(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    if not await ensure_admin(interaction):
+        return
+
+    db = get_database()
+    row = await db.get_user_api_key(interaction.user.id)
+    if not row:
+        await interaction.followup.send(
+            embed=create_error_embed("API Key Required", "Use the bot's API key setup first."),
+            ephemeral=True,
+        )
+        return
+
+    encrypted = row.get("encrypted_key") or row.get("api_key_encrypted")
+    if not encrypted:
+        await interaction.followup.send(
+            embed=create_error_embed("API Key Required", "Use the bot's API key setup first."),
+            ephemeral=True,
+        )
+        return
+
+    try:
+        api_key = get_security_manager().decrypt_api_key(encrypted)
+    except Exception:
+        log.exception("Failed to decrypt API key for user %s", interaction.user.id)
+        await interaction.followup.send(
+            embed=create_error_embed("API Key Error", "Stored API key could not be decrypted. Please set it again."),
+            ephemeral=True,
+        )
+        return
+
+    torn = get_torn_api()
+    try:
+        data = await torn.get_torn_items(api_key)
+    except TornAPIError as e:
+        await interaction.followup.send(
+            embed=create_error_embed("Torn API Error", str(e)),
+            ephemeral=True,
+        )
+        return
+    except Exception as e:
+        log.exception("Unexpected error fetching Torn items: %s", e)
+        await interaction.followup.send(
+            embed=create_error_embed("Refresh Failed", "Unexpected error fetching item data from Torn API."),
+            ephemeral=True,
+        )
+        return
+
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, dict):
+        await interaction.followup.send(
+            embed=create_error_embed("Refresh Failed", "Unexpected Torn API response: missing items payload."),
+            ephemeral=True,
+        )
+        return
+
+    def _pick_image_url(item_payload: dict, item_id: int) -> str:
+        image_payload = item_payload.get("image")
+        candidate = ""
+
+        if isinstance(image_payload, dict):
+            for key in ("large", "full", "preview", "medium", "small", "thumbnail"):
+                value = image_payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidate = value.strip()
+                    break
+        elif isinstance(image_payload, str) and image_payload.strip():
+            candidate = image_payload.strip()
+
+        if candidate.startswith("//"):
+            candidate = f"https:{candidate}"
+        elif candidate.startswith("/"):
+            candidate = f"https://www.torn.com{candidate}"
+
+        if not candidate:
+            candidate = f"https://www.torn.com/images/items/{item_id}/large.png"
+        return candidate
+
+    rows: list[tuple[int, str, str, str]] = []
+    name_to_item_id: dict[str, int] = {}
+
+    for id_key, item in items.items():
+        if not isinstance(item, dict):
+            continue
+
+        raw_name = item.get("name")
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            continue
+
+        try:
+            item_id = int(item.get("id") or item.get("item_id") or item.get("ID") or id_key)
+        except (TypeError, ValueError):
+            continue
+
+        name = raw_name.strip()
+        normalized = norm_name(name)
+        if not normalized:
+            continue
+
+        image_url = _pick_image_url(item, item_id)
+        rows.append((item_id, name, normalized, image_url))
+        name_to_item_id[normalized] = item_id
+
+    if not rows:
+        await interaction.followup.send(
+            embed=create_error_embed("Refresh Failed", "No valid item rows were returned by Torn API."),
+            ephemeral=True,
+        )
+        return
+
+    repo = TornItemsRepository(db.pool)
+    inserted = await repo.upsert_items(rows)
+
+    alias_targets = {
+        "xanax": "Xanax",
+        "xan": "Xanax",
+        "edvd": "Erotic DVD",
+        "e dvd": "Erotic DVD",
+        "erotic dvd": "Erotic DVD",
+        "dp": "Donator Pack",
+        "donator pack": "Donator Pack",
+    }
+    aliases: dict[str, int] = {}
+    for alias, target_name in alias_targets.items():
+        target_id = name_to_item_id.get(norm_name(target_name))
+        if target_id:
+            aliases[norm_name(alias)] = target_id
+
+    alias_count = await repo.upsert_aliases(aliases)
+    refreshed_iso = datetime.now(timezone.utc).isoformat()
+    await repo.set_last_refresh_iso(refreshed_iso)
+
+    await interaction.followup.send(
+        embed=create_success_embed(
+            "Item Icons Refreshed",
+            f"Upserted items: **{inserted}**\nAliases updated: **{alias_count}**\nRefreshed at: `{refreshed_iso}`",
+        ),
+        ephemeral=True,
+    )
+
 
 @bot.tree.command(name="session_create", description="Create a 99k jump session (Admin only)")
 @app_commands.default_permissions(administrator=True)
