@@ -288,6 +288,8 @@ class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
 intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
+intents.messages = True
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 bot.synced = False
