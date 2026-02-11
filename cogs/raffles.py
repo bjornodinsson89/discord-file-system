@@ -445,31 +445,84 @@ class RafflePurchasePanelView(discord.ui.View):
     def __init__(self, raffle_id: int):
         super().__init__(timeout=None)
         self.raffle_id = raffle_id
+        self.add_item(discord.ui.Button(
+            label="🎟️ Buy Tickets",
+            style=discord.ButtonStyle.success,
+            custom_id=f"raffle:{raffle_id}:buy",
+        ))
+        self.add_item(discord.ui.Button(
+            label="ℹ️ My Tickets",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"raffle:{raffle_id}:mine",
+        ))
 
-    @discord.ui.button(label="🎟️ Buy Tickets", style=discord.ButtonStyle.success)
-    async def buy_tickets(self, interaction: discord.Interaction, button: discord.ui.Button):
-        repo = RafflesRepository(get_pool())
-        await interaction.response.send_modal(RaffleBuyModal(self.raffle_id, repo))
+        self.children[0].callback = self.buy_tickets
+        self.children[1].callback = self.my_tickets
 
-    @discord.ui.button(label="ℹ️ My Tickets", style=discord.ButtonStyle.secondary)
-    async def my_tickets(self, interaction: discord.Interaction, button: discord.ui.Button):
-        repo = RafflesRepository(get_pool())
-        entries = await repo.get_raffle_entries(self.raffle_id)
-        mine = [e for e in entries if e.get("discord_id") == interaction.user.id]
+    async def buy_tickets(self, interaction: discord.Interaction):
+        try:
+            repo = RafflesRepository(get_pool())
+            await interaction.response.send_modal(RaffleBuyModal(self.raffle_id, repo))
+        except RuntimeError as e:
+            if "Database not initialized" in str(e):
+                await interaction.response.send_message(
+                    "⚠️ Bot is starting up, try again in a few seconds.",
+                    ephemeral=True,
+                )
+                return
+            log.exception("Runtime error handling buy_tickets for raffle %s: %s", self.raffle_id, e)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ Something went wrong opening ticket purchase. Please try again.",
+                    ephemeral=True,
+                )
+        except Exception as e:
+            log.exception("Error handling buy_tickets for raffle %s: %s", self.raffle_id, e)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ Something went wrong opening ticket purchase. Please try again.",
+                    ephemeral=True,
+                )
 
-        if not mine:
-            await interaction.response.send_message("ℹ️ You have no tickets in this raffle yet.", ephemeral=True)
-            return
+    async def my_tickets(self, interaction: discord.Interaction):
+        try:
+            repo = RafflesRepository(get_pool())
+            entries = await repo.get_raffle_entries(self.raffle_id)
+            mine = [e for e in entries if e.get("discord_id") == interaction.user.id]
 
-        paid = sum(int(e.get("num_tickets", 0)) for e in mine if e.get("payment_verified"))
-        reserved = sum(int(e.get("num_tickets", 0)) for e in mine if not e.get("payment_verified"))
-        total = paid + reserved
+            if not mine:
+                await interaction.response.send_message("ℹ️ You have no tickets in this raffle yet.", ephemeral=True)
+                return
 
-        info = f"🎟️ **Total tickets:** {total}\n✅ **Confirmed:** {paid}"
-        if reserved:
-            info += f"\n⏳ **Reserved (unverified):** {reserved}"
+            paid = sum(int(e.get("num_tickets", 0)) for e in mine if e.get("payment_verified"))
+            reserved = sum(int(e.get("num_tickets", 0)) for e in mine if not e.get("payment_verified"))
+            total = paid + reserved
 
-        await interaction.response.send_message(info, ephemeral=True)
+            info = f"🎟️ **Total tickets:** {total}\n✅ **Confirmed:** {paid}"
+            if reserved:
+                info += f"\n⏳ **Reserved (unverified):** {reserved}"
+
+            await interaction.response.send_message(info, ephemeral=True)
+        except RuntimeError as e:
+            if "Database not initialized" in str(e):
+                await interaction.response.send_message(
+                    "⚠️ Bot is starting up, try again in a few seconds.",
+                    ephemeral=True,
+                )
+                return
+            log.exception("Runtime error handling my_tickets for raffle %s: %s", self.raffle_id, e)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ Something went wrong fetching your tickets. Please try again.",
+                    ephemeral=True,
+                )
+        except Exception as e:
+            log.exception("Error handling my_tickets for raffle %s: %s", self.raffle_id, e)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ Something went wrong fetching your tickets. Please try again.",
+                    ephemeral=True,
+                )
 
 
 class PaymentVerificationView(discord.ui.View):
@@ -546,6 +599,41 @@ class RafflePrizeImagePromptView(discord.ui.View):
         filename = (attachment.filename or "").lower()
         return content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".webp"))
 
+    @staticmethod
+    def _extract_image_url(message: discord.Message) -> str | None:
+        if message.attachments:
+            if len(message.attachments) != 1:
+                return None
+            attachment = message.attachments[0]
+            if not RafflePrizeImagePromptView._is_valid_image(attachment):
+                return None
+            return attachment.url
+
+        for embed in message.embeds:
+            if embed.image and embed.image.url:
+                return embed.image.url
+            if embed.thumbnail and embed.thumbnail.url:
+                return embed.thumbnail.url
+            if embed.url and str(embed.url).lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                return str(embed.url)
+
+        return None
+
+    async def _wait_for_image(self, interaction: discord.Interaction) -> str | None:
+        def _check(message: discord.Message) -> bool:
+            if message.author.id != interaction.user.id:
+                return False
+            if message.channel.id != self.invoke_channel_id:
+                return False
+            return self._extract_image_url(message) is not None
+
+        try:
+            upload_msg = await self.bot.wait_for("message", timeout=90, check=_check)
+        except asyncio.TimeoutError:
+            return None
+
+        return self._extract_image_url(upload_msg)
+
     def _is_allowed(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.creator_discord_id:
             return True
@@ -562,29 +650,11 @@ class RafflePrizeImagePromptView(discord.ui.View):
             ephemeral=True,
         )
 
-        def _check(message: discord.Message) -> bool:
-            return (
-                message.author.id == interaction.user.id
-                and message.channel.id == self.invoke_channel_id
-                and len(message.attachments) > 0
-            )
-
-        try:
-            upload_msg = await self.bot.wait_for("message", timeout=90, check=_check)
-        except asyncio.TimeoutError:
+        prize_image_url = await self._wait_for_image(interaction)
+        if not prize_image_url:
             await interaction.followup.send("⏱️ Timed out waiting for image upload.", ephemeral=True)
             return
 
-        if len(upload_msg.attachments) != 1:
-            await interaction.followup.send("❌ Please upload exactly ONE image attachment.", ephemeral=True)
-            return
-
-        attachment = upload_msg.attachments[0]
-        if not self._is_valid_image(attachment):
-            await interaction.followup.send("❌ Attachment must be an image (png/jpg/jpeg/webp).", ephemeral=True)
-            return
-
-        prize_image_url = attachment.url
         await self.repo.set_prize_image_url(self.raffle_id, prize_image_url)
 
         panel_ref = await self.repo.get_purchase_panel_ref(self.raffle_id)
@@ -633,6 +703,21 @@ class RafflesCog(commands.Cog):
         self.check_raffles.cancel()
         self.cleanup_expired.cancel()
         self.auto_verify_payments.cancel()
+
+    async def cog_load(self):
+        """Register persistent raffle purchase views for existing panel messages."""
+        try:
+            repo = RafflesRepository(get_pool())
+            raffles = await repo.get_active_raffles_with_panels()
+            for raffle in raffles:
+                self.bot.add_view(
+                    RafflePurchasePanelView(raffle_id=int(raffle["raffle_id"])),
+                    message_id=int(raffle["purchase_panel_message_id"]),
+                )
+            if raffles:
+                log.info("Registered %s persistent raffle purchase views", len(raffles))
+        except Exception as e:
+            log.error("Failed registering persistent raffle views: %s", e)
 
     # SINGLE ADMIN-ONLY CREATE COMMAND WITH EMOJIS IN CHOICES
     @app_commands.command(name="raffle_create", description="🎉 Create a new raffle (Admin only)")
