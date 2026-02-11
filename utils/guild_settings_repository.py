@@ -60,8 +60,16 @@ class GuildSettingsRepository:
     def _normalize_admin_role_ids(admin_role_ids: Optional[Iterable[Any]]) -> Optional[list[int]]:
         if admin_role_ids is None:
             return None
+
+        if isinstance(admin_role_ids, (int, str)):
+            candidate_values: Iterable[Any] = [admin_role_ids]
+        elif isinstance(admin_role_ids, dict):
+            candidate_values = admin_role_ids.values()
+        else:
+            candidate_values = admin_role_ids
+
         normalized: list[int] = []
-        for role_id in admin_role_ids:
+        for role_id in candidate_values:
             if role_id is None:
                 continue
             normalized.append(int(role_id))
@@ -187,8 +195,11 @@ class GuildSettingsRepository:
         raw_value = settings.get("admin_role_ids")
         if raw_value is None:
             return []
-        if isinstance(raw_value, list):
-            values = raw_value
+
+        if isinstance(raw_value, dict):
+            values = list(raw_value.values())
+        elif isinstance(raw_value, (list, tuple, set)):
+            values = list(raw_value)
         else:
             values = [raw_value]
 
@@ -203,5 +214,5 @@ class GuildSettingsRepository:
                 stripped = value.strip()
                 if stripped.isdigit():
                     normalized.append(int(stripped))
-            
+
         return normalized

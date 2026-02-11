@@ -4,6 +4,7 @@ Delegates to repository layer while maintaining backward compatibility
 """
 
 import logging
+import json
 import asyncpg
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
@@ -547,6 +548,22 @@ class DatabaseManager:
 # PUBLIC API
 # ============================================================================
 
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """Initialize asyncpg connection codecs for JSON/JSONB."""
+    await conn.set_type_codec(
+        "json",
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
+
+
 async def init_database():
     """Initialize database pool."""
     global _pool
@@ -560,7 +577,8 @@ async def init_database():
             server_settings={
                 'jit': 'off',
                 'application_name': 'happy_jumper'
-            }
+            },
+            init=_init_connection,
         )
         log.info("Database pool initialized with PgBouncer-safe settings")
 

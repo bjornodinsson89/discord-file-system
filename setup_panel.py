@@ -142,7 +142,12 @@ def _missing_channel_perms(channel: discord.abc.GuildChannel, me: discord.Member
 
 
 async def _respond_callback_error(interaction: discord.Interaction, error: Exception):
-    log.exception('Setup callback error guild_id=%s user_id=%s', interaction.guild_id, interaction.user.id if interaction.user else None, exc_info=error)
+    log.exception(
+        'Setup callback error guild_id=%s user_id=%s',
+        interaction.guild_id,
+        interaction.user.id if interaction.user else None,
+        exc_info=(type(error), error, error.__traceback__),
+    )
     msg = "Unexpected setup error. Please try again, or rerun /setup if this continues."
     if interaction.response.is_done():
         await interaction.followup.send(embed=create_error_embed('Setup failed', msg), ephemeral=True)
@@ -183,7 +188,7 @@ class OwnerView(discord.ui.View):
             getattr(selected, "id", None),
             type(selected).__name__ if selected else None,
             type(item).__name__,
-            exc_info=error,
+            exc_info=(type(error), error, error.__traceback__),
         )
         message = (
             "Something went wrong while saving this setup option. "
@@ -293,7 +298,7 @@ class SetupPanelView(OwnerView):
         await self.db.update_guild_settings(interaction.guild_id, **changes)
         self.settings.update(changes)
         await self.db.log_audit(
-            actor_id=interaction.user.id,
+            actor_discord_id=interaction.user.id,
             action="setup_panel_updated",
             target_type="guild",
             target_id=interaction.guild_id,

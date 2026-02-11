@@ -219,7 +219,7 @@ class DatabaseManager:
     
     async def log_audit(
         self,
-        actor_id: Optional[int],
+        actor_discord_id: Optional[int],
         action: str,
         target_type: Optional[str] = None,
         target_id: Optional[int] = None,
@@ -233,7 +233,7 @@ class DatabaseManager:
                 INSERT INTO audit_log 
                 (guild_id, actor_discord_id, action, target_type, target_id, payload, source)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-            """, guild_id, actor_id, action, target_type, target_id,
+            """, guild_id, actor_discord_id, action, target_type, target_id,
                 json.dumps(payload or {}), source)
     
     async def get_audit_logs(
@@ -1216,7 +1216,7 @@ class DatabaseManager:
             payload = dict(application_data)
             payload["provider_id"] = provider["provider_id"]
             await self.log_audit(
-                actor_id=discord_id,
+                actor_discord_id=discord_id,
                 action="insurer_application_submitted",
                 target_type="insurance_provider",
                 target_id=provider["provider_id"],
