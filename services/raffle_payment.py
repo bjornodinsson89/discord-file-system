@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import json
 import logging
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import config
 from repositories.raffles import RafflesRepository
 from utils import get_security_manager, get_torn_api
-from utils.torn_api import TornAPIError, TornAPIRateLimitError
+from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 
 log = logging.getLogger("happy_jumper.services.raffle_payment")
 
@@ -61,9 +59,11 @@ class RafflePaymentService:
 
         try:
             api_key = security.decrypt(buyer_key["encrypted_key"])
-            logs = await torn_api.get_user_logs(api_key, limit=200)
+            logs = await torn_api.get_user_logs(api_key, limit=5)
         except TornAPIRateLimitError:
             return False, None, "Torn API is rate-limited right now. Please try again in a moment."
+        except TornAPIPermissionError:
+            return False, None, "Your Torn API key lacks permission to read item logs (cat=85). Update key permissions and try again."
         except TornAPIError:
             return False, None, "Torn verification is temporarily unavailable. Please try again shortly."
         except Exception:
@@ -118,88 +118,37 @@ class RafflePaymentService:
         since_ts: int,
         until_ts: Optional[int],
     ) -> Optional[dict[str, Any]]:
-        aliases = ["xanax", str(config.XANAX_ITEM_ID)] if item_type == "xanax" else ["erotic dvd", "edvd", "erotic_dvd", "dvd", str(config.DVD_ITEM_ID)]
+        _ = sender_torn_id
+        normalized_item = item_type.lower()
+        if normalized_item == "xanax":
+            required_item_id = int(config.XANAX_ITEM_ID)
+        elif normalized_item in ("erotic dvd", "erotic_dvd", "edvd"):
+            required_item_id = int(config.DVD_ITEM_ID)
+        else:
+            return None
 
         for entry in logs:
-            ts = self._extract_timestamp(entry)
-            if ts is None or ts < since_ts:
+            ts = int(entry.get("timestamp") or 0)
+            if ts < since_ts:
                 continue
             if until_ts is not None and ts > until_ts:
                 continue
 
-            if not self._mentions_sender(entry, sender_torn_id):
-                continue
-            if not self._mentions_recipient(entry, creator_torn_id):
-                continue
-            if not self._looks_like_transfer(entry):
+            details_id = (entry.get("details") or {}).get("id")
+            if details_id != 4102:
                 continue
 
-            qty = self._extract_item_quantity(entry, aliases)
-            if qty >= required_qty:
+            data = entry.get("data") or {}
+            if int(data.get("receiver") or 0) != int(creator_torn_id):
+                continue
+
+            qty_sent = sum(
+                int(item.get("qty") or 0)
+                for item in (data.get("items") or [])
+                if int(item.get("id") or 0) == required_item_id
+            )
+            if qty_sent >= required_qty:
                 return entry
 
         return None
 
-    @staticmethod
-    def _extract_timestamp(entry: dict[str, Any]) -> Optional[int]:
-        for key in ("timestamp", "time", "created", "created_at"):
-            value = entry.get(key)
-            if isinstance(value, (int, float)):
-                return int(value)
-        return None
-
-    @staticmethod
-    def _looks_like_transfer(entry: dict[str, Any]) -> bool:
-        payload = json.dumps(entry, ensure_ascii=False).lower()
-        return any(token in payload for token in ("sent", "send", "transfer", "item", "trade", "gave"))
-
-    @staticmethod
-    def _mentions_sender(entry: dict[str, Any], sender_torn_id: int) -> bool:
-        payload = json.dumps(entry, ensure_ascii=False).lower()
-        sender = str(sender_torn_id)
-        keys = ("sender", "from", "user", "player", "owner")
-        # The logs are read from the buyer's own key; allow this as primary source of sender identity.
-        if sender in payload:
-            return True
-        for key in keys:
-            value = entry.get(key)
-            if isinstance(value, (int, str)) and sender == str(value):
-                return True
-        return False
-
-    @staticmethod
-    def _mentions_recipient(entry: dict[str, Any], creator_torn_id: int) -> bool:
-        target = str(creator_torn_id)
-        payload = json.dumps(entry, ensure_ascii=False).lower()
-        if target in payload:
-            return True
-        for key in ("receiver", "recipient", "to", "target"):
-            value = entry.get(key)
-            if isinstance(value, (int, str)) and target == str(value):
-                return True
-        return False
-
-    @staticmethod
-    def _extract_item_quantity(entry: dict[str, Any], aliases: list[str]) -> int:
-        payload = json.dumps(entry, ensure_ascii=False).lower()
-        qty = 0
-
-        for alias in aliases:
-            for pattern in (
-                rf"(\d+)\s*x\s*{re.escape(alias)}",
-                rf"(\d+)\s*{re.escape(alias)}",
-                rf"{re.escape(alias)}\s*x\s*(\d+)",
-                rf"{re.escape(alias)}[^\d]{{0,16}}(\d+)",
-            ):
-                for match in re.findall(pattern, payload):
-                    try:
-                        qty = max(qty, int(match))
-                    except (TypeError, ValueError):
-                        continue
-
-        for key in ("quantity", "qty", "amount"):
-            value = entry.get(key)
-            if isinstance(value, (int, float)):
-                qty = max(qty, int(value))
-
-        return qty

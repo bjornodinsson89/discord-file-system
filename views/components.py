@@ -407,33 +407,34 @@ def _extract_log_id(log_entry: Dict) -> Optional[int]:
 
 
 def _extract_counterparty_torn_id(log_entry: Dict) -> Optional[int]:
-    blob = json.dumps(log_entry, ensure_ascii=False)
-    numbers = []
-    for key in ("user_id", "target", "receiver_id", "sender_id", "player_id", "opponent"):
-        value = log_entry.get(key)
-        if isinstance(value, int):
-            numbers.append(value)
-    for n in numbers:
-        if n > 0:
-            return n
+    details_id = (log_entry.get("details") or {}).get("id")
+    data = log_entry.get("data") or {}
+    if details_id == 4102:
+        value = data.get("receiver")
+        return int(value) if isinstance(value, (int, str)) and str(value).isdigit() else None
+    if details_id == 4103:
+        value = data.get("sender")
+        return int(value) if isinstance(value, (int, str)) and str(value).isdigit() else None
     return None
 
 
 def _count_item_qty(log_entry: Dict, canonical_item: str) -> int:
-    text = json.dumps(log_entry, ensure_ascii=False).lower()
-    aliases = {
-        "xanax": ["xanax", "xans", "xan"],
-        "erotic_dvd": ["erotic dvd", "edvd", "dvd", "erotic_dvd"],
-        "ecstasy": ["ecstasy", "xtc"],
+    item_map = {
+        "xanax": int(config.XANAX_ITEM_ID),
+        "erotic_dvd": int(config.DVD_ITEM_ID),
+        "ecstasy": int(config.ECSTASY_ITEM_ID),
     }
-    if not any(alias in text for alias in aliases.get(canonical_item, [])):
+    item_id = item_map.get(canonical_item)
+    if item_id is None:
         return 0
 
-    for key in ("quantity", "qty", "amount", "items"):  # best-effort Torn payload support
-        value = log_entry.get(key)
-        if isinstance(value, int):
-            return value
-    return 1
+    data = log_entry.get("data") or {}
+    items = data.get("items") or []
+    return sum(
+        int(item.get("qty") or 0)
+        for item in items
+        if int(item.get("id") or 0) == item_id
+    )
 
 
 
@@ -912,16 +913,19 @@ class ClaimManageView(ui.View):
             api_key = security.decrypt(key_data['encrypted_key'])
             torn_api = get_torn_api()
 
-            candidate_logs = await torn_api.get_user_logs(api_key, limit=200, log_types=[4102])
-            if not candidate_logs:
-                candidate_logs = await torn_api.get_user_logs(api_key, limit=200, log_types=[4103])
+            candidate_logs = await torn_api.get_user_logs(api_key, limit=5)
 
             recipient_torn_id = int(claim['user_torn_id'])
             matched_log = None
             for entry in candidate_logs:
-                counterparty = _extract_counterparty_torn_id(entry)
-                if counterparty and counterparty != recipient_torn_id:
+                details_id = (entry.get("details") or {}).get("id")
+                if details_id != 4102:
                     continue
+
+                counterparty = _extract_counterparty_torn_id(entry)
+                if counterparty != recipient_torn_id:
+                    continue
+
                 if all(_count_item_qty(entry, i['item']) >= int(i['qty']) for i in payout_items):
                     matched_log = entry
                     break
@@ -938,6 +942,14 @@ class ClaimManageView(ui.View):
             )
             await db.log_audit(interaction.user.id, "claim_paid", "claim", self.claim_id)
             await interaction.followup.send(embed=create_success_embed("Claim Paid", _payout_line(payout_items)), ephemeral=True)
+        except TornAPIPermissionError:
+            await interaction.followup.send(
+                embed=create_error_embed(
+                    "Verification Error",
+                    "Your Torn API key lacks permission to read item logs (cat=85). Update key permissions and try again.",
+                ),
+                ephemeral=True,
+            )
         except Exception as exc:
             log.exception("Verify payout failed: %s", exc)
             await interaction.followup.send(embed=create_error_embed("Verification Error", str(exc)), ephemeral=True)

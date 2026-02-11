@@ -133,31 +133,47 @@ class TornAPIClient:
                              payment_type: str, amount: int,
                              item_id: Optional[int] = None,
                              since_timestamp: Optional[int] = None) -> Optional[Dict]:
-        logs = await self.get_user_log(api_key)
-        for entry in logs:
-            if since_timestamp and entry.get("timestamp", 0) < since_timestamp:
-                continue
-            if self._matches_payment(entry, recipient_torn_id, payment_type, amount, item_id):
-                return entry
-        return None
+        if payment_type != "item" or item_id is None:
+            return None
+        return await self.verify_item_payment(
+            api_key=api_key,
+            recipient_torn_id=recipient_torn_id,
+            item_id=item_id,
+            amount=amount,
+            since_timestamp=since_timestamp,
+        )
     
     def _matches_payment(self, entry: Dict, recipient_id: int, payment_type: str,
                          amount: int, item_id: Optional[int] = None) -> bool:
-        s = json.dumps(entry, ensure_ascii=False).lower()
-        if str(recipient_id) not in s or str(amount) not in s:
+        if payment_type != "item" or item_id is None:
             return False
-        if payment_type == "cash":
-            return any(k in s for k in ["$", "cash", "money", "sent", "transfer"])
-        elif payment_type == "item":
-            if item_id is None:
-                return False
-            if str(item_id) not in s:
-                if item_id == config.DVD_ITEM_ID and "dvd" not in s:
-                    return False
-                if item_id == config.XANAX_ITEM_ID and "xanax" not in s:
-                    return False
-            return True
-        return False
+
+        details_id = (entry.get("details") or {}).get("id")
+        if details_id != 4102:
+            return False
+
+        data = entry.get("data") or {}
+        if int(data.get("receiver") or 0) != int(recipient_id):
+            return False
+
+        qty = sum(
+            int(it.get("qty") or 0)
+            for it in (data.get("items") or [])
+            if int(it.get("id") or 0) == int(item_id)
+        )
+        return qty >= int(amount)
+
+    async def verify_item_payment(self, api_key: str, recipient_torn_id: int,
+                                  item_id: int, amount: int,
+                                  since_timestamp: Optional[int] = None) -> Optional[Dict]:
+        logs = await self.get_user_logs(api_key, limit=5)
+        for entry in logs:
+            timestamp = int(entry.get("timestamp") or 0)
+            if since_timestamp and timestamp < since_timestamp:
+                continue
+            if self._matches_payment(entry, recipient_torn_id, "item", amount, item_id):
+                return entry
+        return None
     
     async def check_overdose(self, api_key: str, since_timestamp: Optional[int] = None) -> Optional[Dict]:
         logs = await self.get_user_log(api_key)
@@ -173,17 +189,23 @@ class TornAPIClient:
     
     async def verify_xanax_payment(self, api_key: str, recipient_torn_id: int,
                                     xanax_count: int, since_timestamp: Optional[int] = None) -> Optional[Dict]:
-        return await self.verify_payment(
-            api_key, recipient_torn_id, "item", xanax_count,
-            config.XANAX_ITEM_ID, since_timestamp
+        return await self.verify_item_payment(
+            api_key=api_key,
+            recipient_torn_id=recipient_torn_id,
+            item_id=config.XANAX_ITEM_ID,
+            amount=xanax_count,
+            since_timestamp=since_timestamp,
         )
     
     async def verify_dvd_payment(self, api_key: str, recipient_torn_id: int,
                                   dvd_count: int, since_timestamp: Optional[int] = None) -> Optional[Dict]:
         """Verify Erotic DVD payment."""
-        return await self.verify_payment(
-            api_key, recipient_torn_id, "item", dvd_count,
-            config.DVD_ITEM_ID, since_timestamp
+        return await self.verify_item_payment(
+            api_key=api_key,
+            recipient_torn_id=recipient_torn_id,
+            item_id=config.DVD_ITEM_ID,
+            amount=dvd_count,
+            since_timestamp=since_timestamp,
         )
     
     async def get_user_bars(self, api_key: str) -> Dict:
@@ -204,12 +226,25 @@ class TornAPIClient:
         cooldowns = data.get("cooldowns", {})
         return int(cooldowns.get("drug", 0))
     
-    async def get_user_logs(self, api_key: str, limit: int = 100, 
+    async def get_item_send_receive_logs(self, api_key: str, limit: int = 5) -> List[Dict]:
+        data = await self._request("/user/log", {"cat": 85, "limit": limit, "key": api_key})
+        log_data = data.get("log") if isinstance(data, dict) else None
+        if isinstance(log_data, list):
+            return log_data[:limit]
+        if isinstance(log_data, dict):
+            return list(log_data.values())[:limit]
+        return []
+
+    async def get_user_logs(self, api_key: str, limit: int = 5,
                             log_types: Optional[List[int]] = None) -> List[Dict]:
         """Get user logs, optionally filtered by log type."""
-        logs = await self.get_user_log(api_key, limit)
+        logs = await self.get_item_send_receive_logs(api_key, limit=limit)
         if log_types:
-            logs = [entry for entry in logs if entry.get("log_type") in log_types or entry.get("log") in log_types]
+            logs = [
+                entry for entry in logs
+                if (entry.get("details") or {}).get("id") in log_types
+                or entry.get("log_type") in log_types
+            ]
         return logs
     
     async def get_torn_time(self) -> int:
