@@ -109,9 +109,19 @@ class RaffleCreateModal(discord.ui.Modal):
         if payment_type != "free" and actual_price <= 0:
             await interaction.response.send_message(
                 "❌ Ticket Price must be greater than 0 unless Payment Type is free",
-                ephemeral=True
+                ephemeral=True,
             )
             return
+
+        if payment_type != "free":
+            db = get_database()
+            creator_key = await db.get_user_api_key(interaction.user.id)
+            if not creator_key or not creator_key.get("torn_user_id"):
+                await interaction.response.send_message(
+                    "❌ You must link your Torn API key first to create paid raffles.",
+                    ephemeral=True,
+                )
+                return
 
         repo = RafflesRepository(get_pool())
 
@@ -143,7 +153,8 @@ class RaffleCreateModal(discord.ui.Modal):
                 description=f"🎁 **Prize:** {self.prize.value}\n"
                            f"🎟️ **Tickets:** {total} available\n"
                            f"💰 **Price:** {price_display} per ticket\n"
-                           f"📋 **Max per user:** {'Unlimited ♾️' if max_per == 0 else max_per}",
+                           f"📋 **Max per user:** {'Unlimited ♾️' if max_per == 0 else max_per}\n"
+                           "⏰ **Draw occurs 30 seconds after sellout.**",
                 color=discord.Color.green()
             )
 
@@ -352,13 +363,33 @@ class RaffleBuyModal(discord.ui.Modal):
                 return
 
         # PAID ENTRY
+        db = get_database()
+        buyer_key = await db.get_user_api_key(interaction.user.id)
+        if not buyer_key or not buyer_key.get("torn_user_id"):
+            await interaction.response.send_message(
+                "❌ You must link your Torn API key first to buy paid raffle tickets.",
+                ephemeral=True,
+            )
+            return
+
+        creator_torn_id = raffle.get("creator_torn_id")
+        if not creator_torn_id:
+            creator_key = await db.get_user_api_key(int(raffle["creator_discord_id"]))
+            creator_torn_id = creator_key.get("torn_user_id") if creator_key else None
+        if not creator_torn_id:
+            await interaction.response.send_message(
+                "❌ Raffle creator Torn ID is not configured. Please contact an admin.",
+                ephemeral=True,
+            )
+            return
+
         reserved_until = datetime.utcnow() + timedelta(minutes=5)
 
         try:
             entry = await self.repo.reserve_entry(
                 raffle_id=self.raffle_id,
                 discord_id=interaction.user.id,
-                torn_user_id=0,
+                torn_user_id=int(buyer_key["torn_user_id"]),
                 num_tickets=quantity,
                 reserved_until=reserved_until
             )
@@ -451,7 +482,8 @@ class PaymentVerificationView(discord.ui.View):
         await interaction.response.defer(thinking=True)
 
         try:
-            success, sold_out_raffle_id, error = await self.repo.verify_payment_and_check_sold_out(
+            service = RafflePaymentService(get_database())
+            success, sold_out_raffle_id, error = await service.verify_raffle_payment(
                 self.entry_id, manual=True
             )
 
@@ -612,7 +644,8 @@ class RafflesCog(commands.Cog):
 
             for entry in pending:
                 try:
-                    success, sold_out_id, error = await repo.verify_payment_and_check_sold_out(
+                    service = RafflePaymentService(get_database())
+                    success, sold_out_id, error = await service.verify_raffle_payment(
                         entry["entry_id"], manual=False
                     )
 
