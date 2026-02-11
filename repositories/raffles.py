@@ -275,10 +275,21 @@ class RafflesRepository(RepositoryBase):
                         """,
                         raffle_id,
                     )
-                    if result == "UPDATE 1":
-                        return raffle_id
-
-                return None
+                    
+                    if total_sold >= raffle["tickets_available"]:
+                        update_result = await conn.execute(
+                            """
+                            UPDATE raffles 
+                            SET tickets_fully_sold_at = NOW()
+                            WHERE raffle_id = $1
+                            AND tickets_fully_sold_at IS NULL
+                            """,
+                            entry["raffle_id"]
+                        )
+                        if update_result == "UPDATE 1":
+                            sold_out_id = entry["raffle_id"]
+                
+                return True, sold_out_id, None
 
     async def cancel_expired_reservation(self, entry_id: int):
         async with self.pool.acquire() as conn:
