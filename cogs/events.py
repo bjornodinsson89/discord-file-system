@@ -839,8 +839,8 @@ async def session_create(
         )
         response = await admin_handlers.create_session_handler(request, interaction.user.id)
         embed = create_success_embed(
-            "Session Created",
-            f"Session #{response.id} created.\n{response.message_url or 'Announcement posted.'}"
+            "99k Jump Created",
+            f"Session #{response.id} is live.\n{response.message_url or 'Announcement posted.'}"
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as e:
