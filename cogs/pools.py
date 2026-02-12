@@ -337,13 +337,7 @@ class PoolsCog(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
-        repo = PoolsRepository(get_pool())
-        try:
-            pools = await repo.get_active_pools_with_panels()
-        except Exception:
-            return
-        for pool in pools:
-            self.bot.add_view(PoolPurchasePanelView(pool_id=int(pool["id"])))
+        return
 
     @app_commands.command(name="pool", description="Start a Xanax Pool (Admin only)")
     @app_commands.checks.has_permissions(administrator=True)
@@ -473,6 +467,16 @@ class PoolsCog(commands.Cog):
             await announce_channel.send(embed=embed)
 
         await interaction.response.send_message("✅ Active pool ended.", ephemeral=True)
+
+
+async def register_persistent_pool_views(bot: commands.Bot) -> None:
+    try:
+        repo = PoolsRepository(get_pool())
+        pools = await repo.get_active_pools_with_panels()
+        for pool in pools:
+            bot.add_view(PoolPurchasePanelView(pool_id=int(pool["id"])))
+    except Exception:
+        log.exception("Failed to register persistent pool views")
 
 
 async def setup(bot: commands.Bot):

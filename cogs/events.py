@@ -32,6 +32,7 @@ from setup_panel import (
     render_welcome_template,
     send_setup_panel,
 )
+from cogs.pools import register_persistent_pool_views
 
 from bot_actions import handlers as admin_handlers
 from bot_actions.application_review import perform_application_review
@@ -308,7 +309,6 @@ async def sync_application_commands() -> None:
     have_lock = await db.try_advisory_lock(lock_key)
     if not have_lock:
         log.info("Command sync skipped (another bot process currently syncing commands)")
-        bot.synced = True
         return
 
     try:
@@ -433,6 +433,7 @@ async def on_ready():
     
     await sync_application_commands()
     await register_persistent_application_review_views()
+    await register_persistent_pool_views(bot)
 
     # Start background workers
     if not cleanup_worker.is_running():
