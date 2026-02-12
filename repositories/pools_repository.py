@@ -54,6 +54,20 @@ class PoolsRepository(RepositoryBase):
             )
         return dict(row) if row else None
 
+    async def list_active_pools(self, guild_id: int) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, created_by_discord_id, ticket_price_xanax, tickets_total, max_per_user,
+                       panel_channel_id, panel_message_id, created_at
+                FROM xanax_pools
+                WHERE guild_id = $1 AND status = 'active'
+                ORDER BY created_at DESC
+                """,
+                guild_id,
+            )
+        return [dict(row) for row in rows]
+
     async def get_pool(self, pool_id: int) -> dict | None:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM xanax_pools WHERE id = $1", pool_id)
