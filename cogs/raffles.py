@@ -26,10 +26,27 @@ def _payment_text(payment_type: str, amount: int) -> str:
     if payment_type == "free":
         return "FREE"
     if payment_type == "xanax":
-        return f"{amount} Xanax"
+        return f"💊 {amount} Xanax"
     if payment_type == "erotic_dvd":
-        return f"{amount} Erotic DVD"
+        return f"📀 {amount} eDVD"
     return f"{amount} {payment_type}"
+
+
+def _raffle_remaining_tickets(raffle: dict, entries: list[dict]) -> int:
+    reserved_or_paid = sum(int(e.get("num_tickets", 0)) for e in entries)
+    return max(0, int(raffle["tickets_available"]) - reserved_or_paid)
+
+
+def _max_buy_now(raffle: dict, entries: list[dict], user_id: int) -> int:
+    raffle_remaining = _raffle_remaining_tickets(raffle, entries)
+    if raffle_remaining <= 0:
+        return 0
+    max_per_user = int(raffle.get("max_tickets_per_user") or 0)
+    if max_per_user <= 0:
+        return raffle_remaining
+    user_current = sum(int(e.get("num_tickets", 0)) for e in entries if int(e.get("discord_id", 0)) == user_id)
+    user_remaining = max(0, max_per_user - user_current)
+    return min(user_remaining, raffle_remaining)
 def _is_supported_icon_payment(payment_type: str) -> bool:
     return payment_type in {"xanax", "erotic_dvd"}
 def _parse_bundle_entry(raw_entry: str) -> tuple[int, str] | None:
@@ -265,173 +282,197 @@ class RafflePackContentsModal(discord.ui.Modal):
             bundle_text=raw_contents,
             bundle_entries=bundle_entries,
         )
-class RaffleBuyModal(discord.ui.Modal):
-    """Modal for buying raffle tickets."""
-    quantity = discord.ui.TextInput(
-        label="🎟️ Number of Tickets",
-        placeholder="How many tickets?",
-        required=True,
-        max_length=10
-    )
-    def __init__(self, raffle_id: int, repo: RafflesRepository):
-        super().__init__(title="🎫 Buy Raffle Tickets")
-        self.raffle_id = raffle_id
-        self.repo = repo
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            quantity = int(self.quantity.value)
-            if quantity < 1:
-                raise ValueError()
-        except ValueError:
-            await interaction.response.send_message(
-                "❌ Invalid quantity", ephemeral=True
-            )
-            return
+async def _reserve_raffle_tickets(
+    interaction: discord.Interaction,
+    repo: RafflesRepository,
+    raffle_id: int,
+    quantity: int,
+    *,
+    use_followup: bool = False,
+):
+    async def _send_response(**kwargs):
+        if use_followup:
+            await interaction.followup.send(**kwargs)
+        else:
+            await interaction.response.send_message(**kwargs)
+
+    async def _send_error(message: str):
+        await _send_response(content=message, ephemeral=True)
+
+    try:
+        quantity = int(quantity)
+    except (TypeError, ValueError):
+        await _send_error("❌ Invalid quantity")
+        return
+    if quantity < 1:
+        await _send_error("❌ Invalid quantity")
+        return
+
+    # Check raffle
+    raffle = await repo.get_raffle(raffle_id)
+    if not raffle:
+        await _send_error("❌ Raffle not found")
+        return
+    if raffle["status"] != "active":
+        await _send_error("❌ This raffle is no longer active")
+        return
+
+    entries = await repo.get_raffle_entries(raffle_id)
+    max_buy_now = _max_buy_now(raffle, entries, interaction.user.id)
+    if max_buy_now <= 0:
+        await _send_error("❌ No tickets available.")
+        return
+    if quantity > max_buy_now:
+        quantity = max_buy_now
+
+    # Handle FREE ENTRY
+    if raffle["ticket_payment_type"] == "free":
         # Check raffle
-        raffle = await self.repo.get_raffle(self.raffle_id)
-        if not raffle:
-            await interaction.response.send_message(
-                "❌ Raffle not found", ephemeral=True
-            )
-            return
-        if raffle["status"] != "active":
-            await interaction.response.send_message(
-                "❌ This raffle is no longer active", ephemeral=True
-            )
-            return
-        # Check if sold out
-        if raffle["tickets_sold"] >= raffle["tickets_available"]:
-            await interaction.response.send_message(
-                "❌ Sold out!", ephemeral=True
-            )
-            return
-        # Check max per user
-        if raffle["max_tickets_per_user"] > 0:
-            entries = await self.repo.get_raffle_entries(self.raffle_id)
-            user_tickets = sum(
-                e["num_tickets"] for e in entries
-                if e["discord_id"] == interaction.user.id and e["payment_verified"]
-            )
-            if user_tickets + quantity > raffle["max_tickets_per_user"]:
-                await interaction.response.send_message(
-                    f"❌ Max {raffle['max_tickets_per_user']} tickets per user. "
-                    f"You have {user_tickets}.", ephemeral=True
-                )
-                return
-        # Check availability
-        if raffle["tickets_sold"] + quantity > raffle["tickets_available"]:
-            remaining = raffle["tickets_available"] - raffle["tickets_sold"]
-            await interaction.response.send_message(
-                f"❌ Only {remaining} tickets left!", ephemeral=True
-            )
-            return
-        # Handle FREE ENTRY
-        if raffle["ticket_payment_type"] == "free":
-            try:
-                entry = await self.repo.reserve_free_entry(
-                    raffle_id=self.raffle_id,
+        try:
+            entry = await repo.reserve_free_entry(
+                    raffle_id=raffle_id,
                     discord_id=interaction.user.id,
                     torn_user_id=0,
                     num_tickets=quantity
                 )
-                if not entry:
-                    await interaction.response.send_message(
-                        "❌ Failed to enter raffle", ephemeral=True
-                    )
-                    return
-                embed = discord.Embed(
-                    title="✅ Entry Confirmed!",
-                    description=f"🎁 **Raffle:** {raffle['prize']}\n"
-                               f"🎟️ **Tickets:** {quantity}\n"
-                               f"💰 **Price:** 🎫 FREE",
-                    color=discord.Color.green()
-                )
-                # Check if sold out
-                updated_raffle = await self.repo.get_raffle(self.raffle_id)
-                if updated_raffle["tickets_fully_sold_at"]:
-                    embed.add_field(
-                        name="🎉 SOLD OUT!",
-                        value="This raffle is now full! Drawing soon.",
-                        inline=False
-                    )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            except Exception as e:
-                log.error(f"Failed free entry: {e}")
-                await interaction.response.send_message(
-                    "❌ Failed to enter raffle", ephemeral=True
-                )
-                return
-        # PAID ENTRY
-        db = get_database()
-        buyer_key = await db.get_user_api_key(interaction.user.id)
-        if not buyer_key or not buyer_key.get("torn_user_id"):
-            await interaction.response.send_message(
-                "❌ You must link your Torn API key first to buy paid raffle tickets.",
-                ephemeral=True,
-            )
-            return
-        creator_torn_id = raffle.get("creator_torn_id")
-        if not creator_torn_id:
-            creator_key = await db.get_user_api_key(int(raffle["creator_discord_id"]))
-            creator_torn_id = creator_key.get("torn_user_id") if creator_key else None
-        if not creator_torn_id:
-            await interaction.response.send_message(
-                "❌ Raffle creator Torn ID is not configured. Please contact an admin.",
-                ephemeral=True,
-            )
-            return
-        reserved_until = datetime.utcnow() + timedelta(minutes=5)
-        try:
-            entry = await self.repo.reserve_entry(
-                raffle_id=self.raffle_id,
-                discord_id=interaction.user.id,
-                torn_user_id=int(buyer_key["torn_user_id"]),
-                num_tickets=quantity,
-                reserved_until=reserved_until
-            )
             if not entry:
-                await interaction.response.send_message(
-                    "❌ Failed to reserve tickets", ephemeral=True
-                )
+                await _send_error("❌ Failed to enter raffle")
                 return
-            total_cost = quantity * raffle["ticket_price"]
             embed = discord.Embed(
-                title="🎫 Tickets Reserved!",
+                title="✅ Entry Confirmed!",
                 description=f"🎁 **Raffle:** {raffle['prize']}\n"
                            f"🎟️ **Tickets:** {quantity}\n"
-                           f"💰 **Total:** {_payment_text(raffle['ticket_payment_type'], total_cost)}",
-                color=discord.Color.blue()
+                           f"💰 **Price:** 🎫 FREE",
+                color=discord.Color.green()
             )
-            embed.add_field(
-                name="⏰ Payment Deadline",
-                value=f"⏱️ Auto-verification at 4:30, expires at 5:00\nSend **{_payment_text(raffle['ticket_payment_type'], total_cost)}** to raffle creator in-game!",
-                inline=False
-            )
-            embed.add_field(
-                name="💳 How to Pay",
-                value="📨 Send items via Torn, bot will auto-detect. Click '✅ Verify Now' to check early.",
-                inline=False
-            )
-            view = PaymentVerificationView(self.raffle_id, entry["entry_id"], self.repo, manual=True)
-            files = []
-            embeds = [embed]
-            raffle_cog = interaction.client.get_cog("RafflesCog")
-            if raffle_cog is not None:
-                payment_visual = await raffle_cog.build_payment_file(raffle["ticket_payment_type"], total_cost)
-                if payment_visual:
-                    files.append(discord.File(fp=payment_visual, filename="payments.png"))
-                    payment_embed = discord.Embed(title="Payment", color=discord.Color.dark_blue())
-                    payment_embed.set_image(url="attachment://payments.png")
-                    embeds.append(payment_embed)
-            await interaction.response.send_message(
-                embeds=embeds, files=files, view=view, ephemeral=True
-            )
+            # Check if sold out
+            updated_raffle = await repo.get_raffle(raffle_id)
+            if updated_raffle["tickets_fully_sold_at"]:
+                embed.add_field(
+                    name="🎉 SOLD OUT!",
+                    value="This raffle is now full! Drawing soon.",
+                    inline=False
+                )
+            await _send_response(embed=embed, ephemeral=True)
+            return
         except Exception as e:
-            log.error(f"Failed to reserve entry: {e}")
-            await interaction.response.send_message(
-                "❌ Failed to reserve tickets", ephemeral=True
-            )
+            log.error(f"Failed free entry: {e}")
+            await _send_error("❌ Failed to enter raffle")
+            return
+    # PAID ENTRY
+    db = get_database()
+    buyer_key = await db.get_user_api_key(interaction.user.id)
+    if not buyer_key or not buyer_key.get("torn_user_id"):
+        await _send_error(
+            "❌ You must link your Torn API key first to buy paid raffle tickets."
+        )
+        return
+    creator_torn_id = raffle.get("creator_torn_id")
+    if not creator_torn_id:
+        creator_key = await db.get_user_api_key(int(raffle["creator_discord_id"]))
+        creator_torn_id = creator_key.get("torn_user_id") if creator_key else None
+    if not creator_torn_id:
+        await _send_error("❌ Raffle creator Torn ID is not configured. Please contact an admin.")
+        return
+    reserved_until = datetime.utcnow() + timedelta(minutes=5)
+    try:
+        entry = await repo.reserve_entry(
+            raffle_id=raffle_id,
+            discord_id=interaction.user.id,
+            torn_user_id=int(buyer_key["torn_user_id"]),
+            num_tickets=quantity,
+            reserved_until=reserved_until
+        )
+        if not entry:
+            await _send_error("❌ Failed to reserve tickets")
+            return
+        total_cost = quantity * raffle["ticket_price"]
+        embed = discord.Embed(
+            title="🎫 Tickets Reserved!",
+            description=f"🎁 **Raffle:** {raffle['prize']}\n"
+                       f"🎟️ **Tickets:** {quantity}\n"
+                       f"💰 **Total:** {_payment_text(raffle['ticket_payment_type'], total_cost)}",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="⏰ Payment Deadline",
+            value=f"⏱️ Auto-verification at 4:30, expires at 5:00\nSend **{_payment_text(raffle['ticket_payment_type'], total_cost)}** to raffle creator in-game!",
+            inline=False
+        )
+        embed.add_field(
+            name="💳 How to Pay",
+            value="📨 Send items via Torn, bot will auto-detect. Click '✅ Verify Now' to check early.",
+            inline=False
+        )
+        view = PaymentVerificationView(raffle_id, entry["entry_id"], repo, manual=True)
+        await _send_response(embed=embed, view=view, ephemeral=True)
+    except Exception as e:
+        log.error(f"Failed to reserve entry: {e}")
+        await _send_error("❌ Failed to reserve tickets")
+
+
+class RaffleCustomQuantityModal(discord.ui.Modal):
+    quantity = discord.ui.TextInput(label="Custom Ticket Quantity", placeholder="Enter an integer", required=True, max_length=10)
+
+    def __init__(self, raffle_id: int, repo: RafflesRepository, max_buy: int):
+        super().__init__(title="🎫 Buy Tickets")
+        self.raffle_id = raffle_id
+        self.repo = repo
+        self.max_buy = max_buy
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            quantity = int(self.quantity.value)
+        except (TypeError, ValueError):
+            await interaction.response.send_message("❌ Invalid quantity", ephemeral=True)
+            return
+        if quantity < 1:
+            await interaction.response.send_message("❌ Invalid quantity", ephemeral=True)
+            return
+        if quantity > self.max_buy:
+            quantity = self.max_buy
+        await _reserve_raffle_tickets(interaction, self.repo, self.raffle_id, quantity)
+
+
+class RaffleQuantityPickerView(discord.ui.View):
+    def __init__(self, raffle_id: int, repo: RafflesRepository, max_buy: int):
+        super().__init__(timeout=120)
+        self.raffle_id = raffle_id
+        self.repo = repo
+        self.max_buy = max_buy
+        self.add_item(RaffleQuantitySelect(raffle_id, repo, max_buy))
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Purchase cancelled.", view=None)
+
+
+class RaffleQuantitySelect(discord.ui.Select):
+    def __init__(self, raffle_id: int, repo: RafflesRepository, max_buy: int):
+        options: list[discord.SelectOption] = []
+        if max_buy <= 25:
+            options = [discord.SelectOption(label=str(i), value=str(i)) for i in range(1, max_buy + 1)]
+        else:
+            base = [1, 2, 3, 5, 10, 15, 20, 25]
+            options = [discord.SelectOption(label=str(i), value=str(i)) for i in base if i <= max_buy]
+            options.append(discord.SelectOption(label="Custom", value="custom"))
+        super().__init__(placeholder="Choose ticket quantity", options=options, min_values=1, max_values=1)
+        self.raffle_id = raffle_id
+        self.repo = repo
+        self.max_buy = max_buy
+
+    async def callback(self, interaction: discord.Interaction):
+        selected = self.values[0]
+        if selected == "custom":
+            await interaction.response.send_modal(RaffleCustomQuantityModal(self.raffle_id, self.repo, self.max_buy))
+            return
+        try:
+            quantity = int(selected)
+        except (TypeError, ValueError):
+            await interaction.response.send_message("❌ Invalid quantity", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=False)
+        await _reserve_raffle_tickets(interaction, self.repo, self.raffle_id, quantity, use_followup=True)
 class RafflePurchasePanelView(discord.ui.View):
     """Persistent purchase panel for raffle interactions."""
     def __init__(self, raffle_id: int):
@@ -452,7 +493,23 @@ class RafflePurchasePanelView(discord.ui.View):
     async def buy_tickets(self, interaction: discord.Interaction):
         try:
             repo = RafflesRepository(get_pool())
-            await interaction.response.send_modal(RaffleBuyModal(self.raffle_id, repo))
+            raffle = await repo.get_raffle(self.raffle_id)
+            if not raffle:
+                await interaction.response.send_message("❌ Raffle not found", ephemeral=True)
+                return
+            entries = await repo.get_raffle_entries(self.raffle_id)
+            max_buy = _max_buy_now(raffle, entries, interaction.user.id)
+            if max_buy <= 0:
+                await interaction.response.send_message("❌ No tickets available.", ephemeral=True)
+                return
+            if max_buy <= 1:
+                await _reserve_raffle_tickets(interaction, repo, self.raffle_id, 1)
+                return
+            await interaction.response.send_message(
+                content=f"Choose quantity (1-{max_buy})",
+                view=RaffleQuantityPickerView(self.raffle_id, repo, max_buy),
+                ephemeral=True,
+            )
         except RuntimeError as e:
             message = "❌ Something went wrong opening ticket purchase. Please try again."
             if "Database not initialized" in str(e):
@@ -785,15 +842,7 @@ class RafflesCog(commands.Cog):
             single_item_meta = draft.get("single_item_meta")
             if single_item_meta and not is_bundle:
                 purchase_panel_embed.set_thumbnail(url=single_item_meta.get("image_url"))
-            panel_files = []
-            panel_embeds = [purchase_panel_embed]
-            payment_visual = await self.build_payment_file(ticket_payment_type, draft["ticket_price"])
-            if payment_visual:
-                panel_files.append(discord.File(fp=payment_visual, filename="payments.png"))
-                payment_embed = discord.Embed(title="Payment", color=discord.Color.dark_blue())
-                payment_embed.set_image(url="attachment://payments.png")
-                panel_embeds.append(payment_embed)
-            panel_message = await purchase_channel.send(embeds=panel_embeds, files=panel_files, view=RafflePurchasePanelView(raffle_id=raffle_id))
+            panel_message = await purchase_channel.send(embed=purchase_panel_embed, view=RafflePurchasePanelView(raffle_id=raffle_id))
             await repo.set_purchase_panel_ref(raffle_id=raffle_id, channel_id=purchase_channel.id, message_id=panel_message.id)
             if is_bundle and bundle_entries:
                 bundle_file_io = await self._build_bundle_file(bundle_entries)
@@ -822,15 +871,7 @@ class RafflesCog(commands.Cog):
                         except Exception:
                             announce_channel = None
                     if announce_channel is not None:
-                        files = []
-                        embeds = [announce_embed]
-                        payment_visual = await self.build_payment_file(ticket_payment_type, draft["ticket_price"])
-                        if payment_visual:
-                            files.append(discord.File(fp=payment_visual, filename="payments.png"))
-                            payment_embed = discord.Embed(title="Payment", color=discord.Color.dark_blue())
-                            payment_embed.set_image(url="attachment://payments.png")
-                            embeds.append(payment_embed)
-                        await announce_channel.send(embeds=embeds, files=files)
+                        await announce_channel.send(embed=announce_embed)
             response_text = f"✅ Raffle created. Purchase panel posted in {purchase_channel.mention}.\n{panel_message.jump_url}"
             if is_bundle:
                 await interaction.response.send_message(response_text, ephemeral=True)
