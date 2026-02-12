@@ -768,7 +768,10 @@ async def refresh_item_icons(interaction: discord.Interaction):
         "xan": "Xanax",
         "edvd": "Erotic DVD",
         "e dvd": "Erotic DVD",
+        "e dv d": "Erotic DVD",
         "erotic dvd": "Erotic DVD",
+        "ecstacy": "Ecstasy",
+        "xtc": "Ecstasy",
         "dp": "Donator Pack",
         "donator pack": "Donator Pack",
     }

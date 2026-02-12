@@ -14,6 +14,7 @@ from utils import GuildSettingsRepository
 from utils.database import get_database, get_pool
 from utils.embeds import create_error_embed
 from utils.icon_strips import build_icon_strip_file
+from utils.item_resolver import ItemResolver
 log = logging.getLogger("happy_jumper.raffles")
 _PACK_WORD_RE = re.compile(r"\bpack\b", re.IGNORECASE)
 _CURLY_QUOTES_RE = re.compile(r"[’‘]")
@@ -802,17 +803,9 @@ class RafflesCog(commands.Cog):
         normalized_name = _normalize_item_name(prize_text)
         if not normalized_name:
             return None
-        async with get_pool().acquire() as conn:
-            image_url = await conn.fetchval(
-                """
-                SELECT image_url
-                FROM torn_items
-                WHERE norm_name = $1
-                LIMIT 1
-                """,
-                normalized_name,
-            )
-        cleaned = (image_url or "").strip()
+        resolver = ItemResolver(get_pool())
+        item = await resolver.resolve_item(normalized_name)
+        cleaned = (item or {}).get("image_url", "").strip()
         return cleaned or None
     async def build_payment_file(self, payment_type: str, amount: int):
         if not _is_supported_icon_payment(payment_type) or amount <= 0:

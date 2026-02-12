@@ -164,14 +164,14 @@ class TornAPIClient:
         return qty >= int(amount)
 
     async def verify_item_payment(self, api_key: str, recipient_torn_id: int,
-                                  item_id: int, amount: int,
+                                  required_item_id: int, amount: int,
                                   since_timestamp: Optional[int] = None) -> Optional[Dict]:
         logs = await self.get_user_logs(api_key, limit=5)
         for entry in logs:
             timestamp = int(entry.get("timestamp") or 0)
             if since_timestamp and timestamp < since_timestamp:
                 continue
-            if self._matches_payment(entry, recipient_torn_id, "item", amount, item_id):
+            if self._matches_payment(entry, recipient_torn_id, "item", amount, required_item_id):
                 return entry
         return None
     
@@ -192,7 +192,7 @@ class TornAPIClient:
         return await self.verify_item_payment(
             api_key=api_key,
             recipient_torn_id=recipient_torn_id,
-            item_id=config.XANAX_ITEM_ID,
+            required_item_id=config.XANAX_ITEM_ID,
             amount=xanax_count,
             since_timestamp=since_timestamp,
         )
@@ -203,7 +203,7 @@ class TornAPIClient:
         return await self.verify_item_payment(
             api_key=api_key,
             recipient_torn_id=recipient_torn_id,
-            item_id=config.DVD_ITEM_ID,
+            required_item_id=config.DVD_ITEM_ID,
             amount=dvd_count,
             since_timestamp=since_timestamp,
         )
