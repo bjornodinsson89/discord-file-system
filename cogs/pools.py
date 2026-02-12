@@ -401,6 +401,59 @@ class PoolsCog(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="pool_list", description="List active Xanax Pools")
+    async def pool_list(self, interaction: discord.Interaction):
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+            return
+
+        repo = PoolsRepository(get_pool())
+        pools = await repo.list_active_pools(interaction.guild_id)
+
+        if not pools:
+            embed = discord.Embed(
+                title="No active pools",
+                description="There are currently no active Xanax pools.",
+                color=discord.Color.blurple(),
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        embed = discord.Embed(title="Active Xanax Pools", color=discord.Color.blurple())
+        for pool in pools:
+            pool_id = int(pool["id"])
+            sold = await repo.get_total_tickets(pool_id)
+            tickets_total = int(pool["tickets_total"])
+            ticket_price_xanax = int(pool["ticket_price_xanax"])
+            remaining = max(0, tickets_total - sold)
+            total_xanax = sold * ticket_price_xanax
+            max_per_user = int(pool.get("max_per_user") or 0)
+            max_per_user_display = "Unlimited" if max_per_user == 0 else str(max_per_user)
+
+            panel_channel_id = pool.get("panel_channel_id")
+            panel_message_id = pool.get("panel_message_id")
+            if panel_channel_id and panel_message_id:
+                panel_url = (
+                    f"https://discord.com/channels/{interaction.guild_id}/{int(panel_channel_id)}/{int(panel_message_id)}"
+                )
+                panel_display = f"<#{int(panel_channel_id)}> ({panel_url})"
+            else:
+                panel_display = "Not posted"
+
+            embed.add_field(
+                name=f"Pool #{pool_id}",
+                value=(
+                    f"Price: 💊 {ticket_price_xanax} Xanax\n"
+                    f"Sold/Total: {sold}/{tickets_total} (Remaining: {remaining})\n"
+                    f"Pool Total: {total_xanax} Xanax\n"
+                    f"Max per user: {max_per_user_display}\n"
+                    f"Panel: {panel_display}"
+                ),
+                inline=False,
+            )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @app_commands.command(name="end_pool", description="End active Xanax Pool and draw winner (Admin only)")
     @app_commands.checks.has_permissions(administrator=True)
     async def end_pool(self, interaction: discord.Interaction):
