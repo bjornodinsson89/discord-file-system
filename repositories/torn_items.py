@@ -128,3 +128,7 @@ class TornItemsRepository(RepositoryBase):
         if not item_id:
             return None
         return await self.get_item_meta(item_id)
+
+    async def get_item_by_name(self, raw_name: str) -> dict | None:
+        """Backward/compat helper: resolve by item name or alias and return item metadata."""
+        return await self.get_item_meta_by_name(raw_name)

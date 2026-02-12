@@ -6,6 +6,7 @@ from typing import Any
 import discord
 
 from utils import GuildSettingsRepository
+from utils.database import MissingDatabaseColumnError
 from utils.discord_channels import resolve_guild_channel
 from utils.embeds import create_error_embed, create_info_embed, create_success_embed
 
@@ -295,7 +296,21 @@ class SetupPanelView(OwnerView):
 
     async def save_changes(self, interaction: discord.Interaction, changes: dict[str, Any]) -> None:
         old_values = {k: self.settings.get(k) for k in changes}
-        await self.db.update_guild_settings(interaction.guild_id, **changes)
+        try:
+            await self.db.update_guild_settings(interaction.guild_id, **changes)
+        except MissingDatabaseColumnError as exc:
+            await interaction.response.send_message(
+                embed=create_error_embed(
+                    "Database Update Required",
+                    f"{exc}\n\n"
+                    "```sql\n"
+                    "ALTER TABLE guild_settings ADD COLUMN raffle_purchase_channel_id BIGINT;\n"
+                    "ALTER TABLE guild_settings ADD COLUMN raffle_announcement_channel_id BIGINT;\n"
+                    "```",
+                ),
+                ephemeral=True,
+            )
+            return
         self.settings.update(changes)
         await self.db.log_audit(
             actor_discord_id=interaction.user.id,

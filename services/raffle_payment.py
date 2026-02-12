@@ -4,8 +4,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-import config
 from repositories.raffles import RafflesRepository
+from utils.item_resolver import ItemResolver
 from utils import get_security_manager, get_torn_api
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 
@@ -75,6 +75,24 @@ class RafflePaymentService:
         if expected_qty <= 0:
             return False, None, "Invalid paid ticket quantity for verification."
 
+        resolver = ItemResolver(self.db.pool)
+        if item_type == "xanax":
+            required_item_id = await resolver.resolve_item_id("xanax")
+        elif item_type in ("erotic dvd", "erotic_dvd", "edvd"):
+            required_item_id = await resolver.resolve_item_id("erotic dvd")
+            if not required_item_id:
+                required_item_id = await resolver.resolve_item_id("edvd")
+        else:
+            required_item_id = 0
+
+        if not required_item_id:
+            return (
+                False,
+                None,
+                "Could not resolve ticket payment item ID from the Torn item index. "
+                "Run /refresh_item_icons and try again.",
+            )
+
         created_at = entry.get("created_at")
         since_dt = (created_at - timedelta(seconds=30)) if created_at else datetime.utcnow() - timedelta(minutes=10)
         since_ts = int(since_dt.replace(tzinfo=timezone.utc).timestamp())
@@ -88,7 +106,7 @@ class RafflePaymentService:
             logs=logs,
             sender_torn_id=buyer_torn_id,
             creator_torn_id=creator_torn_id,
-            item_type=item_type,
+            required_item_id=required_item_id,
             required_qty=expected_qty,
             since_ts=since_ts,
             until_ts=until_ts,
@@ -113,19 +131,12 @@ class RafflePaymentService:
         logs: list[dict[str, Any]],
         sender_torn_id: int,
         creator_torn_id: int,
-        item_type: str,
+        required_item_id: int,
         required_qty: int,
         since_ts: int,
         until_ts: Optional[int],
     ) -> Optional[dict[str, Any]]:
         _ = sender_torn_id
-        normalized_item = item_type.lower()
-        if normalized_item == "xanax":
-            required_item_id = int(config.XANAX_ITEM_ID)
-        elif normalized_item in ("erotic dvd", "erotic_dvd", "edvd"):
-            required_item_id = int(config.DVD_ITEM_ID)
-        else:
-            return None
 
         for entry in logs:
             ts = int(entry.get("timestamp") or 0)
@@ -151,4 +162,3 @@ class RafflePaymentService:
                 return entry
 
         return None
-

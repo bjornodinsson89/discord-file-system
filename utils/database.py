@@ -12,6 +12,10 @@ import config
 
 log = logging.getLogger("happy_jumper.database")
 
+
+class MissingDatabaseColumnError(Exception):
+    """Raised when required columns are missing for an update operation."""
+
 # Database pool singleton
 _pool: Optional[asyncpg.Pool] = None
 
@@ -397,19 +401,30 @@ class DatabaseManager:
         if not fields:
             return await self.get_guild_settings(guild_id)
 
-        await self.create_or_update_guild_settings(guild_id)
+        try:
+            await self.create_or_update_guild_settings(guild_id)
 
-        async with self.pool.acquire() as conn:
-            sets = []
-            values = []
-            for i, (key, value) in enumerate(fields.items(), 1):
-                sets.append(f"{key} = ${i}")
-                values.append(value)
-            values.append(guild_id)
+            async with self.pool.acquire() as conn:
+                sets = []
+                values = []
+                for i, (key, value) in enumerate(fields.items(), 1):
+                    sets.append(f"{key} = ${i}")
+                    values.append(value)
+                values.append(guild_id)
 
-            query = f"UPDATE guild_settings SET {', '.join(sets)} WHERE guild_id = ${len(values)} RETURNING *"
-            row = await conn.fetchrow(query, *values)
-            return dict(row) if row else None
+                query = f"UPDATE guild_settings SET {', '.join(sets)} WHERE guild_id = ${len(values)} RETURNING *"
+                row = await conn.fetchrow(query, *values)
+                return dict(row) if row else None
+        except asyncpg.exceptions.UndefinedColumnError as exc:
+            missing_targets = {"raffle_purchase_channel_id", "raffle_announcement_channel_id"}
+            field_names = set(fields.keys())
+            if missing_targets & field_names:
+                raise MissingDatabaseColumnError(
+                    "The `guild_settings` table is missing raffle channel columns. Run:\n"
+                    "ALTER TABLE guild_settings ADD COLUMN raffle_purchase_channel_id BIGINT;\n"
+                    "ALTER TABLE guild_settings ADD COLUMN raffle_announcement_channel_id BIGINT;"
+                ) from exc
+            raise
     
     async def get_guild_statistics(self, guild_id: int):
         """Get guild statistics."""

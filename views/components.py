@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from utils import get_database, get_security_manager, get_torn_api
 from utils.discord_channels import resolve_guild_channel
 from utils.torn_api import TornAPIError, TornAPIPermissionError
+from utils.item_resolver import ItemResolver
 from utils.embeds import *
 from utils.payouts import parse_payout_string, payout_items_to_human, payout_items_to_string, PayoutParseError
 from services import JumpService, RaffleService, DomainError, AlreadyExists, NotFound, InvalidInput, BusinessRuleViolation
@@ -418,16 +419,9 @@ def _extract_counterparty_torn_id(log_entry: Dict) -> Optional[int]:
     return None
 
 
-def _count_item_qty(log_entry: Dict, canonical_item: str) -> int:
-    item_map = {
-        "xanax": int(config.XANAX_ITEM_ID),
-        "erotic_dvd": int(config.DVD_ITEM_ID),
-        "ecstasy": int(config.ECSTASY_ITEM_ID),
-    }
-    item_id = item_map.get(canonical_item)
-    if item_id is None:
+def _count_item_qty_by_id(log_entry: Dict, item_id: int) -> int:
+    if not item_id:
         return 0
-
     data = log_entry.get("data") or {}
     items = data.get("items") or []
     return sum(
@@ -915,6 +909,24 @@ class ClaimManageView(ui.View):
 
             candidate_logs = await torn_api.get_user_logs(api_key, limit=5)
 
+            resolver = ItemResolver(db.pool)
+            resolved_payout_items = []
+            for payout_item in payout_items:
+                raw_name = str(payout_item.get("item") or "").strip()
+                item_id = await resolver.resolve_item_id(raw_name)
+                if not item_id:
+                    await interaction.followup.send(
+                        embed=create_error_embed(
+                            "Unknown Item",
+                            f"Could not resolve '{raw_name}' to a Torn item id. Run /refresh_item_icons or add an alias.",
+                        ),
+                        ephemeral=True,
+                    )
+                    return
+                resolved_payout_items.append(
+                    {"item": raw_name, "item_id": item_id, "qty": int(payout_item.get("qty") or 0)}
+                )
+
             recipient_torn_id = int(claim['user_torn_id'])
             matched_log = None
             for entry in candidate_logs:
@@ -926,7 +938,7 @@ class ClaimManageView(ui.View):
                 if counterparty != recipient_torn_id:
                     continue
 
-                if all(_count_item_qty(entry, i['item']) >= int(i['qty']) for i in payout_items):
+                if all(_count_item_qty_by_id(entry, i['item_id']) >= i['qty'] for i in resolved_payout_items):
                     matched_log = entry
                     break
 
