@@ -6,6 +6,7 @@ from typing import Any
 
 import config
 from .errors import AlreadyExists, BusinessRuleViolation, InvalidInput, NotFound
+from .jump_monitor import get_jump_monitor
 from .validation import validate_discord_id, validate_guild_id, validate_positive_int
 
 log = logging.getLogger("happy_jumper.services.jump")
@@ -16,6 +17,23 @@ class JumpService:
         self.db = db
         self.torn_api = torn_api
         self.security_manager = security_manager
+        self.monitor = get_jump_monitor()
+
+    async def start_monitoring(self, session_id: int) -> None:
+        await self.monitor.start(session_id)
+
+    async def stop_monitoring(self, session_id: int) -> None:
+        await self.monitor.stop(session_id)
+
+    async def end_jump(self, *, session_id: int, status: str = "completed") -> None:
+        validate_positive_int(session_id, field_name="Session ID")
+        async with self.db.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE happy_jump_sessions SET status = $2, updated_at = NOW() WHERE id = $1",
+                session_id,
+                status,
+            )
+        await self.monitor.stop(session_id)
 
     async def join_session(self, *, session_id: int, guild_id: int, user_id: int) -> dict[str, Any]:
         validate_positive_int(session_id, field_name="Session ID")
@@ -61,6 +79,7 @@ class JumpService:
             await self.db.create_signup(session_id, user_id, key_data["torn_user_id"], reserved_until)
             await self.db.update_readiness(session_id, user_id, current_energy, max_energy, drug_cd, "ready")
             await self.db.log_audit(user_id, "jump_signup", "session", session_id)
+            self.monitor.mark_needs_refresh(session_id)
             return {"result": "reserved", "reserved_until": reserved_until}
         except (AlreadyExists, BusinessRuleViolation, InvalidInput, NotFound):
             raise

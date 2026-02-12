@@ -225,6 +225,14 @@ class TornAPIClient:
         data = await self._request("/user", {"selections": "cooldowns", "key": api_key})
         cooldowns = data.get("cooldowns", {})
         return int(cooldowns.get("drug", 0))
+
+    async def get_user_bars_v2(self, api_key: str) -> Dict:
+        """Fetch user bars from Torn v2 endpoint."""
+        return await self._request("/user/bars", {"key": api_key})
+
+    async def get_user_cooldowns_v2(self, api_key: str) -> Dict:
+        """Fetch user cooldowns from Torn v2 endpoint."""
+        return await self._request("/user/cooldowns", {"key": api_key})
     
     async def get_item_send_receive_logs(self, api_key: str, limit: int = 5) -> List[Dict]:
         data = await self._request("/user/log", {"cat": 85, "limit": limit, "key": api_key})

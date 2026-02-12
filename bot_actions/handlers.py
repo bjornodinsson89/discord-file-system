@@ -11,6 +11,7 @@ from repositories.jumps import JumpsRepository
 from repositories.raffles import RafflesRepository
 from repositories.insurance import InsuranceRepository
 from repositories.guilds import GuildsRepository
+from services.jump_monitor import get_jump_monitor
 from bot_actions.schemas import (
     CreateSessionRequest,
     CreateSessionResponse,
@@ -137,7 +138,8 @@ async def create_session_handler(request: CreateSessionRequest, admin_discord_id
         payment_type=request.payment_type,
         payment_amount=request.payment_amount,
     )
-    
+
+    await get_jump_monitor().start(session_id)
     return CreateSessionResponse(id=session_id, message_url=None)
 
 
@@ -181,6 +183,8 @@ async def cancel_session_handler(session_id: int, admin_discord_id: int, reason:
     if not success:
         raise ValueError(f"Session {session_id} not found or already cancelled/completed")
     
+    await get_jump_monitor().stop(session_id)
+
     msg = f"Session #{session_id} has been cancelled."
     if reason:
         msg += f" Reason: {reason}"
@@ -197,7 +201,8 @@ async def complete_session_handler(session_id: int, admin_discord_id: int, sourc
     success = await jumps_repo.complete_session(session_id)
     if not success:
         raise ValueError(f"Session {session_id} not found or not in valid state to complete")
-    
+
+    await get_jump_monitor().stop(session_id)
     return CompleteSessionResponse(f"Session #{session_id} has been completed.")
 
 

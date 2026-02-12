@@ -253,8 +253,8 @@ def create_session_announcement_embed(session: Dict, guild) -> discord.Embed:
     """Create announcement embed for a new 99k session (admin-created)."""
     
     embed = create_base_embed(
-        f"{config.EMOJI_JUMP} New 99k Jump Session",
-        "A new jump session has been created!",
+        f"{config.EMOJI_JUMP} New 99k Jump!",
+        "A fresh 99k session is now open for signups.",
         config.COLOR_PRIMARY
     )
     
@@ -308,7 +308,7 @@ def create_session_announcement_embed(session: Dict, guild) -> discord.Embed:
         inline=True
     )
     
-    embed.set_footer(text=f"Session #{session['id']} • Click buttons below to join")
+    embed.set_footer(text=f"Session #{session['id']} • Use the buttons below to join/pay/status")
     return embed
 
 

@@ -1,10 +1,11 @@
 """Discord views for all Happy Jumper features."""
 
+import asyncio
 import discord
 from discord import ui
 import logging
 import json
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta
 from utils import get_database, get_security_manager, get_torn_api
 from utils.discord_channels import resolve_guild_channel
@@ -13,6 +14,7 @@ from utils.item_resolver import ItemResolver
 from utils.embeds import *
 from utils.payouts import parse_payout_string, payout_items_to_human, payout_items_to_string, PayoutParseError
 from services import JumpService, RaffleService, DomainError, AlreadyExists, NotFound, InvalidInput, BusinessRuleViolation
+from services.jump_monitor import get_jump_monitor
 import config
 
 log = logging.getLogger("happy_jumper.views")
@@ -108,6 +110,8 @@ class ConfirmRemoveKeyView(ui.View):
 # ============================================================================
 
 class JumpSessionView(ui.View):
+    _status_panel_tasks: dict[tuple[int, int], asyncio.Task] = {}
+
     def __init__(self, session_id: int):
         super().__init__(timeout=None)
         self.session_id = session_id
@@ -190,11 +194,52 @@ class JumpSessionView(ui.View):
                 await db.create_signup(self.session_id, next_user['discord_id'], next_user['torn_user_id'], reserved_until)
             
             await update_jump_embed(self.session_id, interaction.message)
+            get_jump_monitor().mark_needs_refresh(self.session_id)
             await interaction.followup.send(embed=create_success_embed("Left Session"), ephemeral=True)
         except Exception as e:
             log.exception(f"Leave error: {e}")
             await interaction.followup.send(embed=create_error_embed("Error", str(e)), ephemeral=True)
     
+    @ui.button(label="Status Panel", style=discord.ButtonStyle.secondary, custom_id="jump_status_panel")
+    async def status_panel(self, interaction: discord.Interaction, button: ui.Button):
+        monitor = get_jump_monitor()
+        await monitor.start(self.session_id)
+
+        embed = await build_jump_status_panel_embed(self.session_id)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        key = (interaction.user.id, self.session_id)
+        existing_task = self._status_panel_tasks.get(key)
+        if existing_task and not existing_task.done():
+            existing_task.cancel()
+
+        self._status_panel_tasks[key] = asyncio.create_task(
+            self._run_status_panel_refresh(interaction)
+        )
+
+    async def _run_status_panel_refresh(self, interaction: discord.Interaction) -> None:
+        started = datetime.utcnow()
+        while True:
+            try:
+                if (datetime.utcnow() - started).total_seconds() > 3600:
+                    return
+
+                db = get_database()
+                session = await db.get_jump_session(self.session_id)
+                if not session or session.get("status") not in {"open", "locked"}:
+                    return
+
+                await asyncio.sleep(10)
+                embed = await build_jump_status_panel_embed(self.session_id)
+                await interaction.edit_original_response(embed=embed)
+            except asyncio.CancelledError:
+                return
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return
+            except Exception:
+                log.exception("Status panel refresh failed session_id=%s", self.session_id)
+                return
+
     @ui.button(label="Session Info", style=discord.ButtonStyle.secondary, emoji=config.EMOJI_INFO, custom_id="jump_info")
     async def info(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
@@ -232,6 +277,7 @@ class JumpSessionView(ui.View):
                 session_id=self.session_id,
                 user_id=interaction.user.id,
             )
+            get_jump_monitor().mark_needs_refresh(self.session_id)
             await interaction.followup.send(embed=create_success_embed("Added to Waitlist", f"Position: #{position}"), ephemeral=True)
         except InvalidInput:
             await interaction.followup.send(embed=create_error_embed("API Key Required"), ephemeral=True)
@@ -325,7 +371,8 @@ class HostControlView(ui.View):
         if session['host_discord_id'] != interaction.user.id and not interaction.user.guild_permissions.administrator:
             await interaction.followup.send(embed=create_error_embed("Not Authorized"), ephemeral=True)
             return
-        await db.complete_session(self.session_id)
+        service = JumpService(db, get_torn_api(), get_security_manager())
+        await service.end_jump(session_id=self.session_id, status="completed")
         await db.log_audit(interaction.user.id, "session_completed", "session", self.session_id)
         await interaction.followup.send(embed=create_success_embed("Session Completed"), view=RatingRequestView(self.session_id), ephemeral=True)
     
@@ -349,7 +396,8 @@ class ConfirmCancelSessionView(ui.View):
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        await db.update_jump_session(self.session_id, status='cancelled')
+        service = JumpService(db, get_torn_api(), get_security_manager())
+        await service.end_jump(session_id=self.session_id, status="cancelled")
         await db.log_audit(interaction.user.id, "session_cancelled", "session", self.session_id)
         await interaction.followup.send(embed=create_success_embed("Session Cancelled"), ephemeral=True)
         self.stop()
@@ -1238,6 +1286,60 @@ class SessionSelectMenu(ui.Select):
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
+
+
+async def build_jump_status_panel_embed(session_id: int) -> discord.Embed:
+    db = get_database()
+    session = await db.get_jump_session(session_id)
+    if not session:
+        return create_error_embed("Session Not Found")
+
+    signups = await db.get_session_signups(session_id)
+    participant_ids = [int(session["host_discord_id"])]
+    participant_ids.extend(int(s["discord_id"]) for s in signups)
+
+    monitor = get_jump_monitor()
+    status_map = monitor.get_status(session_id)
+    now = datetime.utcnow()
+
+    lines = []
+    for discord_id in participant_ids:
+        status = status_map.get(discord_id, {})
+        ready = bool(status.get("ready_bool"))
+        light = "✅" if ready else "❌"
+
+        if status.get("no_api_key"):
+            energy_label = "No API Key"
+            drug_label = "N/A"
+            booster_label = "N/A"
+        else:
+            energy_value = status.get("energy_current")
+            energy_label = f"{energy_value}/1000" if isinstance(energy_value, int) else "?/1000"
+            drug_value = status.get("drug_cd")
+            booster_value = status.get("booster_cd")
+            drug_label = str(drug_value) if isinstance(drug_value, int) else "?"
+            booster_label = str(booster_value) if isinstance(booster_value, int) else "?"
+
+        updated_at = status.get("updated_at")
+        if updated_at:
+            if getattr(updated_at, "tzinfo", None) is not None:
+                updated_at = updated_at.replace(tzinfo=None)
+            age_seconds = int((now - updated_at).total_seconds())
+            updated_label = f"{max(age_seconds, 0)}s ago"
+        else:
+            updated_label = "pending"
+
+        lines.append(
+            f"{light} <@{discord_id}> • E {energy_label} • Drug {drug_label}s • Booster {booster_label}s • Updated {updated_label}"
+        )
+
+    embed = create_info_embed(
+        "99k Jump Live Status Panel",
+        "\n".join(lines) if lines else "No participants yet.",
+    )
+    embed.set_footer(text=f"Session #{session_id} • Auto-refresh every 10s")
+    return embed
 
 async def update_jump_embed(session_id: int, message: discord.Message) -> str:
     db = get_database()
