@@ -6,7 +6,7 @@ from discord import ui
 import logging
 import json
 from typing import Optional, Dict, List, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from utils import get_database, get_security_manager, get_torn_api
 from utils.discord_channels import resolve_guild_channel
 from utils.torn_api import TornAPIError, TornAPIPermissionError
@@ -15,6 +15,7 @@ from utils.embeds import *
 from utils.payouts import parse_payout_string, payout_items_to_human, payout_items_to_string, PayoutParseError
 from services import JumpService, RaffleService, DomainError, AlreadyExists, NotFound, InvalidInput, BusinessRuleViolation
 from services.jump_monitor import get_jump_monitor
+from repositories.jumps import JumpsRepository
 import config
 
 log = logging.getLogger("happy_jumper.views")
@@ -217,6 +218,24 @@ class JumpSessionView(ui.View):
             self._run_status_panel_refresh(interaction)
         )
 
+    @ui.button(label="Start Jump", style=discord.ButtonStyle.primary, emoji="🚀", custom_id="jump_start")
+    async def start_jump(self, interaction: discord.Interaction, button: ui.Button):
+        db = get_database()
+        session = await db.get_jump_session(self.session_id)
+        if not session:
+            await interaction.response.send_message(embed=create_error_embed("Session Not Found"), ephemeral=True)
+            return
+
+        if session["host_discord_id"] != interaction.user.id:
+            await interaction.response.send_message(embed=create_error_embed("Not Authorized", "Only the jump host can start this jump."), ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            embed=create_info_embed("Start Jump", "Choose a delay before DM notifications are sent to participants."),
+            view=StartJumpDelayView(self.session_id),
+            ephemeral=True,
+        )
+
     async def _run_status_panel_refresh(self, interaction: discord.Interaction) -> None:
         started = datetime.utcnow()
         while True:
@@ -325,8 +344,10 @@ class PaymentView(ui.View):
                     "Payment Not Found", "Send payment and wait a few moments before trying again."), ephemeral=True)
                 return
             
-            await db.update_signup(self.session_id, interaction.user.id, status='paid', reserved_until=None)
+            jump_repo = JumpsRepository(db.pool)
+            await jump_repo.mark_purchase_verified(self.session_id, interaction.user.id)
             await db.log_audit(interaction.user.id, "payment_verified", "session", self.session_id, payment)
+            get_jump_monitor().mark_needs_refresh(self.session_id)
             
             # Try to update embed
             settings = await db.get_guild_settings(interaction.guild.id)
@@ -340,10 +361,144 @@ class PaymentView(ui.View):
                 except Exception:
                     pass
             
-            await interaction.followup.send(embed=create_success_embed("Payment Verified!", "You're all set for the jump!"), ephemeral=True)
+            await interaction.followup.send(
+                embed=create_success_embed("Payment Verified!", "You're all set for the jump!"),
+                view=InsuranceOfferView(self.session_id, interaction.user.id),
+                ephemeral=True,
+            )
         except Exception as e:
             log.exception(f"Payment verification error: {e}")
             await interaction.followup.send(embed=create_error_embed("Error", str(e)), ephemeral=True)
+
+
+class InsuranceOfferView(ui.View):
+    def __init__(self, session_id: int, buyer_discord_id: int):
+        super().__init__(timeout=300)
+        self.session_id = session_id
+        self.buyer_discord_id = buyer_discord_id
+
+    @ui.button(label="Yes, request insurance", style=discord.ButtonStyle.success, emoji=config.EMOJI_SHIELD)
+    async def request_insurance(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user.id != self.buyer_discord_id:
+            await interaction.followup.send(embed=create_error_embed("Not Authorized"), ephemeral=True)
+            return
+
+        db = get_database()
+        session = await db.get_jump_session(self.session_id)
+        if not session:
+            await interaction.followup.send(embed=create_error_embed("Session Not Found"), ephemeral=True)
+            return
+
+        settings = await db.get_guild_settings(interaction.guild.id)
+        insurance_channel_id = settings.get("insurance_channel_id")
+        channel = interaction.guild.get_channel(int(insurance_channel_id)) if insurance_channel_id else None
+        if channel is None:
+            await interaction.followup.send(
+                embed=create_error_embed("Insurance Channel Missing", "Ask an admin to configure `insurance_channel_id` in setup."),
+                ephemeral=True,
+            )
+            return
+
+        message = await channel.send(
+            content=f"<@{interaction.user.id}> has requested 99k jump insurance for Jump #{self.session_id}",
+            view=InsuranceClaimView(self.session_id, interaction.user.id),
+        )
+        await db.log_audit(interaction.user.id, "jump_insurance_requested", "session", self.session_id, {"insurance_message_id": message.id})
+        await interaction.followup.send(embed=create_success_embed("Insurance Requested", "Your request was posted in the insurance channel."), ephemeral=True)
+
+    @ui.button(label="No thanks", style=discord.ButtonStyle.secondary)
+    async def no_thanks(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message(embed=create_info_embed("No Problem", "You can request insurance later if needed."), ephemeral=True)
+
+
+class InsuranceClaimView(ui.View):
+    def __init__(self, session_id: int, requester_discord_id: int):
+        super().__init__(timeout=None)
+        self.session_id = session_id
+        self.requester_discord_id = requester_discord_id
+
+    @ui.button(label="Claim", style=discord.ButtonStyle.primary, emoji="🛡️")
+    async def claim(self, interaction: discord.Interaction, button: ui.Button):
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(embed=create_error_embed("Server Member Required"), ephemeral=True)
+            return
+
+        db = get_database()
+        settings = await db.get_guild_settings(interaction.guild.id)
+        insurer_role_id = settings.get("insurer_role_id")
+        has_insurer_role = bool(insurer_role_id and any(role.id == int(insurer_role_id) for role in interaction.user.roles))
+
+        if not has_insurer_role and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                embed=create_error_embed("Not Authorized", "Only verified insurers can claim this request."),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.edit_message(
+            content=(
+                f"<@{self.requester_discord_id}> has requested 99k jump insurance for Jump #{self.session_id}\n"
+                f"✅ Claimed by <@{interaction.user.id}>"
+            ),
+            view=None,
+        )
+
+        try:
+            requester = interaction.guild.get_member(self.requester_discord_id) or await interaction.guild.fetch_member(self.requester_discord_id)
+            await requester.send(f"Your 99k jump insurance request for Jump #{self.session_id} was claimed by {interaction.user.mention}.")
+        except Exception:
+            pass
+
+        try:
+            await interaction.user.send(f"You claimed insurance request for Jump #{self.session_id} from <@{self.requester_discord_id}>.")
+        except Exception:
+            pass
+
+        await db.log_audit(interaction.user.id, "jump_insurance_claimed", "session", self.session_id, {"requester_discord_id": self.requester_discord_id})
+
+
+class StartJumpCustomDelayModal(ui.Modal, title="Custom Jump Delay"):
+    delay = ui.TextInput(label="Delay (mm:ss or minutes)", placeholder="e.g. 3:30 or 5", max_length=8)
+
+    def __init__(self, session_id: int):
+        super().__init__()
+        self.session_id = session_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = (self.delay.value or "").strip()
+        seconds = _parse_start_delay_seconds(raw)
+        if seconds is None or seconds <= 0:
+            await interaction.response.send_message(embed=create_error_embed("Invalid Delay", "Use `minutes` or `mm:ss` format."), ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        await _start_jump_countdown(interaction, self.session_id, seconds)
+
+
+class StartJumpDelayView(ui.View):
+    def __init__(self, session_id: int):
+        super().__init__(timeout=120)
+        self.session_id = session_id
+
+    @ui.select(
+        placeholder="Choose delay",
+        options=[
+            discord.SelectOption(label="1 minute", value="60"),
+            discord.SelectOption(label="2 minutes", value="120"),
+            discord.SelectOption(label="3 minutes", value="180"),
+            discord.SelectOption(label="5 minutes", value="300"),
+            discord.SelectOption(label="10 minutes", value="600"),
+        ],
+    )
+    async def select_delay(self, interaction: discord.Interaction, select: ui.Select):
+        await interaction.response.defer(ephemeral=True)
+        seconds = int(select.values[0])
+        await _start_jump_countdown(interaction, self.session_id, seconds)
+
+    @ui.button(label="Custom", style=discord.ButtonStyle.secondary)
+    async def custom_delay(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(StartJumpCustomDelayModal(self.session_id))
 
 
 class HostControlView(ui.View):
@@ -1308,6 +1463,7 @@ async def build_jump_status_panel_embed(session_id: int) -> discord.Embed:
         status = status_map.get(discord_id, {})
         ready = bool(status.get("ready_bool"))
         light = "✅" if ready else "❌"
+        od_light = "🟧" if bool(status.get("od_any")) else ""
 
         if status.get("no_api_key"):
             energy_label = "No API Key"
@@ -1331,15 +1487,106 @@ async def build_jump_status_panel_embed(session_id: int) -> discord.Embed:
             updated_label = "pending"
 
         lines.append(
-            f"{light} <@{discord_id}> • E {energy_label} • Drug {drug_label}s • Booster {booster_label}s • Updated {updated_label}"
+            f"{light} {od_light} <@{discord_id}> • E {energy_label} • Drug {drug_label}s • Booster {booster_label}s • Updated {updated_label}"
         )
 
     embed = create_info_embed(
         "99k Jump Live Status Panel",
         "\n".join(lines) if lines else "No participants yet.",
     )
+    starts_at = monitor.get_start_countdown(session_id)
+    if starts_at:
+        starts_unix = int(starts_at.timestamp())
+        embed.add_field(name="Start", value=f"Jump starts in <t:{starts_unix}:R> (host initiated)", inline=False)
     embed.set_footer(text=f"Session #{session_id} • Auto-refresh every 10s")
     return embed
+
+
+def _parse_start_delay_seconds(raw_value: str) -> Optional[int]:
+    value = (raw_value or "").strip()
+    if not value:
+        return None
+    if ":" in value:
+        parts = value.split(":", 1)
+        try:
+            minutes = int(parts[0])
+            seconds = int(parts[1])
+        except ValueError:
+            return None
+        if minutes < 0 or seconds < 0 or seconds > 59:
+            return None
+        return minutes * 60 + seconds
+    try:
+        minutes = int(value)
+    except ValueError:
+        return None
+    if minutes < 0:
+        return None
+    return minutes * 60
+
+
+async def _start_jump_countdown(interaction: discord.Interaction, session_id: int, delay_seconds: int) -> None:
+    db = get_database()
+    session = await db.get_jump_session(session_id)
+    if not session:
+        await interaction.followup.send(embed=create_error_embed("Session Not Found"), ephemeral=True)
+        return
+
+    starts_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+    mm, ss = divmod(delay_seconds, 60)
+    countdown_text = f"{mm:02d}:{ss:02d}"
+
+    signups = await db.get_session_signups(session_id)
+    participant_ids = {int(s["discord_id"]) for s in signups}
+    participant_ids.add(int(session["host_discord_id"]))
+
+    announcement_url = ""
+    if interaction.guild and session.get("announcement_channel_id") and session.get("announcement_message_id"):
+        announcement_url = f"https://discord.com/channels/{interaction.guild.id}/{session['announcement_channel_id']}/{session['announcement_message_id']}"
+
+    dm_text = (
+        f"99k Happy Jump starting in {countdown_text}\n"
+        f"Jump #{session_id}\n"
+        f"{announcement_url}".strip()
+    )
+
+    sent_count = 0
+    for discord_id in participant_ids:
+        user = interaction.client.get_user(discord_id)
+        if user is None:
+            try:
+                user = await interaction.client.fetch_user(discord_id)
+            except Exception:
+                user = None
+        if not user:
+            continue
+        try:
+            await user.send(dm_text)
+            sent_count += 1
+        except Exception:
+            continue
+
+    monitor = get_jump_monitor()
+    monitor.set_start_countdown(session_id, starts_at)
+
+    if interaction.guild and session.get("announcement_channel_id") and session.get("announcement_message_id"):
+        try:
+            channel = interaction.guild.get_channel(int(session["announcement_channel_id"]))
+            if channel:
+                announcement_message = await channel.fetch_message(session["announcement_message_id"])
+                base_embed = announcement_message.embeds[0] if announcement_message.embeds else None
+                if base_embed:
+                    embed = base_embed.copy()
+                    embed.add_field(name="Start", value=f"Jump starts in {countdown_text} (host initiated)", inline=False)
+                    await announcement_message.edit(embed=embed, view=JumpSessionView(session_id))
+        except Exception:
+            pass
+
+    await db.log_audit(interaction.user.id, "jump_start_initiated", "session", session_id, {"delay_seconds": delay_seconds, "dm_sent": sent_count})
+    await interaction.followup.send(
+        embed=create_success_embed("Jump Start Announced", f"DM sent to {sent_count} participant(s). Start in {countdown_text}."),
+        ephemeral=True,
+    )
 
 async def update_jump_embed(session_id: int, message: discord.Message) -> str:
     db = get_database()

@@ -40,9 +40,24 @@ class JumpsRepository(RepositoryBase):
                 """
                 UPDATE happy_jump_signups
                 SET status = 'confirmed', payment_verified = TRUE,
-                    payment_verified_at = NOW(), reserved_until = NULL
+                    payment_verified_at = NOW(), purchase_verified_at = NOW(), reserved_until = NULL
                 WHERE session_id = $1 AND discord_id = $2
                 RETURNING id
+                """,
+                session_id,
+                discord_id,
+            )
+            return row is not None
+
+    async def mark_purchase_verified(self, session_id: int, discord_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE happy_jump_signups
+                SET status = 'paid', payment_verified = TRUE,
+                    payment_verified_at = NOW(), purchase_verified_at = NOW(), reserved_until = NULL
+                WHERE session_id = $1 AND discord_id = $2
+                RETURNING id, purchase_verified_at
                 """,
                 session_id,
                 discord_id,
