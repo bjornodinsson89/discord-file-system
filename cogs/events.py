@@ -777,9 +777,10 @@ async def refresh_item_icons(interaction: discord.Interaction):
     }
     aliases: dict[str, int] = {}
     for alias, target_name in alias_targets.items():
-        target_id = name_to_item_id.get(norm_name(target_name))
+        target_norm = norm_name(target_name)
+        target_id = name_to_item_id.get(target_norm)
         if target_id:
-            aliases[norm_name(alias)] = target_id
+            aliases[norm_name(alias)] = int(target_id)
 
     alias_count = await repo.upsert_aliases(aliases)
     refreshed_iso = datetime.now(timezone.utc).isoformat()

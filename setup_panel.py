@@ -269,7 +269,6 @@ class SetupPanelView(OwnerView):
         embed = create_info_embed("Setup Panel", "Configure channels, roles, templates, toggles, and tests from one place.")
         embed.add_field(name="Channels", value=(
             f"Jump: {channel_name('jump_99k_channel_id')}\n"
-            f"Raffle (legacy): {channel_name('raffle_channel_id')}\n"
             f"Raffle announcement: {channel_name('raffle_announcement_channel_id')}\n"
             f"Raffle purchase panel: {channel_name('raffle_purchase_channel_id')}\n"
             f"Insurance: {channel_name('insurance_channel_id')}\n"
@@ -466,7 +465,6 @@ class ChannelsView(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_item(ChannelSelect(self.panel, "jump_99k_channel_id", "Set jump (99k) channel"))
-        self.add_item(ChannelSelect(self.panel, "raffle_channel_id", "Set raffle channel (legacy fallback)"))
         self.add_item(ChannelSelect(self.panel, "raffle_announcement_channel_id", "Set raffle announcement channel"))
 
     @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)

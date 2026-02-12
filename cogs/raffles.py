@@ -915,8 +915,9 @@ class RafflesCog(commands.Cog):
             if is_bundle:
                 await interaction.response.send_message(response_text, ephemeral=True)
             else:
-                await interaction.response.send_message(
-                    response_text,
+                await interaction.response.send_message(response_text, ephemeral=True)
+                await interaction.followup.send(
+                    "Optional: add a prize image URL (single-item raffles only).",
                     ephemeral=True,
                     view=RafflePrizeImagePromptView(
                         bot=self.bot,
