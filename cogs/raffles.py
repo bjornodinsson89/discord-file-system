@@ -16,6 +16,14 @@ from utils.embeds import create_error_embed
 from utils.icon_strips import build_icon_strip_file
 log = logging.getLogger("happy_jumper.raffles")
 _PACK_WORD_RE = re.compile(r"\bpack\b", re.IGNORECASE)
+_CURLY_QUOTES_RE = re.compile(r"[’‘]")
+_NON_ALNUM_WS_RE = re.compile(r"[^a-z0-9\s]")
+_WS_RE = re.compile(r"\s+")
+_MULTI_ITEM_X_PATTERNS = [
+    re.compile(r"\b\d+\s*[x×]\s*[a-z]", re.IGNORECASE),
+    re.compile(r"\b[a-z][a-z0-9'\- ]*\s*[x×]\s*\d+\b", re.IGNORECASE),
+    re.compile(r"\b[x×]\s*\d+\s+[a-z]", re.IGNORECASE),
+]
 _QTY_PATTERNS = [
     re.compile(r"^\s*(\d+)\s+(.+?)\s*$", re.IGNORECASE),
     re.compile(r"^\s*(.+?)\s+[x×](\d+)\s*$", re.IGNORECASE),
@@ -49,6 +57,25 @@ def _max_buy_now(raffle: dict, entries: list[dict], user_id: int) -> int:
     return min(user_remaining, raffle_remaining)
 def _is_supported_icon_payment(payment_type: str) -> bool:
     return payment_type in {"xanax", "erotic_dvd"}
+
+
+def _normalize_item_name(raw_name: str) -> str:
+    value = (raw_name or "").strip().lower()
+    value = _CURLY_QUOTES_RE.sub("'", value)
+    value = _NON_ALNUM_WS_RE.sub(" ", value)
+    value = _WS_RE.sub(" ", value).strip()
+    return value
+
+
+def _is_single_item_prize(prize_text: str, is_bundle: bool) -> bool:
+    if is_bundle:
+        return False
+    value = (prize_text or "").strip().lower()
+    if not value:
+        return False
+    if "," in value:
+        return False
+    return not any(pattern.search(value) for pattern in _MULTI_ITEM_X_PATTERNS)
 def _parse_bundle_entry(raw_entry: str) -> tuple[int, str] | None:
     text = (raw_entry or "").strip()
     if not text:
@@ -769,6 +796,24 @@ class RafflesCog(commands.Cog):
         meta = await repo.get_item_meta_by_name(name)
         self._payment_meta_cache[name] = meta
         return meta
+    async def _get_single_prize_thumbnail_url(self, prize_text: str, is_bundle: bool) -> str | None:
+        if not _is_single_item_prize(prize_text, is_bundle):
+            return None
+        normalized_name = _normalize_item_name(prize_text)
+        if not normalized_name:
+            return None
+        async with get_pool().acquire() as conn:
+            image_url = await conn.fetchval(
+                """
+                SELECT image_url
+                FROM torn_items
+                WHERE norm_name = $1
+                LIMIT 1
+                """,
+                normalized_name,
+            )
+        cleaned = (image_url or "").strip()
+        return cleaned or None
     async def build_payment_file(self, payment_type: str, amount: int):
         if not _is_supported_icon_payment(payment_type) or amount <= 0:
             return None
@@ -839,9 +884,10 @@ class RafflesCog(commands.Cog):
             purchase_panel_embed.add_field(name="Price", value=price_text, inline=True)
             purchase_panel_embed.add_field(name="Tickets", value=f"{draft['tickets_available']}", inline=True)
             purchase_panel_embed.add_field(name="Max per user", value="Unlimited" if draft['max_tickets_per_user'] == 0 else str(draft['max_tickets_per_user']), inline=True)
+            prize_thumbnail_url = await self._get_single_prize_thumbnail_url(draft["prize"], is_bundle)
+            if prize_thumbnail_url:
+                purchase_panel_embed.set_thumbnail(url=prize_thumbnail_url)
             single_item_meta = draft.get("single_item_meta")
-            if single_item_meta and not is_bundle:
-                purchase_panel_embed.set_thumbnail(url=single_item_meta.get("image_url"))
             panel_message = await purchase_channel.send(embed=purchase_panel_embed, view=RafflePurchasePanelView(raffle_id=raffle_id))
             await repo.set_purchase_panel_ref(raffle_id=raffle_id, channel_id=purchase_channel.id, message_id=panel_message.id)
             if is_bundle and bundle_entries:
