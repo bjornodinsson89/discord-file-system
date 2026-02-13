@@ -4,6 +4,7 @@ from .jump_service import JumpService
 from .jump_monitor import JumpMonitor, get_jump_monitor
 from .raffle_payment import RafflePaymentService
 from .raffle_service import RaffleService
+from .payment_receipts import PaymentReceiptService
 
 __all__ = [
     "DomainError",
@@ -18,4 +19,5 @@ __all__ = [
     "InsuranceService",
     "RaffleService",
     "RafflePaymentService",
+    "PaymentReceiptService",
 ]

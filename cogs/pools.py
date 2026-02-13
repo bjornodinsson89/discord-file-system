@@ -11,6 +11,7 @@ from discord.ext import commands
 from repositories.pools_repository import PoolsRepository
 from repositories.torn_items import TornItemsRepository
 from services.raffle_payment import RafflePaymentService
+from services.payment_receipts import PaymentReceiptService
 from utils import GuildSettingsRepository, get_security_manager, get_torn_api
 from utils.database import get_database, get_pool
 from utils.embeds import create_error_embed
@@ -227,6 +228,24 @@ class PoolVerifyPaymentView(discord.ui.View):
             return
 
         await repo.add_entry(self.pool_id, interaction.user.id, quantity)
+        receipts = PaymentReceiptService(db.pool)
+        receipt_id = await receipts.createReceipt(
+            featureType="pool",
+            featureRefId=self.pool_id,
+            payer_discord_id=interaction.user.id,
+            payer_torn_id=buyer_torn_id,
+            payee_discord_id=int(pool.get("created_by_discord_id") or 0) or None,
+            payee_torn_id=creator_torn_id,
+            amount=total_cost,
+            currency_type="xanax",
+            metadata=match,
+        )
+        await receipts.markVerified(
+            receiptId=receipt_id,
+            verifier_discord_id=interaction.user.id,
+            verifier_torn_id=buyer_torn_id,
+            verification_metadata={"source": "pool_verify_payment"},
+        )
         self.stop()
         await _refresh_pool_panel_message(self.bot, self.pool_id)
         await interaction.followup.send(f"✅ Purchase verified. Added **{quantity}** ticket(s).", ephemeral=True)

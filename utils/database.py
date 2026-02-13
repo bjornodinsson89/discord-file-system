@@ -24,7 +24,27 @@ _shim_warning_logged = False
 
 class DatabaseManager:
     """Legacy database manager - delegates to repositories."""
-    
+    @staticmethod
+    def normalize_xanax_count(value: Optional[object]) -> int:
+        if value is None:
+            raise ValueError("Xanax count is required")
+
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid xanax count. Allowed values: 1, 2, 3, 4.") from exc
+
+        if normalized < 1 or normalized > 4:
+            raise ValueError("Invalid xanax count. Allowed values: 1, 2, 3, 4.")
+
+        return normalized
+
+    @staticmethod
+    def merge_raffle_tickets(existing_tickets: int, incoming_tickets: int, payment_verified: bool) -> int:
+        if payment_verified:
+            return int(existing_tickets) + int(incoming_tickets)
+        return int(incoming_tickets)
+
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
         global _shim_warning_logged
@@ -420,9 +440,8 @@ class DatabaseManager:
             field_names = set(fields.keys())
             if missing_targets & field_names:
                 raise MissingDatabaseColumnError(
-                    "The `guild_settings` table is missing raffle channel columns. Run:\n"
-                    "ALTER TABLE guild_settings ADD COLUMN raffle_purchase_channel_id BIGINT;\n"
-                    "ALTER TABLE guild_settings ADD COLUMN raffle_announcement_channel_id BIGINT;"
+                    "The `guild_settings` table is missing raffle channel columns. "
+                    "Apply the latest schema migrations before starting the bot."
                 ) from exc
             raise
     

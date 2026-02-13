@@ -7,6 +7,7 @@ from typing import Any
 import config
 from .errors import AlreadyExists, BusinessRuleViolation, InvalidInput, NotFound
 from .jump_monitor import get_jump_monitor
+from repositories.jumps import JumpsRepository
 from .validation import validate_discord_id, validate_guild_id, validate_positive_int
 
 log = logging.getLogger("happy_jumper.services.jump")
@@ -27,12 +28,11 @@ class JumpService:
 
     async def end_jump(self, *, session_id: int, status: str = "completed") -> None:
         validate_positive_int(session_id, field_name="Session ID")
-        async with self.db.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE happy_jump_sessions SET status = $2, updated_at = NOW() WHERE id = $1",
-                session_id,
-                status,
-            )
+        repo = JumpsRepository(self.db.pool)
+        if status == "completed":
+            await repo.complete_session(session_id)
+        else:
+            await repo.cancel_session(session_id)
         await self.monitor.stop(session_id)
 
     async def join_session(self, *, session_id: int, guild_id: int, user_id: int) -> dict[str, Any]:
