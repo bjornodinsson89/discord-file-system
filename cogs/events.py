@@ -87,7 +87,8 @@ async def assert99kHost(interaction: discord.Interaction, settings: dict | None)
 
     member = interaction.user
     has_admin = bool(member.guild_permissions.administrator)
-    has_role = any(role.id == int(settings["host_role_id"]) for role in member.roles)
+    host_role = settings.get("host_role_id")
+    has_role = bool(host_role) and any(role.id == int(host_role) for role in member.roles)
     if has_admin and has_role:
         return True
 
@@ -847,183 +848,170 @@ async def refresh_item_icons(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="99k-setup", description="Configure 99k settings (Admin only)")
-@app_commands.default_permissions(administrator=True)
-async def jump_99k_setup(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message(embed=create_error_embed("Clearance required.", "Administrator permission is required."), ephemeral=True)
-        return
-    await interaction.response.send_modal(Jump99kSetupModal())
-
-
-class Jump99kSessionCreateModal(discord.ui.Modal, title="Create 99k Session"):
+class Jump99kSessionModal(discord.ui.Modal, title="99k Session"):
     title_input = discord.ui.TextInput(label="Title", required=True, max_length=120)
-    scheduled_start = discord.ui.TextInput(label="Scheduled start (optional)", required=False, max_length=120)
-    max_slots = discord.ui.TextInput(label="Max slots (optional)", required=False, default="5", max_length=3)
+    max_slots = discord.ui.TextInput(label="Max slots (1-5)", required=True, max_length=1)
+    scheduled_start = discord.ui.TextInput(label="Scheduled start text (optional)", required=False, max_length=120)
+    price_item = discord.ui.TextInput(label="Price item (Xanax or Erotic DVD)", required=True, max_length=20)
+    price_quantity = discord.ui.TextInput(label="Price quantity", required=True, max_length=4)
     notes = discord.ui.TextInput(label="Notes (optional)", required=False, style=discord.TextStyle.paragraph, max_length=1000)
 
-    def __init__(self, settings: dict):
+    def __init__(self, settings: dict, session: dict | None = None):
         super().__init__()
         self.settings = settings
-
-    async def on_submit(self, interaction: discord.Interaction):
-        db = get_database()
-        repo = JumpsRepository(db.pool)
-        max_slots = int(str(self.max_slots.value).strip() or self.settings.get("default_max_slots", 5))
-        channel_id = self.settings.get("announce_channel_id") or interaction.channel_id
-        session_id = await repo.create_session(
-            guild_id=interaction.guild_id,
-            host_discord_id=interaction.user.id,
-            title=str(self.title_input.value).strip(),
-            scheduled_start_text=str(self.scheduled_start.value).strip() or None,
-            max_slots=max_slots,
-            notes=str(self.notes.value).strip() or None,
-            announce_channel_id=channel_id,
-            announce_message_id=None,
-        )
-        channel = interaction.guild.get_channel(int(channel_id)) if interaction.guild else interaction.channel
-        if channel:
-            msg = await channel.send(f"📣 **99k Session #{session_id}** — {self.title_input.value}\nClick to join.", view=Jump99kSignupView(session_id))
-            await repo.set_announcement_message(session_id, channel_id=channel.id, message_id=msg.id)
-        await interaction.response.send_message(embed=create_success_embed("99k Jump Created", f"Session #{session_id} created."), ephemeral=True)
-
-
-class Jump99kPaymentModal(discord.ui.Modal, title="Submit Payment Receipt"):
-    amount = discord.ui.TextInput(label="Amount", required=True, max_length=10)
-    currency = discord.ui.TextInput(label="Currency", required=False, default="cash", max_length=20)
-    receipt_hash = discord.ui.TextInput(label="Receipt hash / reference", required=True, max_length=120)
-
-    def __init__(self, session_id: int):
-        super().__init__()
-        self.session_id = session_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        receipts = PaymentReceiptService(get_database().pool)
-        await receipts.createReceipt(
-            featureType="99k_jump",
-            featureRefId=str(self.session_id),
-            payer_discord_id=interaction.user.id,
-            payer_torn_id=None,
-            amount=int(str(self.amount.value).strip()),
-            currency_type=str(self.currency.value).strip() or "cash",
-            metadata={},
-            receipt_hash=str(self.receipt_hash.value).strip(),
-        )
-        await interaction.response.send_message(embed=create_success_embed("Receipt submitted", "Payment receipt recorded as pending."), ephemeral=True)
-
-
-class Jump99kPostSignupView(discord.ui.View):
-    def __init__(self, session_id: int):
-        super().__init__(timeout=300)
-        self.session_id = session_id
-
-    @discord.ui.button(label="Submit Payment", style=discord.ButtonStyle.primary)
-    async def submit_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(Jump99kPaymentModal(self.session_id))
-
-    @discord.ui.button(label="Cancel Signup", style=discord.ButtonStyle.secondary)
-    async def cancel_signup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        repo = JumpsRepository(get_database().pool)
-        ok = await repo.cancel_signup(session_id=self.session_id, discord_id=interaction.user.id)
-        if ok:
-            await interaction.response.send_message(embed=create_success_embed("Signup cancelled", "You were removed from this session."), ephemeral=True)
+        self.session = session
+        if session:
+            self.title_input.default = str(session.get("title") or "")
+            self.max_slots.default = str(session.get("max_slots") or 5)
+            self.scheduled_start.default = str(session.get("scheduled_start_text") or "")
+            price = str(session.get("price_item") or "xanax")
+            self.price_item.default = "Xanax" if price == "xanax" else "Erotic DVD"
+            self.price_quantity.default = str(session.get("price_quantity") or 1)
+            self.notes.default = str(session.get("notes") or "")
         else:
-            await interaction.response.send_message(embed=create_error_embed("Unable", "No active signup found."), ephemeral=True)
+            self.max_slots.default = str(self.settings.get("default_max_slots") or 5)
 
-
-class Jump99kSignupView(discord.ui.View):
-    def __init__(self, session_id: int):
-        super().__init__(timeout=None)
-        self.session_id = session_id
-
-    @discord.ui.button(label="Sign Up", style=discord.ButtonStyle.success)
-    async def signup(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def on_submit(self, interaction: discord.Interaction):
         repo = JumpsRepository(get_database().pool)
-        session = await repo.get_session(self.session_id)
-        if not session or session.get("status") != "open":
-            await interaction.response.send_message(embed=create_error_embed("Session closed", "This session is not open."), ephemeral=True)
+        title = str(self.title_input.value).strip()
+        slots = int(str(self.max_slots.value).strip())
+        if slots < 1 or slots > 5:
+            await interaction.response.send_message(embed=create_error_embed("Invalid max slots", "Max slots must be from 1 to 5."), ephemeral=True)
             return
-        count = await repo.signup_count(self.session_id)
-        if count >= int(session.get("max_slots", 5)):
-            await interaction.response.send_message(embed=create_error_embed("Session full", "No slots remaining."), ephemeral=True)
+        item_raw = str(self.price_item.value).strip().lower()
+        if item_raw not in {"xanax", "erotic dvd"}:
+            await interaction.response.send_message(embed=create_error_embed("Invalid price item", "Only Xanax or Erotic DVD are allowed."), ephemeral=True)
             return
-        await repo.create_or_restore_signup(session_id=self.session_id, guild_id=interaction.guild_id, discord_id=interaction.user.id, torn_user_id=None)
-        await interaction.response.send_message(embed=create_success_embed("Signed up", "You joined this 99k session."), view=Jump99kPostSignupView(self.session_id), ephemeral=True)
+        price_item = "xanax" if item_raw == "xanax" else "erotic_dvd"
+        price_quantity = int(str(self.price_quantity.value).strip())
+        notes = str(self.notes.value).strip() or None
+        scheduled = str(self.scheduled_start.value).strip() or None
+        announce_channel_id = self.settings.get("announce_channel_id")
+
+        if self.session:
+            await repo.update_session(
+                int(self.session["id"]),
+                title=title,
+                scheduled_start_text=scheduled,
+                max_slots=slots,
+                notes=notes,
+                price_item=price_item,
+                price_quantity=price_quantity,
+            )
+            session_id = int(self.session["id"])
+        else:
+            session_id = await repo.create_session(
+                guild_id=interaction.guild_id,
+                host_discord_id=interaction.user.id,
+                title=title,
+                scheduled_start_text=scheduled,
+                max_slots=slots,
+                notes=notes,
+                price_item=price_item,
+                price_quantity=price_quantity,
+                announce_channel_id=announce_channel_id,
+                announce_message_id=None,
+            )
+
+        channel = interaction.guild.get_channel(int(announce_channel_id)) if interaction.guild and announce_channel_id else interaction.channel
+        if channel:
+            content = f"📣 **99k Session #{session_id}** — {title}\nPrice: {price_quantity}x {'Xanax' if price_item=='xanax' else 'Erotic DVD'}\nClick to join."
+            message_id = self.session.get("announce_message_id") if self.session else None
+            if message_id:
+                try:
+                    msg = await channel.fetch_message(int(message_id))
+                    await msg.edit(content=content, view=Jump99kSignupView(session_id))
+                except Exception:
+                    msg = await channel.send(content, view=Jump99kSignupView(session_id))
+                    await repo.set_announcement_message(session_id, channel_id=channel.id, message_id=msg.id)
+            else:
+                msg = await channel.send(content, view=Jump99kSignupView(session_id))
+                await repo.set_announcement_message(session_id, channel_id=channel.id, message_id=msg.id)
+
+        verb = "updated" if self.session else "created"
+        await interaction.response.send_message(embed=create_success_embed("99k session saved", f"Session #{session_id} {verb}."), ephemeral=True)
 
 
-class Jump99kHostPanelView(discord.ui.View):
-    def __init__(self, settings: dict):
-        super().__init__(timeout=600)
-        self.settings = settings
+class Jump99kEditSelectModal(discord.ui.Modal, title="Edit 99k Session"):
+    jump_id = discord.ui.TextInput(label="Jump ID", required=True, max_length=20)
 
-    @discord.ui.button(label="Create Session", style=discord.ButtonStyle.primary)
-    async def create_session(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await assert99kHost(interaction, self.settings):
-            return
-        await interaction.response.send_modal(Jump99kSessionCreateModal(self.settings))
-
-    @discord.ui.button(label="View Active", style=discord.ButtonStyle.secondary)
-    async def view_active(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await assert99kHost(interaction, self.settings):
-            return
+    async def on_submit(self, interaction: discord.Interaction):
         repo = JumpsRepository(get_database().pool)
-        session = await repo.get_active_session(interaction.guild_id)
-        if not session:
-            await interaction.response.send_message(embed=create_info_embed("Active session", "No open session."), ephemeral=True)
+        try:
+            session_id = int(str(self.jump_id.value).strip())
+        except ValueError:
+            await interaction.response.send_message(embed=create_error_embed("Invalid Jump ID", "Jump ID must be numeric."), ephemeral=True)
             return
-        rows = await repo.list_signups_with_receipts(int(session["id"]))
-        body = "\n".join([f"<@{r['discord_id']}> • signup={r.get('signup_status')} • receipt={r.get('receipt_status') or 'none'}" for r in rows]) or "No signups yet."
-        await interaction.response.send_message(embed=create_info_embed(f"Active Session #{session['id']}", body), ephemeral=True)
-
-    @discord.ui.button(label="Close Session", style=discord.ButtonStyle.danger)
-    async def close_session(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await assert99kHost(interaction, self.settings):
+        session = await repo.get_session(session_id)
+        if not session or int(session.get("guild_id")) != int(interaction.guild_id):
+            await interaction.response.send_message(embed=create_error_embed("Not found", "Session not found for this server."), ephemeral=True)
             return
-        repo = JumpsRepository(get_database().pool)
-        session = await repo.get_active_session(interaction.guild_id)
-        if not session:
-            await interaction.response.send_message(embed=create_info_embed("Close session", "No open session."), ephemeral=True)
-            return
-        rows = await repo.list_signups(int(session["id"]))
-        ids = [int(r["discord_id"]) for r in rows if r.get("status") == "signed_up"]
-        await repo.close_session_and_record(session_id=int(session["id"]), guild_id=interaction.guild_id, completed_discord_ids=ids, not_completed_discord_ids=[])
-        await interaction.response.send_message(embed=create_success_embed("Session closed", f"Closed session #{session['id']} and updated totals."), ephemeral=True)
-
-    @discord.ui.button(label="Totals", style=discord.ButtonStyle.secondary)
-    async def totals(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await assert99kHost(interaction, self.settings):
-            return
-        totals = await JumpsRepository(get_database().pool).get_totals(interaction.guild_id)
-        await interaction.response.send_message(embed=create_info_embed("99k totals", f"Completed: **{totals['completed_count']}**\nNot completed: **{totals['not_completed_count']}**"), ephemeral=True)
-
-    @discord.ui.button(label="Help", style=discord.ButtonStyle.secondary)
-    async def help_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=create_info_embed("99k Help", "Use Create Session -> participants Sign Up -> close via Close Session."), ephemeral=True)
+        settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
+        await interaction.response.send_modal(Jump99kSessionModal(settings, session=session))
 
 
-@bot.tree.command(name="99k", description="Open the 99k host panel")
-async def jump_99k(interaction: discord.Interaction):
+jump99k_group = app_commands.Group(name="99k", description="99k happy jump commands")
+
+
+@jump99k_group.command(name="start", description="Create a 99k jump session")
+async def jump99k_start(interaction: discord.Interaction):
+    settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
+    if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
+        return
+    await interaction.response.send_modal(Jump99kSessionModal(settings))
+
+
+@jump99k_group.command(name="edit", description="Edit an open 99k jump session")
+async def jump99k_edit(interaction: discord.Interaction):
+    settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
+    if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
+        return
+    await interaction.response.send_modal(Jump99kEditSelectModal())
+
+
+@jump99k_group.command(name="list", description="List 99k sessions and readiness")
+async def jump99k_list(interaction: discord.Interaction):
+    settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
+    if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
+        return
     repo = JumpsRepository(get_database().pool)
-    settings = await repo.get_settings(interaction.guild_id)
-    if not settings:
-        await interaction.response.send_message(embed=create_error_embed("Setup required.", "Run /99k-setup (Admin only) to configure the Host role."), ephemeral=True)
+    session = await repo.get_active_session(interaction.guild_id)
+    if not session:
+        await interaction.response.send_message(embed=create_info_embed("99k sessions", "No open sessions."), ephemeral=True)
         return
-    if not await assert99kHost(interaction, settings):
-        return
-    await interaction.response.send_message(embed=create_info_embed("99k Host Panel", "Choose an action."), view=Jump99kHostPanelView(settings), ephemeral=True)
+    rows = await repo.list_signups_with_readiness(int(session["id"]))
+    lines = []
+    for r in rows:
+        green = int(r.get("energy") or 0) == 1000 and int(r.get("drug_cooldown") or 0) == 0
+        color = "🟢" if green else "🔴"
+        if r.get("overdose_flag"):
+            color = "🟠"
+        lines.append(f"{color} <@{r['discord_id']}> • E {r.get('energy') or 0}/{r.get('energy_max') or 0} • CD {r.get('drug_cooldown') or 0}s • {r.get('status_text') or 'unknown'}")
+    if not lines:
+        lines = ["No signups yet."]
+    await interaction.response.send_message(embed=create_info_embed(f"99k Session #{session['id']}", "\n".join(lines)), ephemeral=True)
 
 
-@bot.tree.command(name="session_create", description="Create a 99k jump session")
-async def session_create(interaction: discord.Interaction):
+@jump99k_group.command(name="end", description="Close active 99k session")
+async def jump99k_end(interaction: discord.Interaction):
+    settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
+    if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
+        return
     repo = JumpsRepository(get_database().pool)
-    settings = await repo.get_settings(interaction.guild_id)
-    if not settings:
-        await interaction.response.send_message(embed=create_error_embed("Setup required.", "Run /99k-setup (Admin only) to configure the Host role."), ephemeral=True)
+    session = await repo.get_active_session(interaction.guild_id)
+    if not session:
+        await interaction.response.send_message(embed=create_info_embed("99k end", "No open session."), ephemeral=True)
         return
-    if not await assert99kHost(interaction, settings):
+    rows = await repo.list_signups(int(session["id"]))
+    completed_ids = [int(r["discord_id"]) for r in rows if r.get("status") == "signed_up"]
+    ok = await repo.close_session_and_record(session_id=int(session["id"]), guild_id=interaction.guild_id, completed_discord_ids=completed_ids, not_completed_discord_ids=[])
+    if not ok:
+        await interaction.response.send_message(embed=create_error_embed("Could not close", "Session was already closed."), ephemeral=True)
         return
-    await interaction.response.send_modal(Jump99kSessionCreateModal(settings))
+    await interaction.response.send_message(embed=create_success_embed("99k session ended", f"Closed session #{session['id']}."), ephemeral=True)
 
+
+bot.tree.add_command(jump99k_group)
 
 @bot.tree.command(name="policy_create", description="Create an insurance policy (Admin only)")
 @app_commands.default_permissions(administrator=True)

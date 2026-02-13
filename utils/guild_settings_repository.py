@@ -24,6 +24,7 @@ class GuildSettingsRepository:
         "welcome_message_template",
         "auto_complete_enabled",
         "reservation_timeout_minutes",
+        "default_max_slots",
     }
     BIGINT_FIELDS = {
         "announce_channel_id",
@@ -33,6 +34,7 @@ class GuildSettingsRepository:
         "welcome_channel_id",
         "host99k_role_id",
         "insurer_role_id",
+        "default_max_slots",
     }
     DEFAULT_KEYS = {
         "guild_id": None,
@@ -51,6 +53,7 @@ class GuildSettingsRepository:
         "welcome_message_template": None,
         "auto_complete_enabled": True,
         "reservation_timeout_minutes": 5,
+        "default_max_slots": 5,
     }
 
     def __init__(self, db_manager):
@@ -94,7 +97,7 @@ class GuildSettingsRepository:
             if key == "admin_role_ids":
                 normalized[key] = self._normalize_admin_role_ids(value)
                 continue
-            if key == "reservation_timeout_minutes" and value is not None:
+            if key in {"reservation_timeout_minutes", "default_max_slots"} and value is not None:
                 normalized[key] = int(value)
                 continue
             normalized[key] = value
