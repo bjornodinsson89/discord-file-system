@@ -99,143 +99,137 @@ def _parse_bundle_entry(raw_entry: str) -> tuple[int, str] | None:
         return qty, name_raw.strip()
     return None
 class RaffleCreateModal(discord.ui.Modal):
-    """Stub to prevent old direct modal invocation paths."""
+    """Modal for creating a new raffle."""
 
-    def __init__(self, bot: commands.Bot):
-        super().__init__(title="🎉 Create Raffle")
-        self.bot = bot
-
-    async def on_submit(self, interaction: discord.Interaction):
-        raise RuntimeError("RaffleCreateModal is a stub. Use RaffleCreateModalInternal via payment type view.")
-
-
-class RaffleCreateModalInternal(discord.ui.Modal):
-    """Modal for creating a new raffle after payment type is selected."""
     prize = discord.ui.TextInput(
         label="🎁 Prize",
         placeholder="What are you giving away?",
         required=True,
-        max_length=200
+        max_length=200,
+    )
+    payment_type = discord.ui.TextInput(
+        label="💰 Payment Type",
+        placeholder="free | xanax | erotic_dvd",
+        required=True,
+        max_length=20,
+        default="xanax",
     )
     ticket_price = discord.ui.TextInput(
         label="💵 Ticket Price",
-        placeholder="Integer greater than 0",
+        placeholder="Integer (ignored for free)",
         required=True,
         max_length=6,
-        default="1"
+        default="1",
     )
     tickets_available = discord.ui.TextInput(
         label="🎟️ Total Tickets",
         placeholder="Total tickets to sell (minimum 1)",
         required=True,
-        max_length=10
+        max_length=10,
     )
     max_per_user = discord.ui.TextInput(
         label="📋 Max Per User (0 = unlimited)",
         placeholder="0 = unlimited",
         required=True,
         max_length=3,
-        default="0"
+        default="0",
     )
 
-    def __init__(self, bot: commands.Bot, payment_type: str):
+    def __init__(self, bot: commands.Bot):
         super().__init__(title="🎉 Create Raffle")
         self.bot = bot
-        self.payment_type_value = payment_type if payment_type in {"xanax", "erotic_dvd"} else "xanax"
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            payment_type = self.payment_type_value
+            payment_type = str(self.payment_type.value).strip().lower()
+            if payment_type not in {"free", "xanax", "erotic_dvd"}:
+                await interaction.response.send_message(
+                    embed=create_error_embed("Invalid payment type", "Payment type must be one of: free, xanax, erotic_dvd."),
+                    ephemeral=True,
+                )
+                return
             price = int(self.ticket_price.value)
             total = int(self.tickets_available.value)
             max_per = int(self.max_per_user.value or 0)
-            if price <= 0:
-                await interaction.response.send_message("❌ Ticket Price must be greater than 0", ephemeral=True)
+            if payment_type != "free" and price <= 0:
+                await interaction.response.send_message(
+                    embed=create_error_embed("Invalid ticket price", "Ticket Price must be greater than 0 for paid raffles."),
+                    ephemeral=True,
+                )
                 return
             if total < 1:
-                await interaction.response.send_message("❌ Total Tickets must be 1 or greater", ephemeral=True)
+                await interaction.response.send_message(
+                    embed=create_error_embed("Invalid total tickets", "Total Tickets must be 1 or greater."),
+                    ephemeral=True,
+                )
                 return
             if max_per < 0:
-                await interaction.response.send_message("❌ Max Tickets Per User must be 0 or greater", ephemeral=True)
+                await interaction.response.send_message(
+                    embed=create_error_embed("Invalid max per user", "Max Per User must be 0 or greater."),
+                    ephemeral=True,
+                )
                 return
         except ValueError:
-            await interaction.response.send_message("❌ Invalid numbers provided", ephemeral=True)
-            return
-        end_time = datetime.utcnow() + timedelta(days=30)
-        end_trigger = "tickets_sold"
-        hours_after_sold_out = None
-        db = get_database()
-        creator_key = await db.get_user_api_key(interaction.user.id)
-        if not creator_key or not creator_key.get("torn_user_id"):
             await interaction.response.send_message(
-                "❌ You must link your Torn API key first to create paid raffles.",
+                embed=create_error_embed("Invalid numeric input", "Ticket Price, Total Tickets, and Max Per User must be valid integers."),
                 ephemeral=True,
             )
             return
-        item_repo = TornItemsRepository(get_pool())
-        single_item_meta = await item_repo.get_item_meta_by_name(str(self.prize.value))
-        draft = {
-            "guild_id": interaction.guild_id,
-            "creator_discord_id": interaction.user.id,
-            "prize": str(self.prize.value).strip(),
-            "ticket_payment_type": payment_type,
-            "ticket_price": price,
-            "tickets_available": total,
-            "max_tickets_per_user": max_per,
-            "end_time": end_time,
-            "end_trigger": end_trigger,
-            "hours_after_sold_out": hours_after_sold_out,
-            "single_item_meta": single_item_meta,
-        }
-        if _PACK_WORD_RE.search(draft["prize"]) and not single_item_meta:
+        try:
+            end_time = datetime.utcnow() + timedelta(days=30)
+            end_trigger = "tickets_sold"
+            hours_after_sold_out = None
+            db = get_database()
+            creator_key = await db.get_user_api_key(interaction.user.id)
+            if not creator_key or not creator_key.get("torn_user_id"):
+                await interaction.response.send_message(
+                    "❌ You must link your Torn API key first to create paid raffles.",
+                    ephemeral=True,
+                )
+                return
+            item_repo = TornItemsRepository(get_pool())
+            single_item_meta = await item_repo.get_item_meta_by_name(str(self.prize.value))
+            draft = {
+                "guild_id": interaction.guild_id,
+                "creator_discord_id": interaction.user.id,
+                "prize": str(self.prize.value).strip(),
+                "ticket_payment_type": payment_type,
+                "ticket_price": price,
+                "tickets_available": total,
+                "max_tickets_per_user": max_per,
+                "end_time": end_time,
+                "end_trigger": end_trigger,
+                "hours_after_sold_out": hours_after_sold_out,
+                "single_item_meta": single_item_meta,
+            }
+            if _PACK_WORD_RE.search(draft["prize"]) and not single_item_meta:
+                raffle_cog = self.bot.get_cog("RafflesCog")
+                if raffle_cog is None:
+                    await interaction.response.send_message("❌ Raffle system unavailable.", ephemeral=True)
+                    return
+                raffle_cog.store_pack_draft(interaction.user.id, draft)
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="Pack Detected",
+                        description="This prize looks like a pack. Define pack contents now or skip and create text-only.",
+                        color=discord.Color.blurple(),
+                    ),
+                    view=RafflePackChoiceView(self.bot, interaction.user.id),
+                    ephemeral=True,
+                )
+                return
             raffle_cog = self.bot.get_cog("RafflesCog")
             if raffle_cog is None:
                 await interaction.response.send_message("❌ Raffle system unavailable.", ephemeral=True)
                 return
-            raffle_cog.store_pack_draft(interaction.user.id, draft)
-            await interaction.response.send_message(
-                embed=discord.Embed(
-                    title="Pack Detected",
-                    description="This prize looks like a pack. Define pack contents now or skip and create text-only.",
-                    color=discord.Color.blurple(),
-                ),
-                view=RafflePackChoiceView(self.bot, interaction.user.id),
-                ephemeral=True,
-            )
-            return
-        raffle_cog = self.bot.get_cog("RafflesCog")
-        if raffle_cog is None:
-            await interaction.response.send_message("❌ Raffle system unavailable.", ephemeral=True)
-            return
-        await raffle_cog.create_raffle_from_draft(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
-
-
-class RaffleCreatePaymentTypeSelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="💊 Xanax", value="xanax"),
-            discord.SelectOption(label="📀 Erotic DVD", value="erotic_dvd"),
-        ]
-        super().__init__(placeholder="Choose payment type", min_values=1, max_values=1, options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        if isinstance(self.view, RaffleCreatePaymentTypeView):
-            self.view.selected_payment_type = self.values[0]
-        await interaction.response.defer()
-
-
-class RaffleCreatePaymentTypeView(discord.ui.View):
-    def __init__(self, bot: commands.Bot):
-        super().__init__(timeout=300)
-        self.bot = bot
-        self.selected_payment_type = "xanax"
-        self.select = RaffleCreatePaymentTypeSelect()
-        self.select.options[0].default = True
-        self.add_item(self.select)
-
-    @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
-    async def continue_to_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(RaffleCreateModalInternal(self.bot, payment_type=self.selected_payment_type))
+            await raffle_cog.create_raffle_from_draft(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
+        except Exception as exc:
+            log.exception("raffle create modal submit failed: %s", exc)
+            err_embed = create_error_embed("Raffle creation failed", f"{type(exc).__name__}: {exc}")
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=err_embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=err_embed, ephemeral=True)
 
 class RafflePackChoiceView(discord.ui.View):
     def __init__(self, bot: commands.Bot, creator_discord_id: int):
@@ -960,7 +954,7 @@ class RafflesCog(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def raffle_create(self, interaction: discord.Interaction):
         """🎉 Create a raffle - Admin only."""
-        await interaction.response.send_message("Choose a payment type, then continue.", ephemeral=True, view=RaffleCreatePaymentTypeView(self.bot))
+        await interaction.response.send_modal(RaffleCreateModal(self.bot))
     @app_commands.command(name="raffle_draw", description="🎲 Draw a raffle winner (Admin only)")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(raffle_id="🎟️ ID of the raffle to draw")
