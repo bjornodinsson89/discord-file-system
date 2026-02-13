@@ -48,6 +48,7 @@ from repositories.insurance import InsuranceRepository
 from repositories.raffles import RafflesRepository
 from repositories.audit import AuditRepository
 from repositories.jumps import JumpsRepository
+from repositories.users import UsersRepository
 from repositories.torn_items import TornItemsRepository, norm_name
 from services.payment_receipts import PaymentReceiptService
 
@@ -851,7 +852,6 @@ async def refresh_item_icons(interaction: discord.Interaction):
 class Jump99kSessionModal(discord.ui.Modal, title="99k Session"):
     title_input = discord.ui.TextInput(label="Title", required=True, max_length=120)
     max_slots = discord.ui.TextInput(label="Max slots (1-5)", required=True, max_length=1)
-    scheduled_start = discord.ui.TextInput(label="Scheduled start text (optional)", required=False, max_length=120)
     price_item = discord.ui.TextInput(label="Price item (Xanax or Erotic DVD)", required=True, max_length=20)
     price_quantity = discord.ui.TextInput(label="Price quantity", required=True, max_length=4)
     notes = discord.ui.TextInput(label="Notes (optional)", required=False, style=discord.TextStyle.paragraph, max_length=1000)
@@ -863,11 +863,17 @@ class Jump99kSessionModal(discord.ui.Modal, title="99k Session"):
         if session:
             self.title_input.default = str(session.get("title") or "")
             self.max_slots.default = str(session.get("max_slots") or 5)
-            self.scheduled_start.default = str(session.get("scheduled_start_text") or "")
             price = str(session.get("price_item") or "xanax")
             self.price_item.default = "Xanax" if price == "xanax" else "Erotic DVD"
             self.price_quantity.default = str(session.get("price_quantity") or 1)
-            self.notes.default = str(session.get("notes") or "")
+            scheduled = str(session.get("scheduled_start_text") or "").strip()
+            notes = str(session.get("notes") or "").strip()
+            if scheduled and notes:
+                self.notes.default = f"Start: {scheduled}\n{notes}"
+            elif scheduled:
+                self.notes.default = f"Start: {scheduled}"
+            else:
+                self.notes.default = notes
         else:
             self.max_slots.default = str(self.settings.get("default_max_slots") or 5)
 
@@ -884,8 +890,19 @@ class Jump99kSessionModal(discord.ui.Modal, title="99k Session"):
             return
         price_item = "xanax" if item_raw == "xanax" else "erotic_dvd"
         price_quantity = int(str(self.price_quantity.value).strip())
-        notes = str(self.notes.value).strip() or None
-        scheduled = str(self.scheduled_start.value).strip() or None
+        notes_raw = str(self.notes.value).strip()
+        scheduled: str | None = None
+        notes: str | None = None
+        if notes_raw:
+            # To stay within Discord's modal limit (max 5 top-level components), scheduled start
+            # is stored inside Notes as an optional first line: "Start: <text>".
+            lines = notes_raw.splitlines()
+            if lines and lines[0].strip().lower().startswith("start:"):
+                scheduled = lines[0].split(":", 1)[1].strip() or None
+                remaining = "\n".join(lines[1:]).strip()
+                notes = remaining or None
+            else:
+                notes = notes_raw
         announce_channel_id = self.settings.get("announce_channel_id")
 
         if self.session:
@@ -1307,48 +1324,16 @@ async def audit_log(interaction: discord.Interaction, limit: int = 10):
 
 @tasks.loop(seconds=config.CLEANUP_INTERVAL)
 async def cleanup_worker():
-    """Clean up expired reservations and update session statuses."""
-    try:
-        db = get_database()
-        
-        # Clean up expired signup reservations
-        deleted_signups = await db.cleanup_expired_signups()
-        if deleted_signups > 0:
-            log.info(f"Cleaned up {deleted_signups} expired signup reservations")
-        
-        # Auto-promote from waitlist for sessions with open spots
-        sessions = await db.get_sessions_with_expired_signups()
-        for session in sessions:
-            signups = await db.get_session_signups(session['id'])
-            confirmed_count = sum(1 for s in signups if s['status'] in ('reserved', 'confirmed'))
-            
-            while confirmed_count < session['max_spots']:
-                promoted = await db.promote_from_waitlist(session['id'])
-                if not promoted:
-                    break
-                
-                # Notify promoted user
-                try:
-                    guild = bot.get_guild(session['guild_id'])
-                    if guild:
-                        member = guild.get_member(promoted['discord_id'])
-                        if member:
-                            embed = create_success_embed(
-                                "Promoted from Waitlist!",
-                                f"A spot opened up in Session #{session['id']}! "
-                                f"You have {config.DEFAULT_RESERVATION_TIMEOUT} minutes to confirm your payment."
-                            )
-                            try:
-                                await member.send(embed=embed)
-                            except discord.Forbidden:
-                                pass
-                except Exception as e:
-                    log.warning(f"Could not notify promoted user: {e}")
-                
-                confirmed_count += 1
-        
-    except Exception as e:
-        log.error(f"Cleanup worker error: {e}", exc_info=True)
+    """Background cleanup task.
+
+    This repository has been refactored to the new `jump_99k_*` schema.
+    Any legacy cleanup logic referencing `happy_jump_*` tables must never run.
+
+    If you later add time-based automation (reservation expiry, waitlists, etc.)
+    for 99k sessions, implement it against `jump_99k_*` tables in
+    `repositories/jumps.py` and call it here.
+    """
+    return
 
 
 @cleanup_worker.before_loop
@@ -1358,55 +1343,67 @@ async def before_cleanup_worker():
 
 @tasks.loop(seconds=config.READINESS_REFRESH_INTERVAL)
 async def readiness_worker():
-    """Refresh readiness status for active sessions."""
+    """Refresh readiness snapshots for the active 99k session in each guild."""
     try:
         db = get_database()
+        repo = JumpsRepository(db.pool)
+        users_repo = UsersRepository(db.pool)
         torn_api = get_torn_api()
         security = get_security_manager()
-        
-        # Get active sessions across all guilds
-        all_sessions = []
+
         for guild in bot.guilds:
-            sessions = await db.get_active_sessions(guild.id)
-            all_sessions.extend(sessions)
-        
-        if not all_sessions:
-            return
-        
-        # Refresh readiness for each session
-        for session in all_sessions:
-            if session['status'] != 'locked':
-                continue  # Only track readiness for locked sessions
-            
-            signups = await db.get_confirmed_signups(session['id'])
-            
-            for signup in signups:
+            session = await repo.get_active_session(guild.id)
+            if not session:
+                continue
+
+            session_id = int(session["id"])
+            signups = await repo.list_signups(session_id)
+
+            # Include host in readiness checks as well.
+            participant_ids = {int(session.get("host_discord_id"))}
+            for s in signups:
+                if s.get("status") in {"signed_up", "completed", "not_completed"}:
+                    participant_ids.add(int(s["discord_id"]))
+
+            for discord_id in sorted(participant_ids):
                 try:
-                    api_key_data = await db.get_user_api_key(signup['discord_id'])
-                    if not api_key_data:
+                    key_row = await users_repo.get_user_api_key(discord_id)
+                    if not key_row:
                         continue
-                    
-                    api_key = security.decrypt_api_key(api_key_data['encrypted_key'])
-                    
-                    # Get user bars
-                    bars = await torn_api.get_user_bars(api_key)
-                    drug_cd = await torn_api.get_drug_cooldown(api_key)
-                    
-                    await db.update_readiness(
-                        session['id'],
-                        signup['discord_id'],
-                        energy=bars.get('energy', 0),
-                        energy_max=bars.get('energy_max', 150),
-                        drug_cooldown=drug_cd,
-                        status_text=_get_readiness_status(bars, drug_cd)
+
+                    key_data = dict(key_row)
+                    # Compatibility: some environments use api_key_encrypted, others encrypted_key.
+                    if "encrypted_key" not in key_data and "api_key_encrypted" in key_data:
+                        key_data["encrypted_key"] = key_data["api_key_encrypted"]
+
+                    api_key = security.decrypt_api_key(key_data["encrypted_key"])
+                    bars = await torn_api.get_user_bars_v2(api_key)
+                    cooldowns = await torn_api.get_user_cooldowns_v2(api_key)
+
+                    bars_data = (bars or {}).get("bars") or {}
+                    energy_data = bars_data.get("energy") or {}
+                    energy = int(energy_data.get("current", 0))
+                    energy_max = int(energy_data.get("maximum", 0) or energy_data.get("max", 0) or 0)
+
+                    cd_data = (cooldowns or {}).get("cooldowns") or {}
+                    drug_cd = int(cd_data.get("drug", 0))
+
+                    status_text = _get_readiness_status(
+                        {"energy": energy, "energy_max": energy_max},
+                        drug_cd,
                     )
-                    
+                    await repo.upsert_readiness_snapshot(
+                        session_id=session_id,
+                        discord_id=discord_id,
+                        energy=energy,
+                        energy_max=energy_max,
+                        drug_cooldown=drug_cd,
+                        status_text=status_text,
+                    )
                 except Exception as e:
-                    log.warning(f"Failed to refresh readiness for user {signup['discord_id']}: {e}")
-                
-                # Small delay to respect rate limits
-                await asyncio.sleep(0.5)
-    
+                    log.warning(f"Failed to refresh 99k readiness for user {discord_id}: {e}")
+
+                await asyncio.sleep(0.35)
     except Exception as e:
         log.error(f"Readiness worker error: {e}", exc_info=True)
 
