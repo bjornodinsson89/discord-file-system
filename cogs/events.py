@@ -851,12 +851,6 @@ async def refresh_item_icons(interaction: discord.Interaction):
 
 class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
     max_slots = discord.ui.TextInput(label="🎟️ Max slots (1-5)", required=True, max_length=1)
-    payment_type = discord.ui.TextInput(
-        label="💰 Payment Type",
-        required=True,
-        max_length=20,
-        placeholder="xanax or erotic dvd",
-    )
     spot_price = discord.ui.TextInput(
         label="💵 Spot Price",
         required=True,
@@ -876,20 +870,18 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
         max_length=1000,
     )
 
-    def __init__(self, settings: dict, session: dict | None = None):
+    def __init__(self, settings: dict, price_item: str, session: dict | None = None):
         super().__init__()
         self.settings = settings
         self.session = session
+        self.price_item = price_item if price_item in {"xanax", "erotic_dvd"} else "xanax"
         if session:
             self.max_slots.default = str(session.get("max_slots") or 5)
-            price = str(session.get("price_item") or "xanax")
-            self.payment_type.default = "xanax" if price == "xanax" else "erotic dvd"
             self.spot_price.default = str(session.get("price_quantity") or 1)
             self.possible_tct_start.default = str(session.get("scheduled_start_text") or "")
             self.notes.default = str(session.get("notes") or "")
         else:
             self.max_slots.default = str(self.settings.get("default_max_slots") or 5)
-            self.payment_type.default = "xanax"
             self.spot_price.default = "1"
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -911,26 +903,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     ephemeral=True,
                 )
                 return
-            item_raw = str(self.payment_type.value).strip().lower()
-            item_norm = norm_name(item_raw)
-            alias_map = {
-                "xan": "xanax",
-                "xanax": "xanax",
-                "edvd": "erotic dvd",
-                "e dvd": "erotic dvd",
-                "erotic dvd": "erotic dvd",
-            }
-            item_final = alias_map.get(item_norm)
-            if not item_final:
-                await interaction.response.send_message(
-                    embed=create_error_embed(
-                        "Invalid payment type",
-                        "Payment type must be **xanax** or **erotic dvd** (aliases: xan, edvd).",
-                    ),
-                    ephemeral=True,
-                )
-                return
-            price_item = "xanax" if item_final == "xanax" else "erotic_dvd"
+            price_item = self.price_item
             spot_price_raw = str(self.spot_price.value).strip()
             try:
                 price_quantity = int(spot_price_raw)
@@ -1015,6 +988,41 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 )
 
 
+class Jump99kPaymentTypeSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="💊 Xanax", value="xanax"),
+            discord.SelectOption(label="📀 Erotic DVD", value="erotic_dvd"),
+        ]
+        super().__init__(placeholder="Choose payment type", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if isinstance(view, Jump99kPaymentTypeView):
+            view.selected_payment_type = self.values[0]
+        await interaction.response.defer()
+
+
+class Jump99kPaymentTypeView(discord.ui.View):
+    def __init__(self, settings: dict, session: dict | None = None):
+        super().__init__(timeout=300)
+        self.settings = settings
+        self.session = session
+        default_value = str(session.get("price_item") or "xanax") if session else "xanax"
+        if default_value not in {"xanax", "erotic_dvd"}:
+            default_value = "xanax"
+        self.selected_payment_type = default_value
+        self.select = Jump99kPaymentTypeSelect()
+        for option in self.select.options:
+            option.default = option.value == default_value
+        self.add_item(self.select)
+
+    @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
+    async def continue_to_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(
+            Jump99kSessionModal(self.settings, price_item=self.selected_payment_type, session=self.session)
+        )
+
 class Jump99kEditSelectModal(discord.ui.Modal, title="Edit 99k Session"):
     jump_id = discord.ui.TextInput(label="Jump ID", required=True, max_length=20)
 
@@ -1030,7 +1038,7 @@ class Jump99kEditSelectModal(discord.ui.Modal, title="Edit 99k Session"):
             await interaction.response.send_message(embed=create_error_embed("Not found", "Session not found for this server."), ephemeral=True)
             return
         settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
-        await interaction.response.send_modal(Jump99kSessionModal(settings, session=session))
+        await interaction.response.send_message("Choose a payment type, then continue.", ephemeral=True, view=Jump99kPaymentTypeView(settings, session=session))
 
 
 jump99k_group = app_commands.Group(name="99k", description="99k happy jump commands")
@@ -1041,7 +1049,7 @@ async def jump99k_start(interaction: discord.Interaction):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
     if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
         return
-    await interaction.response.send_modal(Jump99kSessionModal(settings))
+    await interaction.response.send_message("Choose a payment type, then continue.", ephemeral=True, view=Jump99kPaymentTypeView(settings))
 
 
 @jump99k_group.command(name="edit", description="Edit an open 99k jump session")
