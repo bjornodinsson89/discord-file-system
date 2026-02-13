@@ -131,12 +131,12 @@ async def create_session_handler(request: CreateSessionRequest, admin_discord_id
     session_id = await jumps_repo.create_session(
         guild_id=request.guild_id,
         host_discord_id=admin_discord_id,
-        host_torn_id=0,  # Will be updated later
-        jump_type="99k",
-        max_spots=request.spots,
-        xanax_count=request.xanax_count,
-        payment_type=request.payment_type,
-        payment_amount=request.payment_amount,
+        title="99k Session",
+        scheduled_start_text=None,
+        max_slots=request.spots,
+        notes=None,
+        announce_channel_id=request.channel_id,
+        announce_message_id=None,
     )
 
     await get_jump_monitor().start(session_id)
@@ -168,7 +168,7 @@ async def lock_session_handler(session_id: int, admin_discord_id: int, source: s
     
     success = await jumps_repo.lock_session(session_id)
     if not success:
-        raise ValueError(f"Session {session_id} not found or already locked")
+        raise ValueError(f"Session {session_id} not found or already closed")
     
     return LockSessionResponse(f"Session #{session_id} has been locked for jump preparation.")
 
