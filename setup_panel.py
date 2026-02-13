@@ -9,6 +9,7 @@ from utils import GuildSettingsRepository
 from utils.database import MissingDatabaseColumnError
 from utils.discord_channels import resolve_guild_channel
 from utils.embeds import create_error_embed, create_info_embed, create_success_embed
+from repositories.jumps import JumpsRepository
 
 log = logging.getLogger("happy_jumper.setup_panel")
 
@@ -283,7 +284,8 @@ class SetupPanelView(OwnerView):
             f"Welcome enabled: `{bool(s.get('welcome_enabled'))}`\n"
             f"Raffle announcement enabled: `{bool(s.get('raffle_announce_enabled', True))}`\n"
             f"Auto complete: `{bool(s.get('auto_complete_enabled', True))}`\n"
-            f"Reservation timeout: `{s.get('reservation_timeout_minutes', 5)}` minutes"
+            f"Reservation timeout: `{s.get('reservation_timeout_minutes', 5)}` minutes\n"
+            f"Default 99k max slots: `{s.get('default_max_slots', 5)}`"
         ), inline=False)
         embed.add_field(name="Session placeholders", value=SUPPORTED_PLACEHOLDERS, inline=False)
         embed.add_field(name="Welcome placeholders", value=WELCOME_SUPPORTED_PLACEHOLDERS, inline=False)
@@ -544,7 +546,33 @@ class RolesView(BackView):
         self.add_item(SingleRoleSelect(self.panel, "host99k_role_id", "Set host role"))
         self.add_item(SingleRoleSelect(self.panel, "insurer_role_id", "Set insurer role"))
 
+    @discord.ui.button(label="Edit my insurer profile", style=discord.ButtonStyle.secondary)
+    async def insurer_profile(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(InsurerProfileModal(self.panel))
 
+
+
+
+class InsurerProfileModal(discord.ui.Modal):
+    display_name = discord.ui.TextInput(label="Display name / callsign", required=True, max_length=80)
+    policy_summary = discord.ui.TextInput(label="Policy summary", required=True, style=discord.TextStyle.paragraph, max_length=1200)
+    contact_instructions = discord.ui.TextInput(label="Contact instructions", required=True, style=discord.TextStyle.paragraph, max_length=1200)
+
+    def __init__(self, panel: "SetupPanelView"):
+        super().__init__(title="Insurer Profile")
+        self.panel = panel
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        repo = JumpsRepository(self.panel.db.pool)
+        await repo.create_insurer_profile(
+            guild_id=interaction.guild_id,
+            insurer_discord_id=interaction.user.id,
+            display_name=str(self.display_name.value).strip(),
+            policy_summary=str(self.policy_summary.value).strip(),
+            contact_instructions=str(self.contact_instructions.value).strip(),
+            metadata={},
+        )
+        await interaction.response.send_message(embed=create_success_embed("Insurer profile saved", "Your insurer profile was updated."), ephemeral=True)
 class WelcomeView(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -595,6 +623,22 @@ class WelcomeView(BackView):
             await _respond_callback_error(interaction, error)
 
 
+
+
+class DefaultMaxSlotsModal(discord.ui.Modal):
+    max_slots = discord.ui.TextInput(label="Default max slots (1-5)", required=True, max_length=1)
+
+    def __init__(self, panel: "SetupPanelView", current: int | None):
+        super().__init__(title="Set 99k Default Max Slots")
+        self.panel = panel
+        self.max_slots.default = str(current or 5)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw = str(self.max_slots.value).strip()
+        if not raw.isdigit() or not 1 <= int(raw) <= 5:
+            await interaction.response.send_message(embed=create_error_embed("Invalid value", "Default max slots must be between 1 and 5."), ephemeral=True)
+            return
+        await self.panel.save_changes(interaction, {"default_max_slots": int(raw)})
 class FeatureTogglesView(BackView):
     @discord.ui.button(label="Toggle Auto Complete", style=discord.ButtonStyle.primary)
     async def toggle_auto_complete(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -615,6 +659,13 @@ class FeatureTogglesView(BackView):
     async def reservation_timeout(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             await interaction.response.send_modal(TimeoutModal(self.panel, self.settings.get("reservation_timeout_minutes")))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="Set 99k Default Max Slots", style=discord.ButtonStyle.secondary)
+    async def default_slots(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await interaction.response.send_modal(DefaultMaxSlotsModal(self.panel, self.settings.get("default_max_slots")))
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
