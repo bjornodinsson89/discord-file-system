@@ -11,14 +11,15 @@ class PaymentReceiptService:
         self,
         *,
         featureType: str,
-        featureRefId: int,
+        featureRefId: int | str,
         payer_discord_id: Optional[int],
         payer_torn_id: Optional[int],
-        payee_discord_id: Optional[int],
-        payee_torn_id: Optional[int],
+        payee_discord_id: Optional[int] = None,
+        payee_torn_id: Optional[int] = None,
         amount: int,
         currency_type: str,
         metadata: Optional[dict[str, Any]] = None,
+        receipt_hash: Optional[str] = None,
     ) -> int:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -27,51 +28,58 @@ class PaymentReceiptService:
                     feature_type,
                     feature_ref_id,
                     payer_discord_id,
-                    payer_torn_id,
-                    payee_discord_id,
-                    payee_torn_id,
+                    payer_torn_user_id,
                     amount,
-                    currency_type,
-                    metadata
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+                    currency,
+                    receipt_hash,
+                    receipt_meta,
+                    status
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,'pending')
                 RETURNING id
                 """,
                 featureType,
-                featureRefId,
+                str(featureRefId),
                 payer_discord_id,
                 payer_torn_id,
-                payee_discord_id,
-                payee_torn_id,
                 amount,
                 currency_type,
+                receipt_hash or f"auto:{featureType}:{featureRefId}:{payer_discord_id}:{amount}",
                 metadata or {},
             )
             return int(row["id"])
 
-    async def markVerified(
-        self,
-        *,
-        receiptId: int,
-        verifier_discord_id: Optional[int],
-        verifier_torn_id: Optional[int],
-        verification_metadata: Optional[dict[str, Any]] = None,
-    ) -> bool:
+    async def markVerified(self, *, receiptId: int, verifier_discord_id: Optional[int], verifier_torn_id: Optional[int] = None, verification_metadata: Optional[dict[str, Any]] = None) -> bool:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE payment_receipts
-                SET verified = TRUE,
+                SET status = 'verified',
                     verified_at = NOW(),
-                    verifier_discord_id = $2,
-                    verifier_torn_id = $3,
-                    verification_metadata = $4::jsonb,
-                    updated_at = NOW()
+                    verified_by_discord_id = $2,
+                    receipt_meta = COALESCE(receipt_meta, '{}'::jsonb) || $3::jsonb
                 WHERE id = $1
                 RETURNING id
                 """,
                 receiptId,
                 verifier_discord_id,
-                verifier_torn_id,
+                verification_metadata or {},
+            )
+            return row is not None
+
+    async def markRejected(self, *, receiptId: int, verifier_discord_id: Optional[int], verification_metadata: Optional[dict[str, Any]] = None) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE payment_receipts
+                SET status = 'rejected',
+                    verified_at = NOW(),
+                    verified_by_discord_id = $2,
+                    receipt_meta = COALESCE(receipt_meta, '{}'::jsonb) || $3::jsonb
+                WHERE id = $1
+                RETURNING id
+                """,
+                receiptId,
+                verifier_discord_id,
                 verification_metadata or {},
             )
             return row is not None
