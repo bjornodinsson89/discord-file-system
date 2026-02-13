@@ -8,6 +8,7 @@ from repositories.raffles import RafflesRepository
 from utils.item_resolver import ItemResolver
 from utils import get_security_manager, get_torn_api
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
+from services.payment_receipts import PaymentReceiptService
 
 log = logging.getLogger("happy_jumper.services.raffle_payment")
 
@@ -117,6 +118,25 @@ class RafflePaymentService:
         verified = await self.repo.mark_entry_verified(entry_id)
         if not verified:
             return False, None, "Entry not found"
+
+        receipts = PaymentReceiptService(self.db.pool)
+        receipt_id = await receipts.createReceipt(
+            featureType="raffle",
+            featureRefId=int(entry_id),
+            payer_discord_id=int(entry.get("discord_id") or 0) or None,
+            payer_torn_id=buyer_torn_id,
+            payee_discord_id=int(entry.get("creator_discord_id") or 0) or None,
+            payee_torn_id=creator_torn_id,
+            amount=expected_qty,
+            currency_type=item_type,
+            metadata=match,
+        )
+        await receipts.markVerified(
+            receiptId=receipt_id,
+            verifier_discord_id=int(entry.get("discord_id") or 0) or None,
+            verifier_torn_id=buyer_torn_id,
+            verification_metadata={"source": "raffle_verify_entry_payment"},
+        )
 
         sold_out_id = await self.repo.recompute_tickets_sold_and_maybe_set_sold_out(int(entry["raffle_id"]))
         return True, sold_out_id, None

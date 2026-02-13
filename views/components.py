@@ -13,7 +13,7 @@ from utils.torn_api import TornAPIError, TornAPIPermissionError
 from utils.item_resolver import ItemResolver
 from utils.embeds import *
 from utils.payouts import parse_payout_string, payout_items_to_human, payout_items_to_string, PayoutParseError
-from services import JumpService, RaffleService, DomainError, AlreadyExists, NotFound, InvalidInput, BusinessRuleViolation
+from services import JumpService, RaffleService, DomainError, AlreadyExists, NotFound, InvalidInput, BusinessRuleViolation, PaymentReceiptService
 from services.jump_monitor import get_jump_monitor
 from repositories.jumps import JumpsRepository
 import config
@@ -346,6 +346,24 @@ class PaymentView(ui.View):
             
             jump_repo = JumpsRepository(db.pool)
             await jump_repo.mark_purchase_verified(self.session_id, interaction.user.id)
+            receipts = PaymentReceiptService(db.pool)
+            receipt_id = await receipts.createReceipt(
+                featureType="jump_99k",
+                featureRefId=self.session_id,
+                payer_discord_id=interaction.user.id,
+                payer_torn_id=key_data.get('torn_user_id'),
+                payee_discord_id=session.get('host_discord_id'),
+                payee_torn_id=session.get('host_torn_id'),
+                amount=session['payment_amount'],
+                currency_type=session['payment_type'],
+                metadata=payment,
+            )
+            await receipts.markVerified(
+                receiptId=receipt_id,
+                verifier_discord_id=interaction.user.id,
+                verifier_torn_id=key_data.get('torn_user_id'),
+                verification_metadata={"source": "jump_mark_paid"},
+            )
             await db.log_audit(interaction.user.id, "payment_verified", "session", self.session_id, payment)
             get_jump_monitor().mark_needs_refresh(self.session_id)
             
@@ -999,6 +1017,24 @@ class InsurancePaymentView(ui.View):
                 return
             
             await db.activate_coverage(self.coverage_id)
+            receipts = PaymentReceiptService(db.pool)
+            receipt_id = await receipts.createReceipt(
+                featureType="insurance",
+                featureRefId=self.coverage_id,
+                payer_discord_id=interaction.user.id,
+                payer_torn_id=key_data.get('torn_user_id'),
+                payee_discord_id=provider.get('discord_id'),
+                payee_torn_id=provider.get('torn_user_id'),
+                amount=coverage['premium_paid'],
+                currency_type='cash',
+                metadata=payment,
+            )
+            await receipts.markVerified(
+                receiptId=receipt_id,
+                verifier_discord_id=interaction.user.id,
+                verifier_torn_id=key_data.get('torn_user_id'),
+                verification_metadata={"source": "insurance_verify_payment"},
+            )
             await db.log_audit(interaction.user.id, "coverage_activated", "insurance", self.coverage_id)
             
             await interaction.followup.send(embed=create_success_embed(

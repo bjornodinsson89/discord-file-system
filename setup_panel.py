@@ -302,10 +302,7 @@ class SetupPanelView(OwnerView):
                 embed=create_error_embed(
                     "Database Update Required",
                     f"{exc}\n\n"
-                    "```sql\n"
-                    "ALTER TABLE guild_settings ADD COLUMN raffle_purchase_channel_id BIGINT;\n"
-                    "ALTER TABLE guild_settings ADD COLUMN raffle_announcement_channel_id BIGINT;\n"
-                    "```",
+                    "Apply the latest repository migrations, then retry setup.",
                 ),
                 ephemeral=True,
             )
