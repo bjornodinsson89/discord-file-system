@@ -109,13 +109,13 @@ class RaffleCreateModal(discord.ui.Modal):
         max_length=200,
     )
     payment_type = discord.ui.TextInput(
-        label="💰 Payment Type (free | 💊 xanax | 📀 erotic_dvd)",
+        label="💰 Payment Type (free/xanax/eDVD)",
         placeholder="free | xanax | erotic_dvd",
         required=True,
         max_length=20,
     )
     ticket_price = discord.ui.TextInput(
-        label="💵 Ticket Price (amount of 💊/📀; ignored for free)",
+        label="💵 Ticket Price (amount)",
         placeholder="Integer (ignored for free)",
         required=True,
         max_length=6,
