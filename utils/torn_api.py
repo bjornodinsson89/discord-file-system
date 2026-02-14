@@ -221,7 +221,7 @@ class TornAPIClient:
             required_item_id = item_id
         if not required_item_id:
             return None
-        logs = await self.get_user_log(api_key, limit=5)
+        logs = await self.get_user_logs(api_key, limit=5)
         for entry in logs:
             timestamp = int(entry.get("timestamp") or 0)
             if since_timestamp and timestamp < since_timestamp:
