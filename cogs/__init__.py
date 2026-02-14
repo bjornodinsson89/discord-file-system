@@ -4,4 +4,5 @@ EXTENSIONS = [
     "cogs.raffles",
     "cogs.pools",
     "cogs.setup",
+    "cogs.applications",
 ]
