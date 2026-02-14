@@ -6,10 +6,10 @@ from typing import Any, Optional
 
 from repositories.raffles import RafflesRepository
 from repositories.users import UsersRepository
-from utils.item_resolver import ItemResolver
 from utils import get_security_manager, get_torn_api
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 from services.payment_receipts import PaymentReceiptService
+from utils.payment_normalization import parse_payment_type
 
 log = logging.getLogger("happy_jumper.services.raffle_payment")
 
@@ -74,27 +74,18 @@ class RafflePaymentService:
             return False, None, "Torn verification is temporarily unavailable. Please try again shortly."
 
         expected_qty = int(entry["ticket_price"] or 0) * int(entry["num_tickets"] or 0)
-        item_type = str(entry["ticket_payment_type"]).lower()
+        try:
+            item_type = parse_payment_type(str(entry["ticket_payment_type"]), allow_free=False)
+        except ValueError:
+            item_type = ""
+
         if expected_qty <= 0:
             return False, None, "Invalid paid ticket quantity for verification."
 
-        resolver = ItemResolver(self.db.pool)
-        if item_type == "xanax":
-            required_item_id = await resolver.resolve_item_id("xanax")
-        elif item_type in ("erotic dvd", "erotic_dvd", "edvd"):
-            required_item_id = await resolver.resolve_item_id("erotic dvd")
-            if not required_item_id:
-                required_item_id = await resolver.resolve_item_id("edvd")
-        else:
-            required_item_id = 0
+        required_item_id = 206 if item_type == "xanax" else 366 if item_type == "erotic_dvd" else 0
 
         if not required_item_id:
-            return (
-                False,
-                None,
-                "Could not resolve ticket payment item ID from the Torn item index. "
-                "Run /refresh_item_icons and try again.",
-            )
+            return False, None, "Invalid payment type configured for this raffle."
 
         created_at = entry.get("created_at")
         since_dt = (created_at - timedelta(seconds=30)) if created_at else datetime.utcnow() - timedelta(minutes=10)

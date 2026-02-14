@@ -27,6 +27,7 @@ from views import (
 )
 from utils.payouts import parse_payout_string, payout_items_to_human, PayoutParseError
 from utils.torn_api import TornAPIError
+from utils.payment_normalization import parse_payment_type
 from setup_panel import (
     DEFAULT_WELCOME_TEMPLATE,
     detect_rules_channel,
@@ -865,7 +866,7 @@ async def refresh_item_icons(interaction: discord.Interaction):
 
 class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
     payment_type = discord.ui.TextInput(
-        label="Payment item",
+        label="Xanax 💊 | Erotic DvD 📀",
         required=True,
         max_length=20,
         placeholder="xanax",
@@ -903,11 +904,10 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 await interaction.response.send_message(embed=create_error_embed("Invalid max slots", "Max slots must be from 1 to 5."), ephemeral=True)
                 return
 
-            raw_payment_type = str(self.payment_type.value).strip().lower()
-            if raw_payment_type == "edvd":
-                raw_payment_type = "erotic_dvd"
-            if raw_payment_type not in {"xanax", "erotic_dvd"}:
-                await interaction.response.send_message(embed=create_error_embed("Invalid payment type", "Payment type must be one of: 💊 xanax, 📀 erotic_dvd."), ephemeral=True)
+            try:
+                raw_payment_type = parse_payment_type(str(self.payment_type.value), allow_free=False)
+            except ValueError as exc:
+                await interaction.response.send_message(embed=create_error_embed("Invalid payment type", str(exc)), ephemeral=True)
                 return
 
             try:
