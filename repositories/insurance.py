@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Optional, Any
 
 from .base import RepositoryBase
@@ -40,7 +41,7 @@ class InsuranceRepository(RepositoryBase):
                 discord_id,
                 torn_user_id,
                 torn_name,
-                application_data,
+                json.dumps(application_data or {}, separators=(",", ":"), ensure_ascii=False),
             )
             return int(row["provider_id"])
 
@@ -165,7 +166,7 @@ class InsuranceRepository(RepositoryBase):
                 claim_type,
                 xanax_lost,
                 payout_amount,
-                payout_items,
+                json.dumps(payout_items or [], separators=(",", ":"), ensure_ascii=False),
                 torn_log_id,
                 torn_log_timestamp,
                 torn_log_evidence
@@ -269,7 +270,7 @@ class InsuranceRepository(RepositoryBase):
 
     async def set_claim_payout_items(self, claim_id: int, payout_items: list[dict[str, Any]], resolved_by: int) -> bool:
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("UPDATE insurance_claims SET payout_items=$2::jsonb, resolved_by=$3, resolved_at=NOW() WHERE claim_id=$1 RETURNING claim_id", claim_id, payout_items, resolved_by)
+            row = await conn.fetchrow("UPDATE insurance_claims SET payout_items=$2::jsonb, resolved_by=$3, resolved_at=NOW() WHERE claim_id=$1 RETURNING claim_id", claim_id, json.dumps(payout_items or [], separators=(",", ":"), ensure_ascii=False), resolved_by)
             return row is not None
 
     async def mark_claim_paid_with_log(self, claim_id: int, resolved_by: int, payout_log_id: int, payout_log_timestamp: int, payout_log_evidence: str) -> bool:

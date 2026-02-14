@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 
@@ -44,7 +45,7 @@ class PaymentReceiptService:
                 amount,
                 currency_type,
                 receipt_hash or f"auto:{featureType}:{featureRefId}:{payer_discord_id}:{amount}",
-                metadata or {},
+                json.dumps(metadata or {}, separators=(",", ":"), ensure_ascii=False),
             )
             return int(row["id"])
 
@@ -62,7 +63,7 @@ class PaymentReceiptService:
                 """,
                 receiptId,
                 verifier_discord_id,
-                verification_metadata or {},
+                json.dumps(verification_metadata or {}, separators=(",", ":"), ensure_ascii=False),
             )
             return row is not None
 
@@ -108,7 +109,7 @@ class PaymentReceiptService:
                     amount,
                     currency_type,
                     receipt_hash or f"auto:{featureType}:{featureRefId}:{payer_discord_id}:{amount}",
-                    metadata or {},
+                    json.dumps(metadata or {}, separators=(",", ":"), ensure_ascii=False),
                 )
                 receipt_id = int(row["id"])
                 await conn.execute(
@@ -122,7 +123,7 @@ class PaymentReceiptService:
                     """,
                     receipt_id,
                     verifier_discord_id,
-                    {"verifier_torn_id": verifier_torn_id, "payee_discord_id": payee_discord_id, "payee_torn_id": payee_torn_id},
+                    json.dumps({"verifier_torn_id": verifier_torn_id, "payee_discord_id": payee_discord_id, "payee_torn_id": payee_torn_id}, separators=(",", ":"), ensure_ascii=False),
                 )
                 return receipt_id
     async def markRejected(self, *, receiptId: int, verifier_discord_id: Optional[int], verification_metadata: Optional[dict[str, Any]] = None) -> bool:
@@ -139,6 +140,6 @@ class PaymentReceiptService:
                 """,
                 receiptId,
                 verifier_discord_id,
-                verification_metadata or {},
+                json.dumps(verification_metadata or {}, separators=(",", ":"), ensure_ascii=False),
             )
             return row is not None

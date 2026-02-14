@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 from .base import RepositoryBase
@@ -189,7 +190,7 @@ class JumpsRepository(RepositoryBase):
                 "UPDATE jump_99k_signups SET overdose_flag=true, overdose_detected_at=NOW(), overdose_meta=$3::jsonb WHERE session_id=$1 AND participant_discord_id=$2 RETURNING id",
                 session_id,
                 discord_id,
-                overdose_meta,
+                json.dumps(overdose_meta or {}, separators=(",", ":"), ensure_ascii=False),
             )
             return row is not None
 
@@ -228,7 +229,7 @@ class JumpsRepository(RepositoryBase):
                 ON CONFLICT (guild_id, insurer_discord_id)
                 DO UPDATE SET display_name=EXCLUDED.display_name, policy_summary=EXCLUDED.policy_summary, contact_instructions=EXCLUDED.contact_instructions, insurer_meta=EXCLUDED.insurer_meta, updated_at=NOW()
                 """,
-                guild_id, insurer_discord_id, display_name, policy_summary, contact_instructions, metadata,
+                guild_id, insurer_discord_id, display_name, policy_summary, contact_instructions, json.dumps(metadata or {}, separators=(",", ":"), ensure_ascii=False),
             )
 
     async def get_insurer_profile(self, *, guild_id: int, insurer_discord_id: int) -> Optional[dict]:
@@ -363,7 +364,7 @@ class JumpsRepository(RepositoryBase):
                     denial_reason = NULL
                 RETURNING *
                 """,
-                guild_id, discord_id, torn_user_id, torn_name, display_name, forum_url, application_data,
+                guild_id, discord_id, torn_user_id, torn_name, display_name, forum_url, json.dumps(application_data or {}, separators=(",", ":"), ensure_ascii=False),
             )
             return dict(row)
 
