@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from repositories.insurance import InsuranceRepository
 from .errors import InvalidInput, NotFound, BusinessRuleViolation
 from .validation import sanitize_text, validate_discord_id, validate_guild_id, validate_torn_id, validate_url
 
@@ -11,6 +12,7 @@ log = logging.getLogger("happy_jumper.services.insurance")
 class InsuranceService:
     def __init__(self, db):
         self.db = db
+        self.repo = InsuranceRepository(db.pool)
 
     async def submit_insurer_application(
         self,
@@ -38,13 +40,16 @@ class InsuranceService:
                 "description_terms": clean_desc,
                 "proof_vouches": None,
             }
-            return await self.db.upsert_insurer_application(
+            provider_id = await self.repo.upsert_provider_application(
                 guild_id=guild_id,
                 discord_id=discord_id,
                 torn_user_id=torn_user_id,
-                company_name=clean_company,
+                torn_name=clean_company,
+                display_name=clean_company,
+                forum_url=clean_forum_url,
                 application_data=payload,
             )
+            return {"provider_id": provider_id}
         except Exception:
             log.exception("Submit insurer application failed guild_id=%s discord_id=%s", guild_id, discord_id)
             raise
@@ -54,10 +59,10 @@ class InsuranceService:
             raise InvalidInput("Invalid decision")
         validate_discord_id(admin_discord_id)
         try:
-            result = await self.db.review_insurer_application(provider_id, decision, admin_discord_id, reason=reason)
-            if not result:
+            resolved = await self.repo.resolve_provider_application(provider_id, decision, admin_discord_id, reason=reason)
+            if not resolved:
                 raise NotFound("Application not found")
-            return result
+            return {"ok": True}
         except (InvalidInput, NotFound, BusinessRuleViolation):
             raise
         except Exception:

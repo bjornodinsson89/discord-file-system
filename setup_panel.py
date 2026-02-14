@@ -6,6 +6,7 @@ from typing import Any
 import discord
 
 from utils import GuildSettingsRepository
+from repositories.audit import AuditRepository
 from utils.database import MissingDatabaseColumnError
 from utils.discord_channels import resolve_guild_channel
 from utils.embeds import create_error_embed, create_info_embed, create_success_embed
@@ -298,7 +299,8 @@ class SetupPanelView(OwnerView):
     async def save_changes(self, interaction: discord.Interaction, changes: dict[str, Any]) -> None:
         old_values = {k: self.settings.get(k) for k in changes}
         try:
-            await self.db.update_guild_settings(interaction.guild_id, **changes)
+            settings_repo = GuildSettingsRepository(self.db)
+            await settings_repo.upsert_settings(interaction.guild_id, **changes)
         except MissingDatabaseColumnError as exc:
             await interaction.response.send_message(
                 embed=create_error_embed(
@@ -310,7 +312,8 @@ class SetupPanelView(OwnerView):
             )
             return
         self.settings.update(changes)
-        await self.db.log_audit(
+        audit_repo = AuditRepository(self.db.pool)
+        await audit_repo.log_audit(
             actor_discord_id=interaction.user.id,
             action="setup_panel_updated",
             target_type="guild",

@@ -402,8 +402,8 @@ async def _reserve_raffle_tickets(
             await _send_error("❌ Failed to enter raffle")
             return
     # PAID ENTRY
-    db = _DBContext()
-    buyer_key = await db.get_user_api_key(interaction.user.id)
+    users_repo = UsersRepository(get_pool())
+    buyer_key = await users_repo.get_user_api_key(interaction.user.id)
     if not buyer_key or not buyer_key.get("torn_user_id"):
         await _send_error(
             "❌ You must link your Torn API key first to buy paid raffle tickets."
@@ -411,7 +411,7 @@ async def _reserve_raffle_tickets(
         return
     creator_torn_id = raffle.get("creator_torn_id")
     if not creator_torn_id:
-        creator_key = await db.get_user_api_key(int(raffle["creator_discord_id"]))
+        creator_key = await users_repo.get_user_api_key(int(raffle["creator_discord_id"]))
         creator_torn_id = creator_key.get("torn_user_id") if creator_key else None
     if not creator_torn_id:
         await _send_error("❌ Raffle creator Torn ID is not configured. Please contact an admin.")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from types import SimpleNamespace
+from dataclasses import dataclass
 from typing import Optional
 
 import asyncpg
@@ -15,16 +15,21 @@ class MissingDatabaseColumnError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class Database:
+    pool: asyncpg.Pool
+
+
 _pool: Optional[asyncpg.Pool] = None
-_database_manager = SimpleNamespace(pool=None)
+_db: Optional[Database] = None
 
 
 async def init_pool() -> asyncpg.Pool:
-    global _pool
+    global _pool, _db
     if pool_is_open(_pool):
         return _pool  # type: ignore[return-value]
     _pool = await create_pool()
-    _database_manager.pool = _pool
+    _db = Database(pool=_pool)
     log.info("Database pool initialized")
     return _pool
 
@@ -36,17 +41,19 @@ def get_pool() -> asyncpg.Pool:
 
 
 async def close_pool() -> None:
-    global _pool
+    global _pool, _db
     if _pool is not None and pool_is_open(_pool):
         await _pool.close()
     _pool = None
-    _database_manager.pool = None
+    _db = None
 
 
 # Backward-compatible alias
 init_database = init_pool
 
 
-def get_database():
-    _database_manager.pool = get_pool()
-    return _database_manager
+def get_database() -> Database:
+    global _db
+    if _db is None or not pool_is_open(_db.pool):
+        _db = Database(pool=get_pool())
+    return _db

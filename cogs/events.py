@@ -56,6 +56,18 @@ from services.payment_receipts import PaymentReceiptService
 
 log = logging.getLogger("happy_jumper")
 
+
+async def try_advisory_lock(pool, lock_key: int) -> bool:
+    async with pool.acquire() as conn:
+        return bool(await conn.fetchval("SELECT pg_try_advisory_lock($1)", lock_key))
+
+
+async def release_advisory_lock(pool, lock_key: int) -> bool:
+    async with pool.acquire() as conn:
+        return bool(await conn.fetchval("SELECT pg_advisory_unlock($1)", lock_key))
+
+
+
 async def ensure_admin(interaction: discord.Interaction) -> bool:
     """Ensure invoking user can manage guild bot configuration/actions."""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -305,7 +317,7 @@ class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
         }
         fallback_name = (interaction.user.display_name or interaction.user.name or "").strip()
         effective_torn_name = torn_name or fallback_name
-        host_application = await db.upsert_host_application(
+        host_application = await JumpsRepository(db.pool).upsert_host_application(
             guild_id=interaction.guild_id,
             discord_id=interaction.user.id,
             torn_user_id=int(raw_torn_id),
@@ -361,7 +373,7 @@ async def sync_application_commands() -> None:
 
     db = get_database()
     lock_key = 82542001
-    have_lock = await db.try_advisory_lock(lock_key)
+    have_lock = await try_advisory_lock(db.pool, lock_key)
     if not have_lock:
         log.info("Command sync skipped (another bot process currently syncing commands)")
         return
@@ -403,7 +415,7 @@ async def sync_application_commands() -> None:
     except Exception:
         log.exception("Failed to sync commands")
     finally:
-        await db.release_advisory_lock(lock_key)
+        await release_advisory_lock(db.pool, lock_key)
 
 
 async def _send_interaction_error(interaction: discord.Interaction, message: str):
@@ -449,7 +461,7 @@ async def register_persistent_application_review_views() -> None:
     """Register persistent approve/deny views for pending applications."""
     db = get_database()
 
-    insurer_apps = await db.list_pending_insurer_applications()
+    insurer_apps = await InsuranceRepository(db.pool).list_pending_insurer_applications()
     for app in insurer_apps:
         guild_id = app.get("guild_id")
         if guild_id is None:
@@ -463,7 +475,7 @@ async def register_persistent_application_review_views() -> None:
             )
         )
 
-    host_apps = await db.list_pending_host_applications()
+    host_apps = await JumpsRepository(db.pool).list_pending_host_applications()
     for app in host_apps:
         bot.add_view(
             ApplicationReviewView(
@@ -589,7 +601,7 @@ async def remove_api_key(interaction: discord.Interaction):
     """Remove user's stored API key."""
     await interaction.response.defer(ephemeral=True)
     db = get_database()
-    existing = await db.get_user_api_key(interaction.user.id)
+    existing = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
     
     if not existing:
         embed = create_error_embed("No API Key", "You don't have an API key registered.")
@@ -610,7 +622,7 @@ async def my_sessions(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     db = get_database()
     
-    sessions = await db.get_active_sessions(interaction.guild_id)
+    sessions = await JumpsRepository(db.pool).list_open_sessions_by_guild(interaction.guild_id)
     
     user_signups = []
     user_waitlist = []
@@ -620,11 +632,11 @@ async def my_sessions(interaction: discord.Interaction):
         if session['host_discord_id'] == interaction.user.id:
             hosted_sessions.append(session)
         
-        signup = await db.get_signup(session['id'], interaction.user.id)
+        signup = await JumpsRepository(db.pool).get_signup(session['id'], interaction.user.id)
         if signup:
             user_signups.append({'session': session, 'signup': signup})
         
-        waitlist_pos = await db.get_waitlist_position(session['id'], interaction.user.id)
+        waitlist_pos = None
         if waitlist_pos:
             user_waitlist.append({'session': session, 'position': waitlist_pos})
     
@@ -673,7 +685,7 @@ async def stats(interaction: discord.Interaction):
     """Show server statistics."""
     await interaction.response.defer(ephemeral=True)
     db = get_database()
-    stats = await db.get_guild_statistics(interaction.guild_id)
+    stats = await JumpsRepository(db.pool).get_guild_statistics(interaction.guild_id)
     
     embed = create_statistics_embed(stats, f"Statistics for {interaction.guild.name}")
     await interaction.followup.send(embed=embed, ephemeral=True)
@@ -692,7 +704,7 @@ async def refresh_item_icons(interaction: discord.Interaction):
         return
 
     db = get_database()
-    row = await db.get_user_api_key(interaction.user.id)
+    row = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
     if not row:
         await interaction.followup.send(
             embed=create_error_embed("API Key Required", "Use the bot's API key setup first."),
@@ -1311,7 +1323,7 @@ async def audit_log(interaction: discord.Interaction, limit: int = 10):
         return
     try:
         db = get_database()
-        entries = await db.get_audit_logs(guild_id=interaction.guild_id, limit=min(limit, 20))
+        entries = await AuditRepository(db.pool).get_audit_logs(guild_id=interaction.guild_id, limit=min(limit, 20))
         if not entries:
             await interaction.followup.send(embed=create_info_embed("Audit Log", "No audit entries found."), ephemeral=True)
             return
@@ -1442,7 +1454,7 @@ async def insurance_monitor():
         
         for coverage in active_coverage:
             try:
-                api_key_data = await db.get_user_api_key(coverage['user_discord_id'])
+                api_key_data = await UsersRepository(db.pool).get_user_api_key(coverage['user_discord_id'])
                 if not api_key_data:
                     continue
                 
@@ -1624,7 +1636,7 @@ async def _draw_raffle_winner(raffle: dict):
         if not guild:
             return
         
-        settings = await db.get_guild_settings(raffle['guild_id'])
+        settings = await GuildSettingsRepository(db).get_or_create(raffle['guild_id'])
         channel_id = settings.get('raffle_channel_id')
         
         if not channel_id:
@@ -1640,7 +1652,7 @@ async def _draw_raffle_winner(raffle: dict):
             except Exception:
                 channel = None
         if not channel:
-            await db.update_guild_settings(raffle['guild_id'], raffle_channel_id=None)
+            await GuildSettingsRepository(db).upsert_settings(raffle['guild_id'], raffle_channel_id=None)
             log.warning("Configured raffle channel invalid for guild %s; cleared raffle_channel_id", raffle['guild_id'])
             return
 
