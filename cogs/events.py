@@ -867,6 +867,45 @@ async def refresh_item_icons(interaction: discord.Interaction):
     )
 
 
+
+async def _disable_99k_session_messages(bot_client: commands.Bot, session: dict, *, status_text: str) -> None:
+    announce_channel_id = session.get("announce_channel_id")
+    announce_message_id = session.get("announce_message_id")
+    if announce_channel_id and announce_message_id:
+        channel = bot_client.get_channel(int(announce_channel_id))
+        if channel is None:
+            try:
+                channel = await bot_client.fetch_channel(int(announce_channel_id))
+            except Exception:
+                channel = None
+        if channel:
+            try:
+                msg = await channel.fetch_message(int(announce_message_id))
+                view = discord.ui.View.from_message(msg, timeout=None)
+                for child in view.children:
+                    child.disabled = True
+                content = msg.content or ""
+                if status_text not in content:
+                    content = f"{content}\n[{status_text}]".strip()
+                await msg.edit(content=content, view=view)
+            except Exception:
+                pass
+
+    private_channel_id = session.get("private_channel_id")
+    roster_message_id = session.get("roster_message_id")
+    if private_channel_id and roster_message_id:
+        guild = bot_client.get_guild(int(session["guild_id"]))
+        if guild:
+            try:
+                pch = guild.get_channel(int(private_channel_id)) or await guild.fetch_channel(int(private_channel_id))
+                roster_msg = await pch.fetch_message(int(roster_message_id))
+                view = discord.ui.View.from_message(roster_msg, timeout=None)
+                for child in view.children:
+                    child.disabled = True
+                await roster_msg.edit(view=view)
+            except Exception:
+                pass
+
 async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:
     db = get_database()
     repo = JumpsRepository(db.pool)
@@ -1018,7 +1057,15 @@ class Jump99kUserControlsView(discord.ui.View):
 
         session = await repo.get_session(self.session_id)
         if not session or str(session.get("status", "")).lower() != "open":
-            await interaction.response.send_message("Session is not open.", ephemeral=True)
+            try:
+                if interaction.message:
+                    view = discord.ui.View.from_message(interaction.message, timeout=None)
+                    for child in view.children:
+                        child.disabled = True
+                    await interaction.message.edit(view=view)
+            except Exception:
+                pass
+            await interaction.response.send_message("This is closed.", ephemeral=True)
             return
         if int(session.get("guild_id", 0)) != int(interaction.guild_id):
             await interaction.response.send_message("Session not found.", ephemeral=True)
@@ -1102,7 +1149,15 @@ class Jump99kSignupView(discord.ui.View):
 
         session = await repo.get_session(self.session_id)
         if not session or str(session.get("status", "")).lower() != "open":
-            await interaction.response.send_message("Session is not open.", ephemeral=True)
+            try:
+                if interaction.message:
+                    view = discord.ui.View.from_message(interaction.message, timeout=None)
+                    for child in view.children:
+                        child.disabled = True
+                    await interaction.message.edit(view=view)
+            except Exception:
+                pass
+            await interaction.response.send_message("This is closed.", ephemeral=True)
             return
         if int(session.get("guild_id", 0)) != int(interaction.guild_id):
             await interaction.response.send_message("Session not found.", ephemeral=True)
@@ -1360,6 +1415,7 @@ async def jump99k_end(interaction: discord.Interaction):
         await interaction.response.send_message(embed=create_error_embed("Could not close", "Session was already closed."), ephemeral=True)
         return
 
+    await _disable_99k_session_messages(interaction.client, session, status_text="Session closed")
     private_channel_id = session.get("private_channel_id")
     if private_channel_id and interaction.guild:
         try:
@@ -1367,8 +1423,10 @@ async def jump99k_end(interaction: discord.Interaction):
             await private_channel.delete(reason="99k session finished")
         except Exception:
             log.exception("Failed to delete private 99k channel for session %s", session.get("id"))
+            await _disable_99k_session_messages(interaction.client, session, status_text="Session closed")
         await repo.clear_private_channel(int(session["id"]))
 
+    await repo.mark_cleaned(int(session["id"]))
     await interaction.response.send_message(embed=create_success_embed("99k session ended", f"Closed session #{session['id']}."), ephemeral=True)
 
 
@@ -1668,21 +1726,22 @@ async def audit_log(interaction: discord.Interaction, limit: int = 10):
 
 @tasks.loop(seconds=config.CLEANUP_INTERVAL)
 async def cleanup_worker():
-    """Background cleanup task for 99k private channels."""
+    """Background cleanup task for 99k private channels and stale buttons."""
     try:
         repo = JumpsRepository(get_pool())
-        sessions = await repo.list_non_open_sessions_with_private_channel()
+        sessions = await repo.list_non_open_sessions_for_cleanup()
         for session in sessions:
+            await _disable_99k_session_messages(bot, session, status_text=f"Session {session.get('status')}")
             guild = bot.get_guild(int(session["guild_id"]))
-            if not guild:
+            private_channel_id = session.get("private_channel_id")
+            if private_channel_id and guild:
+                try:
+                    private_channel = await guild.fetch_channel(int(private_channel_id))
+                    await private_channel.delete(reason="99k session finished")
+                except Exception:
+                    log.exception("Failed cleanup delete for 99k private channel session=%s", session.get("id"))
                 await repo.clear_private_channel(int(session["id"]))
-                continue
-            try:
-                private_channel = await guild.fetch_channel(int(session["private_channel_id"]))
-                await private_channel.delete(reason="99k session finished")
-            except Exception:
-                log.exception("Failed cleanup delete for 99k private channel session=%s", session.get("id"))
-            await repo.clear_private_channel(int(session["id"]))
+            await repo.mark_cleaned(int(session["id"]))
     except Exception:
         log.exception("cleanup_worker failed")
 

@@ -403,11 +403,29 @@ class JumpsRepository(RepositoryBase):
                 """
                 SELECT *
                 FROM jump_99k_sessions
-                WHERE status IN ('closed', 'cancelled')
+                WHERE status IN ('closed', 'cancelled', 'expired', 'completed')
                   AND private_channel_id IS NOT NULL
+                  AND cleaned_at IS NULL
                 """
             )
             return [dict(r) for r in rows]
+
+
+    async def list_non_open_sessions_for_cleanup(self) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM jump_99k_sessions
+                WHERE status IN ('closed', 'cancelled', 'expired', 'completed')
+                  AND cleaned_at IS NULL
+                """
+            )
+            return [dict(r) for r in rows]
+
+    async def mark_cleaned(self, session_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute("UPDATE jump_99k_sessions SET cleaned_at = NOW(), updated_at = NOW() WHERE id = $1", session_id)
 
     async def list_open_sessions_by_guild(self, guild_id: int) -> list[dict]:
         async with self.pool.acquire() as conn:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Optional
 
 from .base import RepositoryBase
@@ -209,6 +210,103 @@ class RafflesRepository(RepositoryBase):
             )
             return [dict(row) for row in rows]
 
+    async def get_stale_raffles_for_cleanup(self) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM raffles
+                WHERE status IN ('completed', 'cancelled', 'expired', 'closed')
+                  AND cleaned_at IS NULL
+                """
+            )
+            return [dict(row) for row in rows]
+
+    async def mark_cleaned(self, raffle_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE raffles SET cleaned_at = NOW() WHERE raffle_id = $1",
+                raffle_id,
+            )
+
+    async def set_announcement_ref(self, raffle_id: int, channel_id: int, message_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE raffles
+                SET announcement_channel_id = $2,
+                    announcement_message_id = $3
+                WHERE raffle_id = $1
+                """,
+                raffle_id,
+                channel_id,
+                message_id,
+            )
+
+    async def set_prize_confirm_dm_ref(self, raffle_id: int, channel_id: int, message_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE raffles
+                SET prize_confirm_dm_channel_id = $2,
+                    prize_confirm_dm_message_id = $3
+                WHERE raffle_id = $1
+                """,
+                raffle_id,
+                channel_id,
+                message_id,
+            )
+
+    async def set_prize_sent(self, raffle_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE raffles SET prize_sent_at = NOW() WHERE raffle_id = $1",
+                raffle_id,
+            )
+
+    async def get_pending_prize_confirm_dm_rows(self) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT raffle_id, creator_discord_id, prize_confirm_dm_message_id
+                FROM raffles
+                WHERE prize_confirm_dm_message_id IS NOT NULL
+                  AND status = 'completed'
+                  AND prize_sent_at IS NULL
+                """
+            )
+            return [dict(row) for row in rows]
+
+    async def get_prize_items_payload(self, raffle: dict) -> list[dict]:
+        if raffle.get("prize_item_id") and raffle.get("prize_quantity"):
+            return [{"item_id": int(raffle["prize_item_id"]), "qty": int(raffle["prize_quantity"])}]
+
+        raw = raffle.get("prize_items")
+        if not raw:
+            return []
+
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return []
+        else:
+            parsed = raw
+
+        if not isinstance(parsed, list):
+            return []
+
+        items: list[dict] = []
+        for row in parsed:
+            if not isinstance(row, dict):
+                continue
+            item_id = row.get("item_id") or row.get("id")
+            qty = row.get("qty") or row.get("quantity")
+            if not item_id or not qty:
+                continue
+            items.append({"item_id": int(item_id), "qty": int(qty)})
+        return items
+
     async def get_raffle_entries(self, raffle_id: int) -> list:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
@@ -366,7 +464,9 @@ class RafflesRepository(RepositoryBase):
                 """
                 UPDATE raffles
                 SET purchase_panel_channel_id = $2,
-                    purchase_panel_message_id = $3
+                    purchase_panel_message_id = $3,
+                    purchase_channel_id = $2,
+                    purchase_message_id = $3
                 WHERE raffle_id = $1
                 """,
                 raffle_id,
