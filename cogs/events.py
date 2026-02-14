@@ -725,27 +725,14 @@ async def refresh_item_icons(interaction: discord.Interaction):
 
 
 async def _disable_99k_session_messages(bot_client: commands.Bot, session: dict, *, status_text: str) -> None:
-    announce_channel_id = session.get("announce_channel_id")
-    announce_message_id = session.get("announce_message_id")
-    if announce_channel_id and announce_message_id:
-        channel = bot_client.get_channel(int(announce_channel_id))
-        if channel is None:
-            try:
-                channel = await bot_client.fetch_channel(int(announce_channel_id))
-            except Exception:
-                channel = None
-        if channel:
-            try:
-                msg = await channel.fetch_message(int(announce_message_id))
-                view = discord.ui.View.from_message(msg, timeout=None)
-                for child in view.children:
-                    child.disabled = True
-                content = msg.content or ""
-                if status_text not in content:
-                    content = f"{content}\n[{status_text}]".strip()
-                await msg.edit(content=content, view=view)
-            except Exception:
-                pass
+    repo = JumpsRepository(get_pool())
+    await upsert_99k_announcement(
+        bot=bot_client,
+        repo=repo,
+        guild_id=int(session["guild_id"]),
+        session_id=int(session["id"]),
+        channel_id=int(session["announce_channel_id"]) if session.get("announce_channel_id") else None,
+    )
 
     private_channel_id = session.get("private_channel_id")
     roster_message_id = session.get("roster_message_id")
@@ -762,6 +749,93 @@ async def _disable_99k_session_messages(bot_client: commands.Bot, session: dict,
             except Exception:
                 pass
 
+
+def _format_99k_price_item_label(price_item: str | None) -> str:
+    normalized = str(price_item or "").strip().lower()
+    if normalized == "xanax":
+        return "Xanax 💊"
+    if normalized in {"erotic dvd", "erotic_dvd", "edvd"}:
+        return "Erotic DvD 📀"
+    if normalized in {"donator pack", "donator_pack", "dp"}:
+        return "Donator Pack 🎁"
+    return str(price_item or "Unknown")
+
+
+def _is_99k_closed(status: str | None) -> bool:
+    return str(status or "").strip().lower() in {"closed", "cancelled", "finished", "completed", "expired"}
+
+
+def build_99k_announcement_content(session: dict, signed_up: int, paid: int) -> str:
+    session_id = int(session["id"])
+    tct_start_text = str(session.get("scheduled_start_text") or "Not set")
+    price_amount = int(session.get("price_amount") or 0)
+    price_item_label = _format_99k_price_item_label(session.get("price_item"))
+    notes_or_placeholder = str(session.get("notes") or "None")
+    max_slots = int(session.get("max_slots") or 0)
+    is_closed = _is_99k_closed(session.get("status"))
+    is_full = not is_closed and max_slots > 0 and signed_up >= max_slots
+    status_text = "Closed" if is_closed else ("Full" if is_full else "Open")
+    return (
+        f"📣✨ **99k Happy Jump** ✨ — **Session #{session_id}**\n"
+        f"🕒 Possible TCT start: {tct_start_text}\n"
+        f"💰 Spot price: {price_amount}x {price_item_label}\n"
+        f"📝 Notes: {notes_or_placeholder}\n"
+        f"👥 Signed up: {signed_up}/{max_slots} • ✅ Paid: {paid}\n"
+        f"🔒 Status: {status_text}\n"
+        "_Click **Join** to reserve your spot._"
+    )
+
+
+async def upsert_99k_announcement(
+    bot: commands.Bot,
+    repo: JumpsRepository,
+    guild_id: int,
+    session_id: int,
+    channel_id: int | None,
+) -> None:
+    session = await repo.get_session(session_id)
+    if not session or int(session.get("guild_id", 0)) != int(guild_id):
+        return
+
+    signups = await repo.list_signups(session_id)
+    signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
+    paid = sum(1 for row in signups if row.get("payment_verified"))
+    max_slots = int(session.get("max_slots") or 0)
+    is_closed = _is_99k_closed(session.get("status"))
+    is_full = not is_closed and max_slots > 0 and signed_up >= max_slots
+
+    target_channel_id = int(channel_id or session.get("announce_channel_id") or 0)
+    if target_channel_id <= 0:
+        return
+
+    guild = bot.get_guild(int(guild_id))
+    channel = guild.get_channel(target_channel_id) if guild else bot.get_channel(target_channel_id)
+    if channel is None:
+        try:
+            channel = await (guild.fetch_channel(target_channel_id) if guild else bot.fetch_channel(target_channel_id))
+        except Exception:
+            return
+
+    content = build_99k_announcement_content(session, signed_up, paid)
+    view = Jump99kSignupView(session_id=session_id, is_full=is_full, is_closed=is_closed)
+
+    announce_channel_id = session.get("announce_channel_id")
+    announce_message_id = session.get("announce_message_id")
+    if announce_channel_id and announce_message_id:
+        try:
+            msg = await channel.fetch_message(int(announce_message_id))
+            await msg.edit(content=content, view=view)
+            if int(announce_channel_id) != int(channel.id):
+                await repo.set_announcement_message(session_id, channel_id=int(channel.id), message_id=int(msg.id))
+            return
+        except discord.NotFound:
+            pass
+        except Exception:
+            return
+
+    msg = await channel.send(content, view=view)
+    await repo.set_announcement_message(session_id, channel_id=int(channel.id), message_id=int(msg.id))
+
 async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:
     db = get_database()
     repo = JumpsRepository(db.pool)
@@ -769,20 +843,13 @@ async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:
         session = await repo.get_session(session_id)
         if not session:
             return
-        channel_id = session.get("announce_channel_id")
-        message_id = session.get("announce_message_id")
-        if not channel_id or not message_id:
-            return
-        guild = bot_client.get_guild(int(session["guild_id"]))
-        channel = guild.get_channel(int(channel_id)) if guild else bot_client.get_channel(int(channel_id))
-        if not channel:
-            return
-        message = await channel.fetch_message(int(message_id))
-        signups = await repo.list_signups(session_id)
-        signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
-        paid = sum(1 for row in signups if row.get("payment_verified"))
-        base_content = message.content.split("\nSigned up:", 1)[0]
-        await message.edit(content=f"{base_content}\nSigned up: {signed_up} / Paid: {paid}")
+        await upsert_99k_announcement(
+            bot=bot_client,
+            repo=repo,
+            guild_id=int(session["guild_id"]),
+            session_id=int(session_id),
+            channel_id=int(session["announce_channel_id"]) if session.get("announce_channel_id") else None,
+        )
     except Exception:
         pass
 
@@ -989,12 +1056,19 @@ class Jump99kUserControlsView(discord.ui.View):
 
 
 class Jump99kSignupView(discord.ui.View):
-    def __init__(self, session_id: int):
+    def __init__(self, session_id: int, is_full: bool, is_closed: bool):
         super().__init__(timeout=None)
         self.session_id = session_id
+        if is_closed:
+            button = discord.ui.Button(label="Closed", style=discord.ButtonStyle.secondary, disabled=True, custom_id=f"jump99k:join:{session_id}")
+        elif is_full:
+            button = discord.ui.Button(label="Full", style=discord.ButtonStyle.secondary, disabled=True, custom_id=f"jump99k:join:{session_id}")
+        else:
+            button = discord.ui.Button(label="Join", style=discord.ButtonStyle.success, disabled=False, custom_id=f"jump99k:join:{session_id}")
+        button.callback = self.join
+        self.add_item(button)
 
-    @discord.ui.button(label="Join", style=discord.ButtonStyle.success)
-    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def join(self, interaction: discord.Interaction):
         if not interaction.guild_id:
             await interaction.response.send_message("Guild context is required.", ephemeral=True)
             return
@@ -1004,19 +1078,20 @@ class Jump99kSignupView(discord.ui.View):
         users_repo = UsersRepository(db.pool)
 
         session = await repo.get_session(self.session_id)
-        if not session or str(session.get("status", "")).lower() != "open":
-            try:
-                if interaction.message:
-                    view = discord.ui.View.from_message(interaction.message, timeout=None)
-                    for child in view.children:
-                        child.disabled = True
-                    await interaction.message.edit(view=view)
-            except Exception:
-                pass
-            await interaction.response.send_message("This is closed.", ephemeral=True)
+        if not session or _is_99k_closed(session.get("status")):
+            await _refresh_99k_panel(interaction.client, self.session_id)
+            await interaction.response.send_message("This jump is closed.", ephemeral=True)
             return
         if int(session.get("guild_id", 0)) != int(interaction.guild_id):
             await interaction.response.send_message("Session not found.", ephemeral=True)
+            return
+
+        signups = await repo.list_signups(self.session_id)
+        signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
+        max_slots = int(session.get("max_slots") or 0)
+        if max_slots > 0 and signed_up >= max_slots:
+            await _refresh_99k_panel(interaction.client, self.session_id)
+            await interaction.response.send_message("This jump is full.", ephemeral=True)
             return
 
         bl = await repo.is_blacklisted(interaction.guild_id, interaction.user.id)
@@ -1115,12 +1190,10 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
 
             notes = str(self.notes.value).strip() or None
             announce_channel_id = self.settings.get("announce_channel_id")
-            created_new_session = False
             if self.session:
                 await repo.update_session(int(self.session["id"]), title=title, scheduled_start_text=scheduled, max_slots=slots, notes=notes, price_item=raw_payment_type, price_amount=price_amount)
                 session_id = int(self.session["id"])
             else:
-                created_new_session = True
                 session_id = await repo.create_session(
                     guild_id=interaction.guild_id,
                     host_discord_id=interaction.user.id,
@@ -1166,23 +1239,14 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     roster_msg = await private_channel.send(embed=panel_embed, view=Jump99kRosterView(session_id))
                     await repo.set_private_channel(session_id, channel_id=private_channel.id, roster_message_id=roster_msg.id)
 
-            channel = interaction.guild.get_channel(int(announce_channel_id)) if interaction.guild and announce_channel_id else interaction.channel
-            if channel:
-                item_label = "Xanax" if raw_payment_type == "xanax" else "eDVD"
-                start_line = f"Possible TCT start: **{scheduled}**\n" if scheduled else ""
-                notes_line = f"Notes: {notes}\n" if notes else ""
-                content = f"📣 **{title}** — Session **#{session_id}**\n{start_line}Spot price: **{price_amount}x {item_label}**\n{notes_line}Click to join."
-                message_id = self.session.get("announce_message_id") if self.session else None
-                if message_id:
-                    try:
-                        msg = await channel.fetch_message(int(message_id))
-                        await msg.edit(content=content, view=Jump99kSignupView(session_id))
-                    except Exception:
-                        msg = await channel.send(content, view=Jump99kSignupView(session_id))
-                        await repo.set_announcement_message(session_id, channel_id=channel.id, message_id=msg.id)
-                else:
-                    msg = await channel.send(content, view=Jump99kSignupView(session_id))
-                    await repo.set_announcement_message(session_id, channel_id=channel.id, message_id=msg.id)
+            target_channel_id = int(announce_channel_id) if announce_channel_id else (interaction.channel.id if interaction.channel else None)
+            await upsert_99k_announcement(
+                bot=interaction.client,
+                repo=repo,
+                guild_id=int(interaction.guild_id),
+                session_id=int(session_id),
+                channel_id=target_channel_id,
+            )
             verb = "updated" if self.session else "created"
             await interaction.response.send_message(embed=create_success_embed("99k session saved", f"Session #{session_id} {verb}."), ephemeral=True)
         except Exception as e:
