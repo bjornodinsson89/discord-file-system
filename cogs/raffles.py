@@ -773,10 +773,13 @@ class RafflesCog(commands.Cog):
         self.cleanup_expired.cancel()
         self.auto_verify_payments.cancel()
         if self._post_ready_init_task and not self._post_ready_init_task.done():
-            self._post_ready_init_task.cancel()
+            try:
+                self._post_ready_init_task.cancel()
+            except Exception:
+                log.exception("Failed to cancel post-ready raffle init task")
 
     async def cog_load(self):
-        self._post_ready_init_task = self.bot.loop.create_task(self._post_ready_init())
+        self._post_ready_init_task = asyncio.create_task(self._post_ready_init())
 
     async def _post_ready_init(self):
         """Register persistent raffle purchase views for existing panel messages."""
@@ -805,8 +808,8 @@ class RafflesCog(commands.Cog):
                     len(panel_raffles),
                     max(len(active_raffles) - len(panel_raffle_ids), 0),
                 )
-        except Exception as e:
-            log.error("Failed registering persistent raffle views: %s", e)
+        except Exception:
+            log.exception("Failed registering persistent raffle views")
     def store_pack_draft(self, creator_discord_id: int, draft: dict) -> None:
         self._pack_drafts[creator_discord_id] = (draft, datetime.utcnow() + timedelta(minutes=10))
     def get_pack_draft(self, creator_discord_id: int) -> dict | None:
