@@ -5,6 +5,7 @@ from .insurance import InsuranceRepository
 from .users import UsersRepository
 from .guilds import GuildsRepository
 from .audit import AuditRepository  # ADD THIS LINE
+from .applications import ApplicationsRepository
 
 __all__ = [
     'RepositoryBase',
@@ -14,4 +15,5 @@ __all__ = [
     'UsersRepository',
     'GuildsRepository',
     'AuditRepository',  # ADD THIS LINE
+    'ApplicationsRepository',
 ]

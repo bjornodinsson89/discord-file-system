@@ -274,6 +274,7 @@ class SetupPanelView(OwnerView):
             f"Raffle announcement: {channel_name('raffle_announcement_channel_id')}\n"
             f"Raffle purchase panel: {channel_name('raffle_purchase_channel_id')}\n"
             f"Insurance: {channel_name('insurance_channel_id')}\n"
+            f"Applications: {channel_name('applications_channel_id')}\n"
             f"Welcome: {channel_name('welcome_channel_id')}"
         ), inline=False)
         embed.add_field(name="Roles", value=(
@@ -492,6 +493,7 @@ class ChannelsViewPage2(BackView):
         super().__init__(**kwargs)
         self.add_item(ChannelSelect(self.panel, "raffle_purchase_channel_id", "Set raffle purchase panel channel"))
         self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Set insurance channel"))
+        self.add_item(ChannelSelect(self.panel, "applications_channel_id", "Set applications channel"))
         self.add_item(ChannelSelect(self.panel, "welcome_channel_id", "Set welcome channel"))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
