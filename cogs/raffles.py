@@ -16,6 +16,7 @@ from utils.database import get_pool
 from utils.embeds import create_error_embed
 from utils.icon_strips import build_icon_strip_file
 from utils.item_resolver import ItemResolver
+from utils.payment_normalization import parse_payment_type
 log = logging.getLogger("happy_jumper.raffles")
 _PACK_WORD_RE = re.compile(r"\bpack\b", re.IGNORECASE)
 _CURLY_QUOTES_RE = re.compile(r"[’‘]")
@@ -109,7 +110,7 @@ class RaffleCreateModal(discord.ui.Modal):
         max_length=200,
     )
     payment_type = discord.ui.TextInput(
-        label="Payment type",
+        label="Free | Xanax 💊 | Erotic DvD 📀",
         placeholder="free",
         required=True,
         max_length=20,
@@ -139,10 +140,12 @@ class RaffleCreateModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            payment_type = str(self.payment_type.value).strip().lower()
-            if payment_type not in {"free", "xanax", "erotic_dvd"}:
+            raw_payment_type = str(self.payment_type.value)
+            try:
+                payment_type = parse_payment_type(raw_payment_type, allow_free=True)
+            except ValueError as exc:
                 await interaction.response.send_message(
-                    embed=create_error_embed("Invalid payment type", "Payment type must be one of: free, xanax, erotic_dvd."),
+                    embed=create_error_embed("Invalid payment type", str(exc)),
                     ephemeral=True,
                 )
                 return
