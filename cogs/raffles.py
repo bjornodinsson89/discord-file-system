@@ -11,7 +11,7 @@ from repositories.raffles import RafflesRepository
 from repositories.torn_items import TornItemsRepository
 from repositories.users import UsersRepository
 from services.raffle_payment import RafflePaymentService
-from utils import GuildSettingsRepository
+from utils import GuildSettingsRepository, get_database
 from utils.database import get_pool
 from utils.embeds import create_error_embed
 from utils.icon_strips import build_icon_strip_file
@@ -608,7 +608,7 @@ class PaymentVerificationView(discord.ui.View):
     async def verify_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(thinking=True)
         try:
-            service = RafflePaymentService(_DBContext())
+            service = RafflePaymentService(get_database())
             success, sold_out_raffle_id, error = await service.verify_entry_payment(
                 self.entry_id, manual=True
             )
@@ -856,7 +856,7 @@ class RafflesCog(commands.Cog):
                 is_bundle=is_bundle,
                 bundle_text=bundle_text,
             )
-            db = _DBContext()
+            db = get_database()
             settings_repo = GuildSettingsRepository(db)
             settings = await settings_repo.get_or_create(interaction.guild_id)
             purchase_channel_id = settings.get("raffle_purchase_channel_id") or settings.get("raffle_channel_id")
@@ -1027,7 +1027,7 @@ class RafflesCog(commands.Cog):
             pending = await repo.get_pending_verifications()
             for entry in pending:
                 try:
-                    service = RafflePaymentService(_DBContext())
+                    service = RafflePaymentService(get_database())
                     success, sold_out_id, error = await service.verify_entry_payment(
                         entry["entry_id"], manual=False
                     )

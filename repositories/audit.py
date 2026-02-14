@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Optional, Any
 
@@ -21,6 +22,7 @@ class AuditRepository(RepositoryBase):
         actor_torn_id: Optional[int] = None,
     ) -> int:
         """Create audit log entry and return audit ID."""
+        payload_json = json.dumps(payload or {}, separators=(",", ":"), ensure_ascii=False)
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -39,7 +41,7 @@ class AuditRepository(RepositoryBase):
                 action,
                 target_type,
                 target_id,
-                payload or {},
+                payload_json,
                 ip_address,
                 user_agent,
                 source,
@@ -142,7 +144,7 @@ class AuditRepository(RepositoryBase):
                 FROM audit_log
                 WHERE actor_discord_id = $1
                 AND action = $2
-                AND created_at > NOW() - INTERVAL '$3 minutes'
+                AND created_at > NOW() - make_interval(mins => $3)
                 ORDER BY created_at DESC
                 """,
                 actor_discord_id,
@@ -157,7 +159,7 @@ class AuditRepository(RepositoryBase):
             result = await conn.execute(
                 """
                 DELETE FROM audit_log 
-                WHERE created_at < NOW() - INTERVAL '$1 days'
+                WHERE created_at < NOW() - make_interval(days => $1)
                 """,
                 days,
             )
@@ -165,4 +167,3 @@ class AuditRepository(RepositoryBase):
                 return int(result.split()[-1])
             except (ValueError, IndexError):
                 return 0
-
