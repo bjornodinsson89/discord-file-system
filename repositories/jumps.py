@@ -98,6 +98,30 @@ class JumpsRepository(RepositoryBase):
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE jump_99k_sessions SET announce_channel_id = $2, announce_message_id = $3 WHERE id = $1", session_id, channel_id, message_id)
 
+    async def set_private_channel(self, session_id: int, *, channel_id: int, roster_message_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET private_channel_id = $2, roster_message_id = $3, updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+                channel_id,
+                roster_message_id,
+            )
+
+    async def clear_private_channel(self, session_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET private_channel_id = NULL, roster_message_id = NULL, updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+            )
+
     async def get_active_session(self, guild_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open' ORDER BY created_at DESC LIMIT 1", guild_id)
@@ -372,6 +396,18 @@ class JumpsRepository(RepositoryBase):
                 status,
             )
             return row is not None
+
+    async def list_non_open_sessions_with_private_channel(self) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM jump_99k_sessions
+                WHERE status IN ('closed', 'cancelled')
+                  AND private_channel_id IS NOT NULL
+                """
+            )
+            return [dict(r) for r in rows]
 
     async def list_open_sessions_by_guild(self, guild_id: int) -> list[dict]:
         async with self.pool.acquire() as conn:

@@ -892,53 +892,110 @@ async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:
         pass
 
 
-class Jump99kSignupView(discord.ui.View):
+def _build_roster_embed(session: dict, signups: list[dict]) -> discord.Embed:
+    paid_rows = [row for row in signups if row.get("status") == "signed_up" and row.get("payment_verified")]
+    reserved_rows = [row for row in signups if row.get("status") == "signed_up" and not row.get("payment_verified")]
+    cancelled_rows = [row for row in signups if row.get("status") == "cancelled"]
+
+    total_signed = len(paid_rows) + len(reserved_rows)
+    paid_count = len(paid_rows)
+
+    roster_lines: list[str] = []
+    for row in paid_rows:
+        torn = row.get("torn_user_id")
+        torn_suffix = f" (Torn {int(torn)})" if torn else ""
+        roster_lines.append(f"✅ <@{int(row['discord_id'])}>{torn_suffix}")
+    for row in reserved_rows:
+        roster_lines.append(f"⏳ <@{int(row['discord_id'])}>")
+    for row in cancelled_rows:
+        roster_lines.append(f"❌ <@{int(row['discord_id'])}>")
+
+    item_label = "Xanax" if str(session.get("price_item", "")).lower() == "xanax" else "eDVD"
+    description = (
+        f"Session ID: **#{int(session['id'])}**\n"
+        f"Host: <@{int(session['host_discord_id'])}>\n"
+        f"Payment: **{int(session['price_amount'])}x {item_label}**\n"
+        f"Signed: **{total_signed}** | Paid: **{paid_count}**\n"
+        "Members will appear here after payment verification."
+    )
+    if roster_lines:
+        description += "\n\n" + "\n".join(roster_lines)
+
+    return discord.Embed(title="Jump Roster", description=description, color=discord.Color.blurple())
+
+
+async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageable, message: discord.Message | None = None) -> tuple[discord.Embed, str]:
+    repo = JumpsRepository(get_pool())
+    session = await repo.get_session(session_id)
+    if not session:
+        raise ValueError("Session not found")
+    signups = await repo.list_signups(session_id)
+    embed = _build_roster_embed(session, signups)
+
+    paid_rows = [row for row in signups if row.get("status") == "signed_up" and row.get("payment_verified")]
+    reserved_rows = [row for row in signups if row.get("status") == "signed_up" and not row.get("payment_verified")]
+    cancelled_rows = [row for row in signups if row.get("status") == "cancelled"]
+    roster_text_lines = []
+    for row in paid_rows:
+        torn = row.get("torn_user_id")
+        torn_suffix = f" (Torn {int(torn)})" if torn else ""
+        roster_text_lines.append(f"✅ <@{int(row['discord_id'])}>{torn_suffix}")
+    for row in reserved_rows:
+        roster_text_lines.append(f"⏳ <@{int(row['discord_id'])}>")
+    for row in cancelled_rows:
+        roster_text_lines.append(f"❌ <@{int(row['discord_id'])}>")
+    roster_text = "\n".join(roster_text_lines) if roster_text_lines else "No members yet."
+
+    if message is not None:
+        await message.edit(embed=embed, view=Jump99kRosterView(session_id))
+    return embed, roster_text
+
+
+async def _grant_private_channel_access(guild: discord.Guild, session: dict, discord_id: int) -> None:
+    private_channel_id = session.get("private_channel_id")
+    if not private_channel_id:
+        return
+
+    try:
+        channel = guild.get_channel(int(private_channel_id)) or await guild.fetch_channel(int(private_channel_id))
+        member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
+        overwrite = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True)
+        await channel.set_permissions(member, overwrite=overwrite, reason="99k payment verified")
+
+        roster_message_id = session.get("roster_message_id")
+        if roster_message_id:
+            roster_message = await channel.fetch_message(int(roster_message_id))
+            await _refresh_roster_panel(int(session["id"]), channel, roster_message)
+    except Exception:
+        log.exception("Failed to update 99k private channel permissions for session=%s user=%s", session.get("id"), discord_id)
+
+
+class Jump99kRosterView(discord.ui.View):
     def __init__(self, session_id: int):
         super().__init__(timeout=None)
         self.session_id = session_id
 
-    @discord.ui.button(label="Join", style=discord.ButtonStyle.success)
-    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild_id:
-            await interaction.response.send_message("Guild context is required.", ephemeral=True)
+    @discord.ui.button(label="Refresh roster", style=discord.ButtonStyle.primary)
+    async def refresh_roster(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.channel:
+            await interaction.response.send_message("Channel not found.", ephemeral=True)
             return
+        embed, _ = await _refresh_roster_panel(self.session_id, interaction.channel, interaction.message)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        db = get_database()
-        repo = JumpsRepository(db.pool)
-        users_repo = UsersRepository(db.pool)
-
-        session = await repo.get_session(self.session_id)
-        if not session or str(session.get("status", "")).lower() != "open":
-            await interaction.response.send_message("Session is not open.", ephemeral=True)
+    @discord.ui.button(label="View roster", style=discord.ButtonStyle.secondary)
+    async def view_roster(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.channel:
+            await interaction.response.send_message("Channel not found.", ephemeral=True)
             return
-        if int(session.get("guild_id", 0)) != int(interaction.guild_id):
-            await interaction.response.send_message("Session not found.", ephemeral=True)
-            return
+        _, roster_text = await _refresh_roster_panel(self.session_id, interaction.channel, interaction.message)
+        await interaction.response.send_message(roster_text, ephemeral=True)
 
-        bl = await repo.is_blacklisted(interaction.guild_id, interaction.user.id)
-        if bl:
-            await interaction.response.send_message("You are blacklisted.", ephemeral=True)
-            return
 
-        key_row = await users_repo.get_user_api_key(interaction.user.id)
-        if not key_row:
-            await interaction.response.send_message("Link your Torn API key before joining.", ephemeral=True)
-            return
-
-        settings = await GuildSettingsRepository(db).get_or_create(interaction.guild_id)
-        timeout_minutes = int(settings.get("reservation_timeout_minutes") or config.DEFAULT_RESERVATION_TIMEOUT)
-        reserved_until = datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
-
-        torn_user_id = int(key_row["torn_user_id"]) if key_row.get("torn_user_id") else None
-        await repo.create_or_restore_signup(
-            session_id=self.session_id,
-            guild_id=interaction.guild_id,
-            discord_id=interaction.user.id,
-            torn_user_id=torn_user_id,
-            reserved_until=reserved_until,
-        )
-        await _refresh_99k_panel(interaction.client, self.session_id)
-        await interaction.response.send_message("✅ Spot reserved. Send payment in Torn, then press Verify Payment.", ephemeral=True)
+class Jump99kUserControlsView(discord.ui.View):
+    def __init__(self, session_id: int):
+        super().__init__(timeout=900)
+        self.session_id = session_id
 
     @discord.ui.button(label="Leave", style=discord.ButtonStyle.secondary)
     async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1015,6 +1072,8 @@ class Jump99kSignupView(discord.ui.View):
             verifier_discord_id=interaction.user.id,
             verifier_torn_id=payer_torn,
         )
+        if interaction.guild:
+            await _grant_private_channel_access(interaction.guild, session, interaction.user.id)
         await _refresh_99k_panel(interaction.client, self.session_id)
         try:
             await interaction.response.send_message(
@@ -1026,6 +1085,63 @@ class Jump99kSignupView(discord.ui.View):
             await interaction.response.send_message("✅ Payment verified for this 99k session.", ephemeral=True)
 
 
+class Jump99kSignupView(discord.ui.View):
+    def __init__(self, session_id: int):
+        super().__init__(timeout=None)
+        self.session_id = session_id
+
+    @discord.ui.button(label="Join", style=discord.ButtonStyle.success)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild_id:
+            await interaction.response.send_message("Guild context is required.", ephemeral=True)
+            return
+
+        db = get_database()
+        repo = JumpsRepository(db.pool)
+        users_repo = UsersRepository(db.pool)
+
+        session = await repo.get_session(self.session_id)
+        if not session or str(session.get("status", "")).lower() != "open":
+            await interaction.response.send_message("Session is not open.", ephemeral=True)
+            return
+        if int(session.get("guild_id", 0)) != int(interaction.guild_id):
+            await interaction.response.send_message("Session not found.", ephemeral=True)
+            return
+
+        bl = await repo.is_blacklisted(interaction.guild_id, interaction.user.id)
+        if bl:
+            await interaction.response.send_message("You are blacklisted.", ephemeral=True)
+            return
+
+        key_row = await users_repo.get_user_api_key(interaction.user.id)
+        if not key_row:
+            await interaction.response.send_message("Link your Torn API key before joining.", ephemeral=True)
+            return
+
+        settings = await GuildSettingsRepository(db).get_or_create(interaction.guild_id)
+        timeout_minutes = int(settings.get("reservation_timeout_minutes") or config.DEFAULT_RESERVATION_TIMEOUT)
+        reserved_until = datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
+
+        torn_user_id = int(key_row["torn_user_id"]) if key_row.get("torn_user_id") else None
+        await repo.create_or_restore_signup(
+            session_id=self.session_id,
+            guild_id=interaction.guild_id,
+            discord_id=interaction.user.id,
+            torn_user_id=torn_user_id,
+            reserved_until=reserved_until,
+        )
+        await _refresh_99k_panel(interaction.client, self.session_id)
+
+        reserve_embed = discord.Embed(
+            title="Spot Reserved",
+            description="Spot reserved. Send payment in Torn, then press Verify Payment.",
+            color=discord.Color.green(),
+        )
+        await interaction.response.send_message(
+            embed=reserve_embed,
+            view=Jump99kUserControlsView(self.session_id),
+            ephemeral=True,
+        )
 class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
     payment_type = discord.ui.TextInput(
         label="Xanax 💊 | Erotic DvD 📀",
@@ -1046,7 +1162,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
         max_length=5,
         placeholder="21:00",
     )
-    notes = discord.ui.TextInput(label="Notes", placeholder="Running on time", required=False, style=discord.TextStyle.paragraph, max_length=1000)
+    notes = discord.ui.TextInput(label="Notes", placeholder="Add jump instructions", required=False, style=discord.TextStyle.paragraph, max_length=1000)
 
     def __init__(self, settings: dict, session: dict | None = None):
         super().__init__()
@@ -1088,10 +1204,12 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
 
             notes = str(self.notes.value).strip() or None
             announce_channel_id = self.settings.get("announce_channel_id")
+            created_new_session = False
             if self.session:
                 await repo.update_session(int(self.session["id"]), title=title, scheduled_start_text=scheduled, max_slots=slots, notes=notes, price_item=raw_payment_type, price_amount=price_amount)
                 session_id = int(self.session["id"])
             else:
+                created_new_session = True
                 session_id = await repo.create_session(
                     guild_id=interaction.guild_id,
                     host_discord_id=interaction.user.id,
@@ -1104,6 +1222,39 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     announce_channel_id=announce_channel_id,
                     announce_message_id=None,
                 )
+
+                if interaction.guild and isinstance(interaction.user, discord.Member):
+                    overwrites = {
+                        interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                        interaction.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+                        interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+                    }
+                    for role_id in GuildSettingsRepository.resolve_admin_role_ids(self.settings):
+                        role = interaction.guild.get_role(int(role_id))
+                        if role:
+                            overwrites[role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True)
+
+                    category = interaction.channel.category if isinstance(interaction.channel, discord.TextChannel) else None
+                    private_channel = await interaction.guild.create_text_channel(
+                        name=f"jump-{session_id}",
+                        category=category,
+                        overwrites=overwrites,
+                        reason="99k jump session channel",
+                    )
+
+                    panel_embed = discord.Embed(
+                        title="Jump Roster",
+                        description=(
+                            f"Session ID: **#{session_id}**\n"
+                            f"Host: {interaction.user.mention}\n"
+                            f"Payment: **{price_amount}x {'Xanax' if raw_payment_type == 'xanax' else 'eDVD'}**\n"
+                            "Members will appear here after payment verification."
+                        ),
+                        color=discord.Color.blurple(),
+                    )
+                    roster_msg = await private_channel.send(embed=panel_embed, view=Jump99kRosterView(session_id))
+                    await repo.set_private_channel(session_id, channel_id=private_channel.id, roster_message_id=roster_msg.id)
+
             channel = interaction.guild.get_channel(int(announce_channel_id)) if interaction.guild and announce_channel_id else interaction.channel
             if channel:
                 item_label = "Xanax" if raw_payment_type == "xanax" else "eDVD"
@@ -1208,6 +1359,16 @@ async def jump99k_end(interaction: discord.Interaction):
     if not ok:
         await interaction.response.send_message(embed=create_error_embed("Could not close", "Session was already closed."), ephemeral=True)
         return
+
+    private_channel_id = session.get("private_channel_id")
+    if private_channel_id and interaction.guild:
+        try:
+            private_channel = await interaction.guild.fetch_channel(int(private_channel_id))
+            await private_channel.delete(reason="99k session finished")
+        except Exception:
+            log.exception("Failed to delete private 99k channel for session %s", session.get("id"))
+        await repo.clear_private_channel(int(session["id"]))
+
     await interaction.response.send_message(embed=create_success_embed("99k session ended", f"Closed session #{session['id']}."), ephemeral=True)
 
 
@@ -1507,16 +1668,23 @@ async def audit_log(interaction: discord.Interaction, limit: int = 10):
 
 @tasks.loop(seconds=config.CLEANUP_INTERVAL)
 async def cleanup_worker():
-    """Background cleanup task.
-
-    This repository has been refactored to the new `jump_99k_*` schema.
-    Any legacy cleanup logic referencing `happy_jump_*` tables must never run.
-
-    If you later add time-based automation (reservation expiry, waitlists, etc.)
-    for 99k sessions, implement it against `jump_99k_*` tables in
-    `repositories/jumps.py` and call it here.
-    """
-    return
+    """Background cleanup task for 99k private channels."""
+    try:
+        repo = JumpsRepository(get_pool())
+        sessions = await repo.list_non_open_sessions_with_private_channel()
+        for session in sessions:
+            guild = bot.get_guild(int(session["guild_id"]))
+            if not guild:
+                await repo.clear_private_channel(int(session["id"]))
+                continue
+            try:
+                private_channel = await guild.fetch_channel(int(session["private_channel_id"]))
+                await private_channel.delete(reason="99k session finished")
+            except Exception:
+                log.exception("Failed cleanup delete for 99k private channel session=%s", session.get("id"))
+            await repo.clear_private_channel(int(session["id"]))
+    except Exception:
+        log.exception("cleanup_worker failed")
 
 
 @cleanup_worker.before_loop
@@ -1654,6 +1822,12 @@ async def auto_verify_99k_payments():
                     verifier_discord_id=participant_id,
                     verifier_torn_id=payer_torn,
                 )
+                guild = bot.get_guild(int(signup["guild_id"]))
+                if guild:
+                    verified_session = await repo.get_session(session_id)
+                    if verified_session:
+                        await _grant_private_channel_access(guild, verified_session, participant_id)
+
                 user = bot.get_user(participant_id)
                 if user:
                     try:
