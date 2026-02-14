@@ -109,26 +109,26 @@ class RaffleCreateModal(discord.ui.Modal):
         max_length=200,
     )
     payment_type = discord.ui.TextInput(
-        label="💰 Payment Type (free/xanax/eDVD)",
-        placeholder="free | xanax | erotic_dvd",
+        label="Payment type",
+        placeholder="free",
         required=True,
         max_length=20,
     )
     ticket_price = discord.ui.TextInput(
-        label="💵 Ticket Price (amount)",
-        placeholder="Integer (ignored for free)",
+        label="Ticket price",
+        placeholder="1",
         required=True,
         max_length=6,
     )
     tickets_available = discord.ui.TextInput(
-        label="🎟️ Total Tickets",
-        placeholder="Total tickets to sell (minimum 1)",
+        label="Tickets available",
+        placeholder="100",
         required=True,
         max_length=10,
     )
     max_per_user = discord.ui.TextInput(
-        label="📋 Max Per User (0 = unlimited)",
-        placeholder="0 = unlimited",
+        label="Max per user",
+        placeholder="5",
         required=True,
         max_length=3,
     )
@@ -454,7 +454,7 @@ async def _reserve_raffle_tickets(
 
 
 class RaffleCustomQuantityModal(discord.ui.Modal):
-    quantity = discord.ui.TextInput(label="Custom Ticket Quantity", placeholder="Enter an integer", required=True, max_length=10)
+    quantity = discord.ui.TextInput(label="Ticket quantity", placeholder="3", required=True, max_length=10)
 
     def __init__(self, raffle_id: int, repo: RafflesRepository, max_buy: int):
         super().__init__(title="🎫 Buy Tickets")

@@ -43,8 +43,8 @@ def create_jump_session_embed(session: Dict, signups: List[Dict], readiness: Lis
                     value=f"<@{session['host_discord_id']}>\nTorn: `{session['host_torn_id']}`", inline=True)
     embed.add_field(name=f"{config.EMOJI_PILL} Xanax", value=f"`{session['xanax_count']}`", inline=True)
     
-    paid = sum(1 for s in signups if s['status'] == 'paid')
-    reserved = sum(1 for s in signups if s['status'] == 'reserved')
+    paid = sum(1 for s in signups if s.get('payment_verified') is True)
+    reserved = sum(1 for s in signups if s.get('payment_verified') is not True)
     available = session['max_spots'] - len(signups)
     
     embed.add_field(name=f"{config.EMOJI_JUMP} Spots",
@@ -66,7 +66,7 @@ def create_jump_session_embed(session: Dict, signups: List[Dict], readiness: Lis
         readiness_map = {r['discord_id']: r for r in (readiness or [])}
         parts = []
         for i, s in enumerate(signups[:15], 1):
-            emoji = config.EMOJI_CHECK if s['status'] == 'paid' else config.EMOJI_CLOCK
+            emoji = config.EMOJI_CHECK if s.get('payment_verified') is True else config.EMOJI_CLOCK
             r = readiness_map.get(s['discord_id'])
             status_text = ""
             if r:
@@ -222,8 +222,8 @@ def create_api_key_guide_embed() -> discord.Embed:
                               "Register your API key to use Happy Jumper features.")
     embed.add_field(
         name="Get an API Key",
-        value=f"Create a custom key here: {config.TORN_API_KEY_LINK}\n"
-              "Or use a full access key if you already have one.",
+        value="Torn API keys are personal. Never share your key.\n"
+              "By registering it here, you consent to the bot using it only to check eligibility and verify payments via the Torn API.",
         inline=False,
     )
     embed.add_field(name=f"{config.EMOJI_LOCK} Security",

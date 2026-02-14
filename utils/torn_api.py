@@ -5,6 +5,7 @@ import asyncio
 import time
 import json
 import logging
+import socket
 from typing import Dict, List, Optional, Tuple
 from collections import deque
 import config
@@ -63,7 +64,9 @@ class TornAPIClient:
     
     async def _ensure_session(self):
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
+            connector = aiohttp.TCPConnector(family=socket.AF_INET, limit=50, ttl_dns_cache=300)
+            headers = {"User-Agent": "HappyJumperBot/1.0 (aiohttp)"}
+            self.session = aiohttp.ClientSession(connector=connector, headers=headers)
     
     async def close(self):
         if self.session and not self.session.closed:
@@ -77,31 +80,78 @@ class TornAPIClient:
         await self.rate_limiter.acquire()
         await self._ensure_session()
         
-        try:
-            async with self.session.get(
-                f"{config.TORN_BASE_URL}{path}",
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=20)
-            ) as resp:
-                data = await resp.json()
-                if isinstance(data, dict) and "error" in data:
-                    error = data["error"]
-                    msg = str(error.get("error", error)) if isinstance(error, dict) else str(error)
-                    if "rate limit" in msg.lower():
-                        raise TornAPIRateLimitError(msg)
-                    elif "permission" in msg.lower() or "access" in msg.lower():
-                        raise TornAPIPermissionError(msg)
-                    raise TornAPIError(msg)
-                return data
-        except aiohttp.ClientError as e:
-            raise TornAPIError(f"Network error: {e}")
-        except asyncio.TimeoutError:
-            raise TornAPIError("Request timed out")
+        timeout = aiohttp.ClientTimeout(total=60, connect=15, sock_connect=15, sock_read=45)
+        backoffs = [0.5, 1.0, 2.0]
+        attempts = len(backoffs)
+
+        for attempt in range(1, attempts + 1):
+            started = time.perf_counter()
+            try:
+                async with self.session.get(
+                    f"{config.TORN_BASE_URL}{path}",
+                    params=params,
+                    timeout=timeout,
+                ) as resp:
+                    elapsed = time.perf_counter() - started
+                    log.debug("Torn API attempt=%s method=GET path=%s status=%s elapsed=%.3fs", attempt, path, resp.status, elapsed)
+
+                    if resp.status in (520, 522, 523, 524):
+                        raise TornAPIError(f"Torn API is currently unreachable (Cloudflare {resp.status}).")
+
+                    try:
+                        data = await resp.json(content_type=None)
+                    except Exception:
+                        data = await resp.text()
+
+                    if resp.status >= 400:
+                        raise TornAPIError(f"Torn API error (HTTP {resp.status}).")
+
+                    if isinstance(data, dict) and "error" in data:
+                        error = data["error"]
+                        msg = str(error.get("error", error)) if isinstance(error, dict) else str(error)
+                        if "rate limit" in msg.lower():
+                            raise TornAPIRateLimitError(msg)
+                        elif "permission" in msg.lower() or "access" in msg.lower():
+                            raise TornAPIPermissionError(msg)
+                        raise TornAPIError(msg)
+                    return data
+            except TornAPIRateLimitError:
+                raise
+            except TornAPIPermissionError:
+                raise
+            except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+                elapsed = time.perf_counter() - started
+                log.debug(
+                    "Torn API attempt=%s method=GET path=%s status=exception elapsed=%.3fs error=%s",
+                    attempt,
+                    path,
+                    elapsed,
+                    exc,
+                )
+                if attempt == attempts:
+                    if isinstance(exc, asyncio.TimeoutError):
+                        log.exception("Torn API request timed out after retries: path=%s", path)
+                        raise TornAPIError("Request timed out")
+                    log.exception("Torn API request failed after retries: path=%s", path)
+                    raise TornAPIError(f"Network error: {exc}")
+                await asyncio.sleep(backoffs[attempt - 1])
+            except TornAPIError as exc:
+                if attempt == attempts:
+                    log.exception("Torn API request failed after retries: path=%s", path)
+                    if "timed out" in str(exc).lower() or "timeout" in str(exc).lower():
+                        raise TornAPIError("Request timed out")
+                    raise
+                await asyncio.sleep(backoffs[attempt - 1])
+
+        raise TornAPIError("Request timed out")
 
     async def validate_api_key(self, api_key: str) -> Tuple[int, int, set]:
         """Validate API key by fetching user identity from Torn API v2."""
         user = await self._request("/user", {"selections": "basic,discord", "key": api_key})
-        discord_id = int(user["discord"]["discord_id"])
+        discord_raw = (user.get("discord") or {}).get("discord_id") if isinstance(user, dict) else None
+        if discord_raw in (None, "", 0, "0"):
+            raise TornAPIError("Torn did not return discord_id; ensure key has 'discord' permission")
+        discord_id = int(discord_raw)
         torn_id = int(user["profile"]["id"])
         return discord_id, torn_id, set()
 
@@ -138,7 +188,7 @@ class TornAPIClient:
         return await self.verify_item_payment(
             api_key=api_key,
             recipient_torn_id=recipient_torn_id,
-            item_id=item_id,
+            required_item_id=item_id,
             amount=amount,
             since_timestamp=since_timestamp,
         )
@@ -164,9 +214,14 @@ class TornAPIClient:
         return qty >= int(amount)
 
     async def verify_item_payment(self, api_key: str, recipient_torn_id: int,
-                                  required_item_id: int, amount: int,
+                                  required_item_id: Optional[int], amount: int,
+                                  item_id: Optional[int] = None,
                                   since_timestamp: Optional[int] = None) -> Optional[Dict]:
-        logs = await self.get_user_logs(api_key, limit=5)
+        if not required_item_id and item_id:
+            required_item_id = item_id
+        if not required_item_id:
+            return None
+        logs = await self.get_user_log(api_key, limit=5)
         for entry in logs:
             timestamp = int(entry.get("timestamp") or 0)
             if since_timestamp and timestamp < since_timestamp:

@@ -27,6 +27,7 @@ def _format_dt(dt: Optional[datetime]) -> str:
 class DenyReasonModal(discord.ui.Modal, title="Deny Application"):
     reason = discord.ui.TextInput(
         label="Reason",
+        placeholder="Not enough details",
         required=True,
         style=discord.TextStyle.paragraph,
         max_length=1000,

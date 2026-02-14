@@ -116,10 +116,10 @@ async def assert99kHost(interaction: discord.Interaction, settings: dict | None)
 
 
 class Jump99kSetupModal(discord.ui.Modal, title="99k Setup"):
-    host_role_id = discord.ui.TextInput(label="Host Role ID", required=True, max_length=20)
-    announce_channel_id = discord.ui.TextInput(label="Announce Channel ID (optional)", required=False, max_length=20)
-    payee_discord_id = discord.ui.TextInput(label="Payee Discord ID (optional)", required=False, max_length=20)
-    default_max_slots = discord.ui.TextInput(label="Default max slots", required=False, default="5", max_length=3)
+    host_role_id = discord.ui.TextInput(label="Host role", placeholder="@99k Host", required=True, max_length=20)
+    announce_channel_id = discord.ui.TextInput(label="Announce channel", placeholder="#announcements", required=False, max_length=20)
+    payee_discord_id = discord.ui.TextInput(label="Payee", placeholder="@HostUser", required=False, max_length=20)
+    default_max_slots = discord.ui.TextInput(label="Default max slots", placeholder="5", required=False, default="5", max_length=3)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
@@ -209,12 +209,12 @@ async def _can_review_applications(interaction: discord.Interaction) -> bool:
 
 
 class RequestInsurerModal(discord.ui.Modal, title="Insurer Application"):
-    torn_id = discord.ui.TextInput(label="Torn ID", required=True, max_length=20)
-    torn_name = discord.ui.TextInput(label="Torn Name", required=True, max_length=100)
-    forum_url = discord.ui.TextInput(label="Torn Forum Thread URL", required=True, max_length=500)
-    company_name = discord.ui.TextInput(label="Company/Service Name", required=False, max_length=100)
+    torn_id = discord.ui.TextInput(label="Torn ID", placeholder="1234567", required=True, max_length=20)
+    torn_name = discord.ui.TextInput(label="Torn name", placeholder="HappyJumper", required=True, max_length=100)
+    forum_url = discord.ui.TextInput(label="Forum link", required=True, max_length=500)
+    company_name = discord.ui.TextInput(label="Company name", placeholder="Sky Insurance", required=False, max_length=100)
     description_terms_vouches = discord.ui.TextInput(
-        label="Description/Terms + Proof/Vouches",
+        label="About your service",
         required=True,
         style=discord.TextStyle.paragraph,
         max_length=3000,
@@ -279,11 +279,11 @@ class RequestInsurerModal(discord.ui.Modal, title="Insurer Application"):
 
 
 class RequestHost99kModal(discord.ui.Modal, title="Host 99k Application"):
-    torn_id = discord.ui.TextInput(label="Torn ID", required=True, max_length=20)
-    torn_name = discord.ui.TextInput(label="Torn Name", required=True, max_length=100)
-    forum_url = discord.ui.TextInput(label="Hosting Thread/Forum URL", required=True, max_length=500)
-    schedule = discord.ui.TextInput(label="Schedule/Availability", required=True, style=discord.TextStyle.paragraph, max_length=1000)
-    experience_notes = discord.ui.TextInput(label="Experience + Notes", required=False, style=discord.TextStyle.paragraph, max_length=2000)
+    torn_id = discord.ui.TextInput(label="Torn ID", placeholder="1234567", required=True, max_length=20)
+    torn_name = discord.ui.TextInput(label="Torn name", placeholder="HappyJumper", required=True, max_length=100)
+    forum_url = discord.ui.TextInput(label="Forum link", required=True, max_length=500)
+    schedule = discord.ui.TextInput(label="When you host", placeholder="Weeknights after 21:00 TCT", required=True, style=discord.TextStyle.paragraph, max_length=1000)
+    experience_notes = discord.ui.TextInput(label="Experience notes", placeholder="Hosted 20+ smooth jumps", required=False, style=discord.TextStyle.paragraph, max_length=2000)
 
     async def on_submit(self, interaction: discord.Interaction):
         raw_torn_id = str(self.torn_id.value).strip()
@@ -865,25 +865,25 @@ async def refresh_item_icons(interaction: discord.Interaction):
 
 class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
     payment_type = discord.ui.TextInput(
-        label="💰 Payment Type (xanax/eDVD)",
+        label="Payment item",
         required=True,
         max_length=20,
-        placeholder="xanax or erotic_dvd",
+        placeholder="xanax",
     )
-    max_slots = discord.ui.TextInput(label="🎟️ Max slots (1-5)", required=True, max_length=1, placeholder="1-5")
+    max_slots = discord.ui.TextInput(label="Max slots", required=True, max_length=1, placeholder="5")
     spot_price = discord.ui.TextInput(
-        label="💵 Spot Price (1-50)",
+        label="Payment amount",
         required=True,
         max_length=4,
-        placeholder="1-50",
+        placeholder="99",
     )
     possible_tct_start = discord.ui.TextInput(
-        label="⏰ Possible TCT start (HH:MM 00/15/30/45)",
+        label="Start time",
         required=False,
         max_length=5,
-        placeholder="e.g. 22:15",
+        placeholder="21:00",
     )
-    notes = discord.ui.TextInput(label="📝 Notes (optional)", required=False, style=discord.TextStyle.paragraph, max_length=1000)
+    notes = discord.ui.TextInput(label="Notes", placeholder="Running on time", required=False, style=discord.TextStyle.paragraph, max_length=1000)
 
     def __init__(self, settings: dict, session: dict | None = None):
         super().__init__()
@@ -971,7 +971,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
 
 
 class Jump99kEditSelectModal(discord.ui.Modal, title="Edit 99k Session"):
-    jump_id = discord.ui.TextInput(label="Jump ID", required=True, max_length=20)
+    jump_id = discord.ui.TextInput(label="Jump ID", placeholder="123", required=True, max_length=20)
 
     async def on_submit(self, interaction: discord.Interaction):
         repo = JumpsRepository(get_pool())
