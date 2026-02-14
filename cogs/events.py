@@ -864,6 +864,71 @@ async def refresh_item_icons(interaction: discord.Interaction):
     )
 
 
+class Jump99kSignupView(discord.ui.View):
+    def __init__(self, session_id: int, timeout: int = 86400):
+        super().__init__(timeout=timeout)
+        self.session_id = session_id
+
+    async def _refresh_announcement_count(self, interaction: discord.Interaction, repo: JumpsRepository) -> None:
+        try:
+            if not interaction.message or not interaction.message.content:
+                return
+            count = await repo.signup_count(self.session_id)
+            base_content = interaction.message.content.split("\nSigned up: ", 1)[0]
+            await interaction.message.edit(content=f"{base_content}\nSigned up: {count}", view=self)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="Join", style=discord.ButtonStyle.success)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild_id:
+            await interaction.response.send_message("Guild context is required.", ephemeral=True)
+            return
+
+        db = get_database()
+        repo = JumpsRepository(db.pool)
+        users_repo = UsersRepository(db.pool)
+
+        session = await repo.get_session(self.session_id)
+        if not session:
+            await interaction.response.send_message("Session not found.", ephemeral=True)
+            return
+        if int(session.get("guild_id", 0)) != int(interaction.guild_id):
+            await interaction.response.send_message("Session not found.", ephemeral=True)
+            return
+        if str(session.get("status", "")).lower() == "closed":
+            await interaction.response.send_message("Session is closed.", ephemeral=True)
+            return
+
+        bl = await repo.is_blacklisted(interaction.guild_id, interaction.user.id)
+        if bl:
+            await interaction.response.send_message("You are blacklisted.", ephemeral=True)
+            return
+
+        key_row = await users_repo.get_user_api_key(interaction.user.id)
+        torn_user_id = int(key_row["torn_user_id"]) if key_row and key_row.get("torn_user_id") else None
+
+        await repo.create_or_restore_signup(
+            session_id=self.session_id,
+            guild_id=interaction.guild_id,
+            discord_id=interaction.user.id,
+            torn_user_id=torn_user_id,
+        )
+        await self._refresh_announcement_count(interaction, repo)
+        await interaction.response.send_message("You’re signed up.", ephemeral=True)
+
+    @discord.ui.button(label="Leave", style=discord.ButtonStyle.secondary)
+    async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+        db = get_database()
+        repo = JumpsRepository(db.pool)
+        ok = await repo.cancel_signup(session_id=self.session_id, discord_id=interaction.user.id)
+        await self._refresh_announcement_count(interaction, repo)
+        if ok:
+            await interaction.response.send_message("You’ve been removed.", ephemeral=True)
+            return
+        await interaction.response.send_message("You weren’t signed up.", ephemeral=True)
+
+
 class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
     payment_type = discord.ui.TextInput(
         label="Xanax 💊 | Erotic DvD 📀",

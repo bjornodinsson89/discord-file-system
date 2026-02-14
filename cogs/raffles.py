@@ -2,6 +2,7 @@
 Raffle system with sell-out trigger support and automatic payment verification.
 """
 import logging
+import asyncio
 import re
 from datetime import datetime, timedelta
 import discord
@@ -762,17 +763,30 @@ class RafflesCog(commands.Cog):
         self.bot = bot
         self._pack_drafts: dict[int, tuple[dict, datetime]] = {}
         self._payment_meta_cache: dict[str, dict | None] = {}
+        self._post_ready_init_task: asyncio.Task | None = None
         self.check_raffles.start()
         self.cleanup_expired.start()
         self.auto_verify_payments.start()
+
     def cog_unload(self):
         self.check_raffles.cancel()
         self.cleanup_expired.cancel()
         self.auto_verify_payments.cancel()
+        if self._post_ready_init_task and not self._post_ready_init_task.done():
+            self._post_ready_init_task.cancel()
+
     async def cog_load(self):
+        self._post_ready_init_task = self.bot.loop.create_task(self._post_ready_init())
+
+    async def _post_ready_init(self):
         """Register persistent raffle purchase views for existing panel messages."""
+        await self.bot.wait_until_ready()
+        db = get_database()
+        if not db.pool:
+            log.error("Failed registering persistent raffle views: database pool is not initialized")
+            return
         try:
-            repo = RafflesRepository(get_pool())
+            repo = RafflesRepository(db.pool)
             panel_raffles = await repo.get_active_raffles_with_panels()
             for raffle in panel_raffles:
                 self.bot.add_view(
