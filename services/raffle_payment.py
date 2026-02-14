@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from repositories.raffles import RafflesRepository
+from repositories.users import UsersRepository
 from utils.item_resolver import ItemResolver
 from utils import get_security_manager, get_torn_api
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
@@ -17,6 +18,7 @@ class RafflePaymentService:
     def __init__(self, db):
         self.db = db
         self.repo = RafflesRepository(db.pool)
+        self.users_repo = UsersRepository(db.pool)
 
     async def verify_entry_payment(self, entry_id: int, manual: bool = False) -> tuple[bool, Optional[int], Optional[str]]:
         entry = await self.repo.get_entry_with_raffle(entry_id)
@@ -40,7 +42,7 @@ class RafflePaymentService:
         if not manual and reserved_until and reserved_until < datetime.utcnow():
             return False, None, "Reservation expired"
 
-        buyer_key = await self.db.get_user_api_key(int(entry["discord_id"]))
+        buyer_key = await self.users_repo.get_user_api_key(int(entry["discord_id"]))
         if not buyer_key or not buyer_key.get("encrypted_key"):
             return False, None, "You must link your Torn API key first to verify paid raffle tickets."
 
@@ -120,7 +122,7 @@ class RafflePaymentService:
             return False, None, "Entry not found"
 
         receipts = PaymentReceiptService(self.db.pool)
-        receipt_id = await receipts.createReceipt(
+        receipt_id = await receipts.create_and_verify(
             featureType="raffle",
             featureRefId=int(entry_id),
             payer_discord_id=int(entry.get("discord_id") or 0) or None,
@@ -130,12 +132,8 @@ class RafflePaymentService:
             amount=expected_qty,
             currency_type=item_type,
             metadata=match,
-        )
-        await receipts.markVerified(
-            receiptId=receipt_id,
             verifier_discord_id=int(entry.get("discord_id") or 0) or None,
             verifier_torn_id=buyer_torn_id,
-            verification_metadata={"source": "raffle_verify_entry_payment"},
         )
 
         sold_out_id = await self.repo.recompute_tickets_sold_and_maybe_set_sold_out(int(entry["raffle_id"]))

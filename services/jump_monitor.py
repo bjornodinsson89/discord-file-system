@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from utils import get_database, get_security_manager, get_torn_api
+from repositories.users import UsersRepository
 
 log = logging.getLogger("happy_jumper.services.jump_monitor")
 
@@ -70,6 +71,7 @@ class JumpMonitor:
 
     async def _poll_once(self, jump_id: int) -> bool:
         db = get_database()
+        users_repo = UsersRepository(db.pool)
         async with db.pool.acquire() as conn:
             session = await conn.fetchrow("SELECT * FROM happy_jump_sessions WHERE id = $1", jump_id)
             if not session:
@@ -102,7 +104,7 @@ class JumpMonitor:
         )
         for discord_id in participant_ids:
             try:
-                key_data = await db.get_user_api_key(discord_id)
+                key_data = await users_repo.get_user_api_key(discord_id)
                 if not key_data:
                     jump_status[discord_id] = {
                         "energy_current": None,

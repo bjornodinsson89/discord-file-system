@@ -294,3 +294,104 @@ class JumpsRepository(RepositoryBase):
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_totals WHERE guild_id = $1", guild_id)
             return dict(row) if row else {"guild_id": guild_id, "completed_count": 0, "not_completed_count": 0}
+
+
+    async def is_blacklisted(self, guild_id: int, discord_id: int) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM blacklist
+                WHERE guild_id = $1 AND discord_id = $2 AND (expires_at IS NULL OR expires_at > NOW())
+                LIMIT 1
+                """,
+                guild_id,
+                discord_id,
+            )
+            return dict(row) if row else None
+
+    async def get_signup(self, session_id: int, discord_id: int) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT *, participant_discord_id AS discord_id, participant_torn_user_id AS torn_user_id
+                FROM jump_99k_signups
+                WHERE session_id = $1 AND participant_discord_id = $2
+                LIMIT 1
+                """,
+                session_id,
+                discord_id,
+            )
+            return dict(row) if row else None
+
+    async def list_readiness(self, session_id: int) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM jump_99k_readiness WHERE session_id = $1", session_id)
+            return [dict(r) for r in rows]
+
+    async def update_session_status(self, session_id: int, status: str) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE jump_99k_sessions SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING id",
+                session_id,
+                status,
+            )
+            return row is not None
+
+    async def list_open_sessions_by_guild(self, guild_id: int) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open' ORDER BY created_at DESC", guild_id)
+            return [dict(r) for r in rows]
+
+
+    async def upsert_host_application(self, *, guild_id: int, discord_id: int, torn_user_id: int, torn_name: Optional[str], display_name: Optional[str], forum_url: str, application_data: dict[str, Any]) -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO host_applications
+                    (guild_id, discord_id, torn_user_id, torn_name, display_name, forum_url, application_data, approval_status, approved_by, approved_at, denial_reason)
+                VALUES
+                    ($1, $2, $3, $4, $5, $6, $7::jsonb, 'pending', NULL, NULL, NULL)
+                ON CONFLICT (guild_id, discord_id) DO UPDATE SET
+                    torn_user_id = EXCLUDED.torn_user_id,
+                    torn_name = EXCLUDED.torn_name,
+                    display_name = EXCLUDED.display_name,
+                    forum_url = EXCLUDED.forum_url,
+                    application_data = EXCLUDED.application_data,
+                    approval_status = 'pending',
+                    approved_by = NULL,
+                    approved_at = NULL,
+                    denial_reason = NULL
+                RETURNING *
+                """,
+                guild_id, discord_id, torn_user_id, torn_name, display_name, forum_url, application_data,
+            )
+            return dict(row)
+
+    async def review_host_application(self, *, application_id: int, decision: str, admin_discord_id: int, reason: Optional[str] = None) -> Optional[dict]:
+        status = 'approved' if decision == 'approve' else 'rejected'
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE host_applications
+                SET approval_status = $2, approved_by = $3, approved_at = NOW(), denial_reason = CASE WHEN $2='rejected' THEN $4 ELSE NULL END
+                WHERE id = $1
+                RETURNING *
+                """,
+                application_id, status, admin_discord_id, reason,
+            )
+            return dict(row) if row else None
+
+    async def list_pending_host_applications(self, guild_id: Optional[int] = None) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            if guild_id is None:
+                rows = await conn.fetch("SELECT id, discord_id, guild_id FROM host_applications WHERE approval_status = 'pending'")
+            else:
+                rows = await conn.fetch("SELECT id, discord_id, guild_id FROM host_applications WHERE approval_status = 'pending' AND guild_id = $1", guild_id)
+            return [dict(r) for r in rows]
+
+    async def get_guild_statistics(self, guild_id: int) -> dict:
+        async with self.pool.acquire() as conn:
+            total = int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_sessions WHERE guild_id = $1", guild_id) or 0)
+            open_count = int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open'", guild_id) or 0)
+            signups = int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_signups WHERE guild_id = $1", guild_id) or 0)
+            return {"total_sessions": total, "open_sessions": open_count, "total_signups": signups}

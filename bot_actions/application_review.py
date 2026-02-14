@@ -6,6 +6,8 @@ from typing import Optional, Dict, Any
 
 from utils import get_database
 from services import InsuranceService, InvalidInput
+from repositories.audit import AuditRepository
+from repositories.jumps import JumpsRepository
 
 
 async def perform_application_review(
@@ -34,7 +36,7 @@ async def perform_application_review(
         action = "insurer_application_approved" if decision == "approve" else "insurer_application_denied"
         target_type = "insurance_provider"
     elif category == "host99k":
-        result = await db.review_host_application(
+        result = await JumpsRepository(db.pool).review_host_application(
             application_id=application_id,
             decision=decision,
             admin_discord_id=admin_discord_id,
@@ -49,7 +51,7 @@ async def perform_application_review(
     else:
         raise ValueError(f"Unsupported category: {category}")
 
-    await db.log_audit(
+    await AuditRepository(db.pool).log_audit(
         actor_discord_id=admin_discord_id,
         action=action,
         target_type=target_type,

@@ -233,3 +233,70 @@ class InsuranceRepository(RepositoryBase):
                 """
             )
             return [dict(row) for row in rows]
+
+
+    async def get_approved_providers_for_browser(self, guild_id: int) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM insurance_providers WHERE guild_id = $1 AND approval_status = 'approved'", guild_id)
+            return [dict(r) for r in rows]
+
+    async def get_provider_policies_for_browser(self, provider_id: int) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM insurance_policies WHERE provider_id = $1 AND active = TRUE", provider_id)
+            return [dict(r) for r in rows]
+
+    async def create_coverage(self, *, policy_id: int, user_discord_id: int, user_torn_id: int, xanax_covered: int, premium_paid: int, premium_type: str, payout_amount: int, reserved_until: datetime) -> int:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO insurance_coverage (policy_id, user_discord_id, user_torn_id, xanax_covered, premium_paid, premium_type, payout_amount, status, reserved_until, created_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,'reserved',$8,NOW())
+                RETURNING coverage_id
+                """,
+                policy_id, user_discord_id, user_torn_id, xanax_covered, premium_paid, premium_type, payout_amount, reserved_until,
+            )
+            return int(row['coverage_id'])
+
+    async def get_coverage(self, coverage_id: int) -> Optional[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM insurance_coverage WHERE coverage_id = $1", coverage_id)
+            return dict(row) if row else None
+
+    async def activate_coverage(self, coverage_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("UPDATE insurance_coverage SET status='active', activated_at = NOW() WHERE coverage_id=$1 RETURNING coverage_id", coverage_id)
+            return row is not None
+
+    async def set_claim_payout_items(self, claim_id: int, payout_items: list[dict[str, Any]], resolved_by: int) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("UPDATE insurance_claims SET payout_items=$2::jsonb, resolved_by=$3, resolved_at=NOW() WHERE claim_id=$1 RETURNING claim_id", claim_id, payout_items, resolved_by)
+            return row is not None
+
+    async def mark_claim_paid_with_log(self, claim_id: int, resolved_by: int, payout_log_id: int, payout_log_timestamp: int, payout_log_evidence: str) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE insurance_claims
+                SET status='paid', resolved_by=$2, resolved_at=NOW(), payout_log_id=$3, payout_log_timestamp=to_timestamp($4), payout_log_evidence=$5
+                WHERE claim_id=$1
+                RETURNING claim_id
+                """,
+                claim_id, resolved_by, payout_log_id, payout_log_timestamp, payout_log_evidence,
+            )
+            return row is not None
+
+    async def reject_claim(self, claim_id: int, resolved_by: int, reason: str) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("UPDATE insurance_claims SET status='rejected', resolved_by=$2, notes=$3, resolved_at=NOW() WHERE claim_id=$1 RETURNING claim_id", claim_id, resolved_by, reason)
+            return row is not None
+
+    async def add_host_rating(self, host_discord_id: int, rater_discord_id: int, session_id: int, rating: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO host_ratings (host_discord_id, rater_discord_id, session_id, rating, created_at)
+                VALUES ($1,$2,$3,$4,NOW())
+                ON CONFLICT (session_id, rater_discord_id) DO UPDATE SET rating = EXCLUDED.rating
+                """,
+                host_discord_id, rater_discord_id, session_id, rating,
+            )

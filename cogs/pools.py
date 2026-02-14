@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from repositories.pools_repository import PoolsRepository
+from repositories.users import UsersRepository
 from repositories.torn_items import TornItemsRepository
 from services.raffle_payment import RafflePaymentService
 from services.payment_receipts import PaymentReceiptService
@@ -175,12 +176,13 @@ class PoolVerifyPaymentView(discord.ui.View):
         total_cost = quantity * int(pool["ticket_price_xanax"])
 
         db = get_database()
-        buyer_key = await db.get_user_api_key(interaction.user.id)
+        users_repo = UsersRepository(db.pool)
+        buyer_key = await users_repo.get_user_api_key(interaction.user.id)
         if not buyer_key or not buyer_key.get("encrypted_key") or not buyer_key.get("torn_user_id"):
             await interaction.followup.send("❌ You must link your Torn API key first.", ephemeral=True)
             return
 
-        creator_key = await db.get_user_api_key(int(pool["created_by_discord_id"]))
+        creator_key = await users_repo.get_user_api_key(int(pool["created_by_discord_id"]))
         creator_torn_id = int((creator_key or {}).get("torn_user_id") or 0)
         if not creator_torn_id:
             await interaction.followup.send("❌ Pool creator Torn ID is not configured.", ephemeral=True)
@@ -229,7 +231,7 @@ class PoolVerifyPaymentView(discord.ui.View):
 
         await repo.add_entry(self.pool_id, interaction.user.id, quantity)
         receipts = PaymentReceiptService(db.pool)
-        receipt_id = await receipts.createReceipt(
+        receipt_id = await receipts.create_and_verify(
             featureType="pool",
             featureRefId=self.pool_id,
             payer_discord_id=interaction.user.id,
@@ -239,12 +241,8 @@ class PoolVerifyPaymentView(discord.ui.View):
             amount=total_cost,
             currency_type="xanax",
             metadata=match,
-        )
-        await receipts.markVerified(
-            receiptId=receipt_id,
             verifier_discord_id=interaction.user.id,
             verifier_torn_id=buyer_torn_id,
-            verification_metadata={"source": "pool_verify_payment"},
         )
         self.stop()
         await _refresh_pool_panel_message(self.bot, self.pool_id)

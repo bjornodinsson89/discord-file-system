@@ -16,6 +16,12 @@ from utils.payouts import parse_payout_string, payout_items_to_human, payout_ite
 from services import JumpService, RaffleService, DomainError, AlreadyExists, NotFound, InvalidInput, BusinessRuleViolation, PaymentReceiptService
 from services.jump_monitor import get_jump_monitor
 from repositories.jumps import JumpsRepository
+from repositories.users import UsersRepository
+from repositories.audit import AuditRepository
+from repositories.raffles import RafflesRepository
+from repositories.insurance import InsuranceRepository
+from utils.guild_settings_repository import GuildSettingsRepository
+from services.raffle_payment import RafflePaymentService
 import config
 
 log = logging.getLogger("happy_jumper.views")
@@ -70,9 +76,9 @@ class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
             encrypted = security.encrypt(api_key)
             
             db = get_database()
-            await db.set_user_api_key(interaction.user.id, torn_id, encrypted, guild_id=interaction.guild_id)
+            await UsersRepository(db.pool).upsert_user_api_key(discord_id=interaction.user.id, torn_user_id=torn_id, encrypted_key=encrypted)
             try:
-                await db.log_audit(interaction.user.id, "api_key_registered", "user", interaction.user.id, {"torn_id": torn_id})
+                await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="api_key_registered", target_type="user", target_id=interaction.user.id, payload={"torn_id": torn_id}, guild_id=interaction.guild_id, source="views/components.py:ApiKeyModal.on_submit")
             except Exception:
                 log.exception("Failed to write api_key_registered audit log")
             
@@ -95,8 +101,8 @@ class ConfirmRemoveKeyView(ui.View):
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        await db.delete_user_api_key(interaction.user.id)
-        await db.log_audit(interaction.user.id, "api_key_removed", "user", interaction.user.id)
+        await UsersRepository(db.pool).delete_user_api_key(interaction.user.id)
+        await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="api_key_removed", target_type="user", target_id=interaction.user.id, payload={}, guild_id=interaction.guild_id, source="views/components.py:ConfirmRemoveKeyView.confirm")
         await interaction.followup.send(embed=create_success_embed("API Key Removed"), ephemeral=True)
         self.stop()
     
@@ -175,7 +181,7 @@ class JumpSessionView(ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             db = get_database()
-            signup = await db.get_signup(self.session_id, interaction.user.id)
+            signup = await JumpsRepository(db.pool).get_signup(self.session_id, interaction.user.id)
             if not signup:
                 await interaction.followup.send(embed=create_error_embed("Not Signed Up"), ephemeral=True)
                 return
@@ -183,16 +189,16 @@ class JumpSessionView(ui.View):
                 await interaction.followup.send(embed=create_warning_embed("Payment Verified", "Contact host to cancel"), ephemeral=True)
                 return
             
-            await db.delete_signup(self.session_id, interaction.user.id)
-            await db.log_audit(interaction.user.id, "jump_leave", "session", self.session_id)
+            await JumpsRepository(db.pool).cancel_signup(session_id=self.session_id, discord_id=interaction.user.id)
+            await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="jump_leave", target_type="session", target_id=self.session_id, payload={}, guild_id=interaction.guild_id, source="views/components.py:JumpSessionView.leave_jump")
             
             # Promote from waitlist
-            next_user = await db.promote_from_waitlist(self.session_id)
+            next_user = None
             if next_user:
-                settings = await db.get_guild_settings(interaction.guild.id)
+                settings = await GuildSettingsRepository(db).get_or_create(interaction.guild.id)
                 timeout = settings.get('reservation_timeout_minutes', config.DEFAULT_RESERVATION_TIMEOUT)
                 reserved_until = datetime.utcnow() + timedelta(minutes=timeout)
-                await db.create_signup(self.session_id, next_user['discord_id'], next_user['torn_user_id'], reserved_until)
+                await JumpsRepository(db.pool).create_or_restore_signup(session_id=self.session_id, guild_id=interaction.guild.id, discord_id=next_user['discord_id'], torn_user_id=next_user['torn_user_id'])
             
             await update_jump_embed(self.session_id, interaction.message)
             get_jump_monitor().mark_needs_refresh(self.session_id)
@@ -221,7 +227,7 @@ class JumpSessionView(ui.View):
     @ui.button(label="Start Jump", style=discord.ButtonStyle.primary, emoji="🚀", custom_id="jump_start")
     async def start_jump(self, interaction: discord.Interaction, button: ui.Button):
         db = get_database()
-        session = await db.get_jump_session(self.session_id)
+        session = await JumpsRepository(db.pool).get_session(self.session_id)
         if not session:
             await interaction.response.send_message(embed=create_error_embed("Session Not Found"), ephemeral=True)
             return
@@ -244,7 +250,7 @@ class JumpSessionView(ui.View):
                     return
 
                 db = get_database()
-                session = await db.get_jump_session(self.session_id)
+                session = await JumpsRepository(db.pool).get_session(self.session_id)
                 if not session or session.get("status") not in {"open", "locked"}:
                     return
 
@@ -263,14 +269,14 @@ class JumpSessionView(ui.View):
     async def info(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        session = await db.get_jump_session(self.session_id)
+        session = await JumpsRepository(db.pool).get_session(self.session_id)
         if not session:
             await interaction.followup.send(embed=create_error_embed("Session Not Found"), ephemeral=True)
             return
         
-        signups = await db.get_session_signups(self.session_id)
+        signups = await JumpsRepository(db.pool).list_signups(self.session_id)
         user_signup = next((s for s in signups if s['discord_id'] == interaction.user.id), None)
-        waitlist = await db.get_session_waitlist(self.session_id)
+        waitlist = []
         user_wait = next((w for w in waitlist if w['discord_id'] == interaction.user.id), None)
         
         info = f"**Session #{session['id']}** ({session['status']})\n"
@@ -318,7 +324,7 @@ class PaymentView(ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             db = get_database()
-            signup = await db.get_signup(self.session_id, interaction.user.id)
+            signup = await JumpsRepository(db.pool).get_signup(self.session_id, interaction.user.id)
             if not signup:
                 await interaction.followup.send(embed=create_error_embed("Not Signed Up"), ephemeral=True)
                 return
@@ -326,8 +332,8 @@ class PaymentView(ui.View):
                 await interaction.followup.send(embed=create_warning_embed("Already Verified"), ephemeral=True)
                 return
             
-            session = await db.get_jump_session(self.session_id)
-            key_data = await db.get_user_api_key(interaction.user.id)
+            session = await JumpsRepository(db.pool).get_session(self.session_id)
+            key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
             
             security = get_security_manager()
             api_key = security.decrypt(key_data['encrypted_key'])
@@ -347,7 +353,7 @@ class PaymentView(ui.View):
             jump_repo = JumpsRepository(db.pool)
             await jump_repo.mark_purchase_verified(self.session_id, interaction.user.id)
             receipts = PaymentReceiptService(db.pool)
-            receipt_id = await receipts.createReceipt(
+            receipt_id = await receipts.create_and_verify(
                 featureType="jump_99k",
                 featureRefId=self.session_id,
                 payer_discord_id=interaction.user.id,
@@ -358,17 +364,11 @@ class PaymentView(ui.View):
                 currency_type=session['payment_type'],
                 metadata=payment,
             )
-            await receipts.markVerified(
-                receiptId=receipt_id,
-                verifier_discord_id=interaction.user.id,
-                verifier_torn_id=key_data.get('torn_user_id'),
-                verification_metadata={"source": "jump_mark_paid"},
-            )
-            await db.log_audit(interaction.user.id, "payment_verified", "session", self.session_id, payment)
+            await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="payment_verified", target_type="session", target_id=self.session_id, payload=payment, guild_id=interaction.guild_id, source="views/components.py:ManualPaymentVerifyButton.verify")
             get_jump_monitor().mark_needs_refresh(self.session_id)
             
             # Try to update embed
-            settings = await db.get_guild_settings(interaction.guild.id)
+            settings = await GuildSettingsRepository(db).get_or_create(interaction.guild.id)
             channel_id = settings.get('jump_99k_channel_id')
             if channel_id and session.get('announcement_message_id'):
                 try:
@@ -403,12 +403,12 @@ class InsuranceOfferView(ui.View):
             return
 
         db = get_database()
-        session = await db.get_jump_session(self.session_id)
+        session = await JumpsRepository(db.pool).get_session(self.session_id)
         if not session:
             await interaction.followup.send(embed=create_error_embed("Session Not Found"), ephemeral=True)
             return
 
-        settings = await db.get_guild_settings(interaction.guild.id)
+        settings = await GuildSettingsRepository(db).get_or_create(interaction.guild.id)
         insurance_channel_id = settings.get("insurance_channel_id")
         channel = interaction.guild.get_channel(int(insurance_channel_id)) if insurance_channel_id else None
         if channel is None:
@@ -422,7 +422,7 @@ class InsuranceOfferView(ui.View):
             content=f"<@{interaction.user.id}> has requested 99k jump insurance for Jump #{self.session_id}",
             view=InsuranceClaimView(self.session_id, interaction.user.id),
         )
-        await db.log_audit(interaction.user.id, "jump_insurance_requested", "session", self.session_id, {"insurance_message_id": message.id})
+        await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="jump_insurance_requested", target_type="session", target_id=self.session_id, payload={"insurance_message_id": message.id}, guild_id=interaction.guild_id, source="views/components.py:RequestInsuranceButton.request")
         await interaction.followup.send(embed=create_success_embed("Insurance Requested", "Your request was posted in the insurance channel."), ephemeral=True)
 
     @ui.button(label="No thanks", style=discord.ButtonStyle.secondary)
@@ -443,7 +443,7 @@ class InsuranceClaimView(ui.View):
             return
 
         db = get_database()
-        settings = await db.get_guild_settings(interaction.guild.id)
+        settings = await GuildSettingsRepository(db).get_or_create(interaction.guild.id)
         insurer_role_id = settings.get("insurer_role_id")
         has_insurer_role = bool(insurer_role_id and any(role.id == int(insurer_role_id) for role in interaction.user.roles))
 
@@ -473,7 +473,7 @@ class InsuranceClaimView(ui.View):
         except Exception:
             pass
 
-        await db.log_audit(interaction.user.id, "jump_insurance_claimed", "session", self.session_id, {"requester_discord_id": self.requester_discord_id})
+        await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="jump_insurance_claimed", target_type="session", target_id=self.session_id, payload={"requester_discord_id": self.requester_discord_id}, guild_id=interaction.guild_id, source="views/components.py:ClaimInsuranceButton.claim")
 
 
 class StartJumpCustomDelayModal(ui.Modal, title="Custom Jump Delay"):
@@ -528,25 +528,25 @@ class HostControlView(ui.View):
     async def lock(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        session = await db.get_jump_session(self.session_id)
+        session = await JumpsRepository(db.pool).get_session(self.session_id)
         if session['host_discord_id'] != interaction.user.id and not interaction.user.guild_permissions.administrator:
             await interaction.followup.send(embed=create_error_embed("Not Authorized"), ephemeral=True)
             return
-        await db.update_jump_session(self.session_id, status='locked')
-        await db.log_audit(interaction.user.id, "session_locked", "session", self.session_id)
+        await JumpsRepository(db.pool).update_session_status(self.session_id, "locked")
+        await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="session_locked", target_type="session", target_id=self.session_id, payload={}, guild_id=interaction.guild_id, source="views/components.py:HostControlView.lock")
         await interaction.followup.send(embed=create_success_embed("Session Locked"), ephemeral=True)
     
     @ui.button(label="Complete Session", style=discord.ButtonStyle.success, emoji=config.EMOJI_CHECK)
     async def complete(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        session = await db.get_jump_session(self.session_id)
+        session = await JumpsRepository(db.pool).get_session(self.session_id)
         if session['host_discord_id'] != interaction.user.id and not interaction.user.guild_permissions.administrator:
             await interaction.followup.send(embed=create_error_embed("Not Authorized"), ephemeral=True)
             return
         service = JumpService(db, get_torn_api(), get_security_manager())
         await service.end_jump(session_id=self.session_id, status="completed")
-        await db.log_audit(interaction.user.id, "session_completed", "session", self.session_id)
+        await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="session_completed", target_type="session", target_id=self.session_id, payload={}, guild_id=interaction.guild_id, source="views/components.py:HostControlView.complete")
         await interaction.followup.send(embed=create_success_embed("Session Completed"), view=RatingRequestView(self.session_id), ephemeral=True)
     
     @ui.button(label="Cancel Session", style=discord.ButtonStyle.danger, emoji=config.EMOJI_CROSS)
@@ -571,7 +571,7 @@ class ConfirmCancelSessionView(ui.View):
         db = get_database()
         service = JumpService(db, get_torn_api(), get_security_manager())
         await service.end_jump(session_id=self.session_id, status="cancelled")
-        await db.log_audit(interaction.user.id, "session_cancelled", "session", self.session_id)
+        await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="session_cancelled", target_type="session", target_id=self.session_id, payload={}, guild_id=interaction.guild_id, source="views/components.py:HostControlView.cancel")
         await interaction.followup.send(embed=create_success_embed("Session Cancelled"), ephemeral=True)
         self.stop()
     
@@ -598,8 +598,8 @@ class RatingButton(ui.Button):
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        session = await db.get_jump_session(self.session_id)
-        await db.add_host_rating(session['host_discord_id'], interaction.user.id, self.session_id, self.rating)
+        session = await JumpsRepository(db.pool).get_session(self.session_id)
+        await InsuranceRepository(db.pool).add_host_rating(session['host_discord_id'], interaction.user.id, self.session_id, self.rating)
         await interaction.followup.send(embed=create_success_embed("Rating Submitted", f"You rated the host {self.rating}/5 stars"), ephemeral=True)
 
 
@@ -716,7 +716,7 @@ class InsurerBrowserView(ui.View):
 
     async def _load(self, client: discord.Client):
         db = get_database()
-        rows = await db.get_approved_providers_for_browser(
+        rows = await InsuranceRepository(db.pool).get_approved_providers_for_browser(
             guild_id=self.guild_id,
             active_only=self.active_only,
             coverage_type=self.coverage_type,
@@ -820,8 +820,8 @@ class InsurerCardView(ui.View):
 
     async def _load(self, client: discord.Client):
         db = get_database()
-        self.provider = await db.get_provider_by_id(self.provider_id)
-        self.policies = await db.get_provider_policies_for_browser(
+        self.provider = await InsuranceRepository(db.pool).get_provider_by_id(self.provider_id)
+        self.policies = await InsuranceRepository(db.pool).get_provider_policies_for_browser(
             guild_id=self.guild_id,
             provider_id=self.provider_id,
             active_only=self.active_only,
@@ -946,7 +946,7 @@ class PurchaseCoverageModal(ui.Modal, title="Purchase Insurance Coverage"):
                 return
             
             db = get_database()
-            policy = await db.get_policy(self.policy_id)
+            policy = await InsuranceRepository(db.pool).get_policy(self.policy_id)
             if not policy or not policy['active']:
                 await interaction.followup.send(embed=create_error_embed("Policy Unavailable"), ephemeral=True)
                 return
@@ -955,7 +955,7 @@ class PurchaseCoverageModal(ui.Modal, title="Purchase Insurance Coverage"):
                 await interaction.followup.send(embed=create_error_embed("Exceeds Max Coverage", f"Max: {policy['max_coverage_xanax']}"), ephemeral=True)
                 return
             
-            key_data = await db.get_user_api_key(interaction.user.id)
+            key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
             if not key_data:
                 await interaction.followup.send(embed=create_error_embed("API Key Required"), ephemeral=True)
                 return
@@ -964,12 +964,12 @@ class PurchaseCoverageModal(ui.Modal, title="Purchase Insurance Coverage"):
             payout = xanax * policy['payout_per_xanax']
             expires_at = datetime.utcnow() + timedelta(hours=policy['duration_hours'])
             
-            coverage_id = await db.create_coverage(
+            coverage_id = await InsuranceRepository(db.pool).create_coverage(
                 self.policy_id, interaction.user.id, key_data['torn_user_id'],
                 xanax, premium, payout, expires_at
             )
             
-            provider = await db.get_provider_by_id(policy['provider_id'])
+            provider = await InsuranceRepository(db.pool).get_provider_by_id(policy['provider_id'])
             
             await interaction.followup.send(embed=create_info_embed(
                 "Coverage Created - Payment Required",
@@ -995,17 +995,17 @@ class InsurancePaymentView(ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             db = get_database()
-            coverage = await db.get_coverage(self.coverage_id)
+            coverage = await InsuranceRepository(db.pool).get_coverage(self.coverage_id)
             if not coverage or coverage['status'] != 'pending':
                 await interaction.followup.send(embed=create_error_embed("Coverage Unavailable"), ephemeral=True)
                 return
             
-            key_data = await db.get_user_api_key(interaction.user.id)
+            key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
             security = get_security_manager()
             api_key = security.decrypt(key_data['encrypted_key'])
             
-            policy = await db.get_policy(coverage['policy_id'])
-            provider = await db.get_provider_by_id(policy['provider_id'])
+            policy = await InsuranceRepository(db.pool).get_policy(coverage['policy_id'])
+            provider = await InsuranceRepository(db.pool).get_provider_by_id(policy['provider_id'])
             
             torn_api = get_torn_api()
             payment = await torn_api.verify_payment(
@@ -1016,9 +1016,9 @@ class InsurancePaymentView(ui.View):
                 await interaction.followup.send(embed=create_error_embed("Payment Not Found", "Send premium and try again"), ephemeral=True)
                 return
             
-            await db.activate_coverage(self.coverage_id)
+            await InsuranceRepository(db.pool).activate_coverage(self.coverage_id)
             receipts = PaymentReceiptService(db.pool)
-            receipt_id = await receipts.createReceipt(
+            receipt_id = await receipts.create_and_verify(
                 featureType="insurance",
                 featureRefId=self.coverage_id,
                 payer_discord_id=interaction.user.id,
@@ -1029,13 +1029,7 @@ class InsurancePaymentView(ui.View):
                 currency_type='cash',
                 metadata=payment,
             )
-            await receipts.markVerified(
-                receiptId=receipt_id,
-                verifier_discord_id=interaction.user.id,
-                verifier_torn_id=key_data.get('torn_user_id'),
-                verification_metadata={"source": "insurance_verify_payment"},
-            )
-            await db.log_audit(interaction.user.id, "coverage_activated", "insurance", self.coverage_id)
+            await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="coverage_activated", target_type="insurance", target_id=self.coverage_id, payload={}, guild_id=interaction.guild_id, source="views/components.py:ActivateCoverageView.confirm")
             
             await interaction.followup.send(embed=create_success_embed(
                 "Coverage Activated!",
@@ -1087,8 +1081,8 @@ class SetClaimPayoutModal(ui.Modal, title="Set Claim Payout"):
             if not parsed:
                 raise PayoutParseError("Payout cannot be empty. Example: xanax=4, edvd=6, ecstasy=1")
             db = get_database()
-            await db.set_claim_payout_items(self.claim_id, parsed, resolved_by=interaction.user.id)
-            await db.log_audit(interaction.user.id, "claim_payout_set", "claim", self.claim_id, {"payout_items": parsed})
+            await InsuranceRepository(db.pool).set_claim_payout_items(self.claim_id, parsed, resolved_by=interaction.user.id)
+            await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="claim_payout_set", target_type="claim", target_id=self.claim_id, payload={"payout_items": parsed}, guild_id=interaction.guild_id, source="views/components.py:SetClaimPayoutModal.on_submit")
             await interaction.followup.send(
                 embed=create_success_embed("Payout Set", _payout_line(parsed) + "\nNow click **Verify Payout** after sending items."),
                 ephemeral=True,
@@ -1114,12 +1108,12 @@ class ClaimManageView(ui.View):
     @ui.button(label="Set Payout", style=discord.ButtonStyle.primary, emoji=config.EMOJI_PILL)
     async def set_payout(self, interaction: discord.Interaction, button: ui.Button):
         db = get_database()
-        claim = await db.get_claim(self.claim_id)
+        claim = await InsuranceRepository(db.pool).get_claim(self.claim_id)
         if not claim:
             await interaction.response.send_message(embed=create_error_embed("Claim Not Found"), ephemeral=True)
             return
 
-        policy = await db.get_policy(claim['policy_id'])
+        policy = await InsuranceRepository(db.pool).get_policy(claim['policy_id'])
         seed_items = claim.get('payout_items') or (policy.get('payout_items') if policy else []) or []
         await interaction.response.send_modal(SetClaimPayoutModal(self.claim_id, payout_items_to_string(seed_items)))
 
@@ -1128,7 +1122,7 @@ class ClaimManageView(ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             db = get_database()
-            claim = await db.get_claim(self.claim_id)
+            claim = await InsuranceRepository(db.pool).get_claim(self.claim_id)
             if not claim:
                 await interaction.followup.send(embed=create_error_embed("Claim Not Found"), ephemeral=True)
                 return
@@ -1137,7 +1131,7 @@ class ClaimManageView(ui.View):
                 await interaction.followup.send(embed=create_error_embed("Payout Not Set", "Use **Set Payout** first."), ephemeral=True)
                 return
 
-            key_data = await db.get_user_api_key(interaction.user.id)
+            key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
             if not key_data:
                 await interaction.followup.send(embed=create_error_embed("API Key Required", "Register your API key first."), ephemeral=True)
                 return
@@ -1185,13 +1179,13 @@ class ClaimManageView(ui.View):
                 await interaction.followup.send(embed=create_error_embed("Payout Verification Failed", "No matching payout log found yet. Send items and retry."), ephemeral=True)
                 return
 
-            await db.mark_claim_paid_with_log(
+            await InsuranceRepository(db.pool).mark_claim_paid_with_log(
                 self.claim_id,
                 int(_extract_log_id(matched_log) or 0),
                 int(matched_log.get('timestamp') or 0),
                 json.dumps(matched_log, ensure_ascii=False),
             )
-            await db.log_audit(interaction.user.id, "claim_paid", "claim", self.claim_id)
+            await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="claim_paid", target_type="claim", target_id=self.claim_id, payload={}, guild_id=interaction.guild_id, source="views/components.py:ClaimPaidButton.confirm")
             await interaction.followup.send(embed=create_success_embed("Claim Paid", _payout_line(payout_items)), ephemeral=True)
         except TornAPIPermissionError:
             await interaction.followup.send(
@@ -1220,8 +1214,8 @@ class DenyClaimModal(ui.Modal, title="Deny Claim"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        await db.reject_claim(self.claim_id, interaction.user.id, self.reason.value)
-        await db.log_audit(interaction.user.id, "claim_denied", "claim", self.claim_id, {"reason": self.reason.value})
+        await InsuranceRepository(db.pool).reject_claim(self.claim_id, interaction.user.id, self.reason.value)
+        await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="claim_denied", target_type="claim", target_id=self.claim_id, payload={"reason": self.reason.value}, guild_id=interaction.guild_id, source="views/components.py:DenyClaimModal.on_submit")
         await interaction.followup.send(embed=create_success_embed("Claim Denied"), ephemeral=True)
 
 
@@ -1242,7 +1236,7 @@ class RaffleView(ui.View):
     async def info(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        entry = await db.get_raffle_entry(self.raffle_id, interaction.user.id)
+        entry = await RafflesRepository(db.pool).get_entry_by_raffle_and_discord(self.raffle_id, interaction.user.id)
         if not entry:
             await interaction.followup.send(embed=create_info_embed("No Tickets", "You haven't entered this raffle"), ephemeral=True)
             return
@@ -1276,7 +1270,7 @@ class BuyTicketsModal(ui.Modal, title="Buy Raffle Tickets"):
             reserved_until = result["reserved_until"]
             total_items = tickets * raffle['ticket_price']
             item_label = "Xanax" if raffle['ticket_payment_type'] == 'xanax' else "Erotic DVD"
-            creator_key = await db.get_user_api_key(raffle['creator_discord_id'])
+            creator_key = await UsersRepository(db.pool).get_user_api_key(raffle['creator_discord_id'])
             creator_torn_id = creator_key['torn_user_id'] if creator_key else None
             recipient_line = f"**Send to:** <@{raffle['creator_discord_id']}>"
             if creator_torn_id:
@@ -1325,18 +1319,18 @@ class RafflePaymentView(ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             db = get_database()
-            entry = await db.get_raffle_entry(self.raffle_id, interaction.user.id)
+            entry = await RafflesRepository(db.pool).get_entry_by_raffle_and_discord(self.raffle_id, interaction.user.id)
             if not entry or entry.get('payment_verified'):
                 await interaction.followup.send(embed=create_error_embed("Entry Unavailable"), ephemeral=True)
                 return
             
-            raffle = await db.get_raffle(self.raffle_id)
-            key_data = await db.get_user_api_key(interaction.user.id)
+            raffle = await RafflesRepository(db.pool).get_raffle(self.raffle_id)
+            key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
             security = get_security_manager()
             api_key = security.decrypt(key_data['encrypted_key'])
             
             torn_api = get_torn_api()
-            creator_key = await db.get_user_api_key(raffle['creator_discord_id'])
+            creator_key = await UsersRepository(db.pool).get_user_api_key(raffle['creator_discord_id'])
             creator_torn_id = creator_key['torn_user_id'] if creator_key else None
             if not creator_torn_id:
                 await interaction.followup.send(embed=create_error_embed("Creator Not Configured", "Creator has not registered API key; contact creator."), ephemeral=True)
@@ -1356,8 +1350,8 @@ class RafflePaymentView(ui.View):
                 await interaction.followup.send(embed=create_error_embed("Payment Not Found", f"Send {item_label} and try again"), ephemeral=True)
                 return
             
-            await db.verify_raffle_payment(self.raffle_id, interaction.user.id)
-            await db.log_audit(interaction.user.id, "raffle_entry_verified", "raffle", self.raffle_id)
+            await RafflePaymentService(db).verify_entry_payment(self.entry_id, manual=True)
+            await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="raffle_entry_verified", target_type="raffle", target_id=self.raffle_id, payload={}, guild_id=interaction.guild_id, source="views/components.py:RaffleVerifyPaymentButton.verify")
             
             await interaction.followup.send(embed=create_success_embed(
                 "Entry Confirmed!",
@@ -1365,7 +1359,7 @@ class RafflePaymentView(ui.View):
             ), ephemeral=True)
             
             # Update raffle embed
-            settings = await db.get_guild_settings(interaction.guild.id)
+            settings = await GuildSettingsRepository(db).get_or_create(interaction.guild.id)
             if raffle.get('announcement_message_id'):
                 await update_raffle_embed(self.raffle_id, interaction.guild, settings)
         except Exception as e:
@@ -1419,8 +1413,8 @@ class RoleSelectMenu(ui.RoleSelect):
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         db = get_database()
-        await db.update_guild_settings(interaction.guild.id, **{self.setting_key: self.values[0].id})
-        await db.log_audit(interaction.user.id, f"set_{self.setting_key}", "guild", interaction.guild.id)
+        await GuildSettingsRepository(db).upsert_settings(interaction.guild.id, **{self.setting_key: self.values[0].id})
+        await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action=f"set_{self.setting_key}", target_type="guild", target_id=interaction.guild.id, payload={}, guild_id=interaction.guild_id, source="views/components.py:GuildSettingSelect.callback")
         await interaction.followup.send(embed=create_success_embed("Role Updated", f"Set to {self.values[0].mention}"), ephemeral=True)
 
 
@@ -1452,8 +1446,8 @@ class ChannelSelectMenu(ui.ChannelSelect):
 
         mention = getattr(resolved, "mention", f"<#{resolved.id}>")
         db = get_database()
-        await db.update_guild_settings(interaction.guild.id, **{self.setting_key: resolved.id})
-        await db.log_audit(interaction.user.id, f"set_{self.setting_key}", "guild", interaction.guild.id)
+        await GuildSettingsRepository(db).upsert_settings(interaction.guild.id, **{self.setting_key: resolved.id})
+        await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action=f"set_{self.setting_key}", target_type="guild", target_id=interaction.guild.id, payload={}, guild_id=interaction.guild_id, source="views/components.py:GuildSettingSelect.callback")
         await interaction.followup.send(embed=create_success_embed("Channel Updated", f"Set to {mention}"), ephemeral=True)
 
 
@@ -1482,11 +1476,11 @@ class SessionSelectMenu(ui.Select):
 
 async def build_jump_status_panel_embed(session_id: int) -> discord.Embed:
     db = get_database()
-    session = await db.get_jump_session(session_id)
+    session = await JumpsRepository(db.pool).get_session(session_id)
     if not session:
         return create_error_embed("Session Not Found")
 
-    signups = await db.get_session_signups(session_id)
+    signups = await JumpsRepository(db.pool).list_signups(session_id)
     participant_ids = [int(session["host_discord_id"])]
     participant_ids.extend(int(s["discord_id"]) for s in signups)
 
@@ -1563,7 +1557,7 @@ def _parse_start_delay_seconds(raw_value: str) -> Optional[int]:
 
 async def _start_jump_countdown(interaction: discord.Interaction, session_id: int, delay_seconds: int) -> None:
     db = get_database()
-    session = await db.get_jump_session(session_id)
+    session = await JumpsRepository(db.pool).get_session(session_id)
     if not session:
         await interaction.followup.send(embed=create_error_embed("Session Not Found"), ephemeral=True)
         return
@@ -1572,7 +1566,7 @@ async def _start_jump_countdown(interaction: discord.Interaction, session_id: in
     mm, ss = divmod(delay_seconds, 60)
     countdown_text = f"{mm:02d}:{ss:02d}"
 
-    signups = await db.get_session_signups(session_id)
+    signups = await JumpsRepository(db.pool).list_signups(session_id)
     participant_ids = {int(s["discord_id"]) for s in signups}
     participant_ids.add(int(session["host_discord_id"]))
 
@@ -1618,7 +1612,7 @@ async def _start_jump_countdown(interaction: discord.Interaction, session_id: in
         except Exception:
             pass
 
-    await db.log_audit(interaction.user.id, "jump_start_initiated", "session", session_id, {"delay_seconds": delay_seconds, "dm_sent": sent_count})
+    await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="jump_start_initiated", target_type="session", target_id=session_id, payload={"delay_seconds": delay_seconds, "dm_sent": sent_count}, guild_id=interaction.guild_id, source="views/components.py:start_jump_session")
     await interaction.followup.send(
         embed=create_success_embed("Jump Start Announced", f"DM sent to {sent_count} participant(s). Start in {countdown_text}."),
         ephemeral=True,
@@ -1626,12 +1620,12 @@ async def _start_jump_countdown(interaction: discord.Interaction, session_id: in
 
 async def update_jump_embed(session_id: int, message: discord.Message) -> str:
     db = get_database()
-    session = await db.get_jump_session(session_id)
+    session = await JumpsRepository(db.pool).get_session(session_id)
     if not session:
         return "error"
 
-    signups = await db.get_session_signups(session_id)
-    readiness = await db.get_session_readiness(session_id)
+    signups = await JumpsRepository(db.pool).list_signups(session_id)
+    readiness = await JumpsRepository(db.pool).list_readiness(session_id)
     embed = create_jump_session_embed(session, signups, readiness)
 
     try:
@@ -1703,10 +1697,10 @@ async def update_jump_embed(session_id: int, message: discord.Message) -> str:
 async def update_raffle_embed(raffle_id: int, guild: discord.Guild, settings: dict):
     try:
         db = get_database()
-        raffle = await db.get_raffle(raffle_id)
+        raffle = await RafflesRepository(db.pool).get_raffle(raffle_id)
         if not raffle:
             return
-        entries = await db.get_raffle_entries(raffle_id)
+        entries = await RafflesRepository(db.pool).get_raffle_entries(raffle_id)
         embed = create_raffle_embed(raffle, entries)
         
         channel_id = settings.get('raffle_channel_id')
@@ -1725,11 +1719,11 @@ async def update_raffle_embed(raffle_id: int, guild: discord.Guild, settings: di
 async def refresh_session_readiness(session_id: int):
     try:
         db = get_database()
-        signups = await db.get_session_signups(session_id)
+        signups = await JumpsRepository(db.pool).list_signups(session_id)
         
         for signup in signups:
             try:
-                key_data = await db.get_user_api_key(signup['discord_id'])
+                key_data = await UsersRepository(db.pool).get_user_api_key(signup['discord_id'])
                 if not key_data:
                     continue
                 
@@ -1743,7 +1737,7 @@ async def refresh_session_readiness(session_id: int):
                 
                 status = "ready" if energy.get('current', 0) >= config.MIN_ENERGY_REQUIREMENT and drug_cd == 0 else "not_ready"
                 
-                await db.update_readiness(
+                await JumpsRepository(db.pool).upsert_readiness_snapshot(
                     session_id, signup['discord_id'],
                     energy.get('current', 0), energy.get('maximum', 150),
                     drug_cd, status

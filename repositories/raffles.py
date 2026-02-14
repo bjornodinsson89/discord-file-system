@@ -217,6 +217,33 @@ class RafflesRepository(RepositoryBase):
             )
             return [dict(row) for row in rows]
 
+
+
+    async def get_entry_by_raffle_and_discord(self, raffle_id: int, discord_id: int) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM raffle_entries WHERE raffle_id = $1 AND discord_id = $2",
+                raffle_id,
+                discord_id,
+            )
+            return dict(row) if row else None
+
+    async def get_reserved_tickets_count(self, raffle_id: int) -> int:
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(num_tickets), 0)
+                FROM raffle_entries
+                WHERE raffle_id = $1
+                  AND payment_verified = FALSE
+                  AND reserved_until > NOW()
+                """,
+                raffle_id,
+            )
+            return int(value or 0)
+
+    async def draw_winner(self, raffle_id: int) -> Optional[dict]:
+        return await self.draw_raffle_winner(raffle_id)
     async def get_pending_verifications(self) -> list:
         """Get entries that need auto-verification."""
         async with self.pool.acquire() as conn:
