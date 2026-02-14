@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, Optional
 
 from .base import RepositoryBase
@@ -124,19 +125,20 @@ class JumpsRepository(RepositoryBase):
         async with self.pool.acquire() as conn:
             return int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_signups WHERE session_id = $1 AND status IN ('signed_up','completed','not_completed')", session_id))
 
-    async def create_or_restore_signup(self, *, session_id: int, guild_id: int, discord_id: int, torn_user_id: Optional[int]) -> None:
+    async def create_or_restore_signup(self, *, session_id: int, guild_id: int, discord_id: int, torn_user_id: Optional[int], reserved_until: Optional[datetime] = None) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO jump_99k_signups (session_id, guild_id, participant_discord_id, participant_torn_user_id, status)
-                VALUES ($1,$2,$3,$4,'signed_up')
+                INSERT INTO jump_99k_signups (session_id, guild_id, participant_discord_id, participant_torn_user_id, status, reserved_until)
+                VALUES ($1,$2,$3,$4,'signed_up',$5)
                 ON CONFLICT (session_id, participant_discord_id)
-                DO UPDATE SET status = 'signed_up', participant_torn_user_id = EXCLUDED.participant_torn_user_id
+                DO UPDATE SET status = 'signed_up', participant_torn_user_id = EXCLUDED.participant_torn_user_id, reserved_until = EXCLUDED.reserved_until
                 """,
                 session_id,
                 guild_id,
                 discord_id,
                 torn_user_id,
+                reserved_until,
             )
 
     async def cancel_signup(self, *, session_id: int, discord_id: int) -> bool:
@@ -174,6 +176,39 @@ class JumpsRepository(RepositoryBase):
                 session_id,
             )
             return [dict(r) for r in rows]
+
+    async def cancel_expired_unpaid(self) -> int:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE jump_99k_signups
+                SET status='cancelled'
+                WHERE status='signed_up'
+                  AND payment_verified=FALSE
+                  AND reserved_until IS NOT NULL
+                  AND reserved_until <= NOW()
+                """
+            )
+            return int(str(result).split()[-1])
+
+    async def list_pending_payment_signups(self, *, limit: int = 50) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT s.*, ses.price_item, ses.price_amount, ses.host_discord_id, ses.created_at
+                FROM jump_99k_signups s
+                JOIN jump_99k_sessions ses ON ses.id = s.session_id
+                WHERE ses.status='open'
+                  AND s.status='signed_up'
+                  AND s.payment_verified=FALSE
+                  AND s.reserved_until IS NOT NULL
+                  AND s.reserved_until > NOW()
+                ORDER BY s.reserved_until ASC
+                LIMIT $1
+                """,
+                limit,
+            )
+            return [dict(row) for row in rows]
 
     async def mark_signup_payment_verified(self, *, session_id: int, discord_id: int) -> bool:
         async with self.pool.acquire() as conn:

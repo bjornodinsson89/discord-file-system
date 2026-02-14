@@ -11,7 +11,7 @@ import asyncio
 import json
 import re
 from urllib.parse import urlparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import config
@@ -25,8 +25,9 @@ from utils.embeds import (
 from views import (
     ApiKeyIntroView, ConfirmRemoveKeyView, ApplicationReviewView, InsurerBrowserView
 )
+from views.components import InsuranceOfferView
 from utils.payouts import parse_payout_string, payout_items_to_human, PayoutParseError
-from utils.torn_api import TornAPIError
+from utils.torn_api import TornAPIError, TornAPIRateLimitError
 from utils.payment_normalization import parse_payment_type
 from setup_panel import (
     DEFAULT_WELCOME_TEMPLATE,
@@ -512,6 +513,8 @@ async def on_ready():
         insurance_monitor.start()
     if not raffle_completion_worker.is_running():
         raffle_completion_worker.start()
+    if not auto_verify_99k_payments.is_running():
+        auto_verify_99k_payments.start()
     
     log.info("✓ Bot is ready!")
 
@@ -864,20 +867,35 @@ async def refresh_item_icons(interaction: discord.Interaction):
     )
 
 
-class Jump99kSignupView(discord.ui.View):
-    def __init__(self, session_id: int, timeout: int = 86400):
-        super().__init__(timeout=timeout)
-        self.session_id = session_id
+async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:
+    db = get_database()
+    repo = JumpsRepository(db.pool)
+    try:
+        session = await repo.get_session(session_id)
+        if not session:
+            return
+        channel_id = session.get("announce_channel_id")
+        message_id = session.get("announce_message_id")
+        if not channel_id or not message_id:
+            return
+        guild = bot_client.get_guild(int(session["guild_id"]))
+        channel = guild.get_channel(int(channel_id)) if guild else bot_client.get_channel(int(channel_id))
+        if not channel:
+            return
+        message = await channel.fetch_message(int(message_id))
+        signups = await repo.list_signups(session_id)
+        signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
+        paid = sum(1 for row in signups if row.get("payment_verified"))
+        base_content = message.content.split("\nSigned up:", 1)[0]
+        await message.edit(content=f"{base_content}\nSigned up: {signed_up} / Paid: {paid}")
+    except Exception:
+        pass
 
-    async def _refresh_announcement_count(self, interaction: discord.Interaction, repo: JumpsRepository) -> None:
-        try:
-            if not interaction.message or not interaction.message.content:
-                return
-            count = await repo.signup_count(self.session_id)
-            base_content = interaction.message.content.split("\nSigned up: ", 1)[0]
-            await interaction.message.edit(content=f"{base_content}\nSigned up: {count}", view=self)
-        except Exception:
-            pass
+
+class Jump99kSignupView(discord.ui.View):
+    def __init__(self, session_id: int):
+        super().__init__(timeout=None)
+        self.session_id = session_id
 
     @discord.ui.button(label="Join", style=discord.ButtonStyle.success)
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -890,14 +908,11 @@ class Jump99kSignupView(discord.ui.View):
         users_repo = UsersRepository(db.pool)
 
         session = await repo.get_session(self.session_id)
-        if not session:
-            await interaction.response.send_message("Session not found.", ephemeral=True)
+        if not session or str(session.get("status", "")).lower() != "open":
+            await interaction.response.send_message("Session is not open.", ephemeral=True)
             return
         if int(session.get("guild_id", 0)) != int(interaction.guild_id):
             await interaction.response.send_message("Session not found.", ephemeral=True)
-            return
-        if str(session.get("status", "")).lower() == "closed":
-            await interaction.response.send_message("Session is closed.", ephemeral=True)
             return
 
         bl = await repo.is_blacklisted(interaction.guild_id, interaction.user.id)
@@ -906,27 +921,109 @@ class Jump99kSignupView(discord.ui.View):
             return
 
         key_row = await users_repo.get_user_api_key(interaction.user.id)
-        torn_user_id = int(key_row["torn_user_id"]) if key_row and key_row.get("torn_user_id") else None
+        if not key_row:
+            await interaction.response.send_message("Link your Torn API key before joining.", ephemeral=True)
+            return
 
+        settings = await GuildSettingsRepository(db).get_or_create(interaction.guild_id)
+        timeout_minutes = int(settings.get("reservation_timeout_minutes") or config.DEFAULT_RESERVATION_TIMEOUT)
+        reserved_until = datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
+
+        torn_user_id = int(key_row["torn_user_id"]) if key_row.get("torn_user_id") else None
         await repo.create_or_restore_signup(
             session_id=self.session_id,
             guild_id=interaction.guild_id,
             discord_id=interaction.user.id,
             torn_user_id=torn_user_id,
+            reserved_until=reserved_until,
         )
-        await self._refresh_announcement_count(interaction, repo)
-        await interaction.response.send_message("You’re signed up.", ephemeral=True)
+        await _refresh_99k_panel(interaction.client, self.session_id)
+        await interaction.response.send_message("✅ Spot reserved. Send payment in Torn, then press Verify Payment.", ephemeral=True)
 
     @discord.ui.button(label="Leave", style=discord.ButtonStyle.secondary)
     async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
         db = get_database()
         repo = JumpsRepository(db.pool)
         ok = await repo.cancel_signup(session_id=self.session_id, discord_id=interaction.user.id)
-        await self._refresh_announcement_count(interaction, repo)
+        await _refresh_99k_panel(interaction.client, self.session_id)
         if ok:
             await interaction.response.send_message("You’ve been removed.", ephemeral=True)
+        else:
+            await interaction.response.send_message("You weren’t signed up.", ephemeral=True)
+
+    @discord.ui.button(label="✅ Verify Payment", style=discord.ButtonStyle.success)
+    async def verify_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
+        db = get_database()
+        repo = JumpsRepository(db.pool)
+        users_repo = UsersRepository(db.pool)
+        security = get_security_manager()
+        torn_api = get_torn_api()
+
+        session = await repo.get_session(self.session_id)
+        if not session or str(session.get("status", "")).lower() != "open":
+            await interaction.response.send_message("Session is not open.", ephemeral=True)
             return
-        await interaction.response.send_message("You weren’t signed up.", ephemeral=True)
+        if int(session.get("guild_id", 0)) != int(interaction.guild_id):
+            await interaction.response.send_message("Session not found.", ephemeral=True)
+            return
+
+        bl = await repo.is_blacklisted(interaction.guild_id, interaction.user.id)
+        if bl:
+            await interaction.response.send_message("You are blacklisted.", ephemeral=True)
+            return
+
+        key_row = await users_repo.get_user_api_key(interaction.user.id)
+        encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
+        if not key_row or not encrypted_key:
+            await interaction.response.send_message("Link your Torn API key first.", ephemeral=True)
+            return
+
+        host_key = await users_repo.get_user_api_key(int(session["host_discord_id"]))
+        host_torn_id = int(host_key["torn_user_id"]) if host_key and host_key.get("torn_user_id") else 0
+        if not host_torn_id:
+            await interaction.response.send_message("Host has not linked Torn ID.", ephemeral=True)
+            return
+
+        api_key = security.decrypt_api_key(encrypted_key)
+        since_ts = int((session["created_at"] - timedelta(seconds=60)).timestamp())
+        item = str(session.get("price_item", "")).lower()
+        if item == "xanax":
+            payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, int(session["price_amount"]), since_timestamp=since_ts)
+        elif item == "erotic_dvd":
+            payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, int(session["price_amount"]), since_timestamp=since_ts)
+        else:
+            await interaction.response.send_message("Unsupported payment item for this session.", ephemeral=True)
+            return
+
+        if not payment:
+            await interaction.response.send_message("Payment not found yet…", ephemeral=True)
+            return
+
+        await repo.mark_signup_payment_verified(session_id=self.session_id, discord_id=interaction.user.id)
+        payer_torn = int(key_row.get("torn_user_id") or 0) or None
+        receipts = PaymentReceiptService(db.pool)
+        await receipts.create_and_verify(
+            featureType="jump_99k",
+            featureRefId=self.session_id,
+            payer_discord_id=interaction.user.id,
+            payer_torn_id=payer_torn,
+            payee_discord_id=int(session["host_discord_id"]) or None,
+            payee_torn_id=host_torn_id,
+            amount=int(session["price_amount"]),
+            currency_type=str(session["price_item"]),
+            metadata=payment,
+            verifier_discord_id=interaction.user.id,
+            verifier_torn_id=payer_torn,
+        )
+        await _refresh_99k_panel(interaction.client, self.session_id)
+        try:
+            await interaction.response.send_message(
+                "✅ Payment verified for this 99k session.",
+                view=InsuranceOfferView(self.session_id, interaction.user.id),
+                ephemeral=True,
+            )
+        except Exception:
+            await interaction.response.send_message("✅ Payment verified for this 99k session.", ephemeral=True)
 
 
 class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
@@ -1497,6 +1594,83 @@ async def readiness_worker():
 
 @readiness_worker.before_loop
 async def before_readiness_worker():
+    await bot.wait_until_ready()
+
+
+@tasks.loop(seconds=30)
+async def auto_verify_99k_payments():
+    try:
+        db = get_database()
+        repo = JumpsRepository(get_pool())
+        users_repo = UsersRepository(db.pool)
+        security = get_security_manager()
+        torn_api = get_torn_api()
+
+        await repo.cancel_expired_unpaid()
+        pending = await repo.list_pending_payment_signups(limit=50)
+        receipts = PaymentReceiptService(db.pool)
+
+        for signup in pending:
+            try:
+                if signup.get("reserved_until") and signup["reserved_until"] <= datetime.now(timezone.utc):
+                    continue
+                participant_id = int(signup["participant_discord_id"])
+                session_id = int(signup["session_id"])
+
+                key_row = await users_repo.get_user_api_key(participant_id)
+                encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
+                if not key_row or not encrypted_key:
+                    continue
+                host_key = await users_repo.get_user_api_key(int(signup["host_discord_id"]))
+                host_torn_id = int(host_key["torn_user_id"]) if host_key and host_key.get("torn_user_id") else 0
+                if not host_torn_id:
+                    continue
+
+                api_key = security.decrypt_api_key(encrypted_key)
+                since_ts = int((signup["created_at"] - timedelta(seconds=60)).timestamp())
+                item = str(signup.get("price_item", "")).lower()
+                if item == "xanax":
+                    payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, int(signup["price_amount"]), since_timestamp=since_ts)
+                elif item == "erotic_dvd":
+                    payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, int(signup["price_amount"]), since_timestamp=since_ts)
+                else:
+                    continue
+
+                if not payment:
+                    continue
+
+                await repo.mark_signup_payment_verified(session_id=session_id, discord_id=participant_id)
+                payer_torn = int(key_row.get("torn_user_id") or 0) or None
+                await receipts.create_and_verify(
+                    featureType="jump_99k",
+                    featureRefId=session_id,
+                    payer_discord_id=participant_id,
+                    payer_torn_id=payer_torn,
+                    payee_discord_id=int(signup["host_discord_id"]) or None,
+                    payee_torn_id=host_torn_id,
+                    amount=int(signup["price_amount"]),
+                    currency_type=str(signup["price_item"]),
+                    metadata=payment,
+                    verifier_discord_id=participant_id,
+                    verifier_torn_id=payer_torn,
+                )
+                user = bot.get_user(participant_id)
+                if user:
+                    try:
+                        await user.send(f"✅ Payment verified for 99k session #{session_id}")
+                    except Exception:
+                        pass
+                await _refresh_99k_panel(bot, session_id)
+            except (TornAPIRateLimitError, TornAPIError):
+                continue
+            except Exception as entry_err:
+                log.warning("Auto verify failed for signup %s/%s: %s", signup.get("session_id"), signup.get("participant_discord_id"), entry_err)
+    except Exception as e:
+        log.error(f"auto_verify_99k_payments error: {e}", exc_info=True)
+
+
+@auto_verify_99k_payments.before_loop
+async def before_auto_verify_99k_payments():
     await bot.wait_until_ready()
 
 
