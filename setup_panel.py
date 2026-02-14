@@ -314,15 +314,22 @@ class SetupPanelView(OwnerView):
             return
         self.settings.update(changes)
         audit_repo = AuditRepository(self.db.pool)
-        await audit_repo.log_audit(
-            actor_discord_id=interaction.user.id,
-            action="setup_panel_updated",
-            target_type="guild",
-            target_id=interaction.guild_id,
-            payload={"changes": {k: {"old": old_values[k], "new": changes[k]} for k in changes}},
-            guild_id=interaction.guild_id,
-            source="discord",
-        )
+        try:
+            await audit_repo.log_audit(
+                actor_discord_id=interaction.user.id,
+                action="setup_panel_updated",
+                target_type="guild",
+                target_id=interaction.guild_id,
+                payload={"changes": {k: {"old": old_values[k], "new": changes[k]} for k in changes}},
+                guild_id=interaction.guild_id,
+                source="discord",
+            )
+        except Exception:
+            log.exception(
+                "Audit logging failed during setup save guild_id=%s user_id=%s",
+                interaction.guild_id,
+                interaction.user.id,
+            )
         await _send_or_edit(interaction, self._build_embed(), self)
 
     async def _resolve_real_channel(self, interaction: discord.Interaction, selected: Any) -> discord.abc.GuildChannel | None:
