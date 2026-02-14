@@ -1403,6 +1403,7 @@ async def readiness_worker():
                     )
                     await repo.upsert_readiness_snapshot(
                         session_id=session_id,
+                        guild_id=int(session["guild_id"]),
                         discord_id=discord_id,
                         energy=energy,
                         energy_max=energy_max,

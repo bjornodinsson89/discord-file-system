@@ -48,6 +48,8 @@ class JumpsRepository(RepositoryBase):
             return dict(row)
 
     async def create_session(self, *, guild_id: int, host_discord_id: int, title: str, scheduled_start_text: Optional[str], max_slots: int, notes: Optional[str], price_item: str, price_amount: int, announce_channel_id: Optional[int], announce_message_id: Optional[int]) -> int:
+        if price_amount is None or int(price_amount) < 1:
+            raise ValueError("price_amount must be a positive integer (>= 1).")
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -70,6 +72,8 @@ class JumpsRepository(RepositoryBase):
             return int(row["id"])
 
     async def update_session(self, session_id: int, *, title: str, scheduled_start_text: Optional[str], max_slots: int, notes: Optional[str], price_item: str, price_amount: int) -> bool:
+        if price_amount is None or int(price_amount) < 1:
+            raise ValueError("price_amount must be a positive integer (>= 1).")
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -123,10 +127,10 @@ class JumpsRepository(RepositoryBase):
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO jump_99k_signups (session_id, guild_id, discord_id, torn_user_id, status)
+                INSERT INTO jump_99k_signups (session_id, guild_id, participant_discord_id, participant_torn_user_id, status)
                 VALUES ($1,$2,$3,$4,'signed_up')
-                ON CONFLICT (session_id, discord_id)
-                DO UPDATE SET status = 'signed_up', torn_user_id = EXCLUDED.torn_user_id
+                ON CONFLICT (session_id, participant_discord_id)
+                DO UPDATE SET status = 'signed_up', participant_torn_user_id = EXCLUDED.participant_torn_user_id
                 """,
                 session_id,
                 guild_id,
@@ -136,33 +140,33 @@ class JumpsRepository(RepositoryBase):
 
     async def cancel_signup(self, *, session_id: int, discord_id: int) -> bool:
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("UPDATE jump_99k_signups SET status = 'cancelled' WHERE session_id = $1 AND discord_id = $2 RETURNING id", session_id, discord_id)
+            row = await conn.fetchrow("UPDATE jump_99k_signups SET status = 'cancelled' WHERE session_id = $1 AND participant_discord_id = $2 RETURNING id", session_id, discord_id)
             return row is not None
 
     async def list_signups(self, session_id: int) -> list[dict]:
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM jump_99k_signups WHERE session_id = $1 ORDER BY signed_up_at ASC", session_id)
+            rows = await conn.fetch("SELECT *, participant_discord_id AS discord_id, participant_torn_user_id AS torn_user_id FROM jump_99k_signups WHERE session_id = $1 ORDER BY signed_up_at ASC", session_id)
             return [dict(r) for r in rows]
 
-    async def upsert_readiness_snapshot(self, *, session_id: int, discord_id: int, energy: int, energy_max: int, drug_cooldown: int, status_text: str) -> None:
+    async def upsert_readiness_snapshot(self, *, session_id: int, guild_id: int, discord_id: int, energy: int, energy_max: int, drug_cooldown: int, status_text: str) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO jump_99k_readiness (session_id, discord_id, energy, energy_max, drug_cooldown, status_text, checked_at)
-                VALUES ($1,$2,$3,$4,$5,$6,NOW())
-                ON CONFLICT (session_id, discord_id)
+                INSERT INTO jump_99k_readiness (session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, status_text, checked_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+                ON CONFLICT (session_id, guild_id, discord_id)
                 DO UPDATE SET energy=EXCLUDED.energy, energy_max=EXCLUDED.energy_max, drug_cooldown=EXCLUDED.drug_cooldown, status_text=EXCLUDED.status_text, checked_at=NOW()
                 """,
-                session_id, discord_id, energy, energy_max, drug_cooldown, status_text,
+                session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, status_text,
             )
 
     async def list_signups_with_readiness(self, session_id: int) -> list[dict]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT s.*, r.energy, r.energy_max, r.drug_cooldown, r.status_text, r.checked_at
+                SELECT s.*, s.participant_discord_id AS discord_id, s.participant_torn_user_id AS torn_user_id, r.energy, r.energy_max, r.drug_cooldown, r.status_text, r.checked_at
                 FROM jump_99k_signups s
-                LEFT JOIN jump_99k_readiness r ON r.session_id=s.session_id AND r.discord_id=s.discord_id
+                LEFT JOIN jump_99k_readiness r ON r.session_id=s.session_id AND r.guild_id=s.guild_id AND r.discord_id=s.participant_discord_id
                 WHERE s.session_id=$1
                 ORDER BY s.signed_up_at ASC
                 """,
@@ -173,7 +177,7 @@ class JumpsRepository(RepositoryBase):
     async def mark_signup_payment_verified(self, *, session_id: int, discord_id: int) -> bool:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "UPDATE jump_99k_signups SET payment_verified=true, payment_verified_at=NOW() WHERE session_id=$1 AND discord_id=$2 RETURNING id",
+                "UPDATE jump_99k_signups SET payment_verified=true, payment_verified_at=NOW() WHERE session_id=$1 AND participant_discord_id=$2 RETURNING id",
                 session_id,
                 discord_id,
             )
@@ -182,7 +186,7 @@ class JumpsRepository(RepositoryBase):
     async def mark_signup_overdose(self, *, session_id: int, discord_id: int, overdose_meta: dict[str, Any]) -> bool:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "UPDATE jump_99k_signups SET overdose_flag=true, overdose_detected_at=NOW(), overdose_meta=$3::jsonb WHERE session_id=$1 AND discord_id=$2 RETURNING id",
+                "UPDATE jump_99k_signups SET overdose_flag=true, overdose_detected_at=NOW(), overdose_meta=$3::jsonb WHERE session_id=$1 AND participant_discord_id=$2 RETURNING id",
                 session_id,
                 discord_id,
                 overdose_meta,
@@ -192,13 +196,13 @@ class JumpsRepository(RepositoryBase):
     async def close_session_and_record(self, *, session_id: int, guild_id: int, completed_discord_ids: list[int], not_completed_discord_ids: list[int]) -> bool:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                row = await conn.fetchrow("UPDATE jump_99k_sessions SET status = 'closed', closed_at = NOW() WHERE id = $1 AND status = 'open' RETURNING id", session_id)
+                row = await conn.fetchrow("UPDATE jump_99k_sessions SET status = 'closed', ends_at = NOW(), updated_at = NOW() WHERE id = $1 AND status = 'open' RETURNING id", session_id)
                 if not row:
                     return False
                 if completed_discord_ids:
-                    await conn.execute("UPDATE jump_99k_signups SET status = 'completed' WHERE session_id = $1 AND discord_id = ANY($2::bigint[])", session_id, completed_discord_ids)
+                    await conn.execute("UPDATE jump_99k_signups SET status = 'completed' WHERE session_id = $1 AND participant_discord_id = ANY($2::bigint[])", session_id, completed_discord_ids)
                 if not_completed_discord_ids:
-                    await conn.execute("UPDATE jump_99k_signups SET status = 'not_completed' WHERE session_id = $1 AND discord_id = ANY($2::bigint[])", session_id, not_completed_discord_ids)
+                    await conn.execute("UPDATE jump_99k_signups SET status = 'not_completed' WHERE session_id = $1 AND participant_discord_id = ANY($2::bigint[])", session_id, not_completed_discord_ids)
                 await conn.execute(
                     """
                     INSERT INTO jump_99k_totals (guild_id, completed_count, not_completed_count, updated_at)
