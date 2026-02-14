@@ -1,20 +1,18 @@
-"""Utility package for Happy Jumper Bot.
-
-This package exposes stable import surface for the rest of the bot.
-
-Important (Linux/Railway):
-- Filenames are case-sensitive. Keep module imports lowercase (database.py, security.py, torn_api.py).
-"""
-
 from __future__ import annotations
 
-from .database import DatabaseManager, init_database, get_database
+from .database import init_pool, get_pool, close_pool
 from .torn_api import TornAPIClient, init_torn_api, get_torn_api
 from .security import SecurityManager, init_security, get_security_manager
 from .guild_settings_repository import GuildSettingsRepository
 
+# Backward-compatible aliases
+init_database = init_pool
+get_database = get_pool
+
 __all__ = [
-    "DatabaseManager",
+    "init_pool",
+    "get_pool",
+    "close_pool",
     "init_database",
     "get_database",
     "TornAPIClient",

@@ -139,6 +139,14 @@ class RafflesRepository(RepositoryBase):
                 
                 return dict(row) if row else None
 
+
+    async def cancel_active_raffle(self, raffle_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE raffles SET status = 'cancelled' WHERE raffle_id = $1 AND status = 'active' RETURNING raffle_id",
+                raffle_id,
+            )
+            return row is not None
     async def get_raffle(self, raffle_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
