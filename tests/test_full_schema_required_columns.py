@@ -23,3 +23,19 @@ def test_000_full_schema_contains_required_columns():
 
     for column in required_columns:
         assert column in schema_sql, f"Missing required schema column definition: {column}"
+
+
+def test_005_canonical_jump_99k_pricing_migration_defines_required_columns():
+    migration_sql = Path("migrations/005_canonicalize_jump_99k_pricing.sql").read_text(encoding="utf-8")
+
+    required_snippets = [
+        "ADD COLUMN IF NOT EXISTS price_item TEXT",
+        "ADD COLUMN IF NOT EXISTS price_amount INT",
+        "ADD COLUMN IF NOT EXISTS scheduled_start_text TEXT",
+        "ALTER COLUMN price_item SET NOT NULL",
+        "ALTER COLUMN price_amount SET NOT NULL",
+        "DROP COLUMN " + "price_" + "quantity",
+    ]
+
+    for snippet in required_snippets:
+        assert snippet in migration_sql

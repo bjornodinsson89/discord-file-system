@@ -24,21 +24,16 @@ class VerifyPrizeButton(ui.Button):
         
         repo = RafflesRepository(get_pool())
         
-        # Get raffle details
-        async with repo.pool.acquire() as conn:
-            raffle = await conn.fetchrow(
-                "SELECT * FROM raffles WHERE raffle_id = $1",
-                self.raffle_id
-            )
-            
-            if not raffle or raffle["status"] != 'awaiting_delivery':
+        raffle = await repo.get_raffle(self.raffle_id)
+
+        if not raffle or raffle["status"] != 'awaiting_delivery':
                 await interaction.followup.send(
                     "❌ This raffle is not awaiting delivery verification.", 
                     ephemeral=True
                 )
                 return
             
-            if raffle["prize_verified_at"]:
+        if raffle["prize_verified_at"]:
                 await interaction.followup.send(
                     "✅ Prize already verified!", 
                     ephemeral=True

@@ -9,12 +9,14 @@ from discord.ext import commands, tasks
 import logging
 import asyncio
 import json
+import re
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 from typing import Optional
 
 import config
 from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager, GuildSettingsRepository
+from utils.database import get_pool
 from utils.embeds import (
     create_success_embed, create_error_embed, create_warning_embed, create_info_embed,
     create_api_key_guide_embed, create_statistics_embed,
@@ -851,104 +853,69 @@ async def refresh_item_icons(interaction: discord.Interaction):
 
 class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
     payment_type = discord.ui.TextInput(
-        label="💰 Payment Type",
+        label="💰 Payment Type (💊 xanax | 📀 erotic_dvd)",
         required=True,
         max_length=20,
-        placeholder="xanax | erotic_dvd",
-        default="xanax",
+        placeholder="xanax or erotic_dvd",
     )
-    max_slots = discord.ui.TextInput(label="🎟️ Max slots (1-5)", required=True, max_length=1)
+    max_slots = discord.ui.TextInput(label="🎟️ Max slots (1-5)", required=True, max_length=1, placeholder="1-5")
     spot_price = discord.ui.TextInput(
-        label="💵 Spot Price",
+        label="💵 Spot Price (1-50)",
         required=True,
         max_length=4,
-        placeholder="1",
+        placeholder="1-50",
     )
     possible_tct_start = discord.ui.TextInput(
-        label="⏰ Possible TCT start time (optional)",
+        label="⏰ Possible TCT start time (24h HH:MM, minutes 00/15/30/45)",
         required=False,
-        max_length=120,
-        placeholder="e.g. 10:40 AM TCT",
+        max_length=5,
+        placeholder="e.g. 22:15",
     )
-    notes = discord.ui.TextInput(
-        label="📝 Notes (optional)",
-        required=False,
-        style=discord.TextStyle.paragraph,
-        max_length=1000,
-    )
+    notes = discord.ui.TextInput(label="📝 Notes (optional)", required=False, style=discord.TextStyle.paragraph, max_length=1000)
 
     def __init__(self, settings: dict, session: dict | None = None):
         super().__init__()
         self.settings = settings
         self.session = session
-        if session:
-            self.payment_type.default = str(session.get("price_item") or "xanax")
-            self.max_slots.default = str(session.get("max_slots") or 5)
-            self.spot_price.default = str(session.get("price_quantity") or 1)
-            self.possible_tct_start.default = str(session.get("scheduled_start_text") or "")
-            self.notes.default = str(session.get("notes") or "")
-        else:
-            self.payment_type.default = "xanax"
-            self.max_slots.default = str(self.settings.get("default_max_slots") or 5)
-            self.spot_price.default = "1"
 
     async def on_submit(self, interaction: discord.Interaction):
-        repo = JumpsRepository(get_database().pool)
+        repo = JumpsRepository(get_pool())
         try:
             title = "✨ 99k Happy Jump ✨"
-            slots_raw = str(self.max_slots.value).strip()
             try:
-                slots = int(slots_raw)
+                slots = int(str(self.max_slots.value).strip())
             except ValueError:
-                await interaction.response.send_message(
-                    embed=create_error_embed("Invalid max slots", "Max slots must be a number from 1 to 5."),
-                    ephemeral=True,
-                )
+                await interaction.response.send_message(embed=create_error_embed("Invalid max slots", "Max slots must be a number from 1 to 5."), ephemeral=True)
                 return
             if slots < 1 or slots > 5:
-                await interaction.response.send_message(
-                    embed=create_error_embed("Invalid max slots", "Max slots must be from 1 to 5."),
-                    ephemeral=True,
-                )
+                await interaction.response.send_message(embed=create_error_embed("Invalid max slots", "Max slots must be from 1 to 5."), ephemeral=True)
                 return
+
             raw_payment_type = str(self.payment_type.value).strip().lower()
             if raw_payment_type == "edvd":
                 raw_payment_type = "erotic_dvd"
             if raw_payment_type not in {"xanax", "erotic_dvd"}:
-                await interaction.response.send_message(
-                    embed=create_error_embed("Invalid payment type", "Payment type must be one of: xanax, erotic_dvd."),
-                    ephemeral=True,
-                )
+                await interaction.response.send_message(embed=create_error_embed("Invalid payment type", "Payment type must be one of: 💊 xanax, 📀 erotic_dvd."), ephemeral=True)
                 return
-            price_item = raw_payment_type
-            spot_price_raw = str(self.spot_price.value).strip()
+
             try:
-                price_quantity = int(spot_price_raw)
+                price_amount = int(str(self.spot_price.value).strip())
             except ValueError:
-                await interaction.response.send_message(
-                    embed=create_error_embed("Invalid spot price", "Spot price must be a whole number (e.g. 1)."),
-                    ephemeral=True,
-                )
+                await interaction.response.send_message(embed=create_error_embed("Invalid spot price", "Spot price must be a whole number from 1 to 50."), ephemeral=True)
                 return
-            if price_quantity < 1 or price_quantity > 50:
-                await interaction.response.send_message(
-                    embed=create_error_embed("Invalid spot price", "Spot price must be between 1 and 50."),
-                    ephemeral=True,
-                )
+            if price_amount < 1 or price_amount > 50:
+                await interaction.response.send_message(embed=create_error_embed("Invalid spot price", "Spot price must be between 1 and 50."), ephemeral=True)
                 return
+
             scheduled = str(self.possible_tct_start.value).strip() or None
+            if scheduled and not re.fullmatch(r"^([01]\d|2[0-3]):(00|15|30|45)$", scheduled):
+                await interaction.response.send_message(embed=create_error_embed("Invalid start time", "Possible TCT start time must use 24h HH:MM and minutes 00/15/30/45 (example: 22:15)."), ephemeral=True)
+                return
+
             notes = str(self.notes.value).strip() or None
             announce_channel_id = self.settings.get("announce_channel_id")
             if self.session:
-                await repo.update_session(
-                    int(self.session["id"]),
-                    title=title,
-                    scheduled_start_text=scheduled,
-                    max_slots=slots,
-                    notes=notes,
-                    price_item=price_item,
-                    price_quantity=price_quantity,
-                )
+                await repo.update_session(int(self.session["id"]), title=title, scheduled_start_text=scheduled, max_slots=slots, notes=notes, price_item=raw_payment_type, price_amount=price_amount)
                 session_id = int(self.session["id"])
             else:
                 session_id = await repo.create_session(
@@ -958,23 +925,17 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     scheduled_start_text=scheduled,
                     max_slots=slots,
                     notes=notes,
-                    price_item=price_item,
-                    price_quantity=price_quantity,
+                    price_item=raw_payment_type,
+                    price_amount=price_amount,
                     announce_channel_id=announce_channel_id,
                     announce_message_id=None,
                 )
             channel = interaction.guild.get_channel(int(announce_channel_id)) if interaction.guild and announce_channel_id else interaction.channel
             if channel:
-                item_label = "Xanax" if price_item == "xanax" else "eDVD"
+                item_label = "Xanax" if raw_payment_type == "xanax" else "eDVD"
                 start_line = f"Possible TCT start: **{scheduled}**\n" if scheduled else ""
                 notes_line = f"Notes: {notes}\n" if notes else ""
-                content = (
-                    f"📣 **{title}** — Session **#{session_id}**\n"
-                    f"{start_line}"
-                    f"Spot price: **{price_quantity}x {item_label}**\n"
-                    f"{notes_line}"
-                    "Click to join."
-                )
+                content = f"📣 **{title}** — Session **#{session_id}**\n{start_line}Spot price: **{price_amount}x {item_label}**\n{notes_line}Click to join."
                 message_id = self.session.get("announce_message_id") if self.session else None
                 if message_id:
                     try:
@@ -987,29 +948,21 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     msg = await channel.send(content, view=Jump99kSignupView(session_id))
                     await repo.set_announcement_message(session_id, channel_id=channel.id, message_id=msg.id)
             verb = "updated" if self.session else "created"
-            await interaction.response.send_message(
-                embed=create_success_embed("99k session saved", f"Session #{session_id} {verb}."),
-                ephemeral=True,
-            )
+            await interaction.response.send_message(embed=create_success_embed("99k session saved", f"Session #{session_id} {verb}."), ephemeral=True)
         except Exception as e:
             log.exception("99k session modal submit failed: %s", e)
+            err = create_error_embed("99k start failed", f"{type(e).__name__}: {e}")
             if interaction.response.is_done():
-                await interaction.followup.send(
-                    embed=create_error_embed("99k start failed", f"{type(e).__name__}: {e}"),
-                    ephemeral=True,
-                )
+                await interaction.followup.send(embed=err, ephemeral=True)
             else:
-                await interaction.response.send_message(
-                    embed=create_error_embed("99k start failed", f"{type(e).__name__}: {e}"),
-                    ephemeral=True,
-                )
+                await interaction.response.send_message(embed=err, ephemeral=True)
 
 
 class Jump99kEditSelectModal(discord.ui.Modal, title="Edit 99k Session"):
     jump_id = discord.ui.TextInput(label="Jump ID", required=True, max_length=20)
 
     async def on_submit(self, interaction: discord.Interaction):
-        repo = JumpsRepository(get_database().pool)
+        repo = JumpsRepository(get_pool())
         try:
             session_id = int(str(self.jump_id.value).strip())
         except ValueError:
@@ -1047,7 +1000,7 @@ async def jump99k_list(interaction: discord.Interaction):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
     if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
         return
-    repo = JumpsRepository(get_database().pool)
+    repo = JumpsRepository(get_pool())
     session = await repo.get_active_session(interaction.guild_id)
     if not session:
         await interaction.response.send_message(embed=create_info_embed("99k sessions", "No open sessions."), ephemeral=True)
@@ -1070,7 +1023,7 @@ async def jump99k_end(interaction: discord.Interaction):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
     if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
         return
-    repo = JumpsRepository(get_database().pool)
+    repo = JumpsRepository(get_pool())
     session = await repo.get_active_session(interaction.guild_id)
     if not session:
         await interaction.response.send_message(embed=create_info_embed("99k end", "No open session."), ephemeral=True)

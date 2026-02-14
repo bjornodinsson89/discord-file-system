@@ -9,9 +9,10 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from repositories.raffles import RafflesRepository
 from repositories.torn_items import TornItemsRepository
+from repositories.users import UsersRepository
 from services.raffle_payment import RafflePaymentService
 from utils import GuildSettingsRepository
-from utils.database import get_database, get_pool
+from utils.database import get_pool
 from utils.embeds import create_error_embed
 from utils.icon_strips import build_icon_strip_file
 from utils.item_resolver import ItemResolver
@@ -108,18 +109,16 @@ class RaffleCreateModal(discord.ui.Modal):
         max_length=200,
     )
     payment_type = discord.ui.TextInput(
-        label="💰 Payment Type",
+        label="💰 Payment Type (free | 💊 xanax | 📀 erotic_dvd)",
         placeholder="free | xanax | erotic_dvd",
         required=True,
         max_length=20,
-        default="xanax",
     )
     ticket_price = discord.ui.TextInput(
-        label="💵 Ticket Price",
+        label="💵 Ticket Price (amount of 💊/📀; ignored for free)",
         placeholder="Integer (ignored for free)",
         required=True,
         max_length=6,
-        default="1",
     )
     tickets_available = discord.ui.TextInput(
         label="🎟️ Total Tickets",
@@ -132,7 +131,6 @@ class RaffleCreateModal(discord.ui.Modal):
         placeholder="0 = unlimited",
         required=True,
         max_length=3,
-        default="0",
     )
 
     def __init__(self, bot: commands.Bot):
@@ -179,11 +177,11 @@ class RaffleCreateModal(discord.ui.Modal):
             end_time = datetime.utcnow() + timedelta(days=30)
             end_trigger = "tickets_sold"
             hours_after_sold_out = None
-            db = get_database()
-            creator_key = await db.get_user_api_key(interaction.user.id)
+            users_repo = UsersRepository(get_pool())
+            creator_key = await users_repo.get_user_api_key(interaction.user.id)
             if not creator_key or not creator_key.get("torn_user_id"):
                 await interaction.response.send_message(
-                    "❌ You must link your Torn API key first to create paid raffles.",
+                    embed=create_error_embed("Missing API key", "You must link your Torn API key first to create raffles."),
                     ephemeral=True,
                 )
                 return
@@ -404,7 +402,7 @@ async def _reserve_raffle_tickets(
             await _send_error("❌ Failed to enter raffle")
             return
     # PAID ENTRY
-    db = get_database()
+    db = _DBContext()
     buyer_key = await db.get_user_api_key(interaction.user.id)
     if not buyer_key or not buyer_key.get("torn_user_id"):
         await _send_error(
@@ -610,7 +608,7 @@ class PaymentVerificationView(discord.ui.View):
     async def verify_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(thinking=True)
         try:
-            service = RafflePaymentService(get_database())
+            service = RafflePaymentService(_DBContext())
             success, sold_out_raffle_id, error = await service.verify_entry_payment(
                 self.entry_id, manual=True
             )
@@ -858,7 +856,7 @@ class RafflesCog(commands.Cog):
                 is_bundle=is_bundle,
                 bundle_text=bundle_text,
             )
-            db = get_database()
+            db = _DBContext()
             settings_repo = GuildSettingsRepository(db)
             settings = await settings_repo.get_or_create(interaction.guild_id)
             purchase_channel_id = settings.get("raffle_purchase_channel_id") or settings.get("raffle_channel_id")
@@ -983,12 +981,8 @@ class RafflesCog(commands.Cog):
     async def raffle_cancel(self, interaction: discord.Interaction, raffle_id: int):
         """❌ Cancel an active raffle - Admin only."""
         repo = RafflesRepository(get_pool())
-        async with repo.pool.acquire() as conn:
-            result = await conn.execute(
-                "UPDATE raffles SET status = 'cancelled' WHERE raffle_id = $1 AND status = 'active'",
-                raffle_id
-            )
-            if result == "UPDATE 0":
+        cancelled = await repo.cancel_active_raffle(raffle_id)
+        if not cancelled:
                 await interaction.response.send_message(
                     "❌ Raffle not found or already completed/cancelled", ephemeral=True
                 )
@@ -1033,7 +1027,7 @@ class RafflesCog(commands.Cog):
             pending = await repo.get_pending_verifications()
             for entry in pending:
                 try:
-                    service = RafflePaymentService(get_database())
+                    service = RafflePaymentService(_DBContext())
                     success, sold_out_id, error = await service.verify_entry_payment(
                         entry["entry_id"], manual=False
                     )
