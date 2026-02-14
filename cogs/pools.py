@@ -86,7 +86,7 @@ async def _refresh_pool_panel_message(bot: commands.Bot, pool_id: int) -> None:
 
 
 class PoolCustomQuantityModal(discord.ui.Modal):
-    quantity = discord.ui.TextInput(label="Custom Ticket Quantity", placeholder="Enter an integer", required=True, max_length=10)
+    quantity = discord.ui.TextInput(label="Ticket quantity", placeholder="3", required=True, max_length=10)
 
     def __init__(self, pool_id: int, max_buy: int):
         super().__init__(title="💊 Buy Pool Tickets")

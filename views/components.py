@@ -58,7 +58,7 @@ class ApiKeyIntroView(ui.View):
 
 
 class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
-    api_key = ui.TextInput(label="Torn API Key", placeholder="Enter your 16-character API key", min_length=16, max_length=16)
+    api_key = ui.TextInput(label="Torn API key", placeholder="examplekey123456", min_length=16, max_length=16)
     
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -87,7 +87,11 @@ class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
         except TornAPIPermissionError as e:
             await interaction.followup.send(embed=create_error_embed("Insufficient Permissions", str(e)), ephemeral=True)
         except TornAPIError as e:
-            await interaction.followup.send(embed=create_error_embed("Validation Failed", str(e)), ephemeral=True)
+            message = str(e)
+            lowered = message.lower()
+            if any(token in lowered for token in ("timed out", "timeout", "cloudflare", "522", "unreachable")):
+                message = f"{message}\nTorn API server may be down. Please try again in a minute."
+            await interaction.followup.send(embed=create_error_embed("Validation Failed", message), ephemeral=True)
         except Exception as e:
             log.exception(f"API key error: {e}")
             await interaction.followup.send(embed=create_error_embed("Error", "An unexpected error occurred"), ephemeral=True)
@@ -185,7 +189,7 @@ class JumpSessionView(ui.View):
             if not signup:
                 await interaction.followup.send(embed=create_error_embed("Not Signed Up"), ephemeral=True)
                 return
-            if signup['status'] == 'paid':
+            if signup.get('payment_verified') is True:
                 await interaction.followup.send(embed=create_warning_embed("Payment Verified", "Contact host to cancel"), ephemeral=True)
                 return
             
@@ -328,7 +332,7 @@ class PaymentView(ui.View):
             if not signup:
                 await interaction.followup.send(embed=create_error_embed("Not Signed Up"), ephemeral=True)
                 return
-            if signup['status'] == 'paid':
+            if signup.get('payment_verified') is True:
                 await interaction.followup.send(embed=create_warning_embed("Already Verified"), ephemeral=True)
                 return
             
@@ -477,7 +481,7 @@ class InsuranceClaimView(ui.View):
 
 
 class StartJumpCustomDelayModal(ui.Modal, title="Custom Jump Delay"):
-    delay = ui.TextInput(label="Delay (mm:ss or minutes)", placeholder="e.g. 3:30 or 5", max_length=8)
+    delay = ui.TextInput(label="Delay", placeholder="3:30", max_length=8)
 
     def __init__(self, session_id: int):
         super().__init__()
@@ -931,7 +935,7 @@ class InsurancePolicyView(ui.View):
 
 
 class PurchaseCoverageModal(ui.Modal, title="Purchase Insurance Coverage"):
-    xanax_count = ui.TextInput(label="Xanax to Cover", placeholder="How many Xanax?", min_length=1, max_length=4)
+    xanax_count = ui.TextInput(label="Xanax to cover", placeholder="10", min_length=1, max_length=4)
     
     def __init__(self, policy_id: int):
         super().__init__()
@@ -1205,7 +1209,7 @@ class ClaimManageView(ui.View):
 
 
 class DenyClaimModal(ui.Modal, title="Deny Claim"):
-    reason = ui.TextInput(label="Denial Reason", placeholder="Why is this claim being denied?", style=discord.TextStyle.paragraph)
+    reason = ui.TextInput(label="Reason", placeholder="Missing proof", style=discord.TextStyle.paragraph)
     
     def __init__(self, claim_id: int):
         super().__init__()
@@ -1241,7 +1245,7 @@ class RaffleView(ui.View):
             await interaction.followup.send(embed=create_info_embed("No Tickets", "You haven't entered this raffle"), ephemeral=True)
             return
         
-        status = "paid" if entry.get('payment_verified') else "reserved"
+        status = "verified" if entry.get('payment_verified') is True else "reserved"
         info = f"**Tickets:** {entry['num_tickets']}\n**Status:** {status.title()}"
         if status == 'reserved' and entry.get('reserved_until'):
             info += f"\n**Expires:** <t:{int(entry['reserved_until'].timestamp())}:R>"
@@ -1250,7 +1254,7 @@ class RaffleView(ui.View):
 
 
 class BuyTicketsModal(ui.Modal, title="Buy Raffle Tickets"):
-    ticket_count = ui.TextInput(label="Number of Tickets", placeholder="How many tickets?", min_length=1, max_length=4)
+    ticket_count = ui.TextInput(label="Ticket count", placeholder="2", min_length=1, max_length=4)
     
     def __init__(self, raffle_id: int):
         super().__init__()
