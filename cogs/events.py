@@ -853,7 +853,7 @@ async def refresh_item_icons(interaction: discord.Interaction):
 
 class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
     payment_type = discord.ui.TextInput(
-        label="💰 Payment Type (💊 xanax | 📀 erotic_dvd)",
+        label="💰 Payment Type (xanax/eDVD)",
         required=True,
         max_length=20,
         placeholder="xanax or erotic_dvd",
@@ -866,7 +866,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
         placeholder="1-50",
     )
     possible_tct_start = discord.ui.TextInput(
-        label="⏰ Possible TCT start time (24h HH:MM, minutes 00/15/30/45)",
+        label="⏰ Possible TCT start (HH:MM 00/15/30/45)",
         required=False,
         max_length=5,
         placeholder="e.g. 22:15",
