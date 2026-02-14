@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Iterable, Optional
 
 
@@ -95,7 +96,12 @@ class GuildSettingsRepository:
                 normalized[key] = self._normalize_bigint(value)
                 continue
             if key == "admin_role_ids":
-                normalized[key] = self._normalize_admin_role_ids(value)
+                normalized_ids = self._normalize_admin_role_ids(value)
+                if normalized_ids is None:
+                    normalized[key] = None
+                else:
+                    unique_int_ids = sorted(set(normalized_ids))
+                    normalized[key] = json.dumps(unique_int_ids, separators=(",", ":"), ensure_ascii=False)
                 continue
             if key in {"reservation_timeout_minutes", "default_max_slots"} and value is not None:
                 normalized[key] = int(value)
@@ -133,7 +139,10 @@ class GuildSettingsRepository:
             sets = []
             values = []
             for i, (key, value) in enumerate(fields.items(), 1):
-                sets.append(f"{key} = ${i}")
+                if key == "admin_role_ids":
+                    sets.append(f"{key} = ${i}::jsonb")
+                else:
+                    sets.append(f"{key} = ${i}")
                 values.append(value)
             values.append(guild_id)
             row = await conn.fetchrow(
