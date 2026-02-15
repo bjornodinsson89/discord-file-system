@@ -313,11 +313,13 @@ class SetupPanelView(OwnerView):
 
     async def save_changes(self, interaction: discord.Interaction, changes: dict[str, Any]) -> None:
         old_values = {k: self.settings.get(k) for k in changes}
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=False)
         try:
             settings_repo = GuildSettingsRepository(self.db)
             await settings_repo.upsert_settings(interaction.guild_id, **changes)
         except MissingDatabaseColumnError as exc:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=create_error_embed(
                     "Database Update Required",
                     f"{exc}\n\n"

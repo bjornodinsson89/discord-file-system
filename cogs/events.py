@@ -4,6 +4,7 @@ Discord bot process entrypoint (no embedded web server).
 """
 
 import discord
+import asyncpg
 from discord import app_commands
 from discord.ext import commands, tasks
 import logging
@@ -988,19 +989,63 @@ class Jump99kRosterView(discord.ui.View):
 
     @discord.ui.button(label="Refresh roster", style=discord.ButtonStyle.primary)
     async def refresh_roster(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.channel:
-            await interaction.response.send_message("Channel not found.", ephemeral=True)
-            return
-        embed, _ = await _refresh_roster_panel(self.session_id, interaction.channel, interaction.message)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            if not interaction.channel:
+                await interaction.followup.send("Channel not found.", ephemeral=True)
+                return
+            embed, roster_text = await _refresh_roster_panel(self.session_id, interaction.channel, interaction.message)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except (discord.Forbidden, discord.NotFound):
+            log.warning(
+                "Roster message edit failed session_id=%s guild_id=%s user_id=%s",
+                self.session_id,
+                interaction.guild_id,
+                interaction.user.id if interaction.user else None,
+            )
+            try:
+                _, roster_text = await _refresh_roster_panel(self.session_id, interaction.channel, None)
+                await interaction.followup.send(f"Roster message could not be updated, but here is the latest roster:\n{roster_text}", ephemeral=True)
+            except Exception:
+                await interaction.followup.send("Could not refresh roster right now. Please try again shortly.", ephemeral=True)
+        except Exception:
+            log.exception(
+                "99k refresh_roster failed session_id=%s guild_id=%s user_id=%s",
+                self.session_id,
+                interaction.guild_id,
+                interaction.user.id if interaction.user else None,
+            )
+            await interaction.followup.send("Sorry—refreshing the roster failed. Please try again.", ephemeral=True)
 
     @discord.ui.button(label="View roster", style=discord.ButtonStyle.secondary)
     async def view_roster(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.channel:
-            await interaction.response.send_message("Channel not found.", ephemeral=True)
-            return
-        _, roster_text = await _refresh_roster_panel(self.session_id, interaction.channel, interaction.message)
-        await interaction.response.send_message(roster_text, ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            if not interaction.channel:
+                await interaction.followup.send("Channel not found.", ephemeral=True)
+                return
+            _, roster_text = await _refresh_roster_panel(self.session_id, interaction.channel, interaction.message)
+            await interaction.followup.send(roster_text, ephemeral=True)
+        except (discord.Forbidden, discord.NotFound):
+            log.warning(
+                "Roster message edit failed during view session_id=%s guild_id=%s user_id=%s",
+                self.session_id,
+                interaction.guild_id,
+                interaction.user.id if interaction.user else None,
+            )
+            try:
+                _, roster_text = await _refresh_roster_panel(self.session_id, interaction.channel, None)
+                await interaction.followup.send(roster_text, ephemeral=True)
+            except Exception:
+                await interaction.followup.send("Could not fetch the roster right now. Please try again.", ephemeral=True)
+        except Exception:
+            log.exception(
+                "99k view_roster failed session_id=%s guild_id=%s user_id=%s",
+                self.session_id,
+                interaction.guild_id,
+                interaction.user.id if interaction.user else None,
+            )
+            await interaction.followup.send("Sorry—loading the roster failed. Please try again.", ephemeral=True)
 
 
 class Jump99kUserControlsView(discord.ui.View):
@@ -1010,76 +1055,88 @@ class Jump99kUserControlsView(discord.ui.View):
 
     @discord.ui.button(label="Leave", style=discord.ButtonStyle.secondary)
     async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
-        db = get_database()
-        repo = JumpsRepository(db.pool)
-        ok = await repo.cancel_signup(session_id=self.session_id, discord_id=interaction.user.id)
-        await _refresh_99k_panel(interaction.client, self.session_id)
-        await _refresh_roster_if_exists(interaction.client, self.session_id)
-        if ok:
-            await interaction.response.send_message("You’ve been removed.", ephemeral=True)
-        else:
-            await interaction.response.send_message("You weren’t signed up.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            db = get_database()
+            repo = JumpsRepository(db.pool)
+            ok = await repo.cancel_signup(session_id=self.session_id, discord_id=interaction.user.id)
+            await _refresh_99k_panel(interaction.client, self.session_id)
+            await _refresh_roster_if_exists(interaction.client, self.session_id)
+            if ok:
+                await interaction.followup.send("You’ve been removed.", ephemeral=True)
+            else:
+                await interaction.followup.send("You weren’t signed up.", ephemeral=True)
+        except Exception:
+            log.exception(
+                "99k leave failed session_id=%s guild_id=%s user_id=%s",
+                self.session_id,
+                interaction.guild_id,
+                interaction.user.id if interaction.user else None,
+            )
+            await interaction.followup.send("Sorry—could not process that action. Please try again.", ephemeral=True)
 
     @discord.ui.button(label="✅ Verify Payment", style=discord.ButtonStyle.success)
     async def verify_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
-        db = get_database()
-        repo = JumpsRepository(db.pool)
-        users_repo = UsersRepository(db.pool)
-        security = get_security_manager()
-        torn_api = get_torn_api()
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            db = get_database()
+            repo = JumpsRepository(db.pool)
+            users_repo = UsersRepository(db.pool)
+            security = get_security_manager()
+            torn_api = get_torn_api()
 
-        session = await repo.get_session(self.session_id)
-        if not session or str(session.get("status", "")).lower() != "open":
-            try:
-                if interaction.message:
-                    view = discord.ui.View.from_message(interaction.message, timeout=None)
-                    for child in view.children:
-                        child.disabled = True
-                    await interaction.message.edit(view=view)
-            except Exception:
-                pass
-            await interaction.response.send_message("This is closed.", ephemeral=True)
-            return
-        if int(session.get("guild_id", 0)) != int(interaction.guild_id):
-            await interaction.response.send_message("Session not found.", ephemeral=True)
-            return
+            session = await repo.get_session(self.session_id)
+            if not session or str(session.get("status", "")).lower() != "open":
+                try:
+                    if interaction.message:
+                        view = discord.ui.View.from_message(interaction.message, timeout=None)
+                        for child in view.children:
+                            child.disabled = True
+                        await interaction.message.edit(view=view)
+                except Exception:
+                    pass
+                await interaction.followup.send("This is closed.", ephemeral=True)
+                return
+            if int(session.get("guild_id", 0)) != int(interaction.guild_id):
+                await interaction.followup.send("Session not found.", ephemeral=True)
+                return
 
-        bl = await repo.is_blacklisted(interaction.guild_id, interaction.user.id)
-        if bl:
-            await interaction.response.send_message("You are blacklisted.", ephemeral=True)
-            return
+            bl = await repo.is_blacklisted(interaction.guild_id, interaction.user.id)
+            if bl:
+                await interaction.followup.send("You are blacklisted.", ephemeral=True)
+                return
 
-        key_row = await users_repo.get_user_api_key(interaction.user.id)
-        encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
-        if not key_row or not encrypted_key:
-            await interaction.response.send_message("Link your Torn API key first.", ephemeral=True)
-            return
+            key_row = await users_repo.get_user_api_key(interaction.user.id)
+            encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
+            if not key_row or not encrypted_key:
+                await interaction.followup.send("Link your Torn API key first.", ephemeral=True)
+                return
 
-        host_key = await users_repo.get_user_api_key(int(session["host_discord_id"]))
-        host_torn_id = int(host_key["torn_user_id"]) if host_key and host_key.get("torn_user_id") else 0
-        if not host_torn_id:
-            await interaction.response.send_message("Host has not linked Torn ID.", ephemeral=True)
-            return
+            host_key = await users_repo.get_user_api_key(int(session["host_discord_id"]))
+            host_torn_id = int(host_key["torn_user_id"]) if host_key and host_key.get("torn_user_id") else 0
+            if not host_torn_id:
+                await interaction.followup.send("Host has not linked Torn ID.", ephemeral=True)
+                return
 
-        api_key = security.decrypt_api_key(encrypted_key)
-        since_ts = int((session["created_at"] - timedelta(seconds=60)).timestamp())
-        item = str(session.get("price_item", "")).lower()
-        if item == "xanax":
-            payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, int(session["price_amount"]), since_timestamp=since_ts)
-        elif item == "erotic_dvd":
-            payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, int(session["price_amount"]), since_timestamp=since_ts)
-        else:
-            await interaction.response.send_message("Unsupported payment item for this session.", ephemeral=True)
-            return
+            api_key = security.decrypt_api_key(encrypted_key)
+            since_ts = int((session["created_at"] - timedelta(seconds=60)).timestamp())
+            item = str(session.get("price_item", "")).lower()
+            if item == "xanax":
+                payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, int(session["price_amount"]), since_timestamp=since_ts)
+            elif item == "erotic_dvd":
+                payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, int(session["price_amount"]), since_timestamp=since_ts)
+            else:
+                await interaction.followup.send("Unsupported payment item for this session.", ephemeral=True)
+                return
 
-        if not payment:
-            await interaction.response.send_message("Payment not found yet…", ephemeral=True)
-            return
+            if not payment:
+                await interaction.followup.send("Payment not found yet…", ephemeral=True)
+                return
 
-        await repo.mark_signup_payment_verified(session_id=self.session_id, discord_id=interaction.user.id)
-        payer_torn = int(key_row.get("torn_user_id") or 0) or None
-        receipts = PaymentReceiptService(db.pool)
-        await receipts.create_and_verify(
+            await repo.mark_signup_payment_verified(session_id=self.session_id, discord_id=interaction.user.id)
+            payer_torn = int(key_row.get("torn_user_id") or 0) or None
+            receipts = PaymentReceiptService(db.pool)
+            await receipts.create_and_verify(
             featureType="jump_99k",
             featureRefId=self.session_id,
             payer_discord_id=interaction.user.id,
@@ -1092,18 +1149,23 @@ class Jump99kUserControlsView(discord.ui.View):
             verifier_discord_id=interaction.user.id,
             verifier_torn_id=payer_torn,
         )
-        if interaction.guild:
-            await _grant_private_channel_access(interaction.guild, session, interaction.user.id)
-        await _refresh_99k_panel(interaction.client, self.session_id)
-        await _refresh_roster_if_exists(interaction.client, self.session_id)
-        try:
-            await interaction.response.send_message(
+            if interaction.guild:
+                await _grant_private_channel_access(interaction.guild, session, interaction.user.id)
+            await _refresh_99k_panel(interaction.client, self.session_id)
+            await _refresh_roster_if_exists(interaction.client, self.session_id)
+            await interaction.followup.send(
                 "✅ Payment verified for this 99k session.",
                 view=InsuranceOfferView(self.session_id, interaction.user.id),
                 ephemeral=True,
             )
         except Exception:
-            await interaction.response.send_message("✅ Payment verified for this 99k session.", ephemeral=True)
+            log.exception(
+                "99k verify_payment failed session_id=%s guild_id=%s user_id=%s",
+                self.session_id,
+                interaction.guild_id,
+                interaction.user.id if interaction.user else None,
+            )
+            await interaction.followup.send("Sorry—payment verification failed. Please try again.", ephemeral=True)
 
 
 class Jump99kSignupView(discord.ui.View):
@@ -1120,65 +1182,89 @@ class Jump99kSignupView(discord.ui.View):
         self.add_item(button)
 
     async def join(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if not interaction.guild_id:
-            await interaction.response.send_message("Guild context is required.", ephemeral=True)
+            await interaction.followup.send("Guild context is required.", ephemeral=True)
             return
 
-        db = get_database()
-        repo = JumpsRepository(db.pool)
-        users_repo = UsersRepository(db.pool)
+        try:
+            db = get_database()
+            repo = JumpsRepository(db.pool)
+            users_repo = UsersRepository(db.pool)
 
-        session = await repo.get_session(self.session_id)
-        if not session or _is_99k_closed(session.get("status")):
+            session = await repo.get_session(self.session_id)
+            if not session or _is_99k_closed(session.get("status")):
+                await _refresh_99k_panel(interaction.client, self.session_id)
+                await interaction.followup.send("This jump is closed.", ephemeral=True)
+                return
+            if int(session.get("guild_id", 0)) != int(interaction.guild_id):
+                await interaction.followup.send("Session not found.", ephemeral=True)
+                return
+
+            signups = await repo.list_signups(self.session_id)
+            signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
+            max_slots = int(session.get("max_slots") or 0)
+            if max_slots > 0 and signed_up >= max_slots:
+                await _refresh_99k_panel(interaction.client, self.session_id)
+                await interaction.followup.send("This jump is full.", ephemeral=True)
+                return
+
+            bl = await repo.is_blacklisted(interaction.guild_id, interaction.user.id)
+            if bl:
+                await interaction.followup.send("You are blacklisted.", ephemeral=True)
+                return
+
+            key_row = await users_repo.get_user_api_key(interaction.user.id)
+            if not key_row:
+                await interaction.followup.send("Link your Torn API key before joining.", ephemeral=True)
+                return
+
+            settings = await GuildSettingsRepository(db).get_or_create(interaction.guild_id)
+            timeout_minutes = int(settings.get("reservation_timeout_minutes") or config.DEFAULT_RESERVATION_TIMEOUT)
+            reserved_until = datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
+
+            torn_user_id = int(key_row["torn_user_id"]) if key_row.get("torn_user_id") else None
+            await repo.create_or_restore_signup(
+                session_id=self.session_id,
+                guild_id=interaction.guild_id,
+                discord_id=interaction.user.id,
+                torn_user_id=torn_user_id,
+                reserved_until=reserved_until,
+            )
             await _refresh_99k_panel(interaction.client, self.session_id)
-            await interaction.response.send_message("This jump is closed.", ephemeral=True)
-            return
-        if int(session.get("guild_id", 0)) != int(interaction.guild_id):
-            await interaction.response.send_message("Session not found.", ephemeral=True)
-            return
 
-        signups = await repo.list_signups(self.session_id)
-        signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
-        max_slots = int(session.get("max_slots") or 0)
-        if max_slots > 0 and signed_up >= max_slots:
-            await _refresh_99k_panel(interaction.client, self.session_id)
-            await interaction.response.send_message("This jump is full.", ephemeral=True)
-            return
-
-        bl = await repo.is_blacklisted(interaction.guild_id, interaction.user.id)
-        if bl:
-            await interaction.response.send_message("You are blacklisted.", ephemeral=True)
-            return
-
-        key_row = await users_repo.get_user_api_key(interaction.user.id)
-        if not key_row:
-            await interaction.response.send_message("Link your Torn API key before joining.", ephemeral=True)
-            return
-
-        settings = await GuildSettingsRepository(db).get_or_create(interaction.guild_id)
-        timeout_minutes = int(settings.get("reservation_timeout_minutes") or config.DEFAULT_RESERVATION_TIMEOUT)
-        reserved_until = datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
-
-        torn_user_id = int(key_row["torn_user_id"]) if key_row.get("torn_user_id") else None
-        await repo.create_or_restore_signup(
-            session_id=self.session_id,
-            guild_id=interaction.guild_id,
-            discord_id=interaction.user.id,
-            torn_user_id=torn_user_id,
-            reserved_until=reserved_until,
-        )
-        await _refresh_99k_panel(interaction.client, self.session_id)
-
-        reserve_embed = discord.Embed(
-            title="Spot Reserved",
-            description="Spot reserved. Send payment in Torn, then press Verify Payment.",
-            color=discord.Color.green(),
-        )
-        await interaction.response.send_message(
-            embed=reserve_embed,
-            view=Jump99kUserControlsView(self.session_id),
-            ephemeral=True,
-        )
+            reserve_embed = discord.Embed(
+                title="Spot Reserved",
+                description="Spot reserved. Send payment in Torn, then press Verify Payment.",
+                color=discord.Color.green(),
+            )
+            await interaction.followup.send(
+                embed=reserve_embed,
+                view=Jump99kUserControlsView(self.session_id),
+                ephemeral=True,
+            )
+        except asyncpg.UndefinedColumnError as exc:
+            log.exception(
+                "99k join failed due to missing DB column session_id=%s guild_id=%s user_id=%s",
+                self.session_id,
+                interaction.guild_id,
+                interaction.user.id if interaction.user else None,
+            )
+            if "reserved_until" in str(exc):
+                await interaction.followup.send(
+                    "A required database migration is missing (`reserved_until`). Please ask an admin to run the latest migration SQL.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.followup.send("Sorry—could not process signup right now. Please try again.", ephemeral=True)
+        except Exception:
+            log.exception(
+                "99k join failed session_id=%s guild_id=%s user_id=%s",
+                self.session_id,
+                interaction.guild_id,
+                interaction.user.id if interaction.user else None,
+            )
+            await interaction.followup.send("Sorry—could not process signup right now. Please try again.", ephemeral=True)
 class HostTaxGateView(discord.ui.View):
     def __init__(self, *, guild_id: int, host_discord_id: int):
         super().__init__(timeout=300)
