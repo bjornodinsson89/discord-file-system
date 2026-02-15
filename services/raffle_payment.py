@@ -62,7 +62,7 @@ class RafflePaymentService:
 
         try:
             api_key = security.decrypt(buyer_key["encrypted_key"])
-            logs = await torn_api.get_user_logs(api_key, limit=5)
+            logs = await torn_api.get_user_log(api_key, limit=5)
         except TornAPIRateLimitError:
             return False, None, "Torn API is rate-limited right now. Please try again in a moment."
         except TornAPIPermissionError:

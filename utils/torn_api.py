@@ -221,7 +221,18 @@ class TornAPIClient:
             required_item_id = item_id
         if not required_item_id:
             return None
-        logs = await self.get_user_logs(api_key, limit=5)
+        try:
+            logs = await self.get_user_log(api_key, limit=200)
+        except Exception as exc:
+            log.warning(
+                "Payment verification failed while reading Torn logs recipient=%s required_item_id=%s amount=%s since=%s error=%s",
+                recipient_torn_id,
+                required_item_id,
+                amount,
+                since_timestamp,
+                type(exc).__name__,
+            )
+            raise
         for entry in logs:
             timestamp = int(entry.get("timestamp") or 0)
             if since_timestamp and timestamp < since_timestamp:
@@ -283,7 +294,7 @@ class TornAPIClient:
         cash_amount: Optional[int] = None,
         since_timestamp: Optional[int] = None,
     ) -> Optional[Dict]:
-        logs = await self.get_user_logs(api_key, limit=50)
+        logs = await self.get_user_log(api_key, limit=200)
         for entry in logs:
             timestamp = int(entry.get("timestamp") or 0)
             if since_timestamp and timestamp < since_timestamp:

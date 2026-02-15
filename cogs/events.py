@@ -478,8 +478,6 @@ async def on_ready():
         readiness_worker.start()
     if not overdose_monitor.is_running():
         overdose_monitor.start()
-    if not insurance_monitor.is_running():
-        insurance_monitor.start()
     if not raffle_completion_worker.is_running():
         raffle_completion_worker.start()
     if not auto_verify_99k_payments.is_running():
@@ -896,14 +894,13 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int) -> 
 
 
 def build_99k_jump_created_announcement_content(session: dict) -> str:
-    session_id = int(session["id"])
     tct_start_text = str(session.get("scheduled_start_text") or "Not set")
     max_slots = int(session.get("max_slots") or 0)
+    price_amount = int(session.get("price_amount") or 0)
+    price_item_label = _format_99k_price_item_label(session.get("price_item"))
     return (
-        f"🔔✨ **99k Happy Jump Alert** ✨\n"
-        f"A new session is now open: **Session #{session_id}**\n"
-        f"🕒 Start time: {tct_start_text}\n"
-        f"🪑 Available spots: **{max_slots}/{max_slots} available spots**"
+        f"🔔 There will be a jump {tct_start_text} (time displayed in your timezone). Please secure your spot with {price_amount}x {price_item_label}.\n"
+        f"{max_slots}/{max_slots} available spots"
     )
 
 
@@ -1016,16 +1013,22 @@ async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:
 
 def _format_cd_hhmm(seconds: int | None) -> str:
     if seconds is None:
-        return "--:--"
+        return "?"
     total = max(0, int(seconds))
     hours, rem = divmod(total, 3600)
     minutes, _ = divmod(rem, 60)
     return f"{hours:02d}:{minutes:02d}"
 
 
+
+
+def _format_energy_pair(current: int | None, maximum: int | None) -> str:
+    if current is None or maximum is None:
+        return "|?/?|"
+    return f"|{int(current)}/{int(maximum)}|"
 def _truncate_name_16(name: str) -> str:
     raw = (name or "").strip() or "User"
-    return raw if len(raw) <= 16 else f"{raw[:15]}…"
+    return raw if len(raw) <= 12 else f"{raw[:12]}…"
 
 
 async def _resolve_roster_name(guild: discord.Guild | None, discord_id: int) -> str:
@@ -1066,14 +1069,15 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
 
     guild = channel.guild if isinstance(channel, discord.abc.GuildChannel) else None
     host_name = await _resolve_roster_name(guild, host_id)
-    host_energy = int((host_readiness or {}).get("energy") or 0)
-    host_energy_max = int((host_readiness or {}).get("energy_max") or 0)
+    host_energy = (host_readiness or {}).get("energy")
+    host_energy_max = (host_readiness or {}).get("energy_max")
     host_drug_cd = (host_readiness or {}).get("drug_cooldown") if host_readiness else None
     host_booster_cd = (host_readiness or {}).get("booster_cooldown") if host_readiness else None
-    host_emoji = "🟩" if host_energy >= 1000 and int(host_drug_cd or 0) == 0 else "🟥"
+    host_ready = host_energy is not None and host_energy_max is not None and int(host_energy) >= 1000 and int(host_drug_cd or 0) == 0
+    host_emoji = "🟩" if host_ready else "🟥"
 
     lines = [
-        f"1) Name:{host_name} E-lvl |{host_energy}/{host_energy_max}| Dcd |{_format_cd_hhmm(host_drug_cd)}| Bcd |{_format_cd_hhmm(host_booster_cd)}| {host_emoji}"
+        f"1) Name:{host_name} E-lvl {_format_energy_pair(host_energy, host_energy_max)} Dcd |{_format_cd_hhmm(host_drug_cd)}| Bcd |{_format_cd_hhmm(host_booster_cd)}| {host_emoji}"
     ]
 
     participants = [row for row in signups if int(row.get("discord_id") or 0) != host_id]
@@ -1082,20 +1086,20 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
         name = await _resolve_roster_name(guild, discord_id)
 
         has_readiness = row.get("checked_at") is not None
-        energy = int(row.get("energy") or 0) if has_readiness else 0
-        energy_max = int(row.get("energy_max") or 0) if has_readiness else 0
+        energy = int(row.get("energy") or 0) if has_readiness else None
+        energy_max = int(row.get("energy_max") or 0) if has_readiness else None
         drug_cd = row.get("drug_cooldown") if has_readiness else None
         booster_cd = row.get("booster_cooldown") if has_readiness else None
 
         if bool(row.get("overdose_flag")):
             emoji = "🟧"
-        elif energy >= 1000 and int(drug_cd or 0) == 0:
+        elif energy is not None and energy >= 1000 and int(drug_cd or 0) == 0:
             emoji = "🟩"
         else:
             emoji = "🟥"
 
         lines.append(
-            f"{idx}) Name:{name} E-lvl |{energy}/{energy_max}| Dcd |{_format_cd_hhmm(drug_cd)}| Bcd |{_format_cd_hhmm(booster_cd)}| {emoji}"
+            f"{idx}) Name:{name} E-lvl {_format_energy_pair(energy, energy_max)} Dcd |{_format_cd_hhmm(drug_cd)}| Bcd |{_format_cd_hhmm(booster_cd)}| {emoji}"
         )
 
     embed = _build_roster_embed(lines)
@@ -1339,6 +1343,8 @@ class Jump99kUserControlsView(discord.ui.View):
                 view=InsuranceOfferView(self.session_id, interaction.user.id),
                 ephemeral=True,
             )
+        except TornAPIError:
+            await interaction.followup.send("Torn API may be down; try again shortly.", ephemeral=True)
         except Exception:
             log.exception(
                 "99k verify_payment failed session_id=%s guild_id=%s user_id=%s",
@@ -2383,73 +2389,8 @@ async def before_overdose_monitor():
 
 @tasks.loop(seconds=config.INSURANCE_CHECK_INTERVAL)
 async def insurance_monitor():
-    """Monitor insurance coverage and process automatic claims."""
-    try:
-        db = get_database()
-        insurance_repo = InsuranceRepository(db.pool)
-        users_repo = UsersRepository(db.pool)
-        tracker = OverdoseTracker(
-            users_repo=users_repo,
-            overdose_repo=OverdoseRepository(db.pool),
-            jumps_repo=None,
-        )
-
-        await insurance_repo.expire_coverage()
-        active_coverage = await insurance_repo.get_active_coverage()
-
-        for coverage in active_coverage:
-            try:
-                activated_at = coverage.get("activated_at")
-                expires_at = coverage.get("expires_at")
-                if not activated_at:
-                    continue
-                now = datetime.now(timezone.utc)
-                if activated_at > now:
-                    continue
-                if expires_at and expires_at <= now:
-                    continue
-
-                since_ts = int(activated_at.timestamp())
-                event = await tracker.check_user_since(
-                    guild_id=int(coverage.get("guild_id") or 0),
-                    discord_id=int(coverage["user_discord_id"]),
-                    since_ts=since_ts,
-                    session_id=None,
-                )
-                if not event:
-                    continue
-
-                try:
-                    log_id = int(str(event.get("torn_log_id") or "0"))
-                except ValueError:
-                    continue
-                existing = await insurance_repo.check_existing_claim(int(coverage["coverage_id"]), log_id)
-                if existing:
-                    continue
-
-                await _create_insurance_claim(
-                    coverage,
-                    {
-                        "type": event.get("event_type"),
-                        "timestamp": event.get("event_timestamp"),
-                        "log_id": event.get("torn_log_id"),
-                    },
-                    event.get("raw") or {},
-                )
-
-                await insurance_repo.update_coverage_last_check(
-                    int(coverage["coverage_id"]),
-                    int(event.get("event_timestamp") or since_ts),
-                )
-            except OverdoseTrackerError as exc:
-                log.warning("Failed to monitor coverage %s due to Torn/API: %s", coverage.get("coverage_id"), exc)
-            except Exception as e:
-                log.warning(f"Failed to monitor coverage {coverage['coverage_id']}: {e}")
-
-            await asyncio.sleep(0.5)
-
-    except Exception as e:
-        log.error(f"Insurance monitor error: {e}", exc_info=True)
+    """Legacy monitor disabled: OD notifications are handled by overdose_monitor."""
+    return
 
 
 @insurance_monitor.before_loop

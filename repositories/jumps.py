@@ -364,6 +364,7 @@ class JumpsRepository(RepositoryBase):
                 WHERE session_id=$1
                   AND participant_discord_id=$2
                   AND claimed_by_discord_id IS NOT NULL
+                  AND status = 'completed'
                 ORDER BY COALESCE(claimed_at, requested_at) DESC
                 LIMIT 1
                 """,
@@ -438,6 +439,35 @@ class JumpsRepository(RepositoryBase):
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_insurance_requests WHERE id=$1", request_id)
             return dict(row) if row else None
+
+
+    async def get_insurance_request_for_signup(self, *, session_id: int, participant_discord_id: int) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT *
+                FROM jump_99k_insurance_requests
+                WHERE session_id=$1 AND participant_discord_id=$2
+                ORDER BY requested_at DESC
+                LIMIT 1
+                """,
+                session_id,
+                participant_discord_id,
+            )
+            return dict(row) if row else None
+
+    async def mark_insurance_payment_verified(self, *, request_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE jump_99k_insurance_requests
+                SET status='completed', completed_at=NOW()
+                WHERE id=$1 AND status IN ('accepted','claimed')
+                RETURNING id
+                """,
+                request_id,
+            )
+            return row is not None
 
     async def claim_insurance_request(self, *, request_id: int, claimed_by_discord_id: int) -> bool:
         async with self.pool.acquire() as conn:
