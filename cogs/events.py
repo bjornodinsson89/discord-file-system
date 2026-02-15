@@ -42,6 +42,7 @@ from cogs.pools import register_persistent_pool_views
 from bot_actions import handlers as admin_handlers
 from bot_actions.application_review import perform_application_review
 from services import InsuranceService, DomainError, InvalidInput
+from services.overdose_tracker import OverdoseTracker, OverdoseTrackerError
 from bot_actions.schemas import (
     CreateSessionRequest,
     CreateRaffleRequest,
@@ -54,6 +55,7 @@ from repositories.raffles import RafflesRepository
 from repositories.audit import AuditRepository
 from repositories.jumps import JumpsRepository
 from repositories.users import UsersRepository
+from repositories.overdose import OverdoseRepository
 from repositories.torn_items import TornItemsRepository, norm_name
 from repositories.host_tax import HostTaxRepository
 from services.payment_receipts import PaymentReceiptService
@@ -303,6 +305,7 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 bot.synced = False
+_od_last_checked: dict[tuple[int, int, int], datetime] = {}
 
 
 async def sync_application_commands() -> None:
@@ -473,6 +476,8 @@ async def on_ready():
         cleanup_worker.start()
     if not readiness_worker.is_running():
         readiness_worker.start()
+    if not overdose_monitor.is_running():
+        overdose_monitor.start()
     if not insurance_monitor.is_running():
         insurance_monitor.start()
     if not raffle_completion_worker.is_running():
@@ -959,43 +964,34 @@ async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:
 
 
 def _format_cd_hhmm(seconds: int | None) -> str:
-    total = max(0, int(seconds or 0))
+    if seconds is None:
+        return "--:--"
+    total = max(0, int(seconds))
     hours, rem = divmod(total, 3600)
     minutes, _ = divmod(rem, 60)
     return f"{hours:02d}:{minutes:02d}"
 
 
-def _build_roster_embed(session: dict, signups: list[dict]) -> discord.Embed:
-    host_id = int(session["host_discord_id"])
-    verified_signups = [row for row in signups if int(row.get("discord_id") or 0) != host_id]
+def _truncate_name_16(name: str) -> str:
+    raw = (name or "").strip() or "User"
+    return raw if len(raw) <= 16 else f"{raw[:15]}…"
 
-    def _to_row(number: int, label: str, row: dict | None, status_label: str) -> str:
-        row = row or {}
-        energy = int(row.get("energy") or 0)
-        energy_max = int(row.get("energy_max") or 0)
-        drug_cd = _format_cd_hhmm(row.get("drug_cooldown"))
-        booster_cd = _format_cd_hhmm(row.get("booster_cooldown"))
-        return f"{number:>2} | {label:<12} | {energy:>4}/{energy_max:<4} | {drug_cd} | {booster_cd} | {status_label}"
 
-    roster_lines = [
-        "# | User         | Energy    | Drug CD | Booster CD | Status",
-        "--+--------------+-----------+---------+------------+---------",
-        _to_row(1, "HOST", session.get("host_readiness"), "HOST"),
-    ]
-    for idx, row in enumerate(verified_signups, start=2):
-        roster_lines.append(_to_row(idx, f"User {int(row['discord_id'])}", row, "VERIFIED"))
+async def _resolve_roster_name(guild: discord.Guild | None, discord_id: int) -> str:
+    if guild:
+        member = guild.get_member(discord_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(discord_id)
+            except Exception:
+                member = None
+        if member is not None:
+            return _truncate_name_16(member.display_name)
+    return _truncate_name_16(f"User{str(discord_id)[-4:]}")
 
-    roster_block = "```\n" + "\n".join(roster_lines) + "\n```"
-    item_label = "Xanax" if str(session.get("price_item", "")).lower() == "xanax" else "eDVD"
-    description = (
-        f"Session ID: **#{int(session['id'])}**\n"
-        f"Host ID: **{host_id}**\n"
-        f"Payment: **{int(session['price_amount'])}x {item_label}**\n"
-        f"Verified Spots: **{len(verified_signups)}**\n"
-        f"Status: **{str(session.get('status') or 'unknown').title()}**\n\n"
-        f"{roster_block}"
-    )
-    return discord.Embed(title="Jump Roster", description=description, color=discord.Color.blurple())
+
+def _build_roster_embed(lines: list[str]) -> discord.Embed:
+    return discord.Embed(title="Jump Roster", description="\n".join(lines), color=discord.Color.blurple())
 
 
 async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageable, message: discord.Message | None = None) -> tuple[discord.Embed, str]:
@@ -1003,32 +999,56 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
     session = await repo.get_session(session_id)
     if not session:
         raise ValueError("Session not found")
+
     signups = await repo.list_roster_signups_with_readiness(session_id)
-    signups = [row for row in signups if int(row.get("discord_id") or 0) != int(session["host_discord_id"])]
     readiness_rows = await repo.list_readiness(session_id)
-    host_readiness = next((r for r in readiness_rows if int(r.get("discord_id") or 0) == int(session["host_discord_id"])), None)
+    host_id = int(session["host_discord_id"])
+    host_readiness = next((r for r in readiness_rows if int(r.get("discord_id") or 0) == host_id), None)
     if host_readiness is None:
         host_readiness = await _fetch_and_upsert_host_readiness_snapshot(
             repo=repo,
             users_repo=UsersRepository(get_pool()),
             session_id=int(session_id),
             guild_id=int(session["guild_id"]),
-            host_discord_id=int(session["host_discord_id"]),
+            host_discord_id=host_id,
         )
-    session["host_readiness"] = host_readiness
-    embed = _build_roster_embed(session, signups)
 
-    host_row = session.get("host_readiness") or {}
-    roster_text_lines = [
-        "# | User         | Energy    | Drug CD | Booster CD | Status",
-        "--+--------------+-----------+---------+------------+---------",
-        f"{1:>2} | {'HOST':<12} | {int(host_row.get('energy') or 0):>4}/{int(host_row.get('energy_max') or 0):<4} | {_format_cd_hhmm(host_row.get('drug_cooldown'))} | {_format_cd_hhmm(host_row.get('booster_cooldown'))} | HOST",
+    guild = channel.guild if isinstance(channel, discord.abc.GuildChannel) else None
+    host_name = await _resolve_roster_name(guild, host_id)
+    host_energy = int((host_readiness or {}).get("energy") or 0)
+    host_energy_max = int((host_readiness or {}).get("energy_max") or 0)
+    host_drug_cd = (host_readiness or {}).get("drug_cooldown") if host_readiness else None
+    host_booster_cd = (host_readiness or {}).get("booster_cooldown") if host_readiness else None
+    host_emoji = "🟩" if host_energy >= 1000 and int(host_drug_cd or 0) == 0 else "🟥"
+
+    lines = [
+        f"1) Name:{host_name} E-lvl |{host_energy}/{host_energy_max}| Dcd |{_format_cd_hhmm(host_drug_cd)}| Bcd |{_format_cd_hhmm(host_booster_cd)}| {host_emoji}"
     ]
-    for idx, row in enumerate(signups, start=2):
-        roster_text_lines.append(
-            f"{idx:>2} | {'User ' + str(int(row['discord_id'])):<12} | {int(row.get('energy') or 0):>4}/{int(row.get('energy_max') or 0):<4} | {_format_cd_hhmm(row.get('drug_cooldown'))} | {_format_cd_hhmm(row.get('booster_cooldown'))} | VERIFIED"
+
+    participants = [row for row in signups if int(row.get("discord_id") or 0) != host_id]
+    for idx, row in enumerate(participants, start=2):
+        discord_id = int(row.get("discord_id") or 0)
+        name = await _resolve_roster_name(guild, discord_id)
+
+        has_readiness = row.get("checked_at") is not None
+        energy = int(row.get("energy") or 0) if has_readiness else 0
+        energy_max = int(row.get("energy_max") or 0) if has_readiness else 0
+        drug_cd = row.get("drug_cooldown") if has_readiness else None
+        booster_cd = row.get("booster_cooldown") if has_readiness else None
+
+        if bool(row.get("overdose_flag")):
+            emoji = "🟧"
+        elif energy >= 1000 and int(drug_cd or 0) == 0:
+            emoji = "🟩"
+        else:
+            emoji = "🟥"
+
+        lines.append(
+            f"{idx}) Name:{name} E-lvl |{energy}/{energy_max}| Dcd |{_format_cd_hhmm(drug_cd)}| Bcd |{_format_cd_hhmm(booster_cd)}| {emoji}"
         )
-    roster_text = "```\n" + "\n".join(roster_text_lines) + "\n```"
+
+    embed = _build_roster_embed(lines)
+    roster_text = "\n".join(lines)
 
     if message is not None:
         await message.edit(embed=embed, view=Jump99kRosterView(session_id))
@@ -2213,64 +2233,161 @@ async def before_auto_verify_99k_payments():
     await bot.wait_until_ready()
 
 
+@tasks.loop(seconds=60)
+async def overdose_monitor():
+    """Track overdose events for open 99k sessions using shared overdose tracker."""
+    try:
+        db = get_database()
+        jumps_repo = JumpsRepository(db.pool)
+        users_repo = UsersRepository(db.pool)
+        tracker = OverdoseTracker(
+            users_repo=users_repo,
+            overdose_repo=OverdoseRepository(db.pool),
+            jumps_repo=jumps_repo,
+        )
+
+        sessions = await jumps_repo.list_open_sessions()
+        now = datetime.now(timezone.utc)
+        for session in sessions:
+            session_id = int(session["id"])
+            guild_id = int(session["guild_id"])
+            guild = bot.get_guild(guild_id)
+            signups = await jumps_repo.list_signups(session_id)
+            for signup in signups:
+                if not bool(signup.get("payment_verified")):
+                    continue
+                if signup.get("status") not in {"signed_up", "completed", "not_completed"}:
+                    continue
+                verified_at = signup.get("payment_verified_at")
+                if not verified_at:
+                    continue
+
+                discord_id = int(signup["discord_id"])
+                key = (session_id, guild_id, discord_id)
+                last_checked = _od_last_checked.get(key)
+                if last_checked and (now - last_checked).total_seconds() < 60:
+                    continue
+                _od_last_checked[key] = now
+
+                try:
+                    event = await tracker.check_user_since(
+                        guild_id=guild_id,
+                        discord_id=discord_id,
+                        since_ts=int(verified_at.timestamp()),
+                        session_id=session_id,
+                    )
+                    if not event or not event.get("session_marked"):
+                        continue
+
+                    notice = (
+                        f"⚠️ 99k OD detected in session #{session_id}. User ID: {discord_id}. "
+                        f"Type: {event.get('event_type')}. Log: {event.get('torn_log_id')}"
+                    )
+
+                    sent = False
+                    if guild is not None and session.get("private_channel_id"):
+                        try:
+                            ch = guild.get_channel(int(session["private_channel_id"])) or await guild.fetch_channel(int(session["private_channel_id"]))
+                            await ch.send(notice)
+                            sent = True
+                        except Exception:
+                            sent = False
+                    if not sent:
+                        try:
+                            host_user = bot.get_user(int(session["host_discord_id"])) or await bot.fetch_user(int(session["host_discord_id"]))
+                            await host_user.send(notice)
+                        except Exception:
+                            pass
+
+                    insurer_id = await jumps_repo.get_selected_insurer_for_signup(session_id=session_id, discord_id=discord_id)
+                    if insurer_id:
+                        try:
+                            insurer = bot.get_user(int(insurer_id)) or await bot.fetch_user(int(insurer_id))
+                            await insurer.send(notice)
+                        except Exception:
+                            pass
+                except OverdoseTrackerError as exc:
+                    log.warning("OD tracker Torn/API failure session=%s user=%s: %s", session_id, discord_id, exc)
+                except Exception:
+                    log.exception("OD tracker failed session=%s user=%s", session_id, discord_id)
+
+                await asyncio.sleep(0.2)
+    except Exception as e:
+        log.error(f"Overdose monitor error: {e}", exc_info=True)
+
+
+@overdose_monitor.before_loop
+async def before_overdose_monitor():
+    await bot.wait_until_ready()
+
+
 @tasks.loop(seconds=config.INSURANCE_CHECK_INTERVAL)
 async def insurance_monitor():
     """Monitor insurance coverage and process automatic claims."""
     try:
         db = get_database()
-        torn_api = get_torn_api()
-        security = get_security_manager()
-        
-        # Create repository instance
         insurance_repo = InsuranceRepository(db.pool)
-        
-        # Expire old coverage
+        users_repo = UsersRepository(db.pool)
+        tracker = OverdoseTracker(
+            users_repo=users_repo,
+            overdose_repo=OverdoseRepository(db.pool),
+            jumps_repo=None,
+        )
+
         await insurance_repo.expire_coverage()
-        
-        # Get all active coverage
         active_coverage = await insurance_repo.get_active_coverage()
-        
+
         for coverage in active_coverage:
             try:
-                api_key_data = await UsersRepository(db.pool).get_user_api_key(coverage['user_discord_id'])
-                if not api_key_data:
+                activated_at = coverage.get("activated_at")
+                expires_at = coverage.get("expires_at")
+                if not activated_at:
                     continue
-                
-                api_key = security.decrypt_api_key(api_key_data['encrypted_key'])
-                
-                # Get last checked timestamp
-                last_check = coverage.get('last_log_timestamp', 0)
-                
-                # Check logs for drug events
-                drug_logs = await torn_api.check_drug_use_logs(api_key, since_timestamp=last_check)
-                
-                for log_entry in drug_logs:
-                    # Check if this is an overdose event
-                    od_event = await torn_api.identify_overdose_event(log_entry)
-                    
-                    if od_event:
-                        # Check if claim already exists
-                        log_id = od_event.get('log_id') or log_entry.get('id') or log_entry.get('log_id')
-                        if log_id:
-                            existing = await insurance_repo.check_existing_claim(coverage['coverage_id'], log_id)
-                            if existing:
-                                continue
-                        
-                        # Create claim
-                        await _create_insurance_claim(coverage, od_event, log_entry)
-                
-                # Update last check timestamp
-                if drug_logs:
-                    latest_ts = max(log_entry.get('timestamp', 0) for log_entry in drug_logs)
-                    if latest_ts > last_check:
-                        await insurance_repo.update_coverage_last_check(coverage['coverage_id'], latest_ts)
-                
+                now = datetime.now(timezone.utc)
+                if activated_at > now:
+                    continue
+                if expires_at and expires_at <= now:
+                    continue
+
+                since_ts = int(activated_at.timestamp())
+                event = await tracker.check_user_since(
+                    guild_id=int(coverage.get("guild_id") or 0),
+                    discord_id=int(coverage["user_discord_id"]),
+                    since_ts=since_ts,
+                    session_id=None,
+                )
+                if not event:
+                    continue
+
+                try:
+                    log_id = int(str(event.get("torn_log_id") or "0"))
+                except ValueError:
+                    continue
+                existing = await insurance_repo.check_existing_claim(int(coverage["coverage_id"]), log_id)
+                if existing:
+                    continue
+
+                await _create_insurance_claim(
+                    coverage,
+                    {
+                        "type": event.get("event_type"),
+                        "timestamp": event.get("event_timestamp"),
+                        "log_id": event.get("torn_log_id"),
+                    },
+                    event.get("raw") or {},
+                )
+
+                await insurance_repo.update_coverage_last_check(
+                    int(coverage["coverage_id"]),
+                    int(event.get("event_timestamp") or since_ts),
+                )
+            except OverdoseTrackerError as exc:
+                log.warning("Failed to monitor coverage %s due to Torn/API: %s", coverage.get("coverage_id"), exc)
             except Exception as e:
                 log.warning(f"Failed to monitor coverage {coverage['coverage_id']}: {e}")
-            
-            # Small delay between checks
+
             await asyncio.sleep(0.5)
-    
+
     except Exception as e:
         log.error(f"Insurance monitor error: {e}", exc_info=True)
 

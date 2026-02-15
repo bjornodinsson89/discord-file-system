@@ -19,6 +19,15 @@ _RESERVED_UNTIL_MIGRATION_HINT = (
     "CREATE INDEX IF NOT EXISTS idx_jump_99k_signups_reserved_until ON public.jump_99k_signups (reserved_until);"
 )
 
+_OVERDOSE_MIGRATION_HINT = (
+    "Missing OD schema on jump_99k_signups (overdose_flag/overdose_detected_at/overdose_meta). "
+    "Run the manual SQL migration before enabling overdose tracking."
+)
+
+_READINESS_MIGRATION_HINT = (
+    "Missing jump_99k_readiness.booster_cooldown column. Run manual SQL migration before readiness polling."
+)
+
 
 def _raise_reserved_until_migration_error(exc: Exception) -> None:
     if isinstance(exc, asyncpg.UndefinedColumnError) and "reserved_until" in str(exc):
@@ -146,6 +155,13 @@ class JumpsRepository(RepositoryBase):
             row = await conn.fetchrow("SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open' ORDER BY created_at DESC LIMIT 1", guild_id)
             return dict(row) if row else None
 
+    async def list_open_sessions(self) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM jump_99k_sessions WHERE status='open' ORDER BY created_at DESC"
+            )
+            return [dict(row) for row in rows]
+
     async def get_session(self, session_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_sessions WHERE id = $1", session_id)
@@ -199,15 +215,18 @@ class JumpsRepository(RepositoryBase):
 
     async def upsert_readiness_snapshot(self, *, session_id: int, guild_id: int, discord_id: int, energy: int, energy_max: int, drug_cooldown: int, booster_cooldown: int | None, status_text: str) -> None:
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO jump_99k_readiness (session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, booster_cooldown, status_text, checked_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
-                ON CONFLICT (session_id, guild_id, discord_id)
-                DO UPDATE SET energy=EXCLUDED.energy, energy_max=EXCLUDED.energy_max, drug_cooldown=EXCLUDED.drug_cooldown, booster_cooldown=EXCLUDED.booster_cooldown, status_text=EXCLUDED.status_text, checked_at=NOW()
-                """,
-                session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, booster_cooldown, status_text,
-            )
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO jump_99k_readiness (session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, booster_cooldown, status_text, checked_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+                    ON CONFLICT (session_id, guild_id, discord_id)
+                    DO UPDATE SET energy=EXCLUDED.energy, energy_max=EXCLUDED.energy_max, drug_cooldown=EXCLUDED.drug_cooldown, booster_cooldown=EXCLUDED.booster_cooldown, status_text=EXCLUDED.status_text, checked_at=NOW()
+                    """,
+                    session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, booster_cooldown, status_text,
+                )
+            except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+                log.error(_READINESS_MIGRATION_HINT)
 
     async def list_signups_with_readiness(self, session_id: int) -> list[dict]:
         async with self.pool.acquire() as conn:
@@ -293,15 +312,67 @@ class JumpsRepository(RepositoryBase):
             )
             return row is not None
 
-    async def mark_signup_overdose(self, *, session_id: int, discord_id: int, overdose_meta: dict[str, Any]) -> bool:
+    async def mark_signup_overdose(
+        self,
+        *,
+        session_id: int,
+        guild_id: int,
+        discord_id: int,
+        torn_log_id: str,
+        event_timestamp: int,
+        meta_json: dict[str, Any],
+    ) -> bool:
+        async with self.pool.acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    """
+                    UPDATE jump_99k_signups
+                    SET overdose_flag=true,
+                        overdose_detected_at=NOW(),
+                        overdose_meta=$5::jsonb
+                    WHERE session_id=$1
+                      AND guild_id=$2
+                      AND participant_discord_id=$3
+                      AND COALESCE(overdose_flag, FALSE) = FALSE
+                    RETURNING id
+                    """,
+                    session_id,
+                    guild_id,
+                    discord_id,
+                    torn_log_id,
+                    json.dumps(
+                        {
+                            "torn_log_id": str(torn_log_id),
+                            "event_timestamp": int(event_timestamp),
+                            **(meta_json or {}),
+                        },
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ),
+                )
+            except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+                log.error(_OVERDOSE_MIGRATION_HINT)
+                return False
+            return row is not None
+
+    async def get_selected_insurer_for_signup(self, *, session_id: int, discord_id: int) -> Optional[int]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "UPDATE jump_99k_signups SET overdose_flag=true, overdose_detected_at=NOW(), overdose_meta=$3::jsonb WHERE session_id=$1 AND participant_discord_id=$2 RETURNING id",
+                """
+                SELECT claimed_by_discord_id
+                FROM jump_99k_insurance_requests
+                WHERE session_id=$1
+                  AND participant_discord_id=$2
+                  AND claimed_by_discord_id IS NOT NULL
+                ORDER BY COALESCE(claimed_at, requested_at) DESC
+                LIMIT 1
+                """,
                 session_id,
                 discord_id,
-                json.dumps(overdose_meta or {}, separators=(",", ":"), ensure_ascii=False),
             )
-            return row is not None
+            if not row:
+                return None
+            return int(row["claimed_by_discord_id"])
 
     async def close_session_and_record(self, *, session_id: int, guild_id: int, completed_discord_ids: list[int], not_completed_discord_ids: list[int]) -> bool:
         async with self.pool.acquire() as conn:
@@ -435,10 +506,14 @@ class JumpsRepository(RepositoryBase):
 
     async def list_readiness(self, session_id: int) -> list[dict]:
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, booster_cooldown, status_text, checked_at FROM jump_99k_readiness WHERE session_id = $1",
-                session_id,
-            )
+            try:
+                rows = await conn.fetch(
+                    "SELECT session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, booster_cooldown, status_text, checked_at FROM jump_99k_readiness WHERE session_id = $1",
+                    session_id,
+                )
+            except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+                log.error(_READINESS_MIGRATION_HINT)
+                return []
             return [dict(r) for r in rows]
 
     async def update_session_status(self, session_id: int, status: str) -> bool:
