@@ -482,6 +482,32 @@ class JumpsRepository(RepositoryBase):
             rows = await conn.fetch("SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open' ORDER BY created_at DESC", guild_id)
             return [dict(r) for r in rows]
 
+    async def list_active_sessions_with_roster_panels(self) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, guild_id, private_channel_id, roster_message_id, status
+                FROM jump_99k_sessions
+                WHERE status <> 'closed'
+                  AND roster_message_id IS NOT NULL
+                  AND private_channel_id IS NOT NULL
+                """
+            )
+            return [dict(r) for r in rows]
+
+    async def list_open_sessions_with_announcement_panels(self) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, guild_id, announce_channel_id, announce_message_id, max_slots, status
+                FROM jump_99k_sessions
+                WHERE status = 'open'
+                  AND announce_channel_id IS NOT NULL
+                  AND announce_message_id IS NOT NULL
+                """
+            )
+            return [dict(r) for r in rows]
+
 
     async def upsert_host_application(self, *, guild_id: int, discord_id: int, torn_user_id: int, torn_name: Optional[str], display_name: Optional[str], forum_url: str, application_data: dict[str, Any]) -> dict:
         async with self.pool.acquire() as conn:

@@ -371,6 +371,30 @@ async def register_persistent_application_review_views() -> None:
             )
         )
 
+async def register_persistent_roster_views() -> None:
+    """Register persistent roster panel views for active sessions."""
+    db = get_database()
+    sessions = await JumpsRepository(db.pool).list_active_sessions_with_roster_panels()
+    for session in sessions:
+        bot.add_view(Jump99kRosterView(int(session["id"])))
+
+
+async def register_persistent_signup_views() -> None:
+    """Register persistent signup views for open session announcement panels."""
+    db = get_database()
+    sessions = await JumpsRepository(db.pool).list_open_sessions_with_announcement_panels()
+    for session in sessions:
+        session_id = int(session["id"])
+        max_slots = int(session.get("max_slots") or 0)
+        is_full = False
+        if max_slots > 0:
+            signups = await JumpsRepository(db.pool).list_signups(session_id)
+            signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
+            is_full = signed_up >= max_slots
+        bot.add_view(Jump99kSignupView(session_id=session_id, is_full=is_full, is_closed=False))
+
+
+
 # ============================================================================
 # BOT EVENTS
 # ============================================================================
@@ -385,6 +409,8 @@ async def on_ready():
     
     await sync_application_commands()
     await register_persistent_application_review_views()
+    await register_persistent_roster_views()
+    await register_persistent_signup_views()
     await register_persistent_pool_views(bot)
 
     # Start background workers
@@ -987,8 +1013,24 @@ class Jump99kRosterView(discord.ui.View):
         super().__init__(timeout=None)
         self.session_id = session_id
 
-    @discord.ui.button(label="Refresh roster", style=discord.ButtonStyle.primary)
-    async def refresh_roster(self, interaction: discord.Interaction, button: discord.ui.Button):
+        refresh_btn = discord.ui.Button(
+            label="Refresh roster",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"99k_roster_refresh:{session_id}",
+        )
+        view_btn = discord.ui.Button(
+            label="View roster",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"99k_roster_view:{session_id}",
+        )
+
+        refresh_btn.callback = self._on_refresh
+        view_btn.callback = self._on_view
+
+        self.add_item(refresh_btn)
+        self.add_item(view_btn)
+
+    async def _on_refresh(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             if not interaction.channel:
@@ -1017,8 +1059,7 @@ class Jump99kRosterView(discord.ui.View):
             )
             await interaction.followup.send("Sorry—refreshing the roster failed. Please try again.", ephemeral=True)
 
-    @discord.ui.button(label="View roster", style=discord.ButtonStyle.secondary)
-    async def view_roster(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _on_view(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             if not interaction.channel:
