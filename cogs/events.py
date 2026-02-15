@@ -877,30 +877,33 @@ async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:
 
 
 def _build_roster_embed(session: dict, signups: list[dict]) -> discord.Embed:
-    paid_rows = [row for row in signups if row.get("status") == "signed_up" and row.get("payment_verified")]
-    reserved_rows = [row for row in signups if row.get("status") == "signed_up" and not row.get("payment_verified")]
-    cancelled_rows = [row for row in signups if row.get("status") == "cancelled"]
+    paid_count = len(signups)
 
-    total_signed = len(paid_rows) + len(reserved_rows)
-    paid_count = len(paid_rows)
+    def _readiness_text(row: dict | None, *, fallback: str = "unknown") -> str:
+        row = row or {}
+        energy = row.get("energy")
+        energy_max = row.get("energy_max")
+        cooldown = row.get("drug_cooldown")
+        status_text = row.get("status_text") or fallback
+        energy_text = f"{int(energy)}/{int(energy_max)}" if energy is not None and energy_max is not None else "?/?"
+        cooldown_text = f"{int(cooldown)}s" if cooldown is not None else "?"
+        return f"E {energy_text} • CD {cooldown_text} • {status_text}"
 
-    roster_lines: list[str] = []
-    for row in paid_rows:
-        torn = row.get("torn_user_id")
-        torn_suffix = f" (Torn {int(torn)})" if torn else ""
-        roster_lines.append(f"✅ <@{int(row['discord_id'])}>{torn_suffix}")
-    for row in reserved_rows:
-        roster_lines.append(f"⏳ <@{int(row['discord_id'])}>")
-    for row in cancelled_rows:
-        roster_lines.append(f"❌ <@{int(row['discord_id'])}>")
+    host_readiness = session.get("host_readiness")
+    host_line = f"👑 Host: <@{int(session['host_discord_id'])}> • {_readiness_text(host_readiness)}"
+
+    roster_lines: list[str] = [host_line]
+    for row in signups:
+        roster_lines.append(f"✅ <@{int(row['discord_id'])}> • {_readiness_text(row)}")
 
     item_label = "Xanax" if str(session.get("price_item", "")).lower() == "xanax" else "eDVD"
     description = (
         f"Session ID: **#{int(session['id'])}**\n"
         f"Host: <@{int(session['host_discord_id'])}>\n"
         f"Payment: **{int(session['price_amount'])}x {item_label}**\n"
-        f"Signed: **{total_signed}** | Paid: **{paid_count}**\n"
-        "Members will appear here after payment verification."
+        f"Verified: **{paid_count}**\n"
+        f"Status: **{str(session.get('status') or 'unknown').title()}**\n"
+        "Members appear after payment verification."
     )
     if roster_lines:
         description += "\n\n" + "\n".join(roster_lines)
@@ -913,26 +916,50 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
     session = await repo.get_session(session_id)
     if not session:
         raise ValueError("Session not found")
-    signups = await repo.list_signups(session_id)
+    signups = await repo.list_roster_signups_with_readiness(session_id)
+    readiness_rows = await repo.list_readiness(session_id)
+    host_readiness = next((r for r in readiness_rows if int(r.get("discord_id") or 0) == int(session["host_discord_id"])), None)
+    session["host_readiness"] = host_readiness
     embed = _build_roster_embed(session, signups)
 
-    paid_rows = [row for row in signups if row.get("status") == "signed_up" and row.get("payment_verified")]
-    reserved_rows = [row for row in signups if row.get("status") == "signed_up" and not row.get("payment_verified")]
-    cancelled_rows = [row for row in signups if row.get("status") == "cancelled"]
-    roster_text_lines = []
-    for row in paid_rows:
-        torn = row.get("torn_user_id")
-        torn_suffix = f" (Torn {int(torn)})" if torn else ""
-        roster_text_lines.append(f"✅ <@{int(row['discord_id'])}>{torn_suffix}")
-    for row in reserved_rows:
-        roster_text_lines.append(f"⏳ <@{int(row['discord_id'])}>")
-    for row in cancelled_rows:
-        roster_text_lines.append(f"❌ <@{int(row['discord_id'])}>")
-    roster_text = "\n".join(roster_text_lines) if roster_text_lines else "No members yet."
+    host_row = session.get("host_readiness") or {}
+    host_energy = f"{int(host_row['energy'])}/{int(host_row['energy_max'])}" if host_row.get("energy") is not None and host_row.get("energy_max") is not None else "?/?"
+    host_cd = f"{int(host_row['drug_cooldown'])}s" if host_row.get("drug_cooldown") is not None else "?"
+    host_status = host_row.get("status_text") or "unknown"
+    roster_text_lines = [f"👑 Host: <@{int(session['host_discord_id'])}> • E {host_energy} • CD {host_cd} • {host_status}"]
+    for row in signups:
+        energy = f"{int(row['energy'])}/{int(row['energy_max'])}" if row.get("energy") is not None and row.get("energy_max") is not None else "?/?"
+        cd = f"{int(row['drug_cooldown'])}s" if row.get("drug_cooldown") is not None else "?"
+        status = row.get("status_text") or "unknown"
+        roster_text_lines.append(f"✅ <@{int(row['discord_id'])}> • E {energy} • CD {cd} • {status}")
+    roster_text = "\n".join(roster_text_lines)
 
     if message is not None:
         await message.edit(embed=embed, view=Jump99kRosterView(session_id))
     return embed, roster_text
+
+
+async def _refresh_roster_if_exists(bot_client: commands.Bot, session_id: int) -> None:
+    repo = JumpsRepository(get_pool())
+    session = await repo.get_session(session_id)
+    if not session:
+        return
+
+    private_channel_id = session.get("private_channel_id")
+    roster_message_id = session.get("roster_message_id")
+    if not private_channel_id or not roster_message_id:
+        return
+
+    guild = bot_client.get_guild(int(session["guild_id"]))
+    if not guild:
+        return
+
+    try:
+        channel = guild.get_channel(int(private_channel_id)) or await guild.fetch_channel(int(private_channel_id))
+        roster_message = await channel.fetch_message(int(roster_message_id))
+        await _refresh_roster_panel(int(session_id), channel, roster_message)
+    except Exception:
+        log.exception("Failed to refresh roster panel for session=%s", session_id)
 
 
 async def _grant_private_channel_access(guild: discord.Guild, session: dict, discord_id: int) -> None:
@@ -987,6 +1014,7 @@ class Jump99kUserControlsView(discord.ui.View):
         repo = JumpsRepository(db.pool)
         ok = await repo.cancel_signup(session_id=self.session_id, discord_id=interaction.user.id)
         await _refresh_99k_panel(interaction.client, self.session_id)
+        await _refresh_roster_if_exists(interaction.client, self.session_id)
         if ok:
             await interaction.response.send_message("You’ve been removed.", ephemeral=True)
         else:
@@ -1067,6 +1095,7 @@ class Jump99kUserControlsView(discord.ui.View):
         if interaction.guild:
             await _grant_private_channel_access(interaction.guild, session, interaction.user.id)
         await _refresh_99k_panel(interaction.client, self.session_id)
+        await _refresh_roster_if_exists(interaction.client, self.session_id)
         try:
             await interaction.response.send_message(
                 "✅ Payment verified for this 99k session.",
@@ -1485,6 +1514,8 @@ async def jump99k_end(interaction: discord.Interaction):
     if not ok:
         await interaction.response.send_message(embed=create_error_embed("Could not close", "Session was already closed."), ephemeral=True)
         return
+
+    await _refresh_roster_if_exists(interaction.client, int(session["id"]))
 
     await _disable_99k_session_messages(interaction.client, session, status_text="Session closed")
     private_channel_id = session.get("private_channel_id")
@@ -1955,6 +1986,7 @@ async def auto_verify_99k_payments():
                     except Exception:
                         pass
                 await _refresh_99k_panel(bot, session_id)
+                await _refresh_roster_if_exists(bot, session_id)
             except (TornAPIRateLimitError, TornAPIError):
                 continue
             except Exception as entry_err:

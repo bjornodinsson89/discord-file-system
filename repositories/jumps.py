@@ -201,6 +201,28 @@ class JumpsRepository(RepositoryBase):
             )
             return [dict(r) for r in rows]
 
+    async def list_roster_signups_with_readiness(self, session_id: int) -> list[dict]:
+        """Roster participants: paid/verified only, excluding cancelled/unpaid reservations."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    s.*, s.participant_discord_id AS discord_id, s.participant_torn_user_id AS torn_user_id,
+                    r.energy, r.energy_max, r.drug_cooldown, r.status_text, r.checked_at
+                FROM jump_99k_signups s
+                LEFT JOIN jump_99k_readiness r
+                    ON r.session_id=s.session_id
+                   AND r.guild_id=s.guild_id
+                   AND r.discord_id=s.participant_discord_id
+                WHERE s.session_id=$1
+                  AND s.payment_verified=TRUE
+                  AND s.status IN ('signed_up', 'completed', 'not_completed')
+                ORDER BY s.signed_up_at ASC
+                """,
+                session_id,
+            )
+            return [dict(r) for r in rows]
+
     async def cancel_expired_unpaid(self) -> int:
         async with self.pool.acquire() as conn:
             result = await conn.execute(
