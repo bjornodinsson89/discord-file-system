@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, Iterable, Optional
 
 
@@ -27,6 +26,12 @@ class GuildSettingsRepository:
         "auto_complete_enabled",
         "reservation_timeout_minutes",
         "default_max_slots",
+        "host_tax_enabled",
+        "host_tax_recipient_torn_id",
+        "host_tax_type",
+        "host_tax_item_id",
+        "host_tax_quantity",
+        "host_tax_cash_amount",
     }
     BIGINT_FIELDS = {
         "announce_channel_id",
@@ -38,6 +43,7 @@ class GuildSettingsRepository:
         "host99k_role_id",
         "insurer_role_id",
         "default_max_slots",
+        "host_tax_cash_amount",
     }
     DEFAULT_KEYS = {
         "guild_id": None,
@@ -58,6 +64,12 @@ class GuildSettingsRepository:
         "auto_complete_enabled": True,
         "reservation_timeout_minutes": 5,
         "default_max_slots": 5,
+        "host_tax_enabled": False,
+        "host_tax_recipient_torn_id": None,
+        "host_tax_type": None,
+        "host_tax_item_id": None,
+        "host_tax_quantity": None,
+        "host_tax_cash_amount": None,
     }
 
     def __init__(self, db_manager):
@@ -104,9 +116,9 @@ class GuildSettingsRepository:
                     normalized[key] = None
                 else:
                     unique_int_ids = sorted(set(normalized_ids))
-                    normalized[key] = json.dumps(unique_int_ids, separators=(",", ":"), ensure_ascii=False)
+                    normalized[key] = unique_int_ids
                 continue
-            if key in {"reservation_timeout_minutes", "default_max_slots"} and value is not None:
+            if key in {"reservation_timeout_minutes", "default_max_slots", "host_tax_recipient_torn_id", "host_tax_item_id", "host_tax_quantity"} and value is not None:
                 normalized[key] = int(value)
                 continue
             normalized[key] = value
