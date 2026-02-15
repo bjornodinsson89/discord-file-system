@@ -116,14 +116,11 @@ async def _fetch_and_upsert_host_readiness_snapshot(
     except Exception:
         return None
 
-    bars = (user_data or {}).get("bars") or {}
-    energy_bar = bars.get("energy") or {}
-    cooldowns = (user_data or {}).get("cooldowns") or {}
-
     try:
-        energy_current = int(energy_bar.get("current") or 0)
-        energy_max = int(energy_bar.get("maximum") or 0)
-        drug_cd = int(cooldowns.get("drug") or 0)
+        energy_current = int((user_data or {}).get("bars", {}).get("energy", {}).get("current", 0) or 0)
+        energy_max = int((user_data or {}).get("bars", {}).get("energy", {}).get("maximum", 0) or 0)
+        drug_cd = int((user_data or {}).get("cooldowns", {}).get("drug", 0) or 0)
+        booster_cd = int((user_data or {}).get("cooldowns", {}).get("booster", 0) or 0)
     except Exception:
         return None
 
@@ -137,6 +134,7 @@ async def _fetch_and_upsert_host_readiness_snapshot(
             energy=energy_current,
             energy_max=energy_max,
             drug_cooldown=drug_cd,
+            booster_cooldown=booster_cd,
             status_text=status_text,
         )
     except Exception:
@@ -148,6 +146,7 @@ async def _fetch_and_upsert_host_readiness_snapshot(
         "energy": energy_current,
         "energy_max": energy_max,
         "drug_cooldown": drug_cd,
+        "booster_cooldown": booster_cd,
         "status_text": status_text,
     }
 
@@ -959,38 +958,43 @@ async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:
         pass
 
 
+def _format_cd_hhmm(seconds: int | None) -> str:
+    total = max(0, int(seconds or 0))
+    hours, rem = divmod(total, 3600)
+    minutes, _ = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}"
+
+
 def _build_roster_embed(session: dict, signups: list[dict]) -> discord.Embed:
-    paid_count = len(signups)
+    host_id = int(session["host_discord_id"])
+    verified_signups = [row for row in signups if int(row.get("discord_id") or 0) != host_id]
 
-    def _readiness_text(row: dict | None, *, fallback: str = "unknown") -> str:
+    def _to_row(number: int, label: str, row: dict | None, status_label: str) -> str:
         row = row or {}
-        energy = row.get("energy")
-        energy_max = row.get("energy_max")
-        cooldown = row.get("drug_cooldown")
-        status_text = row.get("status_text") or fallback
-        energy_text = f"{int(energy)}/{int(energy_max)}" if energy is not None and energy_max is not None else "?/?"
-        cooldown_text = f"{int(cooldown)}s" if cooldown is not None else "?"
-        return f"E {energy_text} • CD {cooldown_text} • {status_text}"
+        energy = int(row.get("energy") or 0)
+        energy_max = int(row.get("energy_max") or 0)
+        drug_cd = _format_cd_hhmm(row.get("drug_cooldown"))
+        booster_cd = _format_cd_hhmm(row.get("booster_cooldown"))
+        return f"{number:>2} | {label:<12} | {energy:>4}/{energy_max:<4} | {drug_cd} | {booster_cd} | {status_label}"
 
-    host_readiness = session.get("host_readiness")
-    host_line = f"👑 Host: <@{int(session['host_discord_id'])}> • {_readiness_text(host_readiness)}"
+    roster_lines = [
+        "# | User         | Energy    | Drug CD | Booster CD | Status",
+        "--+--------------+-----------+---------+------------+---------",
+        _to_row(1, "HOST", session.get("host_readiness"), "HOST"),
+    ]
+    for idx, row in enumerate(verified_signups, start=2):
+        roster_lines.append(_to_row(idx, f"User {int(row['discord_id'])}", row, "VERIFIED"))
 
-    roster_lines: list[str] = [host_line]
-    for row in signups:
-        roster_lines.append(f"✅ <@{int(row['discord_id'])}> • {_readiness_text(row)}")
-
+    roster_block = "```\n" + "\n".join(roster_lines) + "\n```"
     item_label = "Xanax" if str(session.get("price_item", "")).lower() == "xanax" else "eDVD"
     description = (
         f"Session ID: **#{int(session['id'])}**\n"
-        f"Host: <@{int(session['host_discord_id'])}>\n"
+        f"Host ID: **{host_id}**\n"
         f"Payment: **{int(session['price_amount'])}x {item_label}**\n"
-        f"Verified: **{paid_count}**\n"
-        f"Status: **{str(session.get('status') or 'unknown').title()}**\n"
-        "Members appear after payment verification."
+        f"Verified Spots: **{len(verified_signups)}**\n"
+        f"Status: **{str(session.get('status') or 'unknown').title()}**\n\n"
+        f"{roster_block}"
     )
-    if roster_lines:
-        description += "\n\n" + "\n".join(roster_lines)
-
     return discord.Embed(title="Jump Roster", description=description, color=discord.Color.blurple())
 
 
@@ -1000,6 +1004,7 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
     if not session:
         raise ValueError("Session not found")
     signups = await repo.list_roster_signups_with_readiness(session_id)
+    signups = [row for row in signups if int(row.get("discord_id") or 0) != int(session["host_discord_id"])]
     readiness_rows = await repo.list_readiness(session_id)
     host_readiness = next((r for r in readiness_rows if int(r.get("discord_id") or 0) == int(session["host_discord_id"])), None)
     if host_readiness is None:
@@ -1014,16 +1019,16 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
     embed = _build_roster_embed(session, signups)
 
     host_row = session.get("host_readiness") or {}
-    host_energy = f"{int(host_row['energy'])}/{int(host_row['energy_max'])}" if host_row.get("energy") is not None and host_row.get("energy_max") is not None else "?/?"
-    host_cd = f"{int(host_row['drug_cooldown'])}s" if host_row.get("drug_cooldown") is not None else "?"
-    host_status = host_row.get("status_text") or "unknown"
-    roster_text_lines = [f"👑 Host: <@{int(session['host_discord_id'])}> • E {host_energy} • CD {host_cd} • {host_status}"]
-    for row in signups:
-        energy = f"{int(row['energy'])}/{int(row['energy_max'])}" if row.get("energy") is not None and row.get("energy_max") is not None else "?/?"
-        cd = f"{int(row['drug_cooldown'])}s" if row.get("drug_cooldown") is not None else "?"
-        status = row.get("status_text") or "unknown"
-        roster_text_lines.append(f"✅ <@{int(row['discord_id'])}> • E {energy} • CD {cd} • {status}")
-    roster_text = "\n".join(roster_text_lines)
+    roster_text_lines = [
+        "# | User         | Energy    | Drug CD | Booster CD | Status",
+        "--+--------------+-----------+---------+------------+---------",
+        f"{1:>2} | {'HOST':<12} | {int(host_row.get('energy') or 0):>4}/{int(host_row.get('energy_max') or 0):<4} | {_format_cd_hhmm(host_row.get('drug_cooldown'))} | {_format_cd_hhmm(host_row.get('booster_cooldown'))} | HOST",
+    ]
+    for idx, row in enumerate(signups, start=2):
+        roster_text_lines.append(
+            f"{idx:>2} | {'User ' + str(int(row['discord_id'])):<12} | {int(row.get('energy') or 0):>4}/{int(row.get('energy_max') or 0):<4} | {_format_cd_hhmm(row.get('drug_cooldown'))} | {_format_cd_hhmm(row.get('booster_cooldown'))} | VERIFIED"
+        )
+    roster_text = "```\n" + "\n".join(roster_text_lines) + "\n```"
 
     if message is not None:
         await message.edit(embed=embed, view=Jump99kRosterView(session_id))
@@ -1545,13 +1550,24 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 )
 
                 users_repo = UsersRepository(get_pool())
-                await _fetch_and_upsert_host_readiness_snapshot(
+                host_snapshot = await _fetch_and_upsert_host_readiness_snapshot(
                     repo=repo,
                     users_repo=users_repo,
                     session_id=int(session_id),
                     guild_id=int(interaction.guild_id),
                     host_discord_id=int(interaction.user.id),
                 )
+                if host_snapshot is None:
+                    await repo.upsert_readiness_snapshot(
+                        session_id=int(session_id),
+                        guild_id=int(interaction.guild_id),
+                        discord_id=int(interaction.user.id),
+                        energy=0,
+                        energy_max=0,
+                        drug_cooldown=0,
+                        booster_cooldown=0,
+                        status_text="unknown",
+                    )
 
                 if bool(self.settings.get("host_tax_enabled")):
                     host_tax_repo = HostTaxRepository(get_pool())
@@ -1597,7 +1613,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                         title="Jump Roster",
                         description=(
                             f"Session ID: **#{session_id}**\n"
-                            f"Host: {interaction.user.mention}\n"
+                            f"Host ID: {interaction.user.id}\n"
                             f"Payment: **{price_amount}x {'Xanax' if raw_payment_type == 'xanax' else 'eDVD'}**\n"
                             "Members will appear here after payment verification."
                         ),
@@ -2079,16 +2095,12 @@ async def readiness_worker():
                         key_data["encrypted_key"] = key_data["api_key_encrypted"]
 
                     api_key = security.decrypt_api_key(key_data["encrypted_key"])
-                    bars = await torn_api.get_user_bars_v2(api_key)
-                    cooldowns = await torn_api.get_user_cooldowns_v2(api_key)
+                    user_data = await torn_api.get_user_data(api_key)
 
-                    bars_data = (bars or {}).get("bars") or {}
-                    energy_data = bars_data.get("energy") or {}
-                    energy = int(energy_data.get("current", 0))
-                    energy_max = int(energy_data.get("maximum", 0) or energy_data.get("max", 0) or 0)
-
-                    cd_data = (cooldowns or {}).get("cooldowns") or {}
-                    drug_cd = int(cd_data.get("drug", 0))
+                    energy = int((user_data or {}).get("bars", {}).get("energy", {}).get("current", 0) or 0)
+                    energy_max = int((user_data or {}).get("bars", {}).get("energy", {}).get("maximum", 0) or 0)
+                    drug_cd = int((user_data or {}).get("cooldowns", {}).get("drug", 0) or 0)
+                    booster_cd = int((user_data or {}).get("cooldowns", {}).get("booster", 0) or 0)
 
                     status_text = _get_readiness_status(
                         {"energy": energy, "energy_max": energy_max},
@@ -2101,6 +2113,7 @@ async def readiness_worker():
                         energy=energy,
                         energy_max=energy_max,
                         drug_cooldown=drug_cd,
+                        booster_cooldown=booster_cd,
                         status_text=status_text,
                     )
                 except Exception as e:

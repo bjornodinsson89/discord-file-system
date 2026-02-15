@@ -1736,15 +1736,22 @@ async def refresh_session_readiness(session_id: int):
                 torn_api = get_torn_api()
                 
                 user_data = await torn_api.get_user_data(api_key)
-                energy = user_data.get('bars', {}).get('energy', {})
-                drug_cd = user_data.get('cooldowns', {}).get('drug', 0)
-                
-                status = "ready" if energy.get('current', 0) >= config.MIN_ENERGY_REQUIREMENT and drug_cd == 0 else "not_ready"
-                
+                energy_current = int(user_data.get('bars', {}).get('energy', {}).get('current', 0) or 0)
+                energy_max = int(user_data.get('bars', {}).get('energy', {}).get('maximum', 0) or 0)
+                drug_cd = int(user_data.get('cooldowns', {}).get('drug', 0) or 0)
+                booster_cd = int(user_data.get('cooldowns', {}).get('booster', 0) or 0)
+
+                status = "ready" if energy_current >= config.MIN_ENERGY_REQUIREMENT and drug_cd == 0 else "not_ready"
+
                 await JumpsRepository(db.pool).upsert_readiness_snapshot(
-                    session_id, signup['discord_id'],
-                    energy.get('current', 0), energy.get('maximum', 150),
-                    drug_cd, status
+                    session_id=session_id,
+                    guild_id=signup['guild_id'],
+                    discord_id=signup['discord_id'],
+                    energy=energy_current,
+                    energy_max=energy_max,
+                    drug_cooldown=drug_cd,
+                    booster_cooldown=booster_cd,
+                    status_text=status,
                 )
             except Exception as e:
                 log.warning(f"Failed to refresh readiness for {signup['discord_id']}: {e}")

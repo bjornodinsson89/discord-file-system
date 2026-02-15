@@ -70,7 +70,8 @@ class JumpService:
 
             api_key = self.security_manager.decrypt(key_data["encrypted_key"])
             user_data = await self.torn_api.get_user_data(api_key)
-            drug_cd = user_data.get("cooldowns", {}).get("drug", 0)
+            drug_cd = int(user_data.get("cooldowns", {}).get("drug", 0) or 0)
+            booster_cd = int(user_data.get("cooldowns", {}).get("booster", 0) or 0)
             if drug_cd > 0:
                 raise BusinessRuleViolation(f"{drug_cd}s remaining")
 
@@ -95,6 +96,7 @@ class JumpService:
                 energy=current_energy,
                 energy_max=max_energy,
                 drug_cooldown=drug_cd,
+                booster_cooldown=booster_cd,
                 status_text="ready",
             )
             await self.audit_repo.log_audit(

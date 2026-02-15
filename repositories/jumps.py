@@ -197,23 +197,23 @@ class JumpsRepository(RepositoryBase):
             rows = await conn.fetch("SELECT *, participant_discord_id AS discord_id, participant_torn_user_id AS torn_user_id FROM jump_99k_signups WHERE session_id = $1 ORDER BY signed_up_at ASC", session_id)
             return [dict(r) for r in rows]
 
-    async def upsert_readiness_snapshot(self, *, session_id: int, guild_id: int, discord_id: int, energy: int, energy_max: int, drug_cooldown: int, status_text: str) -> None:
+    async def upsert_readiness_snapshot(self, *, session_id: int, guild_id: int, discord_id: int, energy: int, energy_max: int, drug_cooldown: int, booster_cooldown: int | None, status_text: str) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO jump_99k_readiness (session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, status_text, checked_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+                INSERT INTO jump_99k_readiness (session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, booster_cooldown, status_text, checked_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
                 ON CONFLICT (session_id, guild_id, discord_id)
-                DO UPDATE SET energy=EXCLUDED.energy, energy_max=EXCLUDED.energy_max, drug_cooldown=EXCLUDED.drug_cooldown, status_text=EXCLUDED.status_text, checked_at=NOW()
+                DO UPDATE SET energy=EXCLUDED.energy, energy_max=EXCLUDED.energy_max, drug_cooldown=EXCLUDED.drug_cooldown, booster_cooldown=EXCLUDED.booster_cooldown, status_text=EXCLUDED.status_text, checked_at=NOW()
                 """,
-                session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, status_text,
+                session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, booster_cooldown, status_text,
             )
 
     async def list_signups_with_readiness(self, session_id: int) -> list[dict]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT s.*, s.participant_discord_id AS discord_id, s.participant_torn_user_id AS torn_user_id, r.energy, r.energy_max, r.drug_cooldown, r.status_text, r.checked_at
+                SELECT s.*, s.participant_discord_id AS discord_id, s.participant_torn_user_id AS torn_user_id, r.energy, r.energy_max, r.drug_cooldown, r.booster_cooldown, r.status_text, r.checked_at
                 FROM jump_99k_signups s
                 LEFT JOIN jump_99k_readiness r ON r.session_id=s.session_id AND r.guild_id=s.guild_id AND r.discord_id=s.participant_discord_id
                 WHERE s.session_id=$1
@@ -230,7 +230,7 @@ class JumpsRepository(RepositoryBase):
                 """
                 SELECT
                     s.*, s.participant_discord_id AS discord_id, s.participant_torn_user_id AS torn_user_id,
-                    r.energy, r.energy_max, r.drug_cooldown, r.status_text, r.checked_at
+                    r.energy, r.energy_max, r.drug_cooldown, r.booster_cooldown, r.status_text, r.checked_at
                 FROM jump_99k_signups s
                 LEFT JOIN jump_99k_readiness r
                     ON r.session_id=s.session_id
@@ -435,7 +435,10 @@ class JumpsRepository(RepositoryBase):
 
     async def list_readiness(self, session_id: int) -> list[dict]:
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM jump_99k_readiness WHERE session_id = $1", session_id)
+            rows = await conn.fetch(
+                "SELECT session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, booster_cooldown, status_text, checked_at FROM jump_99k_readiness WHERE session_id = $1",
+                session_id,
+            )
             return [dict(r) for r in rows]
 
     async def update_session_status(self, session_id: int, status: str) -> bool:
