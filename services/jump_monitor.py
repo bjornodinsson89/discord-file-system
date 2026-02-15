@@ -7,6 +7,9 @@ from typing import Any
 
 from utils import get_database, get_security_manager, get_torn_api
 from repositories.users import UsersRepository
+from repositories.jumps import JumpsRepository
+from repositories.overdose import OverdoseRepository
+from services.overdose_tracker import OverdoseTracker, OverdoseTrackerError
 
 log = logging.getLogger("happy_jumper.services.jump_monitor")
 
@@ -16,11 +19,12 @@ class JumpMonitor:
 
     def __init__(self, poll_interval_seconds: int = 10):
         self.poll_interval_seconds = poll_interval_seconds
-        self.overdose_poll_interval_seconds = 30
+        self.overdose_poll_interval_seconds = 45
         self._tasks: dict[int, asyncio.Task] = {}
         self._statuses: dict[int, dict[int, dict[str, Any]]] = {}
         self._needs_refresh: set[int] = set()
         self._last_overdose_poll_at: dict[int, datetime] = {}
+        self._last_user_overdose_check: dict[tuple[int, int], datetime] = {}
         self._start_countdown: dict[int, datetime] = {}
 
     async def start(self, jump_id: int) -> None:
@@ -72,6 +76,8 @@ class JumpMonitor:
     async def _poll_once(self, jump_id: int) -> bool:
         db = get_database()
         users_repo = UsersRepository(db.pool)
+        jumps_repo = JumpsRepository(db.pool)
+        od_tracker = OverdoseTracker(users_repo=users_repo, overdose_repo=OverdoseRepository(db.pool), jumps_repo=jumps_repo)
         async with db.pool.acquire() as conn:
             session = await conn.fetchrow("SELECT * FROM happy_jump_sessions WHERE id = $1", jump_id)
             if not session:
@@ -138,23 +144,23 @@ class JumpMonitor:
                 last_od_check_at = existing_status.get("last_od_check_at")
 
                 if purchase_verified_at and should_poll_overdose:
-                    purchase_ts = int(purchase_verified_at.timestamp())
-                    xanax_log = await torn_api.get_user_log_v2(api_key, 2291, limit=1)
-                    ecstasy_log = await torn_api.get_user_log_v2(api_key, 2211, limit=1)
-                    xanax_entries = xanax_log.get("log") if isinstance(xanax_log, dict) else None
-                    ecstasy_entries = ecstasy_log.get("log") if isinstance(ecstasy_log, dict) else None
-
-                    if isinstance(xanax_entries, list) and xanax_entries:
-                        od_xanax = int((xanax_entries[0] or {}).get("timestamp") or 0) >= purchase_ts
-                    else:
-                        od_xanax = False
-
-                    if isinstance(ecstasy_entries, list) and ecstasy_entries:
-                        od_ecstasy = int((ecstasy_entries[0] or {}).get("timestamp") or 0) >= purchase_ts
-                    else:
-                        od_ecstasy = False
-
-                    last_od_check_at = now_utc
+                    key = (jump_id, discord_id)
+                    prev = self._last_user_overdose_check.get(key)
+                    if prev is None or (now_utc - prev).total_seconds() >= 60:
+                        try:
+                            event = await od_tracker.check_user_since(
+                                guild_id=int(session["guild_id"]),
+                                discord_id=discord_id,
+                                since_ts=int(purchase_verified_at.timestamp()),
+                                session_id=int(jump_id),
+                            )
+                            if event:
+                                od_xanax = event.get("event_type") == "xanax_overdose"
+                                od_ecstasy = event.get("event_type") == "ecstasy_overdose"
+                        except OverdoseTrackerError as exc:
+                            log.warning("jump_monitor OD tracker failed jump_id=%s discord_id=%s err=%s", jump_id, discord_id, exc)
+                        self._last_user_overdose_check[key] = now_utc
+                        last_od_check_at = now_utc
                 elif not purchase_verified_at:
                     od_xanax = False
                     od_ecstasy = False

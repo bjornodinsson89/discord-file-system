@@ -93,12 +93,13 @@ class InsuranceRepository(RepositoryBase):
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT coverage_id, policy_id, user_discord_id, user_torn_id, 
-                       xanax_covered, premium_paid, premium_type, payout_amount,
-                       status, expires_at, activated_at, created_at, reserved_until,
-                       last_log_timestamp
-                FROM insurance_coverage 
-                WHERE status = 'active'
+                SELECT c.coverage_id, c.policy_id, c.user_discord_id, c.user_torn_id,
+                       c.xanax_covered, c.premium_paid, c.premium_type, c.payout_amount,
+                       c.status, c.expires_at, c.activated_at, c.created_at, c.reserved_until,
+                       c.last_log_timestamp, p.guild_id
+                FROM insurance_coverage c
+                JOIN insurance_policies p ON p.policy_id = c.policy_id
+                WHERE c.status = 'active'
                 """
             )
             return [dict(row) for row in rows]
