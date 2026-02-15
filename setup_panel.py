@@ -271,16 +271,23 @@ class SetupPanelView(OwnerView):
         embed = create_info_embed("Setup Panel", "Configure channels, roles, templates, toggles, and tests from one place.")
         embed.add_field(name="Channels", value=(
             f"Jump: {channel_name('jump_99k_channel_id')}\n"
+            f"Jump announcement: {channel_name('jump_announce_channel_id')}\n"
             f"Raffle announcement: {channel_name('raffle_announcement_channel_id')}\n"
             f"Raffle purchase panel: {channel_name('raffle_purchase_channel_id')}\n"
             f"Insurance: {channel_name('insurance_channel_id')}\n"
             f"Applications: {channel_name('applications_channel_id')}\n"
             f"Welcome: {channel_name('welcome_channel_id')}"
         ), inline=False)
+        jump_ping_mentions = []
+        for rid in (s.get("jump_ping_role_ids") or []):
+            role = guild.get_role(int(rid)) if str(rid).isdigit() else None
+            if role:
+                jump_ping_mentions.append(role.mention)
         embed.add_field(name="Roles", value=(
             f"Admin roles: {', '.join(admin_mentions) if admin_mentions else 'Not set'}\n"
             f"Host role: {role_name(s.get('host99k_role_id'))}\n"
-            f"Insurer role: {role_name(s.get('insurer_role_id'))}"
+            f"Insurer role: {role_name(s.get('insurer_role_id'))}\n"
+            f"Jump ping roles: {', '.join(jump_ping_mentions) if jump_ping_mentions else 'None selected'}"
         ), inline=False)
         host_tax_type = str(s.get('host_tax_type') or '').strip().lower()
         host_tax_enabled = bool(s.get('host_tax_enabled'))
@@ -486,6 +493,12 @@ class ChannelSelect(discord.ui.ChannelSelect):
 
     async def callback(self, interaction: discord.Interaction):
         try:
+            log.info(
+                "Setup channel select callback guild_id=%s key=%s selected_count=%s",
+                interaction.guild_id,
+                self.key,
+                len(self.values),
+            )
             if not self.values:
                 await self.panel.save_changes(interaction, {self.key: None})
                 return
@@ -498,11 +511,15 @@ class ChannelsView(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_item(ChannelSelect(self.panel, "jump_99k_channel_id", "Set jump (99k) channel"))
+        self.add_item(ChannelSelect(self.panel, "jump_announce_channel_id", "Set jump announcement channel"))
         self.add_item(ChannelSelect(self.panel, "raffle_announcement_channel_id", "Set raffle announcement channel"))
 
     @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
     async def next_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
+            log.info("Setup channels next callback guild_id=%s user_id=%s", interaction.guild_id, interaction.user.id)
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
             await _send_or_edit(
                 interaction,
                 create_info_embed("Channels", "Use buttons below to pick each channel."),
@@ -529,6 +546,9 @@ class ChannelsViewPage2(BackView):
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
+            log.info("Setup channels back callback guild_id=%s user_id=%s", interaction.guild_id, interaction.user.id)
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
             await _send_or_edit(
                 interaction,
                 create_info_embed("Channels", "Use buttons below to pick each channel."),
@@ -545,14 +565,21 @@ class ChannelsViewPage2(BackView):
 
 
 class AdminRoleSelect(discord.ui.RoleSelect):
-    def __init__(self, panel: SetupPanelView):
-        super().__init__(placeholder="Set admin role(s)", min_values=0, max_values=10)
+    def __init__(self, panel: SetupPanelView, setting_key: str = "admin_role_ids", placeholder: str = "Set admin role(s)"):
+        super().__init__(placeholder=placeholder, min_values=0, max_values=10)
         self.panel = panel
+        self.setting_key = setting_key
 
     async def callback(self, interaction: discord.Interaction):
         try:
+            log.info(
+                "Setup role selection guild_id=%s key=%s selected_count=%s",
+                interaction.guild_id,
+                self.setting_key,
+                len(self.values),
+            )
             role_ids = [int(role.id) for role in self.values if not role.is_default()]
-            await self.panel.save_changes(interaction, {"admin_role_ids": role_ids})
+            await self.panel.save_changes(interaction, {self.setting_key: role_ids})
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
@@ -565,6 +592,12 @@ class SingleRoleSelect(discord.ui.RoleSelect):
 
     async def callback(self, interaction: discord.Interaction):
         try:
+            log.info(
+                "Setup single role selection guild_id=%s key=%s selected_count=%s",
+                interaction.guild_id,
+                self.key,
+                len(self.values),
+            )
             role = self.values[0]
             if role.is_default():
                 await interaction.response.send_message(embed=create_error_embed("Invalid role", "Cannot use @everyone for this setting."), ephemeral=True)
@@ -580,6 +613,7 @@ class RolesView(BackView):
         self.add_item(AdminRoleSelect(self.panel))
         self.add_item(SingleRoleSelect(self.panel, "host99k_role_id", "Set host role"))
         self.add_item(SingleRoleSelect(self.panel, "insurer_role_id", "Set insurer role"))
+        self.add_item(AdminRoleSelect(self.panel, setting_key="jump_ping_role_ids", placeholder="Set jump ping role(s)"))
 
     @discord.ui.button(label="Edit my insurer profile", style=discord.ButtonStyle.secondary)
     async def insurer_profile(self, interaction: discord.Interaction, _: discord.ui.Button):

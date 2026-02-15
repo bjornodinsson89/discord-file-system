@@ -895,6 +895,57 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int) -> 
     )
 
 
+def build_99k_jump_created_announcement_content(session: dict) -> str:
+    session_id = int(session["id"])
+    tct_start_text = str(session.get("scheduled_start_text") or "Not set")
+    max_slots = int(session.get("max_slots") or 0)
+    return (
+        f"🔔✨ **99k Happy Jump Alert** ✨\n"
+        f"A new session is now open: **Session #{session_id}**\n"
+        f"🕒 Start time: {tct_start_text}\n"
+        f"🪑 Available spots: **{max_slots}/{max_slots} available spots**"
+    )
+
+
+async def post_99k_jump_created_announcement(
+    bot: commands.Bot,
+    guild_id: int,
+    session: dict,
+    settings: dict,
+) -> None:
+    channel_id = int(settings.get("jump_announce_channel_id") or 0)
+    if channel_id <= 0:
+        return
+
+    guild = bot.get_guild(int(guild_id))
+    channel = guild.get_channel(channel_id) if guild else bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await (guild.fetch_channel(channel_id) if guild else bot.fetch_channel(channel_id))
+        except Exception:
+            log.exception(
+                "99k jump announcement channel fetch failed guild_id=%s channel_id=%s session_id=%s",
+                guild_id,
+                channel_id,
+                session.get("id"),
+            )
+            return
+
+    try:
+        role_ids = GuildSettingsRepository._normalize_role_id_list(settings.get("jump_ping_role_ids"))
+        role_mentions = " ".join(f"<@&{rid}>" for rid in role_ids)
+        content = build_99k_jump_created_announcement_content(session)
+        prefix = f"{role_mentions}\n" if role_mentions else ""
+        await channel.send(f"{prefix}{content}")
+    except Exception:
+        log.exception(
+            "99k jump announcement post failed guild_id=%s channel_id=%s session_id=%s",
+            guild_id,
+            getattr(channel, "id", channel_id),
+            session.get("id"),
+        )
+
+
 async def upsert_99k_announcement(
     bot: commands.Bot,
     repo: JumpsRepository,
@@ -1650,6 +1701,15 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 session_id=int(session_id),
                 channel_id=target_channel_id,
             )
+            if not self.session:
+                created_session = await repo.get_session(int(session_id))
+                if created_session:
+                    await post_99k_jump_created_announcement(
+                        bot=interaction.client,
+                        guild_id=int(interaction.guild_id),
+                        session=created_session,
+                        settings=self.settings,
+                    )
             verb = "updated" if self.session else "created"
             await interaction.response.send_message(embed=create_success_embed("99k session saved", f"Session #{session_id} {verb}."), ephemeral=True)
         except Exception as e:
