@@ -96,6 +96,62 @@ async def release_advisory_lock(pool, lock_key: int) -> bool:
         return bool(await conn.fetchval("SELECT pg_advisory_unlock($1)", lock_key))
 
 
+async def _fetch_and_upsert_host_readiness_snapshot(
+    *,
+    repo: JumpsRepository,
+    users_repo: UsersRepository,
+    session_id: int,
+    guild_id: int,
+    host_discord_id: int,
+) -> dict | None:
+    """Fetch host readiness from Torn and upsert snapshot if an API key is available."""
+    key_row = await users_repo.get_user_api_key(host_discord_id)
+    encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
+    if not encrypted_key:
+        return None
+
+    try:
+        api_key = get_security_manager().decrypt_api_key(encrypted_key)
+        user_data = await get_torn_api().get_user_data(api_key)
+    except Exception:
+        return None
+
+    bars = (user_data or {}).get("bars") or {}
+    energy_bar = bars.get("energy") or {}
+    cooldowns = (user_data or {}).get("cooldowns") or {}
+
+    try:
+        energy_current = int(energy_bar.get("current") or 0)
+        energy_max = int(energy_bar.get("maximum") or 0)
+        drug_cd = int(cooldowns.get("drug") or 0)
+    except Exception:
+        return None
+
+    status_text = "ready" if energy_current >= 1000 and drug_cd == 0 else "not ready"
+
+    try:
+        await repo.upsert_readiness_snapshot(
+            session_id=session_id,
+            guild_id=guild_id,
+            discord_id=host_discord_id,
+            energy=energy_current,
+            energy_max=energy_max,
+            drug_cooldown=drug_cd,
+            status_text=status_text,
+        )
+    except Exception:
+        return None
+    return {
+        "session_id": session_id,
+        "guild_id": guild_id,
+        "discord_id": host_discord_id,
+        "energy": energy_current,
+        "energy_max": energy_max,
+        "drug_cooldown": drug_cd,
+        "status_text": status_text,
+    }
+
+
 
 async def ensure_admin(interaction: discord.Interaction) -> bool:
     """Ensure invoking user can manage guild bot configuration/actions."""
@@ -946,6 +1002,14 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
     signups = await repo.list_roster_signups_with_readiness(session_id)
     readiness_rows = await repo.list_readiness(session_id)
     host_readiness = next((r for r in readiness_rows if int(r.get("discord_id") or 0) == int(session["host_discord_id"])), None)
+    if host_readiness is None:
+        host_readiness = await _fetch_and_upsert_host_readiness_snapshot(
+            repo=repo,
+            users_repo=UsersRepository(get_pool()),
+            session_id=int(session_id),
+            guild_id=int(session["guild_id"]),
+            host_discord_id=int(session["host_discord_id"]),
+        )
     session["host_readiness"] = host_readiness
     embed = _build_roster_embed(session, signups)
 
@@ -1478,6 +1542,15 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     price_amount=price_amount,
                     announce_channel_id=announce_channel_id,
                     announce_message_id=None,
+                )
+
+                users_repo = UsersRepository(get_pool())
+                await _fetch_and_upsert_host_readiness_snapshot(
+                    repo=repo,
+                    users_repo=users_repo,
+                    session_id=int(session_id),
+                    guild_id=int(interaction.guild_id),
+                    host_discord_id=int(interaction.user.id),
                 )
 
                 if bool(self.settings.get("host_tax_enabled")):
