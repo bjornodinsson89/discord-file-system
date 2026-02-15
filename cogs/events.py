@@ -54,9 +54,35 @@ from repositories.audit import AuditRepository
 from repositories.jumps import JumpsRepository
 from repositories.users import UsersRepository
 from repositories.torn_items import TornItemsRepository, norm_name
+from repositories.host_tax import HostTaxRepository
 from services.payment_receipts import PaymentReceiptService
 
 log = logging.getLogger("happy_jumper")
+
+
+HOST_TAX_VERIFY_WINDOW_MINUTES = 30
+
+
+def _host_tax_requirement_text(settings: dict) -> str:
+    tax_type = str(settings.get("host_tax_type") or "").strip().lower()
+    if tax_type == "cash":
+        amount = int(settings.get("host_tax_cash_amount") or 0)
+        return f"${amount:,} Torn cash"
+    item_id = int(settings.get("host_tax_item_id") or 0)
+    qty = int(settings.get("host_tax_quantity") or 0)
+    if item_id == 206:
+        return f"{qty}x Xanax 💊"
+    if item_id == 366:
+        return f"{qty}x Erotic DvD 📀"
+    return "a configured tax payment"
+
+
+def _extract_torn_log_id(entry: dict) -> str:
+    for key in ("id", "log_id", "log", "logid"):
+        value = entry.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return "unknown"
 
 
 async def try_advisory_lock(pool, lock_key: int) -> bool:
@@ -700,8 +726,6 @@ async def refresh_item_icons(interaction: discord.Interaction):
         "erotic dvd": "Erotic DVD",
         "ecstacy": "Ecstasy",
         "xtc": "Ecstasy",
-        "dp": "Donator Pack",
-        "donator pack": "Donator Pack",
     }
     aliases: dict[str, int] = {}
     for alias, target_name in alias_targets.items():
@@ -756,8 +780,6 @@ def _format_99k_price_item_label(price_item: str | None) -> str:
         return "Xanax 💊"
     if normalized in {"erotic dvd", "erotic_dvd", "edvd"}:
         return "Erotic DvD 📀"
-    if normalized in {"donator pack", "donator_pack", "dp"}:
-        return "Donator Pack 🎁"
     return str(price_item or "Unknown")
 
 
@@ -1128,6 +1150,101 @@ class Jump99kSignupView(discord.ui.View):
             view=Jump99kUserControlsView(self.session_id),
             ephemeral=True,
         )
+class HostTaxGateView(discord.ui.View):
+    def __init__(self, *, guild_id: int, host_discord_id: int):
+        super().__init__(timeout=300)
+        self.guild_id = int(guild_id)
+        self.host_discord_id = int(host_discord_id)
+
+    async def _open_start_modal(self, interaction: discord.Interaction, settings: dict):
+        await interaction.response.send_modal(Jump99kSessionModal(settings, session=None))
+
+    @discord.ui.button(label="✅ Verify Tax Payment", style=discord.ButtonStyle.success)
+    async def verify_tax(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if int(interaction.user.id) != self.host_discord_id:
+            await interaction.response.send_message("Only the host can verify this payment.", ephemeral=True)
+            return
+
+        db = get_database()
+        settings = await GuildSettingsRepository(db).get_or_create(self.guild_id)
+        if not bool(settings.get("host_tax_enabled")):
+            await self._open_start_modal(interaction, settings)
+            return
+
+        recipient = int(settings.get("host_tax_recipient_torn_id") or 0)
+        tax_type = str(settings.get("host_tax_type") or "").strip().lower()
+        item_id = int(settings.get("host_tax_item_id") or 0) if settings.get("host_tax_item_id") is not None else None
+        quantity = int(settings.get("host_tax_quantity") or 0) if settings.get("host_tax_quantity") is not None else None
+        cash_amount = int(settings.get("host_tax_cash_amount") or 0) if settings.get("host_tax_cash_amount") is not None else None
+        if recipient < 1 or tax_type not in {"item", "cash"}:
+            await interaction.response.send_message("Host tax is enabled but not configured correctly. Ask an admin to update /setup.", ephemeral=True)
+            return
+
+        since_dt = datetime.now(timezone.utc) - timedelta(minutes=HOST_TAX_VERIFY_WINDOW_MINUTES)
+        host_tax_repo = HostTaxRepository(get_pool())
+        recent = await host_tax_repo.get_recent_receipt(
+            guild_id=self.guild_id,
+            discord_user_id=self.host_discord_id,
+            recipient_torn_id=recipient,
+            tax_type=tax_type,
+            item_id=item_id if tax_type == "item" else None,
+            quantity=quantity if tax_type == "item" else None,
+            cash_amount=cash_amount if tax_type == "cash" else None,
+            since_dt=since_dt,
+        )
+        if recent:
+            await self._open_start_modal(interaction, settings)
+            return
+
+        users_repo = UsersRepository(get_pool())
+        key_row = await users_repo.get_user_api_key(self.host_discord_id)
+        encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
+        if not encrypted_key:
+            await interaction.response.send_message("Link your Torn API key before starting a 99k jump.", ephemeral=True)
+            return
+
+        try:
+            api_key = get_security_manager().decrypt_api_key(encrypted_key)
+            entry = await get_torn_api().verify_host_tax_payment(
+                api_key=api_key,
+                recipient_torn_id=recipient,
+                tax_type=tax_type,
+                item_id=item_id if tax_type == "item" else None,
+                quantity=quantity if tax_type == "item" else None,
+                cash_amount=cash_amount if tax_type == "cash" else None,
+                since_timestamp=int(since_dt.timestamp()),
+            )
+        except TornAPIError:
+            await interaction.response.send_message("Torn API may be down. Try again in a minute.", ephemeral=True)
+            return
+        except Exception:
+            log.exception("Host tax verification failed guild_id=%s user_id=%s", self.guild_id, self.host_discord_id)
+            await interaction.response.send_message("Torn API may be down. Try again in a minute.", ephemeral=True)
+            return
+
+        if not entry:
+            await interaction.response.send_message("Not found yet. Send it, then try again.", ephemeral=True)
+            return
+
+        paid_at = datetime.fromtimestamp(int(entry.get("timestamp") or int(datetime.now(timezone.utc).timestamp())), tz=timezone.utc)
+        await host_tax_repo.create_receipt(
+            guild_id=self.guild_id,
+            discord_user_id=self.host_discord_id,
+            recipient_torn_id=recipient,
+            tax_type=tax_type,
+            item_id=item_id if tax_type == "item" else None,
+            quantity=quantity if tax_type == "item" else None,
+            cash_amount=cash_amount if tax_type == "cash" else None,
+            torn_log_id=_extract_torn_log_id(entry),
+            paid_at=paid_at,
+        )
+        await self._open_start_modal(interaction, settings)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_message("Cancelled.", ephemeral=True)
+
+
 class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
     payment_type = discord.ui.TextInput(
         label="Xanax 💊 | Erotic DvD 📀",
@@ -1207,6 +1324,27 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     announce_message_id=None,
                 )
 
+                if bool(self.settings.get("host_tax_enabled")):
+                    host_tax_repo = HostTaxRepository(get_pool())
+                    tax_type = str(self.settings.get("host_tax_type") or "").strip().lower()
+                    recipient = int(self.settings.get("host_tax_recipient_torn_id") or 0)
+                    item_id = int(self.settings.get("host_tax_item_id") or 0) if self.settings.get("host_tax_item_id") is not None else None
+                    quantity = int(self.settings.get("host_tax_quantity") or 0) if self.settings.get("host_tax_quantity") is not None else None
+                    cash_amount = int(self.settings.get("host_tax_cash_amount") or 0) if self.settings.get("host_tax_cash_amount") is not None else None
+                    if recipient > 0 and tax_type in {"item", "cash"}:
+                        since_dt = datetime.now(timezone.utc) - timedelta(minutes=HOST_TAX_VERIFY_WINDOW_MINUTES)
+                        await host_tax_repo.attach_latest_receipt_to_session(
+                            guild_id=int(interaction.guild_id),
+                            discord_user_id=int(interaction.user.id),
+                            session_id=int(session_id),
+                            recipient_torn_id=recipient,
+                            tax_type=tax_type,
+                            item_id=item_id if tax_type == "item" else None,
+                            quantity=quantity if tax_type == "item" else None,
+                            cash_amount=cash_amount if tax_type == "cash" else None,
+                            since_dt=since_dt,
+                        )
+
                 if interaction.guild and isinstance(interaction.user, discord.Member):
                     overwrites = {
                         interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -1284,7 +1422,20 @@ async def jump99k_start(interaction: discord.Interaction):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
     if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
         return
-    await interaction.response.send_modal(Jump99kSessionModal(settings, session=None))
+
+    if not bool(settings.get("host_tax_enabled")):
+        await interaction.response.send_modal(Jump99kSessionModal(settings, session=None))
+        return
+
+    recipient = int(settings.get("host_tax_recipient_torn_id") or 0)
+    requirement = _host_tax_requirement_text(settings)
+    content = (
+        "**Tax Required**\n"
+        f"Recipient Torn ID: **{recipient or 'Not set'}**\n"
+        f"Required payment: **{requirement}**\n\n"
+        "Send it in Torn, then press **Verify Tax Payment**."
+    )
+    await interaction.response.send_message(content, view=HostTaxGateView(guild_id=interaction.guild_id, host_discord_id=interaction.user.id), ephemeral=True)
 
 
 @jump99k_group.command(name="edit", description="Edit an open 99k jump session")

@@ -282,12 +282,26 @@ class SetupPanelView(OwnerView):
             f"Host role: {role_name(s.get('host99k_role_id'))}\n"
             f"Insurer role: {role_name(s.get('insurer_role_id'))}"
         ), inline=False)
+        host_tax_type = str(s.get('host_tax_type') or '').strip().lower()
+        host_tax_enabled = bool(s.get('host_tax_enabled'))
+        if host_tax_type == 'cash':
+            host_tax_label = f"Torn Cash (${int(s.get('host_tax_cash_amount') or 0):,})" if s.get('host_tax_cash_amount') else 'Torn Cash (not set)'
+        elif host_tax_type == 'item' and int(s.get('host_tax_item_id') or 0) == 206:
+            host_tax_label = f"Xanax 💊 x{int(s.get('host_tax_quantity') or 0)}" if s.get('host_tax_quantity') else 'Xanax 💊 (quantity not set)'
+        elif host_tax_type == 'item' and int(s.get('host_tax_item_id') or 0) == 366:
+            host_tax_label = f"Erotic DvD 📀 x{int(s.get('host_tax_quantity') or 0)}" if s.get('host_tax_quantity') else 'Erotic DvD 📀 (quantity not set)'
+        else:
+            host_tax_label = 'Not configured'
+
         embed.add_field(name="Feature Toggles", value=(
             f"Welcome enabled: `{bool(s.get('welcome_enabled'))}`\n"
             f"Raffle announcement enabled: `{bool(s.get('raffle_announce_enabled', True))}`\n"
             f"Auto complete: `{bool(s.get('auto_complete_enabled', True))}`\n"
             f"Reservation timeout: `{s.get('reservation_timeout_minutes', 5)}` minutes\n"
-            f"Default 99k max slots: `{s.get('default_max_slots', 5)}`"
+            f"Default 99k max slots: `{s.get('default_max_slots', 5)}`\n"
+            f"99k Host Tax enabled: `{host_tax_enabled}`\n"
+            f"99k Host Tax recipient Torn ID: `{s.get('host_tax_recipient_torn_id') or 'Not set'}`\n"
+            f"99k Host Tax payment: `{host_tax_label}`"
         ), inline=False)
         embed.add_field(name="Session placeholders", value=SUPPORTED_PLACEHOLDERS, inline=False)
         embed.add_field(name="Welcome placeholders", value=WELCOME_SUPPORTED_PLACEHOLDERS, inline=False)
@@ -416,6 +430,13 @@ class SetupPanelView(OwnerView):
     async def feature_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             await _send_or_edit(interaction, create_info_embed("Feature Toggles", "Change runtime behavior toggles."), FeatureTogglesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="99k Host Tax", style=discord.ButtonStyle.primary)
+    async def host_tax_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await _send_or_edit(interaction, create_info_embed("99k Host Tax", "Optional fee required for a host to start a jump."), HostTaxView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
@@ -678,6 +699,103 @@ class FeatureTogglesView(BackView):
     async def default_slots(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             await interaction.response.send_modal(DefaultMaxSlotsModal(self.panel, self.settings.get("default_max_slots")))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+
+class HostTaxConfigModal(discord.ui.Modal):
+    recipient_torn_id = discord.ui.TextInput(label="Recipient Torn ID", required=False, max_length=12, placeholder="4051872")
+    amount_value = discord.ui.TextInput(label="Amount", required=False, max_length=20, placeholder="1")
+
+    def __init__(self, panel: "SetupPanelView", payment_option: str):
+        super().__init__(title="99k Host Tax")
+        self.panel = panel
+        self.payment_option = payment_option
+        self.amount_value.label = "Cash amount" if payment_option == "cash" else "Item quantity"
+        self.amount_value.placeholder = "5000000" if payment_option == "cash" else "1"
+        self.recipient_torn_id.default = str(panel.settings.get("host_tax_recipient_torn_id") or "")
+        if payment_option == "cash":
+            self.amount_value.default = str(panel.settings.get("host_tax_cash_amount") or "")
+        else:
+            self.amount_value.default = str(panel.settings.get("host_tax_quantity") or "")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        enabled = bool(self.panel.settings.get("host_tax_enabled"))
+        recipient_raw = str(self.recipient_torn_id.value or "").strip()
+        amount_raw = str(self.amount_value.value or "").strip()
+
+        if not enabled:
+            await self.panel.save_changes(
+                interaction,
+                {
+                    "host_tax_recipient_torn_id": int(recipient_raw) if recipient_raw.isdigit() else None,
+                    "host_tax_cash_amount": int(amount_raw) if amount_raw.isdigit() else None,
+                    "host_tax_quantity": int(amount_raw) if amount_raw.isdigit() else None,
+                },
+            )
+            return
+
+        if not recipient_raw.isdigit():
+            await interaction.response.send_message(embed=create_error_embed("Invalid recipient", "Recipient Torn ID must be numbers only (example: 4051872)."), ephemeral=True)
+            return
+        if not amount_raw.isdigit() or int(amount_raw) < 1:
+            example = "5000000" if self.payment_option == "cash" else "1"
+            await interaction.response.send_message(embed=create_error_embed("Invalid amount", f"Enter a number of at least 1 (example: {example})."), ephemeral=True)
+            return
+
+        amount = int(amount_raw)
+        updates = {
+            "host_tax_recipient_torn_id": int(recipient_raw),
+        }
+        if self.payment_option == "cash":
+            updates.update(
+                {
+                    "host_tax_type": "cash",
+                    "host_tax_item_id": None,
+                    "host_tax_quantity": None,
+                    "host_tax_cash_amount": amount,
+                }
+            )
+        else:
+            item_id = 206 if self.payment_option == "xanax" else 366
+            updates.update(
+                {
+                    "host_tax_type": "item",
+                    "host_tax_item_id": item_id,
+                    "host_tax_quantity": amount,
+                    "host_tax_cash_amount": None,
+                }
+            )
+        await self.panel.save_changes(interaction, updates)
+
+
+class HostTaxView(BackView):
+    @discord.ui.button(label="Toggle Enabled", style=discord.ButtonStyle.primary)
+    async def toggle_enabled(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            next_enabled = not bool(self.settings.get("host_tax_enabled"))
+            await self.panel.save_changes(interaction, {"host_tax_enabled": next_enabled})
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="Set Torn Cash", style=discord.ButtonStyle.secondary)
+    async def set_cash(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await interaction.response.send_modal(HostTaxConfigModal(self.panel, "cash"))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="Set Xanax 💊", style=discord.ButtonStyle.secondary)
+    async def set_xanax(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await interaction.response.send_modal(HostTaxConfigModal(self.panel, "xanax"))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="Set Erotic DvD 📀", style=discord.ButtonStyle.secondary)
+    async def set_dvd(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await interaction.response.send_modal(HostTaxConfigModal(self.panel, "dvd"))
         except Exception as error:
             await _respond_callback_error(interaction, error)
 

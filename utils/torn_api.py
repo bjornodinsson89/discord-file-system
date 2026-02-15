@@ -262,6 +262,62 @@ class TornAPIClient:
             amount=dvd_count,
             since_timestamp=since_timestamp,
         )
+
+
+    @staticmethod
+    def _extract_log_id(entry: Dict) -> str:
+        for key in ("id", "log_id", "log", "logid"):
+            value = entry.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return "unknown"
+
+    async def verify_host_tax_payment(
+        self,
+        *,
+        api_key: str,
+        recipient_torn_id: int,
+        tax_type: str,
+        item_id: Optional[int] = None,
+        quantity: Optional[int] = None,
+        cash_amount: Optional[int] = None,
+        since_timestamp: Optional[int] = None,
+    ) -> Optional[Dict]:
+        logs = await self.get_user_logs(api_key, limit=50)
+        for entry in logs:
+            timestamp = int(entry.get("timestamp") or 0)
+            if since_timestamp and timestamp < since_timestamp:
+                continue
+
+            data = entry.get("data") or {}
+            details = entry.get("details") or {}
+            receiver = int(data.get("receiver") or 0)
+            if receiver != int(recipient_torn_id):
+                continue
+
+            if tax_type == "item":
+                if int(details.get("id") or 0) != 4102:
+                    continue
+                wanted_item = int(item_id or 0)
+                wanted_qty = int(quantity or 0)
+                if wanted_item not in (206, 366) or wanted_qty < 1:
+                    continue
+                qty = sum(
+                    int(it.get("qty") or 0)
+                    for it in (data.get("items") or [])
+                    if int(it.get("id") or 0) == wanted_item
+                )
+                if qty == wanted_qty:
+                    return entry
+
+            if tax_type == "cash":
+                wanted_cash = int(cash_amount or 0)
+                if wanted_cash < 1:
+                    continue
+                sent_cash = int(data.get("money") or data.get("cash") or data.get("amount") or 0)
+                if sent_cash == wanted_cash:
+                    return entry
+        return None
     
     async def get_user_bars(self, api_key: str) -> Dict:
         """Get user's energy, nerve, happy, life bars."""
