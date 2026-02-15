@@ -11,6 +11,7 @@ class GuildSettingsRepository:
     ALLOWED_FIELDS = {
         "announce_channel_id",
         "jump_99k_channel_id",
+        "jump_announce_channel_id",
         "raffle_channel_id",
         "raffle_announcement_channel_id",
         "raffle_purchase_channel_id",
@@ -19,6 +20,7 @@ class GuildSettingsRepository:
         "applications_channel_id",
         "welcome_channel_id",
         "admin_role_ids",
+        "jump_ping_role_ids",
         "host99k_role_id",
         "insurer_role_id",
         "welcome_enabled",
@@ -36,6 +38,7 @@ class GuildSettingsRepository:
     BIGINT_FIELDS = {
         "announce_channel_id",
         "jump_99k_channel_id",
+        "jump_announce_channel_id",
         "raffle_channel_id",
         "insurance_channel_id",
         "applications_channel_id",
@@ -49,6 +52,7 @@ class GuildSettingsRepository:
         "guild_id": None,
         "announce_channel_id": None,
         "jump_99k_channel_id": None,
+        "jump_announce_channel_id": None,
         "raffle_channel_id": None,
         "insurance_channel_id": None,
         "applications_channel_id": None,
@@ -56,6 +60,7 @@ class GuildSettingsRepository:
         "raffle_purchase_channel_id": None,
         "welcome_channel_id": None,
         "admin_role_ids": None,
+        "jump_ping_role_ids": [],
         "host99k_role_id": None,
         "insurer_role_id": None,
         "welcome_enabled": False,
@@ -100,6 +105,25 @@ class GuildSettingsRepository:
             return None
         return int(value)
 
+    @staticmethod
+    def _normalize_role_id_list(role_ids: Optional[Iterable[Any]]) -> list[int]:
+        if role_ids is None:
+            return []
+
+        if isinstance(role_ids, (int, str)):
+            candidate_values: Iterable[Any] = [role_ids]
+        elif isinstance(role_ids, dict):
+            candidate_values = role_ids.values()
+        else:
+            candidate_values = role_ids
+
+        normalized: list[int] = []
+        for role_id in candidate_values:
+            if role_id is None:
+                continue
+            normalized.append(int(role_id))
+        return sorted(set(normalized))
+
     def _normalize_updates(self, fields: Dict[str, Any]) -> Dict[str, Any]:
         unknown = set(fields) - self.ALLOWED_FIELDS
         if unknown:
@@ -118,6 +142,9 @@ class GuildSettingsRepository:
                     unique_int_ids = sorted(set(normalized_ids))
                     normalized[key] = unique_int_ids
                 continue
+            if key == "jump_ping_role_ids":
+                normalized[key] = self._normalize_role_id_list(value)
+                continue
             if key in {"reservation_timeout_minutes", "default_max_slots", "host_tax_recipient_torn_id", "host_tax_item_id", "host_tax_quantity"} and value is not None:
                 normalized[key] = int(value)
                 continue
@@ -129,6 +156,7 @@ class GuildSettingsRepository:
         data["guild_id"] = guild_id
         if row:
             data.update(row)
+        data["jump_ping_role_ids"] = self._normalize_role_id_list(data.get("jump_ping_role_ids"))
         return data
 
 
@@ -138,7 +166,7 @@ class GuildSettingsRepository:
         async with self._db.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO guild_settings (guild_id)
+                INSERT INTO public.guild_settings (guild_id)
                 VALUES ($1)
                 ON CONFLICT (guild_id) DO UPDATE SET guild_id = EXCLUDED.guild_id
                 RETURNING *
@@ -154,14 +182,14 @@ class GuildSettingsRepository:
             sets = []
             values = []
             for i, (key, value) in enumerate(fields.items(), 1):
-                if key == "admin_role_ids":
+                if key in {"admin_role_ids", "jump_ping_role_ids"}:
                     sets.append(f"{key} = ${i}::jsonb")
                 else:
                     sets.append(f"{key} = ${i}")
                 values.append(value)
             values.append(guild_id)
             row = await conn.fetchrow(
-                f"UPDATE guild_settings SET {', '.join(sets)} WHERE guild_id = ${len(values)} RETURNING *",
+                f"UPDATE public.guild_settings SET {', '.join(sets)} WHERE guild_id = ${len(values)} RETURNING *",
                 *values,
             )
             return dict(row) if row else None

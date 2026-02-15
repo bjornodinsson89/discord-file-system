@@ -18,13 +18,23 @@ def test_repo_casts_bigints_and_admin_roles():
     normalized = repo._normalize_updates(
         {
             "announce_channel_id": "123",
+            "jump_announce_channel_id": "456",
             "admin_role_ids": ["1", 2],
+            "jump_ping_role_ids": ["11", 12, "11"],
             "reservation_timeout_minutes": "10",
         }
     )
     assert normalized["announce_channel_id"] == 123
+    assert normalized["jump_announce_channel_id"] == 456
     assert normalized["admin_role_ids"] == [1, 2]
+    assert normalized["jump_ping_role_ids"] == [11, 12]
     assert normalized["reservation_timeout_minutes"] == 10
+
+
+def test_repo_merge_defaults_normalizes_jump_ping_roles():
+    repo = GuildSettingsRepository(_DB())
+    merged = repo._merge_defaults({"jump_ping_role_ids": None}, guild_id=55)
+    assert merged["jump_ping_role_ids"] == []
 
 
 def test_repo_get_guild_settings_alias_calls_get_settings(monkeypatch):
