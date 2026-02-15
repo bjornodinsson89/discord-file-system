@@ -5,6 +5,7 @@ import discord
 from discord import ui
 import logging
 import json
+import re
 from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta, timezone
 from utils import get_database, get_security_manager, get_torn_api
@@ -20,6 +21,7 @@ from repositories.users import UsersRepository
 from repositories.audit import AuditRepository
 from repositories.raffles import RafflesRepository
 from repositories.insurance import InsuranceRepository
+from repositories.applications import ApplicationsRepository
 from utils.guild_settings_repository import GuildSettingsRepository
 from services.raffle_payment import RafflePaymentService
 import config
@@ -399,7 +401,7 @@ class InsuranceOfferView(ui.View):
         self.session_id = session_id
         self.buyer_discord_id = buyer_discord_id
 
-    @ui.button(label="Yes, request insurance", style=discord.ButtonStyle.success, emoji=config.EMOJI_SHIELD)
+    @ui.button(label="Request Insurance", style=discord.ButtonStyle.success, emoji=config.EMOJI_SHIELD)
     async def request_insurance(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         if interaction.user.id != self.buyer_discord_id:
@@ -407,9 +409,16 @@ class InsuranceOfferView(ui.View):
             return
 
         db = get_database()
-        session = await JumpsRepository(db.pool).get_session(self.session_id)
-        if not session:
-            await interaction.followup.send(embed=create_error_embed("Session Not Found"), ephemeral=True)
+        repo = JumpsRepository(db.pool)
+        session = await repo.get_session(self.session_id)
+        if not session or str(session.get("status", "")).lower() != "open":
+            for child in self.children:
+                child.disabled = True
+            try:
+                await interaction.edit_original_response(view=self)
+            except Exception:
+                pass
+            await interaction.followup.send(embed=create_error_embed("Session Closed", "This jump session is no longer open."), ephemeral=True)
             return
 
         settings = await GuildSettingsRepository(db).get_or_create(interaction.guild.id)
@@ -422,16 +431,197 @@ class InsuranceOfferView(ui.View):
             )
             return
 
-        message = await channel.send(
-            content=f"<@{interaction.user.id}> has requested 99k jump insurance for Jump #{self.session_id}",
-            view=InsuranceClaimView(self.session_id, interaction.user.id),
+        content = f"{interaction.user.display_name} has requested insurance for their 99k Happy jump (Session #{self.session_id})."
+        message = await channel.send(content=content, view=InsuranceClaimView(self.session_id, interaction.user.id))
+        request_id = await repo.create_insurance_request(
+            session_id=self.session_id,
+            participant_discord_id=interaction.user.id,
+            channel_id=int(channel.id),
+            message_id=int(message.id),
         )
-        await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="jump_insurance_requested", target_type="session", target_id=self.session_id, payload={"insurance_message_id": message.id}, guild_id=interaction.guild_id, source="views/components.py:RequestInsuranceButton.request")
-        await interaction.followup.send(embed=create_success_embed("Insurance Requested", "Your request was posted in the insurance channel."), ephemeral=True)
+        await AuditRepository(db.pool).log_audit(
+            actor_discord_id=interaction.user.id,
+            action="jump_insurance_requested",
+            target_type="session",
+            target_id=self.session_id,
+            payload={"insurance_message_id": message.id, "request_id": request_id},
+            guild_id=interaction.guild_id,
+            source="views/components.py:InsuranceOfferView.request_insurance",
+        )
+        await interaction.followup.send(embed=create_success_embed("Insurance Requested", "Your request was sent to insurers."), ephemeral=True)
 
-    @ui.button(label="No thanks", style=discord.ButtonStyle.secondary)
+    @ui.button(label="No Thanks", style=discord.ButtonStyle.secondary)
     async def no_thanks(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_message(embed=create_info_embed("No Problem", "You can request insurance later if needed."), ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.edit_original_response(view=self)
+        except Exception:
+            pass
+        await interaction.followup.send(embed=create_info_embed("No Problem", "You can request insurance later if needed."), ephemeral=True)
+
+
+class InsuranceDecisionDMView(ui.View):
+    def __init__(self, *, session_id: int, request_id: int, requester_discord_id: int, insurer_discord_id: int, insurer_torn_id: int, fee_text: str):
+        super().__init__(timeout=None)
+        self.session_id = session_id
+        self.request_id = request_id
+        self.requester_discord_id = requester_discord_id
+        self.insurer_discord_id = insurer_discord_id
+        self.insurer_torn_id = insurer_torn_id
+        self.fee_text = fee_text
+
+    async def _disable_on_message(self, interaction: discord.Interaction):
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+    @ui.button(label="Accept Insurance", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user.id != self.requester_discord_id:
+            await interaction.followup.send("This action is only for the requester.", ephemeral=True)
+            return
+
+        db = get_database()
+        repo = JumpsRepository(db.pool)
+        req = await repo.get_insurance_request(self.request_id)
+        if not req or req.get("status") != "claimed":
+            await self._disable_on_message(interaction)
+            await interaction.followup.send("This insurance request is no longer claimable.", ephemeral=True)
+            return
+
+        await repo.set_insurance_request_status(request_id=self.request_id, status="accepted")
+        await self._disable_on_message(interaction)
+
+        insurer_key = await UsersRepository(db.pool).get_user_api_key(self.insurer_discord_id)
+        insurer_torn_id = int((insurer_key or {}).get("torn_user_id") or self.insurer_torn_id or 0)
+        insurer_name = f"Insurer {self.insurer_discord_id}"
+        try:
+            insurer_user = interaction.client.get_user(self.insurer_discord_id) or await interaction.client.fetch_user(self.insurer_discord_id)
+            if insurer_user:
+                insurer_name = insurer_user.display_name
+        except Exception:
+            pass
+
+        await interaction.followup.send(
+            f"Send {self.fee_text} to {insurer_name} [{insurer_torn_id}] in Torn, then press Verify Payment.",
+            view=InsuranceFeeVerifyView(
+                session_id=self.session_id,
+                request_id=self.request_id,
+                requester_discord_id=self.requester_discord_id,
+                insurer_discord_id=self.insurer_discord_id,
+                insurer_torn_id=insurer_torn_id,
+                fee_text=self.fee_text,
+            ),
+            ephemeral=True,
+        )
+
+    @ui.button(label="Deny", style=discord.ButtonStyle.danger)
+    async def deny(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user.id != self.requester_discord_id:
+            await interaction.followup.send("This action is only for the requester.", ephemeral=True)
+            return
+
+        db = get_database()
+        repo = JumpsRepository(db.pool)
+        await repo.set_insurance_request_status(request_id=self.request_id, status="declined")
+        await self._disable_on_message(interaction)
+
+        try:
+            insurer = interaction.client.get_user(self.insurer_discord_id) or await interaction.client.fetch_user(self.insurer_discord_id)
+            await insurer.send("User declined.")
+        except Exception:
+            pass
+        await interaction.followup.send("Insurance request denied.", ephemeral=True)
+
+
+class InsuranceFeeVerifyView(ui.View):
+    def __init__(self, *, session_id: int, request_id: int, requester_discord_id: int, insurer_discord_id: int, insurer_torn_id: int, fee_text: str):
+        super().__init__(timeout=None)
+        self.session_id = session_id
+        self.request_id = request_id
+        self.requester_discord_id = requester_discord_id
+        self.insurer_discord_id = insurer_discord_id
+        self.insurer_torn_id = insurer_torn_id
+        self.fee_text = fee_text
+
+    @ui.button(label="Verify Payment", style=discord.ButtonStyle.success)
+    async def verify_payment(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if interaction.user.id != self.requester_discord_id:
+            await interaction.followup.send("This action is only for the requester.", ephemeral=True)
+            return
+
+        db = get_database()
+        repo = JumpsRepository(db.pool)
+        req = await repo.get_insurance_request(self.request_id)
+        if not req or req.get("status") not in {"accepted", "completed"}:
+            for child in self.children:
+                child.disabled = True
+            try:
+                await interaction.message.edit(view=self)
+            except Exception:
+                pass
+            await interaction.followup.send("This insurance request is no longer active.", ephemeral=True)
+            return
+        if req.get("status") == "completed":
+            await interaction.followup.send("Insurance is already active ✅", ephemeral=True)
+            return
+
+        key_row = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
+        encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
+        if not encrypted_key:
+            await interaction.followup.send("Link your Torn API key first.", ephemeral=True)
+            return
+
+        profile = await ApplicationsRepository(db.pool).get_insurer_profile(guild_id=interaction.guild_id, user_id=self.insurer_discord_id)
+        pricing_text = str((profile or {}).get("pricing_text") or "")
+        qty = 1
+        if pricing_text:
+            m = re.search(r"(\d+)", pricing_text)
+            if m:
+                qty = int(m.group(1))
+
+        security = get_security_manager()
+        api_key = security.decrypt_api_key(encrypted_key)
+        since_ts = int((req.get("accepted_at") or datetime.now(timezone.utc)).timestamp())
+
+        try:
+            payment = await get_torn_api().verify_item_payment(
+                api_key=api_key,
+                recipient_torn_id=int(self.insurer_torn_id),
+                required_item_id=config.XANAX_ITEM_ID,
+                amount=max(1, qty),
+                since_timestamp=since_ts,
+            )
+        except TornAPIError:
+            await interaction.followup.send("Torn API may be down; try again shortly.", ephemeral=True)
+            return
+
+        if not payment:
+            await interaction.followup.send("Payment not found yet. Please try again shortly.", ephemeral=True)
+            return
+
+        await repo.mark_insurance_payment_verified(request_id=self.request_id)
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+        await interaction.followup.send("Insurance active ✅", ephemeral=True)
+        try:
+            insurer = interaction.client.get_user(self.insurer_discord_id) or await interaction.client.fetch_user(self.insurer_discord_id)
+            await insurer.send(f"Insurance purchased by {interaction.user.display_name} ✅")
+        except Exception:
+            pass
 
 
 class InsuranceClaimView(ui.View):
@@ -440,10 +630,11 @@ class InsuranceClaimView(ui.View):
         self.session_id = session_id
         self.requester_discord_id = requester_discord_id
 
-    @ui.button(label="Claim", style=discord.ButtonStyle.primary, emoji="🛡️")
+    @ui.button(label="Claim", style=discord.ButtonStyle.success, emoji="🛡️")
     async def claim(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message(embed=create_error_embed("Server Member Required"), ephemeral=True)
+            await interaction.followup.send(embed=create_error_embed("Server Member Required"), ephemeral=True)
             return
 
         db = get_database()
@@ -452,32 +643,86 @@ class InsuranceClaimView(ui.View):
         has_insurer_role = bool(insurer_role_id and any(role.id == int(insurer_role_id) for role in interaction.user.roles))
 
         if not has_insurer_role and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(
-                embed=create_error_embed("Not Authorized", "Only verified insurers can claim this request."),
-                ephemeral=True,
-            )
+            await interaction.followup.send(embed=create_error_embed("Not Authorized", "Only HJ_Insureance_provider can claim this request."), ephemeral=True)
             return
 
-        await interaction.response.edit_message(
-            content=(
-                f"<@{self.requester_discord_id}> has requested 99k jump insurance for Jump #{self.session_id}\n"
-                f"✅ Claimed by <@{interaction.user.id}>"
-            ),
-            view=None,
+        repo = JumpsRepository(db.pool)
+        req = await repo.get_insurance_request_for_signup(session_id=self.session_id, participant_discord_id=self.requester_discord_id)
+        if not req or req.get("status") != "requested":
+            for child in self.children:
+                child.disabled = True
+            try:
+                await interaction.message.edit(view=self)
+            except Exception:
+                pass
+            await interaction.followup.send("This request is no longer available.", ephemeral=True)
+            return
+
+        ok = await repo.claim_insurance_request(request_id=int(req["id"]), claimed_by_discord_id=interaction.user.id)
+        if not ok:
+            for child in self.children:
+                child.disabled = True
+            try:
+                await interaction.message.edit(view=self)
+            except Exception:
+                pass
+            await interaction.followup.send("Already claimed.", ephemeral=True)
+            return
+
+        for child in self.children:
+            if isinstance(child, ui.Button):
+                child.disabled = True
+                if child.label == "Claim":
+                    child.label = f"Claimed by {interaction.user.display_name[:40]}"
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+        profile = await ApplicationsRepository(db.pool).get_insurer_profile(guild_id=interaction.guild_id, user_id=interaction.user.id)
+        fee_text = str((profile or {}).get("pricing_text") or "provider fee")
+        coverage_window = str((profile or {}).get("coverage_duration_minutes") or "?")
+
+        embed = create_info_embed(
+            "Insurance Info Card",
+            f"Provider: {interaction.user.display_name}\nCoverage window: {coverage_window} minutes\nFee: {fee_text}\nOD detection is automated while in a jump session.",
         )
+        image_url = (profile or {}).get("image_url")
+        if image_url:
+            embed.set_image(url=image_url)
+
+        insurer_torn_id = 0
+        insurer_key = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
+        if insurer_key and insurer_key.get("torn_user_id"):
+            insurer_torn_id = int(insurer_key["torn_user_id"])
 
         try:
             requester = interaction.guild.get_member(self.requester_discord_id) or await interaction.guild.fetch_member(self.requester_discord_id)
-            await requester.send(f"Your 99k jump insurance request for Jump #{self.session_id} was claimed by {interaction.user.mention}.")
+            await requester.send(
+                embed=embed,
+                view=InsuranceDecisionDMView(
+                    session_id=self.session_id,
+                    request_id=int(req["id"]),
+                    requester_discord_id=self.requester_discord_id,
+                    insurer_discord_id=interaction.user.id,
+                    insurer_torn_id=insurer_torn_id,
+                    fee_text=fee_text,
+                ),
+            )
         except Exception:
-            pass
+            await interaction.followup.send("Claimed, but could not DM requester.", ephemeral=True)
+            return
 
-        try:
-            await interaction.user.send(f"You claimed insurance request for Jump #{self.session_id} from <@{self.requester_discord_id}>.")
-        except Exception:
-            pass
-
-        await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="jump_insurance_claimed", target_type="session", target_id=self.session_id, payload={"requester_discord_id": self.requester_discord_id}, guild_id=interaction.guild_id, source="views/components.py:ClaimInsuranceButton.claim")
+        await interaction.followup.send("Insurance request claimed and card sent to requester.", ephemeral=True)
+        await AuditRepository(db.pool).log_audit(
+            actor_discord_id=interaction.user.id,
+            action="jump_insurance_claimed",
+            target_type="session",
+            target_id=self.session_id,
+            payload={"requester_discord_id": self.requester_discord_id},
+            guild_id=interaction.guild_id,
+            source="views/components.py:InsuranceClaimView.claim",
+        )
 
 
 class StartJumpCustomDelayModal(ui.Modal, title="Custom Jump Delay"):
@@ -1144,7 +1389,7 @@ class ClaimManageView(ui.View):
             api_key = security.decrypt(key_data['encrypted_key'])
             torn_api = get_torn_api()
 
-            candidate_logs = await torn_api.get_user_logs(api_key, limit=5)
+            candidate_logs = await torn_api.get_user_log(api_key, limit=5)
 
             resolver = ItemResolver(db.pool)
             resolved_payout_items = []
@@ -1384,11 +1629,11 @@ class SetupView(ui.View):
     
     @ui.button(label="Set Host Role", style=discord.ButtonStyle.primary, emoji="👥")
     async def host_role(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_message("Select host role:", view=RoleSelectView("host99k_role_id"), ephemeral=True)
+        await interaction.response.send_message("Select 99k_Jump_Host role:", view=RoleSelectView("host99k_role_id"), ephemeral=True)
     
     @ui.button(label="Set Insurer Role", style=discord.ButtonStyle.primary, emoji=config.EMOJI_SHIELD)
     async def insurer_role(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_message("Select insurer role:", view=RoleSelectView("insurer_role_id"), ephemeral=True)
+        await interaction.response.send_message("Select HJ_Insureance_provider role:", view=RoleSelectView("insurer_role_id"), ephemeral=True)
     
     @ui.button(label="Set 99k Channel", style=discord.ButtonStyle.secondary, emoji="#️⃣")
     async def jump_channel(self, interaction: discord.Interaction, button: ui.Button):

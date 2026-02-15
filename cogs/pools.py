@@ -195,7 +195,7 @@ class PoolVerifyPaymentView(discord.ui.View):
 
         try:
             api_key = get_security_manager().decrypt(buyer_key["encrypted_key"])
-            logs = await get_torn_api().get_user_logs(api_key, limit=10)
+            logs = await get_torn_api().get_user_log(api_key, limit=10)
         except TornAPIRateLimitError:
             await interaction.followup.send("❌ Torn API is rate-limited. Try again in a moment.", ephemeral=True)
             return

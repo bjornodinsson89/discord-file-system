@@ -8,6 +8,15 @@ from .base import RepositoryBase
 
 
 class ApplicationsRepository(RepositoryBase):
+    async def get_insurer_profile(self, *, guild_id: int, user_id: int) -> Optional[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM insurer_profiles WHERE guild_id = $1 AND user_id = $2",
+                guild_id,
+                user_id,
+            )
+            return dict(row) if row else None
+
     async def get_open_application(self, *, guild_id: int, user_id: int, app_type: str) -> Optional[dict[str, Any]]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(

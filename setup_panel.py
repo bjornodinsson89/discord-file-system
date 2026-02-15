@@ -285,8 +285,8 @@ class SetupPanelView(OwnerView):
                 jump_ping_mentions.append(role.mention)
         embed.add_field(name="Roles", value=(
             f"Admin roles: {', '.join(admin_mentions) if admin_mentions else 'Not set'}\n"
-            f"Host role: {role_name(s.get('host99k_role_id'))}\n"
-            f"Insurer role: {role_name(s.get('insurer_role_id'))}\n"
+            f"99k_Jump_Host role: {role_name(s.get('host99k_role_id'))}\n"
+            f"HJ_Insureance_provider role: {role_name(s.get('insurer_role_id'))}\n"
             f"Jump ping roles: {', '.join(jump_ping_mentions) if jump_ping_mentions else 'None selected'}"
         ), inline=False)
         host_tax_type = str(s.get('host_tax_type') or '').strip().lower()
@@ -611,8 +611,8 @@ class RolesView(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_item(AdminRoleSelect(self.panel))
-        self.add_item(SingleRoleSelect(self.panel, "host99k_role_id", "Set host role"))
-        self.add_item(SingleRoleSelect(self.panel, "insurer_role_id", "Set insurer role"))
+        self.add_item(SingleRoleSelect(self.panel, "host99k_role_id", "Set 99k_Jump_Host role"))
+        self.add_item(SingleRoleSelect(self.panel, "insurer_role_id", "Set HJ_Insureance_provider role"))
         self.add_item(AdminRoleSelect(self.panel, setting_key="jump_ping_role_ids", placeholder="Set jump ping role(s)"))
 
     @discord.ui.button(label="Edit my insurer profile", style=discord.ButtonStyle.secondary)
