@@ -112,6 +112,7 @@ class RafflePrizeConfirmDMView(discord.ui.View):
 
     @discord.ui.button(label="✅ Confirm Prize Sent", style=discord.ButtonStyle.success, custom_id="raffle:confirm_prize_sent")
     async def confirm_prize_sent(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         repo = RafflesRepository(get_pool())
         raffle = await repo.get_raffle(self.raffle_id)
         if not raffle or _raffle_closed_status(raffle) and str(raffle.get("status")) != "completed":
@@ -120,7 +121,7 @@ class RafflePrizeConfirmDMView(discord.ui.View):
                 await interaction.message.edit(view=self)
             except Exception:
                 pass
-            await interaction.response.send_message("This is closed.", ephemeral=True)
+            await interaction.followup.send("This is closed.", ephemeral=True)
             return
 
         guild = interaction.client.get_guild(int(raffle["guild_id"]))
@@ -132,7 +133,7 @@ class RafflePrizeConfirmDMView(discord.ui.View):
             allowed = interaction.user.guild_permissions.administrator or bool({r.id for r in interaction.user.roles} & admin_roles)
 
         if not allowed:
-            await interaction.response.send_message("Only the raffle creator or admins can confirm this.", ephemeral=True)
+            await interaction.followup.send("Only the raffle creator or admins can confirm this.", ephemeral=True)
             return
 
         if raffle.get("prize_sent_at"):
@@ -141,11 +142,11 @@ class RafflePrizeConfirmDMView(discord.ui.View):
                 await interaction.message.edit(view=self)
             except Exception:
                 pass
-            await interaction.response.send_message("Prize already confirmed.", ephemeral=True)
+            await interaction.followup.send("Prize already confirmed.", ephemeral=True)
             return
 
         if str(raffle.get("status")) != "completed":
-            await interaction.response.send_message("This is closed.", ephemeral=True)
+            await interaction.followup.send("This is closed.", ephemeral=True)
             return
 
         users_repo = UsersRepository(get_pool())
@@ -156,7 +157,7 @@ class RafflePrizeConfirmDMView(discord.ui.View):
         encrypted_key = (creator_key or {}).get("encrypted_key") or (creator_key or {}).get("api_key_encrypted")
         creator_torn_id = _safe_int((creator_key or {}).get("torn_user_id")) or _safe_int(raffle.get("creator_torn_id"))
         if not encrypted_key or not creator_torn_id:
-            await interaction.response.send_message("Creator Torn API key is missing; cannot auto-verify.", ephemeral=True)
+            await interaction.followup.send("Creator Torn API key is missing; cannot auto-verify.", ephemeral=True)
             return
 
         winner_torn_id = _safe_int(raffle.get("winner_torn_id"))
@@ -164,12 +165,12 @@ class RafflePrizeConfirmDMView(discord.ui.View):
             winner_key = await users_repo.get_user_api_key(int(raffle.get("winner_discord_id") or 0))
             winner_torn_id = _safe_int((winner_key or {}).get("torn_user_id"))
         if not winner_torn_id:
-            await interaction.response.send_message("Winner has not linked Torn ID; cannot auto-verify.", ephemeral=True)
+            await interaction.followup.send("Winner has not linked Torn ID; cannot auto-verify.", ephemeral=True)
             return
 
         instructions, expected_items, verifiable = await _build_prize_instruction_text(repo, raffle)
         if not verifiable:
-            await interaction.response.send_message(instructions, ephemeral=True)
+            await interaction.followup.send(instructions, ephemeral=True)
             return
 
         completion_ts = raffle.get("drawn_at") or raffle.get("tickets_fully_sold_at") or raffle.get("created_at")
@@ -179,7 +180,7 @@ class RafflePrizeConfirmDMView(discord.ui.View):
         try:
             logs = await torn_api.get_item_send_receive_logs(api_key, limit=50)
         except TornAPIError as exc:
-            await interaction.response.send_message(f"Verification failed: {exc}", ephemeral=True)
+            await interaction.followup.send(f"Verification failed: {exc}", ephemeral=True)
             return
 
         expected_map = {int(i["item_id"]): int(i["qty"]) for i in expected_items}
@@ -205,7 +206,7 @@ class RafflePrizeConfirmDMView(discord.ui.View):
                 break
 
         if not matched:
-            await interaction.response.send_message("No matching send log found yet. Send the prize, then try again.", ephemeral=True)
+            await interaction.followup.send("No matching send log found yet. Send the prize, then try again.", ephemeral=True)
             return
 
         await repo.set_prize_sent(self.raffle_id)
@@ -257,7 +258,7 @@ class RafflePrizeConfirmDMView(discord.ui.View):
         embed.add_field(name="Status", value=f"Confirmed ✅\nMatched Log ID: {log_id}", inline=False)
         _disable_view(self)
         await interaction.message.edit(embed=embed, view=self)
-        await interaction.response.send_message("✅ Prize send verified and logged.", ephemeral=True)
+        await interaction.followup.send("✅ Prize send verified and logged.", ephemeral=True)
 
 def _raffle_remaining_tickets(raffle: dict, entries: list[dict]) -> int:
     reserved_or_paid = sum(int(e.get("num_tickets", 0)) for e in entries)
@@ -752,11 +753,12 @@ class RafflePurchasePanelView(discord.ui.View):
         self.children[0].callback = self.buy_tickets
         self.children[1].callback = self.my_tickets
     async def buy_tickets(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             repo = RafflesRepository(get_pool())
             raffle = await repo.get_raffle(self.raffle_id)
             if not raffle:
-                await interaction.response.send_message("❌ Raffle not found", ephemeral=True)
+                await interaction.followup.send("❌ Raffle not found", ephemeral=True)
                 return
             if _raffle_closed_status(raffle):
                 _disable_view(self)
@@ -764,17 +766,17 @@ class RafflePurchasePanelView(discord.ui.View):
                     await interaction.message.edit(view=self)
                 except Exception:
                     pass
-                await interaction.response.send_message("This is closed.", ephemeral=True)
+                await interaction.followup.send("This is closed.", ephemeral=True)
                 return
             entries = await repo.get_raffle_entries(self.raffle_id)
             max_buy = _max_buy_now(raffle, entries, interaction.user.id)
             if max_buy <= 0:
-                await interaction.response.send_message("❌ No tickets available.", ephemeral=True)
+                await interaction.followup.send("❌ No tickets available.", ephemeral=True)
                 return
             if max_buy <= 1:
                 await _reserve_raffle_tickets(interaction, repo, self.raffle_id, 1)
                 return
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 content=f"Choose quantity (1-{max_buy})",
                 view=RaffleQuantityPickerView(self.raffle_id, repo, max_buy),
                 ephemeral=True,
@@ -784,17 +786,11 @@ class RafflePurchasePanelView(discord.ui.View):
             if "Database not initialized" in str(e):
                 message = "⚠️ Bot is starting up, try again in a few seconds."
             log.exception("Runtime error handling buy_tickets for raffle %s: %s", self.raffle_id, e)
-            if interaction.response.is_done():
-                await interaction.followup.send(message, ephemeral=True)
-            else:
-                await interaction.response.send_message(message, ephemeral=True)
+            await interaction.followup.send(message, ephemeral=True)
         except Exception as e:
             log.exception("Error handling buy_tickets for raffle %s: %s", self.raffle_id, e)
             message = "❌ Something went wrong opening ticket purchase. Please try again."
-            if interaction.response.is_done():
-                await interaction.followup.send(message, ephemeral=True)
-            else:
-                await interaction.response.send_message(message, ephemeral=True)
+            await interaction.followup.send(message, ephemeral=True)
     async def my_tickets(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
