@@ -31,6 +31,36 @@ def test_repo_casts_bigints_and_admin_roles():
     assert normalized["reservation_timeout_minutes"] == 10
 
 
+def test_repo_normalizes_string_json_and_csv_role_lists():
+    repo = GuildSettingsRepository(_DB())
+
+    normalized = repo._normalize_updates(
+        {
+            "admin_role_ids": '["1", "2"]',
+            "jump_ping_role_ids": "123,456",
+        }
+    )
+
+    assert normalized["admin_role_ids"] == [1, 2]
+    assert normalized["jump_ping_role_ids"] == [123, 456]
+
+
+def test_repo_normalizes_jsonb_string_array_from_db_row():
+    repo = GuildSettingsRepository(_DB())
+
+    merged = repo._merge_defaults({"jump_ping_role_ids": "[]", "admin_role_ids": "[123,456]"}, guild_id=99)
+
+    assert merged["jump_ping_role_ids"] == []
+    assert merged["admin_role_ids"] == [123, 456]
+
+
+def test_repo_bad_role_list_values_return_empty_list_and_do_not_raise():
+    repo = GuildSettingsRepository(_DB())
+
+    assert repo._normalize_role_id_list("[1,\"oops\"]", guild_id=123) == []
+    assert repo._normalize_admin_role_ids("[1,\"oops\"]", guild_id=123) == []
+
+
 def test_repo_merge_defaults_normalizes_jump_ping_roles():
     repo = GuildSettingsRepository(_DB())
     merged = repo._merge_defaults({"jump_ping_role_ids": None}, guild_id=55)
