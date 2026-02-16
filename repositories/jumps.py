@@ -77,21 +77,36 @@ class JumpsRepository(RepositoryBase):
             )
             return dict(row)
 
-    async def create_session(self, *, guild_id: int, host_discord_id: int, title: str, scheduled_start_text: Optional[str], max_slots: int, notes: Optional[str], price_item: str, price_amount: int, announce_channel_id: Optional[int], announce_message_id: Optional[int]) -> int:
+    async def create_session(
+        self,
+        *,
+        guild_id: int,
+        host_discord_id: int,
+        title: str,
+        scheduled_start_text: Optional[str],
+        start_time: Optional[datetime],
+        max_slots: int,
+        notes: Optional[str],
+        price_item: str,
+        price_amount: int,
+        announce_channel_id: Optional[int],
+        announce_message_id: Optional[int],
+    ) -> int:
         if price_amount is None or int(price_amount) < 1:
             raise ValueError("price_amount must be a positive integer (>= 1).")
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO jump_99k_sessions (
-                    guild_id, host_discord_id, title, scheduled_start_text, max_slots, notes, price_item, price_amount, status, announce_channel_id, announce_message_id
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',$9,$10)
+                    guild_id, host_discord_id, title, scheduled_start_text, start_time, max_slots, notes, price_item, price_amount, status, announce_channel_id, announce_message_id
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'open',$10,$11)
                 RETURNING id
                 """,
                 guild_id,
                 host_discord_id,
                 title,
                 scheduled_start_text,
+                start_time,
                 max_slots,
                 notes,
                 price_item,
@@ -101,20 +116,32 @@ class JumpsRepository(RepositoryBase):
             )
             return int(row["id"])
 
-    async def update_session(self, session_id: int, *, title: str, scheduled_start_text: Optional[str], max_slots: int, notes: Optional[str], price_item: str, price_amount: int) -> bool:
+    async def update_session(
+        self,
+        session_id: int,
+        *,
+        title: str,
+        scheduled_start_text: Optional[str],
+        start_time: Optional[datetime],
+        max_slots: int,
+        notes: Optional[str],
+        price_item: str,
+        price_amount: int,
+    ) -> bool:
         if price_amount is None or int(price_amount) < 1:
             raise ValueError("price_amount must be a positive integer (>= 1).")
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE jump_99k_sessions
-                SET title=$2, scheduled_start_text=$3, max_slots=$4, notes=$5, price_item=$6, price_amount=$7
+                SET title=$2, scheduled_start_text=$3, start_time=$4, max_slots=$5, notes=$6, price_item=$7, price_amount=$8
                 WHERE id=$1 AND status='open'
                 RETURNING id
                 """,
                 session_id,
                 title,
                 scheduled_start_text,
+                start_time,
                 max_slots,
                 notes,
                 price_item,
