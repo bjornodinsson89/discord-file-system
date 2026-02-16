@@ -284,9 +284,21 @@ class ApplicationsCog(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
-        seed_message = await parent.send(f"Application Thread for {interaction.user.mention}")
         thread_name = f"{'99k-host' if app_type == HOST_APP_TYPE else 'insurer'}-app-{interaction.user.name}"[:90]
-        thread = await seed_message.create_thread(name=thread_name, type=discord.ChannelType.private_thread)
+        try:
+            thread = await parent.create_thread(
+                name=thread_name,
+                type=discord.ChannelType.private_thread,
+                invitable=False,
+                reason=f"Application thread for {interaction.user} ({interaction.user.id})",
+            )
+        except Exception:
+            log.exception("Failed creating application thread guild_id=%s user_id=%s app_type=%s", interaction.guild.id, interaction.user.id, app_type)
+            await interaction.followup.send("Could not start your application because thread creation failed. Please try again or contact an admin.", ephemeral=True)
+            return
+
+        await parent.send(f"Application Thread for {interaction.user.mention}: {thread.mention}")
+        await thread.send(f"Application Thread for {interaction.user.mention}")
 
         try:
             await thread.add_user(interaction.user)
