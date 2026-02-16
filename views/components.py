@@ -8,7 +8,7 @@ import json
 import re
 from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta, timezone
-from utils import get_database, get_security_manager, get_torn_api
+from utils import get_database, get_security_manager, get_torn_api, require_api_key, has_api_key
 from utils.discord_channels import resolve_guild_channel
 from utils.torn_api import TornAPIError, TornAPIPermissionError
 from utils.item_resolver import ItemResolver
@@ -171,7 +171,7 @@ class JumpSessionView(ui.View):
         except NotFound:
             await interaction.followup.send(embed=create_error_embed("Session Unavailable"), ephemeral=True)
         except InvalidInput:
-            await interaction.followup.send(embed=create_error_embed("API Key Required", "Use `/set_api_key`"), ephemeral=True)
+            await require_api_key(interaction, get_database(), "join a 99k jump")
         except BusinessRuleViolation as exc:
             text = str(exc)
             if text.endswith("remaining"):
@@ -311,7 +311,7 @@ class JumpSessionView(ui.View):
             get_jump_monitor().mark_needs_refresh(self.session_id)
             await interaction.followup.send(embed=create_success_embed("Added to Waitlist", f"Position: #{position}"), ephemeral=True)
         except InvalidInput:
-            await interaction.followup.send(embed=create_error_embed("API Key Required"), ephemeral=True)
+            await require_api_key(interaction, get_database(), "join the waitlist")
         except AlreadyExists as exc:
             await interaction.followup.send(embed=create_warning_embed("Already on Waitlist", str(exc)), ephemeral=True)
         except Exception as e:
@@ -339,8 +339,10 @@ class PaymentView(ui.View):
                 return
             
             session = await JumpsRepository(db.pool).get_session(self.session_id)
+            if not await require_api_key(interaction, db, "verify your payment"):
+                return
             key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
-            
+
             security = get_security_manager()
             api_key = security.decrypt(key_data['encrypted_key'])
             torn_api = get_torn_api()
@@ -574,11 +576,10 @@ class InsuranceFeeVerifyView(ui.View):
             await interaction.followup.send("Insurance is already active ✅", ephemeral=True)
             return
 
+        if not await require_api_key(interaction, db, "verify insurance payment"):
+            return
         key_row = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
         encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
-        if not encrypted_key:
-            await interaction.followup.send("Link your Torn API key first.", ephemeral=True)
-            return
 
         profile = await ApplicationsRepository(db.pool).get_insurer_profile(guild_id=interaction.guild_id, user_id=self.insurer_discord_id)
         pricing_text = str((profile or {}).get("pricing_text") or "")
@@ -601,7 +602,7 @@ class InsuranceFeeVerifyView(ui.View):
                 since_timestamp=since_ts,
             )
         except TornAPIError:
-            await interaction.followup.send("Torn API may be down; try again shortly.", ephemeral=True)
+            await interaction.followup.send("Torn API may be down right now. Please try again in a minute.", ephemeral=True)
             return
 
         if not payment:
@@ -1204,10 +1205,9 @@ class PurchaseCoverageModal(ui.Modal, title="Purchase Insurance Coverage"):
                 await interaction.followup.send(embed=create_error_embed("Exceeds Max Coverage", f"Max: {policy['max_coverage_xanax']}"), ephemeral=True)
                 return
             
-            key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
-            if not key_data:
-                await interaction.followup.send(embed=create_error_embed("API Key Required"), ephemeral=True)
+            if not await require_api_key(interaction, db, "request insurance"):
                 return
+            key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
             
             premium = xanax * policy['premium_per_xanax']
             payout = xanax * policy['payout_per_xanax']
@@ -1249,6 +1249,8 @@ class InsurancePaymentView(ui.View):
                 await interaction.followup.send(embed=create_error_embed("Coverage Unavailable"), ephemeral=True)
                 return
             
+            if not await require_api_key(interaction, db, "verify insurance payment"):
+                return
             key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
             security = get_security_manager()
             api_key = security.decrypt(key_data['encrypted_key'])
@@ -1380,10 +1382,9 @@ class ClaimManageView(ui.View):
                 await interaction.followup.send(embed=create_error_embed("Payout Not Set", "Use **Set Payout** first."), ephemeral=True)
                 return
 
-            key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
-            if not key_data:
-                await interaction.followup.send(embed=create_error_embed("API Key Required", "Register your API key first."), ephemeral=True)
+            if not await require_api_key(interaction, db, "verify claim payout"):
                 return
+            key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
 
             security = get_security_manager()
             api_key = security.decrypt(key_data['encrypted_key'])
@@ -1543,7 +1544,7 @@ class BuyTicketsModal(ui.Modal, title="Buy Raffle Tickets"):
         except NotFound:
             await interaction.followup.send(embed=create_error_embed("Raffle Unavailable"), ephemeral=True)
         except InvalidInput:
-            await interaction.followup.send(embed=create_error_embed("API Key Required"), ephemeral=True)
+            await require_api_key(interaction, get_database(), "enter a raffle")
         except BusinessRuleViolation as exc:
             message = str(exc)
             if message.startswith("Max"):
@@ -1574,6 +1575,8 @@ class RafflePaymentView(ui.View):
                 return
             
             raffle = await RafflesRepository(db.pool).get_raffle(self.raffle_id)
+            if not await require_api_key(interaction, db, "verify a raffle purchase"):
+                return
             key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
             security = get_security_manager()
             api_key = security.decrypt(key_data['encrypted_key'])
@@ -1974,6 +1977,7 @@ async def refresh_session_readiness(session_id: int):
             try:
                 key_data = await UsersRepository(db.pool).get_user_api_key(signup['discord_id'])
                 if not key_data:
+                    log.warning("Skipping readiness refresh due to missing API key discord_id=%s guild_id=%s", signup['discord_id'], signup.get('guild_id'))
                     continue
                 
                 security = get_security_manager()
