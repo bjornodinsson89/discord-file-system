@@ -133,8 +133,11 @@ async def create_session_handler(request: CreateSessionRequest, admin_discord_id
         host_discord_id=admin_discord_id,
         title="99k Session",
         scheduled_start_text=None,
+        start_time=None,
         max_slots=request.spots,
         notes=None,
+        price_item="xanax",
+        price_amount=99,
         announce_channel_id=request.channel_id,
         announce_message_id=None,
     )

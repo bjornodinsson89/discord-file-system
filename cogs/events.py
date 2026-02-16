@@ -13,6 +13,7 @@ import json
 import re
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 import config
@@ -66,6 +67,62 @@ log = logging.getLogger("happy_jumper")
 
 HOST_TAX_VERIFY_WINDOW_MINUTES = 30
 
+
+
+
+def _resolve_guild_timezone(settings: dict):
+    timezone_name = str(
+        settings.get("timezone")
+        or settings.get("guild_timezone")
+        or settings.get("tz")
+        or "UTC"
+    ).strip() or "UTC"
+    try:
+        return ZoneInfo(timezone_name)
+    except Exception:
+        return timezone.utc
+
+
+def _parse_optional_session_start(raw_value: str, settings: dict) -> tuple[Optional[datetime], Optional[str]]:
+    value = str(raw_value or "").strip()
+    if not value:
+        return None, None
+
+    parsed: Optional[datetime] = None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M"):
+        try:
+            parsed = datetime.strptime(value, fmt)
+            break
+        except ValueError:
+            continue
+
+    if parsed is None:
+        raise ValueError("invalid start")
+
+    tzinfo = _resolve_guild_timezone(settings)
+    aware = parsed.replace(tzinfo=tzinfo)
+    return aware, aware.strftime("%Y-%m-%d %H:%M")
+
+
+def _format_session_start_display(session: dict) -> str:
+    start_time = session.get("start_time")
+    if not start_time:
+        return "Not set"
+
+    if isinstance(start_time, str):
+        try:
+            start_time = datetime.fromisoformat(start_time)
+        except ValueError:
+            return str(start_time)
+
+    if not isinstance(start_time, datetime):
+        return "Not set"
+
+    if start_time.tzinfo is None:
+        start_time = start_time.replace(tzinfo=timezone.utc)
+
+    unix_ts = int(start_time.timestamp())
+    return f"<t:{unix_ts}:D> <t:{unix_ts}:t>"
 
 def _host_tax_requirement_text(settings: dict) -> str:
     tax_type = str(settings.get("host_tax_type") or "").strip().lower()
@@ -913,7 +970,7 @@ def _is_99k_closed(status: str | None) -> bool:
 
 def build_99k_announcement_content(session: dict, signed_up: int, paid: int) -> str:
     session_id = int(session["id"])
-    tct_start_text = str(session.get("scheduled_start_text") or "Not set")
+    tct_start_text = _format_session_start_display(session)
     price_amount = int(session.get("price_amount") or 0)
     price_item_label = _format_99k_price_item_label(session.get("price_item"))
     notes_or_placeholder = str(session.get("notes") or "None")
@@ -933,7 +990,7 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int) -> 
 
 
 def build_99k_jump_created_announcement_content(session: dict) -> str:
-    tct_start_text = str(session.get("scheduled_start_text") or "Not set")
+    tct_start_text = _format_session_start_display(session)
     max_slots = int(session.get("max_slots") or 0)
     price_amount = int(session.get("price_amount") or 0)
     price_item_label = _format_99k_price_item_label(session.get("price_item"))
@@ -1598,10 +1655,10 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
         placeholder="99",
     )
     possible_tct_start = discord.ui.TextInput(
-        label="Start time",
+        label="Start (optional — date + time)",
         required=False,
-        max_length=5,
-        placeholder="21:00",
+        max_length=16,
+        placeholder="YYYY-MM-DD HH:MM (24h). Leave blank for no set start. Example: 2026-02-18 21:00",
     )
     notes = discord.ui.TextInput(label="Notes", placeholder="Add jump instructions", required=False, style=discord.TextStyle.paragraph, max_length=1000)
 
@@ -1638,15 +1695,19 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 await interaction.response.send_message(embed=create_error_embed("Invalid spot price", "Spot price must be between 1 and 50."), ephemeral=True)
                 return
 
-            scheduled = str(self.possible_tct_start.value).strip() or None
-            if scheduled and not re.fullmatch(r"^([01]\d|2[0-3]):(00|15|30|45)$", scheduled):
-                await interaction.response.send_message(embed=create_error_embed("Invalid start time", "Possible TCT start time must use 24h HH:MM and minutes 00/15/30/45 (example: 22:15)."), ephemeral=True)
+            try:
+                start_time, scheduled = _parse_optional_session_start(self.possible_tct_start.value, self.settings)
+            except ValueError:
+                await interaction.response.send_message(
+                    "Invalid start time. Use: YYYY-MM-DD HH:MM (24h), or leave it blank for no set start. Example: 2026-02-18 21:00",
+                    ephemeral=True,
+                )
                 return
 
             notes = str(self.notes.value).strip() or None
             announce_channel_id = self.settings.get("announce_channel_id")
             if self.session:
-                await repo.update_session(int(self.session["id"]), title=title, scheduled_start_text=scheduled, max_slots=slots, notes=notes, price_item=raw_payment_type, price_amount=price_amount)
+                await repo.update_session(int(self.session["id"]), title=title, scheduled_start_text=scheduled, start_time=start_time, max_slots=slots, notes=notes, price_item=raw_payment_type, price_amount=price_amount)
                 session_id = int(self.session["id"])
             else:
                 session_id = await repo.create_session(
@@ -1654,6 +1715,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     host_discord_id=interaction.user.id,
                     title=title,
                     scheduled_start_text=scheduled,
+                    start_time=start_time,
                     max_slots=slots,
                     notes=notes,
                     price_item=raw_payment_type,
