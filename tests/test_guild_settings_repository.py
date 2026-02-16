@@ -92,3 +92,16 @@ def test_repo_upsert_guild_settings_merges_dict_and_kwargs(monkeypatch):
     result = asyncio.run(repo.upsert_guild_settings(7, {"welcome_enabled": True}, welcome_channel_id=99))
     assert result["welcome_enabled"] is True
     assert result["welcome_channel_id"] == 99
+
+
+def test_repo_insert_or_get_guild_settings_alias_calls_get_settings(monkeypatch):
+    repo = GuildSettingsRepository(_DB())
+
+    async def fake_get_settings(guild_id):
+        return {"guild_id": guild_id, "welcome_enabled": False}
+
+    monkeypatch.setattr(repo, "get_settings", fake_get_settings)
+
+    import asyncio
+    result = asyncio.run(repo.insert_or_get_guild_settings(73))
+    assert result["guild_id"] == 73
