@@ -60,7 +60,7 @@ class ApiKeyIntroView(ui.View):
 
 
 class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
-    api_key = ui.TextInput(label="Torn API key", placeholder="examplekey123456", min_length=16, max_length=16)
+    api_key = ui.TextInput(label="Torn API key", placeholder="Paste a Full Access API key, or tap Create API Key to generate a scoped key for this bot.", min_length=16, max_length=16)
     
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
