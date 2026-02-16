@@ -7,6 +7,15 @@ class _DB:
     pool = None
 
 
+def test_jsonb_helper_encodes_lists_and_dicts():
+    from utils.guild_settings_repository import _jsonb
+
+    assert _jsonb([1, 2]) == "[1, 2]"
+    assert _jsonb({"a": 1}) == '{"a": 1}'
+    assert _jsonb("[]") == "[]"
+    assert _jsonb(None) is None
+
+
 def test_repo_allowlist_rejects_unknown_fields():
     repo = GuildSettingsRepository(_DB())
     with pytest.raises(ValueError):
@@ -105,3 +114,38 @@ def test_repo_insert_or_get_guild_settings_alias_calls_get_settings(monkeypatch)
     import asyncio
     result = asyncio.run(repo.insert_or_get_guild_settings(73))
     assert result["guild_id"] == 73
+
+
+def test_repo_ensure_guild_exists_creates_when_missing(monkeypatch):
+    class _Conn:
+        async def fetchrow(self, query, guild_id):
+            return None
+
+    class _Acquire:
+        async def __aenter__(self):
+            return _Conn()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _Pool:
+        def acquire(self):
+            return _Acquire()
+
+    class _DbWithPool:
+        pool = _Pool()
+
+    repo = GuildSettingsRepository(_DbWithPool())
+
+    called = {"count": 0}
+
+    async def fake_create_defaults(guild_id):
+        called["count"] += 1
+        return {"guild_id": guild_id}
+
+    monkeypatch.setattr(repo, "create_default_guild_settings", fake_create_defaults)
+
+    import asyncio
+
+    asyncio.run(repo.ensure_guild_exists(12345))
+    assert called["count"] == 1
