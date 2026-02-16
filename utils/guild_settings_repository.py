@@ -292,6 +292,9 @@ class GuildSettingsRepository:
     async def get_or_create(self, guild_id: int) -> Dict[str, Any]:
         return await self.get_settings(guild_id)
 
+    async def insert_or_get_guild_settings(self, guild_id: int) -> Dict[str, Any]:
+        return await self.get_settings(guild_id)
+
     async def get_guild_settings(self, guild_id: int) -> Dict[str, Any]:
         return await self.get_settings(guild_id)
 

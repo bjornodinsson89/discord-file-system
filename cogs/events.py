@@ -36,6 +36,7 @@ from setup_panel import (
     has_setup_permission,
     render_welcome_template,
     send_setup_panel,
+    InsurerProfileModal,
 )
 from cogs.pools import register_persistent_pool_views
 
@@ -492,7 +493,12 @@ async def on_guild_join(guild: discord.Guild):
     log.info(f"Joined guild: {guild.name} ({guild.id})")
     db = get_database()
     repo = GuildSettingsRepository(db)
-    settings = await repo.get_or_create(guild.id)
+    try:
+        settings = await repo.insert_or_get_guild_settings(guild.id)
+    except Exception:
+        log.exception("Failed to initialize guild settings for guild %s", guild.id)
+        return
+
     if settings.get("announce_channel_id"):
         return
 
@@ -647,7 +653,40 @@ async def my_sessions(interaction: discord.Interaction):
 @bot.tree.command(name="setup", description="Open the interactive server setup panel")
 async def setup(interaction: discord.Interaction):
     db = get_database()
+    repo = GuildSettingsRepository(db)
+    await repo.insert_or_get_guild_settings(interaction.guild_id)
     await send_setup_panel(interaction, db)
+
+
+@bot.tree.command(name="insurer_profile", description="Edit your insurer profile")
+async def insurer_profile(interaction: discord.Interaction):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message(
+            embed=create_error_embed("Unavailable", "This command can only be used in a server."),
+            ephemeral=True,
+        )
+        return
+
+    db = get_database()
+    settings_repo = GuildSettingsRepository(db)
+    settings = await settings_repo.insert_or_get_guild_settings(interaction.guild_id)
+    insurer_role_id = settings.get("insurer_role_id")
+    if not insurer_role_id:
+        await interaction.response.send_message(
+            embed=create_error_embed("Insurer role not configured", "Run `/setup` and set the insurer role first."),
+            ephemeral=True,
+        )
+        return
+
+    has_insurer_role = any(role.id == int(insurer_role_id) for role in interaction.user.roles)
+    if not has_insurer_role:
+        await interaction.response.send_message(
+            embed=create_error_embed("Missing role", "You need the configured insurer role to use this command."),
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_modal(InsurerProfileModal(db=db))
 
 
 

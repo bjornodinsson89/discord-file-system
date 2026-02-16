@@ -151,7 +151,10 @@ async def _respond_callback_error(interaction: discord.Interaction, error: Excep
         interaction.user.id if interaction.user else None,
         exc_info=(type(error), error, error.__traceback__),
     )
-    msg = "Unexpected setup error. Please try again, or rerun /setup if this continues."
+    msg = (
+        "Unexpected setup error. Please try again, or rerun /setup if this continues. "
+        "Check bot logs for: setup_next_roles_view_error"
+    )
     if interaction.response.is_done():
         await interaction.followup.send(embed=create_error_embed('Setup failed', msg), ephemeral=True)
     else:
@@ -324,6 +327,7 @@ class SetupPanelView(OwnerView):
             await interaction.response.defer(ephemeral=True, thinking=False)
         try:
             settings_repo = GuildSettingsRepository(self.db)
+            await settings_repo.insert_or_get_guild_settings(interaction.guild_id)
             await settings_repo.upsert_settings(interaction.guild_id, **changes)
         except MissingDatabaseColumnError as exc:
             await interaction.followup.send(
@@ -615,10 +619,6 @@ class RolesView(BackView):
         self.add_item(SingleRoleSelect(self.panel, "insurer_role_id", "Set HJ_Insureance_provider role"))
         self.add_item(AdminRoleSelect(self.panel, setting_key="jump_ping_role_ids", placeholder="Set jump ping role(s)"))
 
-    @discord.ui.button(label="Edit my insurer profile", style=discord.ButtonStyle.secondary)
-    async def insurer_profile(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(InsurerProfileModal(self.panel))
-
 
 
 
@@ -627,12 +627,19 @@ class InsurerProfileModal(discord.ui.Modal):
     policy_summary = discord.ui.TextInput(label="Policy summary", required=True, style=discord.TextStyle.paragraph, max_length=1200)
     contact_instructions = discord.ui.TextInput(label="Contact instructions", required=True, style=discord.TextStyle.paragraph, max_length=1200)
 
-    def __init__(self, panel: "SetupPanelView"):
+    def __init__(self, panel: "SetupPanelView" | None = None, *, db=None):
         super().__init__(title="Insurer Profile")
         self.panel = panel
+        self.db = db if db is not None else (panel.db if panel is not None else None)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        repo = JumpsRepository(self.panel.db.pool)
+        if self.db is None:
+            await interaction.response.send_message(
+                embed=create_error_embed("Setup unavailable", "Could not save insurer profile right now."),
+                ephemeral=True,
+            )
+            return
+        repo = JumpsRepository(self.db.pool)
         await repo.create_insurer_profile(
             guild_id=interaction.guild_id,
             insurer_discord_id=interaction.user.id,
@@ -883,6 +890,8 @@ class TestView(BackView):
 
 
 async def send_setup_panel(interaction: discord.Interaction, db) -> None:
+    repo = GuildSettingsRepository(db)
+    await repo.insert_or_get_guild_settings(interaction.guild_id)
     allowed, settings = await ensure_setup_permission(interaction, db)
     if not allowed:
         embed = create_error_embed(
