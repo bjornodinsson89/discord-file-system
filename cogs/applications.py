@@ -316,17 +316,21 @@ class ApplicationsCog(commands.Cog):
                 except Exception:
                     log.exception("Failed adding admin member to app thread member_id=%s thread_id=%s", member.id, thread.id)
 
+        summary_embed = self._build_summary_embed(interaction.user, identity, app_type, {})
+        summary_message = await thread.send(embed=summary_embed)
+        try:
+            await summary_message.pin(reason="Application Summary")
+        except Exception:
+            pass
+
         app = await repo.create_application(
             guild_id=interaction.guild.id,
             user_id=interaction.user.id,
             app_type=app_type,
             thread_id=thread.id,
             channel_id=parent.id,
+            summary_message_id=summary_message.id,
         )
-
-        summary_embed = self._build_summary_embed(interaction.user, identity, app_type, {})
-        summary_message = await thread.send(embed=summary_embed)
-        await summary_message.pin(reason="Application Summary")
 
         first_q = HOST_QUESTIONS[0] if app_type == HOST_APP_TYPE else INSURER_QUESTIONS[0]
         await thread.send(first_q)
@@ -343,22 +347,36 @@ class ApplicationsCog(commands.Cog):
         return embed
 
     async def _update_summary_message(self, thread: discord.Thread, app: dict[str, Any], identity: dict[str, Any]):
-        try:
-            pins = await thread.pins()
-            target = None
-            for msg in pins:
-                if msg.author.id == self.bot.user.id and msg.embeds and msg.embeds[0].title and "Application Summary" in msg.embeds[0].title:
-                    target = msg
-                    break
-            if target is None:
-                target = await thread.send("Application Summary")
+        db = get_database()
+        repo = ApplicationsRepository(db.pool)
+        app_id = int(app["id"])
+        summary_message_id = app.get("summary_message_id")
+
+        applicant = thread.guild.get_member(int(app["user_id"])) or self.bot.get_user(int(app["user_id"]))
+        if applicant is None:
+            applicant = self.bot.user
+        embed = self._build_summary_embed(applicant, identity, app["app_type"], app.get("answers") or {})
+
+        target: discord.Message | None = None
+        if summary_message_id:
+            try:
+                target = await thread.fetch_message(int(summary_message_id))
+            except (discord.NotFound, discord.Forbidden):
+                target = None
+
+        if target is None:
+            target = await thread.send(embed=embed)
+            await repo.set_summary_message_id(app_id=app_id, message_id=target.id)
+            app["summary_message_id"] = target.id
+            try:
                 await target.pin(reason="Application Summary")
-            applicant = thread.guild.get_member(int(app["user_id"])) or self.bot.get_user(int(app["user_id"]))
-            if applicant is None:
-                applicant = self.bot.user
-            await target.edit(embed=self._build_summary_embed(applicant, identity, app["app_type"], app.get("answers") or {}))
+            except Exception:
+                pass
+
+        try:
+            await target.edit(embed=embed)
         except Exception:
-            log.exception("Failed to update summary app_id=%s", app.get("id"))
+            log.exception("applications_summary_update_error app_id=%s thread_id=%s message_id=%s", app_id, thread.id, target.id)
 
     async def _close_thread(self, thread: discord.Thread):
         try:
