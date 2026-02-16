@@ -87,27 +87,42 @@ def _parse_optional_session_start(raw_value: str, settings: dict) -> tuple[Optio
     value = str(raw_value or "").strip()
     if not value:
         return None, None
+    tzinfo = _resolve_guild_timezone(settings)
+    now = datetime.now(tzinfo)
 
-    parsed: Optional[datetime] = None
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M"):
-        try:
-            parsed = datetime.strptime(value, fmt)
-            break
-        except ValueError:
-            continue
-
-    if parsed is None:
+    match = re.fullmatch(r"\s*(\d{1,2})[-/](\d{1,2})(?:\s+|T)(\d{1,2}):(\d{2})\s*", value)
+    if not match:
         raise ValueError("invalid start")
 
-    tzinfo = _resolve_guild_timezone(settings)
-    aware = parsed.replace(tzinfo=tzinfo)
+    month = int(match.group(1))
+    day = int(match.group(2))
+    hour = int(match.group(3))
+    minute = int(match.group(4))
+
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError("invalid start")
+
+    try:
+        aware = datetime(now.year, month, day, hour, minute, tzinfo=tzinfo)
+    except ValueError as exc:
+        raise ValueError("invalid start") from exc
+
+    if aware < (now - timedelta(minutes=5)):
+        next_year = now.year + 1
+        while next_year <= now.year + 4:
+            try:
+                aware = aware.replace(year=next_year)
+                break
+            except ValueError:
+                next_year += 1
+
     return aware, aware.strftime("%Y-%m-%d %H:%M")
 
 
 def _format_session_start_display(session: dict) -> str:
     start_time = session.get("start_time")
     if not start_time:
-        return "Not set"
+        return "Start: Not set"
 
     if isinstance(start_time, str):
         try:
@@ -116,13 +131,13 @@ def _format_session_start_display(session: dict) -> str:
             return str(start_time)
 
     if not isinstance(start_time, datetime):
-        return "Not set"
+        return "Start: Not set"
 
     if start_time.tzinfo is None:
         start_time = start_time.replace(tzinfo=timezone.utc)
 
     unix_ts = int(start_time.timestamp())
-    return f"<t:{unix_ts}:D> <t:{unix_ts}:t>"
+    return f"Start: <t:{unix_ts}:D> <t:{unix_ts}:t>"
 
 def _host_tax_requirement_text(settings: dict) -> str:
     tax_type = str(settings.get("host_tax_type") or "").strip().lower()
@@ -980,7 +995,7 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int) -> 
     status_text = "Closed" if is_closed else ("Full" if is_full else "Open")
     return (
         f"📣✨ **99k Happy Jump** ✨ — **Session #{session_id}**\n"
-        f"🕒 Possible TCT start: {tct_start_text}\n"
+        f"🕒 {tct_start_text}\n"
         f"💰 Spot price: {price_amount}x {price_item_label}\n"
         f"📝 Notes: {notes_or_placeholder}\n"
         f"👥 Signed up: {signed_up}/{max_slots} • ✅ Paid: {paid}\n"
@@ -995,7 +1010,7 @@ def build_99k_jump_created_announcement_content(session: dict) -> str:
     price_amount = int(session.get("price_amount") or 0)
     price_item_label = _format_99k_price_item_label(session.get("price_item"))
     return (
-        f"🔔 There will be a jump {tct_start_text} (time displayed in your timezone). Please secure your spot with {price_amount}x {price_item_label}.\n"
+        f"🔔 There will be a jump. {tct_start_text} (time displayed in your timezone). Please secure your spot with {price_amount}x {price_item_label}.\n"
         f"{max_slots}/{max_slots} available spots"
     )
 
@@ -1655,10 +1670,10 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
         placeholder="99",
     )
     possible_tct_start = discord.ui.TextInput(
-        label="Start (optional — date + time)",
+        label="Start (optional)",
         required=False,
         max_length=16,
-        placeholder="YYYY-MM-DD HH:MM (24h). Leave blank for no set start. Example: 2026-02-18 21:00",
+        placeholder="MM-DD HH:MM (24h). Blank=none. Ex: 02-18 21:00",
     )
     notes = discord.ui.TextInput(label="Notes", placeholder="Add jump instructions", required=False, style=discord.TextStyle.paragraph, max_length=1000)
 
@@ -1699,7 +1714,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 start_time, scheduled = _parse_optional_session_start(self.possible_tct_start.value, self.settings)
             except ValueError:
                 await interaction.response.send_message(
-                    "Invalid start time. Use: YYYY-MM-DD HH:MM (24h), or leave it blank for no set start. Example: 2026-02-18 21:00",
+                    "Invalid start. Use: MM-DD HH:MM (24h), or leave blank. Example: 02-18 21:00",
                     ephemeral=True,
                 )
                 return
