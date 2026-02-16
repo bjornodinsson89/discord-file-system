@@ -476,7 +476,8 @@ class BackView(OwnerView):
         self.guild = guild
         self.panel = panel
 
-    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary)
+    # Select menus consume full rows; pin Back to row 4 to stay within Discord's 5-row view limit.
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary, row=4)
     async def back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             await _send_or_edit(interaction, self.panel._build_embed(), self.panel)
