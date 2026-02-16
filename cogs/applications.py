@@ -115,6 +115,127 @@ class ApplicationReviewView(discord.ui.View):
         await interaction.response.send_modal(RequestChangesModal(self.cog, self.app_id))
 
 
+class InsurerWizardStepModal(discord.ui.Modal):
+    wizard_value = discord.ui.TextInput(label="Response", style=discord.TextStyle.paragraph, required=True, max_length=4000)
+
+    def __init__(self, cog: "ApplicationsCog", guild_id: int, user_id: int, step: int):
+        super().__init__(title=f"Insurance Card — Step {step + 1}/5")
+        self.cog = cog
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.step = step
+        labels = ["Display name", "Coverage summary", "Pricing text", "Rules / exclusions"]
+        placeholders = [
+            "e.g. Falcon Insurance",
+            "Describe what you cover and how it works",
+            "Describe your pricing model",
+            "List your exclusions/rules",
+        ]
+        self.wizard_value.label = labels[step]
+        self.wizard_value.placeholder = placeholders[step]
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        value = str(self.wizard_value.value).strip()
+        if not value:
+            await interaction.response.send_message("This field is required.", ephemeral=True)
+            return
+        await self.cog._advance_insurer_wizard(
+            interaction=interaction,
+            guild_id=self.guild_id,
+            user_id=self.user_id,
+            step=self.step,
+            step_data={
+                ["display_name", "coverage_summary", "pricing_text", "rules_exclusions"][self.step]: value,
+            },
+        )
+
+
+class InsurerWizardTimingModal(discord.ui.Modal, title="Insurance Card — Step 5/5"):
+    activation_delay_minutes = discord.ui.TextInput(label="activation_delay_minutes", style=discord.TextStyle.short, required=True, max_length=10)
+    coverage_duration_minutes = discord.ui.TextInput(label="coverage_duration_minutes", style=discord.TextStyle.short, required=True, max_length=10)
+    image_url = discord.ui.TextInput(label="image_url (optional)", style=discord.TextStyle.short, required=False, max_length=500)
+
+    def __init__(self, cog: "ApplicationsCog", guild_id: int, user_id: int, step: int):
+        super().__init__()
+        self.cog = cog
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.step = step
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            delay = int(str(self.activation_delay_minutes.value).strip())
+            duration = int(str(self.coverage_duration_minutes.value).strip())
+        except ValueError:
+            await interaction.response.send_message("activation_delay_minutes and coverage_duration_minutes must be integers.", ephemeral=True)
+            return
+
+        image_url = str(self.image_url.value).strip()
+        if delay < 0:
+            await interaction.response.send_message("activation_delay_minutes must be >= 0.", ephemeral=True)
+            return
+        if duration < MIN_COVERAGE_DURATION_MINUTES or duration > MAX_COVERAGE_DURATION_MINUTES:
+            await interaction.response.send_message(
+                f"coverage_duration_minutes must be between {MIN_COVERAGE_DURATION_MINUTES} and {MAX_COVERAGE_DURATION_MINUTES}.",
+                ephemeral=True,
+            )
+            return
+        if image_url and not _is_valid_image_url(image_url):
+            await interaction.response.send_message("image_url must be https and end with png/jpg/jpeg/webp.", ephemeral=True)
+            return
+
+        await self.cog._advance_insurer_wizard(
+            interaction=interaction,
+            guild_id=self.guild_id,
+            user_id=self.user_id,
+            step=self.step,
+            step_data={
+                "activation_delay_minutes": delay,
+                "coverage_duration_minutes": duration,
+                "image_url": image_url or None,
+            },
+        )
+
+
+class InsurerWizardView(discord.ui.View):
+    def __init__(self, guild_id: int, target_user_id: int, cog: "ApplicationsCog"):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.target_user_id = target_user_id
+        self.cog = cog
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.target_user_id:
+            await interaction.response.send_message("This isn't your wizard.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
+    async def continue_wizard(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await self._guard(interaction):
+            return
+        db = get_database()
+        repo = ApplicationsRepository(db.pool)
+        state = await repo.get_active_wizard_state_for_user(user_id=self.target_user_id)
+        if not state or int(state.get("guild_id") or 0) != self.guild_id:
+            await interaction.response.send_message("No active wizard. Run /insurer_card_setup again.", ephemeral=True)
+            return
+        step = int(state.get("step") or 0)
+        if step >= 4:
+            await interaction.response.send_modal(InsurerWizardTimingModal(self.cog, self.guild_id, self.target_user_id, step))
+            return
+        await interaction.response.send_modal(InsurerWizardStepModal(self.cog, self.guild_id, self.target_user_id, step))
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_wizard(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await self._guard(interaction):
+            return
+        db = get_database()
+        repo = ApplicationsRepository(db.pool)
+        await repo.clear_wizard_state(guild_id=self.guild_id, user_id=self.target_user_id)
+        await interaction.response.send_message("Wizard cancelled.", ephemeral=True)
+
+
 class ApplicationsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -255,109 +376,94 @@ class ApplicationsCog(commands.Cog):
             await interaction.response.send_message(f"You need {ROLE_NAME_INSURER} role or approved application.", ephemeral=True)
             return
 
-        await interaction.response.send_message("I sent you a DM to continue the Insurance Info Card wizard.", ephemeral=True)
-        await self.start_insurer_wizard(interaction.guild.id, interaction.user)
+        started = await self.start_insurer_wizard(interaction.guild.id, interaction.user)
+        if started:
+            await interaction.response.send_message("I sent you a DM to continue the Insurance Info Card wizard.", ephemeral=True)
+        else:
+            await interaction.response.send_message(
+                "I couldn’t DM you. Enable DMs from server members and rerun /insurer_card_setup.",
+                ephemeral=True,
+            )
 
-    async def start_insurer_wizard(self, guild_id: int, user: discord.User | discord.Member):
+    async def start_insurer_wizard(self, guild_id: int, user: discord.User | discord.Member) -> bool:
         try:
             db = get_database()
             repo = ApplicationsRepository(db.pool)
+            state = await repo.get_active_wizard_state_for_user(user_id=user.id)
+            if state and int(state.get("guild_id") or 0) == guild_id:
+                step = int(state.get("step") or 0)
+                return await self._send_insurer_wizard_prompt(guild_id, user, step, resume=True)
             await repo.upsert_wizard_state(guild_id=guild_id, user_id=user.id, step=0, draft={})
-            dm = await user.create_dm()
-            await dm.send(f"Starting {ROLE_NAME_INSURER} Insurance Info Card wizard.\n{INSURER_WIZARD_STEPS[0]}")
+            return await self._send_insurer_wizard_prompt(guild_id, user, 0, resume=False)
+        except discord.Forbidden:
+            return False
         except Exception:
             log.exception("Failed to start insurer wizard user_id=%s", user.id)
+            return False
 
-    async def _process_wizard_message(self, message: discord.Message):
-        if message.guild is not None and not isinstance(message.channel, discord.DMChannel):
-            return
+    async def _send_insurer_wizard_prompt(self, guild_id: int, user: discord.User | discord.Member, step: int, *, resume: bool) -> bool:
+        dm = await user.create_dm()
+        intro = f"Resuming at Step {step + 1}/5 for your {ROLE_NAME_INSURER} Insurance Info Card wizard." if resume else f"Starting {ROLE_NAME_INSURER} Insurance Info Card wizard."
+        content = f"{intro}\n{INSURER_WIZARD_STEPS[step]}"
+        await dm.send(content, view=InsurerWizardView(guild_id=guild_id, target_user_id=user.id, cog=self))
+        return True
+
+    async def _advance_insurer_wizard(
+        self,
+        interaction: discord.Interaction,
+        guild_id: int,
+        user_id: int,
+        step: int,
+        step_data: dict[str, Any],
+    ) -> None:
         db = get_database()
         repo = ApplicationsRepository(db.pool)
-        state = await repo.get_active_wizard_state_for_user(user_id=message.author.id)
-        if not state:
-            await message.channel.send("No active wizard. Run /create_insurance_card (or whatever command) to start.")
+        state = await repo.get_active_wizard_state_for_user(user_id=user_id)
+        if not state or int(state.get("guild_id") or 0) != guild_id:
+            await interaction.response.send_message("No active wizard. Run /insurer_card_setup again.", ephemeral=True)
             return
 
-        guild_id = int(state["guild_id"])
+        active_step = int(state.get("step") or 0)
+        if active_step != step:
+            await interaction.response.send_message("Wizard step changed. Please press Continue again.", ephemeral=True)
+            return
+
         draft = state.get("draft") or {}
-        step = int(state.get("step") or 0)
-        content = (message.content or "").strip()
+        draft.update(step_data)
+        next_step = step + 1
 
-        try:
-            log.info(
-                "insurance_card_wizard_dm_matched user_id=%s step=%s content_length=%s",
-                message.author.id,
-                step,
-                len(content),
-            )
+        if next_step < len(INSURER_WIZARD_STEPS):
+            await repo.upsert_wizard_state(guild_id=guild_id, user_id=user_id, step=next_step, draft=draft)
+            await interaction.response.send_message("Saved. Check your DMs for the next step.", ephemeral=True)
+            user = interaction.client.get_user(user_id) or interaction.user
+            await self._send_insurer_wizard_prompt(guild_id, user, next_step, resume=False)
+            return
 
-            if step < 4 and not content:
-                await message.channel.send("This field is required. Please reply with text.")
-                return
+        profile = await repo.upsert_insurer_profile(guild_id=guild_id, user_id=user_id, data=draft)
+        await repo.clear_wizard_state(guild_id=guild_id, user_id=user_id)
+        embed = discord.Embed(title=profile["display_name"], color=discord.Color.green())
+        embed.add_field(name="Coverage summary", value=profile["coverage_summary"], inline=False)
+        embed.add_field(name="Pricing", value=profile["pricing_text"], inline=False)
+        embed.add_field(name="Rules/Exclusions", value=profile["rules_exclusions"], inline=False)
+        embed.add_field(
+            name="Coverage timing",
+            value=f"Starts {profile['activation_delay_minutes']} minutes after payment verification, lasts {profile['coverage_duration_minutes']} minutes",
+            inline=False,
+        )
+        embed.add_field(name="Claims", value="Auto-detected by the bot and forwarded to you", inline=False)
+        if profile.get("image_url"):
+            embed.set_image(url=profile["image_url"])
+        await interaction.response.send_message("Saved. Check your DMs for your profile preview.", ephemeral=True)
+        dm = await interaction.user.create_dm()
+        await dm.send("Saved ✅", embed=embed)
 
-            if step == 0:
-                draft["display_name"] = content
-            elif step == 1:
-                draft["coverage_summary"] = content
-            elif step == 2:
-                draft["pricing_text"] = content
-            elif step == 3:
-                draft["rules_exclusions"] = content
-            elif step == 4:
-                delay_match = re.search(r"activation_delay_minutes\s*:\s*(\d+)", content, re.I)
-                duration_match = re.search(r"coverage_duration_minutes\s*:\s*(\d+)", content, re.I)
-                image_match = re.search(r"image_url\s*:\s*(.*)", content, re.I)
-                if not delay_match or not duration_match:
-                    await message.channel.send("Invalid format. Please send all lines exactly as requested.")
-                    return
-                delay = int(delay_match.group(1))
-                duration = int(duration_match.group(1))
-                image_url = image_match.group(1).strip() if image_match else ""
-                if delay < 0:
-                    await message.channel.send("activation_delay_minutes must be >= 0.")
-                    return
-                if duration < MIN_COVERAGE_DURATION_MINUTES or duration > MAX_COVERAGE_DURATION_MINUTES:
-                    await message.channel.send(f"coverage_duration_minutes must be between {MIN_COVERAGE_DURATION_MINUTES} and {MAX_COVERAGE_DURATION_MINUTES}.")
-                    return
-                if image_url and not _is_valid_image_url(image_url):
-                    await message.channel.send("image_url must be https and end with png/jpg/jpeg/webp.")
-                    return
-                draft["activation_delay_minutes"] = delay
-                draft["coverage_duration_minutes"] = duration
-                draft["image_url"] = image_url or None
-
-            next_step = step + 1
-            if next_step < len(INSURER_WIZARD_STEPS):
-                await repo.upsert_wizard_state(guild_id=guild_id, user_id=message.author.id, step=next_step, draft=draft)
-                await message.channel.send(INSURER_WIZARD_STEPS[next_step])
-                return
-
-            profile = await repo.upsert_insurer_profile(guild_id=guild_id, user_id=message.author.id, data=draft)
-            await repo.clear_wizard_state(guild_id=guild_id, user_id=message.author.id)
-            embed = discord.Embed(title=profile["display_name"], color=discord.Color.green())
-            embed.add_field(name="Coverage summary", value=profile["coverage_summary"], inline=False)
-            embed.add_field(name="Pricing", value=profile["pricing_text"], inline=False)
-            embed.add_field(name="Rules/Exclusions", value=profile["rules_exclusions"], inline=False)
-            embed.add_field(
-                name="Coverage timing",
-                value=f"Starts {profile['activation_delay_minutes']} minutes after payment verification, lasts {profile['coverage_duration_minutes']} minutes",
-                inline=False,
-            )
-            embed.add_field(name="Claims", value="Auto-detected by the bot and forwarded to you", inline=False)
-            if profile.get("image_url"):
-                embed.set_image(url=profile["image_url"])
-            await message.channel.send("Saved ✅", embed=embed)
-
-            guild = self.bot.get_guild(guild_id)
-            if guild:
-                settings = await GuildSettingsRepository(db).get_or_create(guild_id)
-                app_channel_id = settings.get("applications_channel_id")
-                app_channel = guild.get_channel(int(app_channel_id)) if app_channel_id else None
-                if isinstance(app_channel, discord.TextChannel):
-                    await app_channel.send(f"Provider Profile Updated: <@{message.author.id}>")
-        except Exception:
-            log.exception("insurance_card_wizard_dm_error user_id=%s", message.author.id)
-            await message.channel.send("Wizard error — please run /create_insurance_card again.")
+        guild = self.bot.get_guild(guild_id)
+        if guild:
+            settings = await GuildSettingsRepository(db).get_or_create(guild_id)
+            app_channel_id = settings.get("applications_channel_id")
+            app_channel = guild.get_channel(int(app_channel_id)) if app_channel_id else None
+            if isinstance(app_channel, discord.TextChannel):
+                await app_channel.send(f"Provider Profile Updated: <@{user_id}>")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -400,7 +506,7 @@ class ApplicationsCog(commands.Cog):
                     questions = HOST_QUESTIONS if app["app_type"] == HOST_APP_TYPE else INSURER_QUESTIONS
                     await message.channel.send(questions[next_question])
             elif message.guild is None or isinstance(message.channel, discord.DMChannel):
-                await self._process_wizard_message(message)
+                await message.channel.send("This wizard uses buttons/modals now. Please click Continue in the wizard message.")
         except Exception:
             log.exception("on_message processing failed channel_id=%s", getattr(message.channel, "id", None))
 
@@ -446,7 +552,9 @@ class ApplicationsCog(commands.Cog):
 
         if app["app_type"] == INSURER_APP_TYPE and applicant:
             try:
-                await self.start_insurer_wizard(int(app["guild_id"]), applicant)
+                started = await self.start_insurer_wizard(int(app["guild_id"]), applicant)
+                if not started and thread:
+                    await thread.send("Could not DM user; ask them to enable DMs and run /insurer_card_setup")
             except Exception:
                 log.exception("Failed to start insurer wizard after approval app_id=%s", app_id)
                 if thread:
