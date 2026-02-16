@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any, Dict, Iterable, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 class GuildSettingsRepository:
@@ -81,12 +86,39 @@ class GuildSettingsRepository:
         self._db = db_manager
 
     @staticmethod
-    def _normalize_admin_role_ids(admin_role_ids: Optional[Iterable[Any]]) -> Optional[list[int]]:
+    def _try_parse_json(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        if not stripped or stripped[0] not in "[{":
+            return value
+        try:
+            return json.loads(stripped)
+        except Exception:
+            return value
+
+    @classmethod
+    def _normalize_admin_role_ids(
+        cls,
+        admin_role_ids: Optional[Iterable[Any]],
+        *,
+        guild_id: Optional[int] = None,
+        field_name: str = "admin_role_ids",
+    ) -> Optional[list[int]]:
         if admin_role_ids is None:
             return None
 
+        admin_role_ids = cls._try_parse_json(admin_role_ids)
+
+        if admin_role_ids in ("", []):
+            return []
+
         if isinstance(admin_role_ids, (int, str)):
-            candidate_values: Iterable[Any] = [admin_role_ids]
+            stripped = admin_role_ids.strip() if isinstance(admin_role_ids, str) else admin_role_ids
+            if isinstance(stripped, str) and "," in stripped:
+                candidate_values = [part.strip() for part in stripped.split(",")]
+            else:
+                candidate_values = [admin_role_ids]
         elif isinstance(admin_role_ids, dict):
             candidate_values = admin_role_ids.values()
         else:
@@ -94,9 +126,21 @@ class GuildSettingsRepository:
 
         normalized: list[int] = []
         for role_id in candidate_values:
-            if role_id is None:
+            if role_id is None or role_id == "":
                 continue
-            normalized.append(int(role_id))
+            try:
+                normalized.append(int(str(role_id).strip()))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Failed to normalize role id value for guild settings",
+                    extra={
+                        "guild_id": guild_id,
+                        "field_name": field_name,
+                        "raw_value_type": type(admin_role_ids).__name__,
+                        "bad_value_type": type(role_id).__name__,
+                    },
+                )
+                return []
         return normalized
 
     @staticmethod
@@ -105,13 +149,28 @@ class GuildSettingsRepository:
             return None
         return int(value)
 
-    @staticmethod
-    def _normalize_role_id_list(role_ids: Optional[Iterable[Any]]) -> list[int]:
+    @classmethod
+    def _normalize_role_id_list(
+        cls,
+        role_ids: Optional[Iterable[Any]],
+        *,
+        guild_id: Optional[int] = None,
+        field_name: str = "jump_ping_role_ids",
+    ) -> list[int]:
         if role_ids is None:
             return []
 
+        role_ids = cls._try_parse_json(role_ids)
+
+        if role_ids in ("", []):
+            return []
+
         if isinstance(role_ids, (int, str)):
-            candidate_values: Iterable[Any] = [role_ids]
+            stripped = role_ids.strip() if isinstance(role_ids, str) else role_ids
+            if isinstance(stripped, str) and "," in stripped:
+                candidate_values = [part.strip() for part in stripped.split(",")]
+            else:
+                candidate_values = [role_ids]
         elif isinstance(role_ids, dict):
             candidate_values = role_ids.values()
         else:
@@ -119,12 +178,24 @@ class GuildSettingsRepository:
 
         normalized: list[int] = []
         for role_id in candidate_values:
-            if role_id is None:
+            if role_id is None or role_id == "":
                 continue
-            normalized.append(int(role_id))
+            try:
+                normalized.append(int(str(role_id).strip()))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Failed to normalize role id list for guild settings",
+                    extra={
+                        "guild_id": guild_id,
+                        "field_name": field_name,
+                        "raw_value_type": type(role_ids).__name__,
+                        "bad_value_type": type(role_id).__name__,
+                    },
+                )
+                return []
         return sorted(set(normalized))
 
-    def _normalize_updates(self, fields: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_updates(self, fields: Dict[str, Any], *, guild_id: Optional[int] = None) -> Dict[str, Any]:
         unknown = set(fields) - self.ALLOWED_FIELDS
         if unknown:
             raise ValueError(f"Unsupported guild settings field(s): {', '.join(sorted(unknown))}")
@@ -135,7 +206,7 @@ class GuildSettingsRepository:
                 normalized[key] = self._normalize_bigint(value)
                 continue
             if key == "admin_role_ids":
-                normalized_ids = self._normalize_admin_role_ids(value)
+                normalized_ids = self._normalize_admin_role_ids(value, guild_id=guild_id, field_name=key)
                 if normalized_ids is None:
                     normalized[key] = None
                 else:
@@ -143,7 +214,7 @@ class GuildSettingsRepository:
                     normalized[key] = unique_int_ids
                 continue
             if key == "jump_ping_role_ids":
-                normalized[key] = self._normalize_role_id_list(value)
+                normalized[key] = self._normalize_role_id_list(value, guild_id=guild_id, field_name=key)
                 continue
             if key in {"reservation_timeout_minutes", "default_max_slots", "host_tax_recipient_torn_id", "host_tax_item_id", "host_tax_quantity"} and value is not None:
                 normalized[key] = int(value)
@@ -156,7 +227,12 @@ class GuildSettingsRepository:
         data["guild_id"] = guild_id
         if row:
             data.update(row)
-        data["jump_ping_role_ids"] = self._normalize_role_id_list(data.get("jump_ping_role_ids"))
+        data["admin_role_ids"] = self._normalize_admin_role_ids(
+            data.get("admin_role_ids"), guild_id=guild_id, field_name="admin_role_ids"
+        )
+        data["jump_ping_role_ids"] = self._normalize_role_id_list(
+            data.get("jump_ping_role_ids"), guild_id=guild_id, field_name="jump_ping_role_ids"
+        )
         return data
 
 
@@ -223,7 +299,7 @@ class GuildSettingsRepository:
         if not fields:
             return await self.get_settings(guild_id)
 
-        normalized = self._normalize_updates(fields)
+        normalized = self._normalize_updates(fields, guild_id=guild_id)
         row = None
         if hasattr(self._db, "update_guild_settings"):
             row = await self._db.update_guild_settings(guild_id, **normalized)
@@ -247,27 +323,5 @@ class GuildSettingsRepository:
 
     @staticmethod
     def resolve_admin_role_ids(settings: Dict[str, Any]) -> list[int]:
-        raw_value = settings.get("admin_role_ids")
-        if raw_value is None:
-            return []
-
-        if isinstance(raw_value, dict):
-            values = list(raw_value.values())
-        elif isinstance(raw_value, (list, tuple, set)):
-            values = list(raw_value)
-        else:
-            values = [raw_value]
-
-        normalized: list[int] = []
-        for value in values:
-            if value is None:
-                continue
-            if isinstance(value, int):
-                normalized.append(value)
-                continue
-            if isinstance(value, str):
-                stripped = value.strip()
-                if stripped.isdigit():
-                    normalized.append(int(stripped))
-
-        return normalized
+        normalized = GuildSettingsRepository._normalize_admin_role_ids(settings.get("admin_role_ids"))
+        return [] if normalized is None else normalized
