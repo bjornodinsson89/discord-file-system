@@ -10,6 +10,16 @@ from typing import Any, Dict, Iterable, Optional
 logger = logging.getLogger(__name__)
 
 
+def _jsonb(v: Any) -> Optional[str]:
+    if v is None:
+        return None
+    if isinstance(v, (list, dict)):
+        return json.dumps(v)
+    if isinstance(v, str):
+        return v
+    return json.dumps(v)
+
+
 class GuildSettingsRepository:
     """CRUD helpers with safe, schema-aligned upserts for per-guild settings."""
 
@@ -251,6 +261,38 @@ class GuildSettingsRepository:
             )
             return dict(row) if row else None
 
+    async def _db_insert_settings(self, guild_id: int, fields: Dict[str, Any]) -> Optional[dict[str, Any]]:
+        if not hasattr(self._db, "pool"):
+            return None
+        async with self._db.pool.acquire() as conn:
+            columns = ["guild_id"]
+            placeholders = ["$1"]
+            values: list[Any] = [guild_id]
+
+            for index, (key, value) in enumerate(fields.items(), start=2):
+                columns.append(key)
+                if key in {"admin_role_ids", "jump_ping_role_ids"}:
+                    placeholders.append(f"${index}::jsonb")
+                    values.append(_jsonb(value))
+                else:
+                    placeholders.append(f"${index}")
+                    values.append(value)
+
+            row = await conn.fetchrow(
+                f"""
+                INSERT INTO public.guild_settings ({', '.join(columns)})
+                VALUES ({', '.join(placeholders)})
+                ON CONFLICT (guild_id) DO NOTHING
+                RETURNING *
+                """,
+                *values,
+            )
+            if row:
+                return dict(row)
+
+            existing = await conn.fetchrow("SELECT * FROM public.guild_settings WHERE guild_id = $1", guild_id)
+            return dict(existing) if existing else None
+
     async def _db_update_settings(self, guild_id: int, fields: Dict[str, Any]) -> Optional[dict[str, Any]]:
         if not hasattr(self._db, "pool"):
             return None
@@ -260,9 +302,10 @@ class GuildSettingsRepository:
             for i, (key, value) in enumerate(fields.items(), 1):
                 if key in {"admin_role_ids", "jump_ping_role_ids"}:
                     sets.append(f"{key} = ${i}::jsonb")
+                    values.append(_jsonb(value))
                 else:
                     sets.append(f"{key} = ${i}")
-                values.append(value)
+                    values.append(value)
             values.append(guild_id)
             row = await conn.fetchrow(
                 f"UPDATE public.guild_settings SET {', '.join(sets)} WHERE guild_id = ${len(values)} RETURNING *",
@@ -297,6 +340,46 @@ class GuildSettingsRepository:
 
     async def get_guild_settings(self, guild_id: int) -> Dict[str, Any]:
         return await self.get_settings(guild_id)
+
+    async def create_default_guild_settings(self, guild_id: int) -> Dict[str, Any]:
+        defaults = {
+            "admin_role_ids": [],
+            "jump_ping_role_ids": [],
+            "announce_channel_id": None,
+            "jump_99k_channel_id": None,
+            "jump_announce_channel_id": None,
+            "raffle_channel_id": None,
+            "raffle_announcement_channel_id": None,
+            "raffle_purchase_channel_id": None,
+            "insurance_channel_id": None,
+            "applications_channel_id": None,
+            "welcome_channel_id": None,
+            "host99k_role_id": None,
+            "insurer_role_id": None,
+            "welcome_enabled": False,
+            "raffle_announce_enabled": True,
+            "welcome_message_template": None,
+            "auto_complete_enabled": True,
+            "reservation_timeout_minutes": 5,
+            "default_max_slots": 5,
+            "host_tax_enabled": False,
+            "host_tax_recipient_torn_id": None,
+            "host_tax_type": None,
+            "host_tax_item_id": None,
+            "host_tax_quantity": None,
+            "host_tax_cash_amount": None,
+        }
+        row = await self._db_insert_settings(guild_id, defaults)
+        return self._merge_defaults(row, guild_id)
+
+    async def ensure_guild_exists(self, guild_id: int):
+        if not hasattr(self._db, "pool"):
+            return
+        async with self._db.pool.acquire() as conn:
+            existing = await conn.fetchrow("SELECT guild_id FROM public.guild_settings WHERE guild_id = $1", guild_id)
+        if existing:
+            return
+        await self.create_default_guild_settings(guild_id)
 
     async def upsert_settings(self, guild_id: int, **fields: Any) -> Dict[str, Any]:
         if not fields:

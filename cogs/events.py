@@ -494,7 +494,8 @@ async def on_guild_join(guild: discord.Guild):
     db = get_database()
     repo = GuildSettingsRepository(db)
     try:
-        settings = await repo.insert_or_get_guild_settings(guild.id)
+        await repo.ensure_guild_exists(guild.id)
+        settings = await repo.get_guild_settings(guild.id)
     except Exception:
         log.exception("Failed to initialize guild settings for guild %s", guild.id)
         return
@@ -654,7 +655,13 @@ async def my_sessions(interaction: discord.Interaction):
 async def setup(interaction: discord.Interaction):
     db = get_database()
     repo = GuildSettingsRepository(db)
-    await repo.insert_or_get_guild_settings(interaction.guild_id)
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            embed=create_error_embed("Unavailable", "This command can only be used in a server."),
+            ephemeral=True,
+        )
+        return
+    await repo.ensure_guild_exists(interaction.guild.id)
     await send_setup_panel(interaction, db)
 
 

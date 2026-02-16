@@ -583,8 +583,27 @@ class AdminRoleSelect(discord.ui.RoleSelect):
                 len(self.values),
             )
             role_ids = [int(role.id) for role in self.values if not role.is_default()]
+            if self.setting_key == "admin_role_ids":
+                log.info(
+                    "setup_next_roles_view guild_id=%s selected_admin_roles=%s",
+                    interaction.guild_id,
+                    role_ids,
+                )
             await self.panel.save_changes(interaction, {self.setting_key: role_ids})
+            if self.setting_key == "admin_role_ids":
+                log.info(
+                    "setup_next_roles_view_db_update_ok guild_id=%s selected_admin_roles=%s",
+                    interaction.guild_id,
+                    role_ids,
+                )
         except Exception as error:
+            if self.setting_key == "admin_role_ids":
+                log.exception(
+                    "setup_next_roles_view_error guild_id=%s selected_admin_roles=%s",
+                    interaction.guild_id,
+                    [int(role.id) for role in self.values if not role.is_default()],
+                    exc_info=(type(error), error, error.__traceback__),
+                )
             await _respond_callback_error(interaction, error)
 
 
@@ -891,7 +910,10 @@ class TestView(BackView):
 
 async def send_setup_panel(interaction: discord.Interaction, db) -> None:
     repo = GuildSettingsRepository(db)
-    await repo.insert_or_get_guild_settings(interaction.guild_id)
+    if interaction.guild is not None:
+        await repo.ensure_guild_exists(interaction.guild.id)
+    else:
+        await repo.ensure_guild_exists(interaction.guild_id)
     allowed, settings = await ensure_setup_permission(interaction, db)
     if not allowed:
         embed = create_error_embed(
