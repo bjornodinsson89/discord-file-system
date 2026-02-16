@@ -44,13 +44,14 @@ class ApplicationsRepository(RepositoryBase):
         app_type: str,
         thread_id: int,
         channel_id: int,
+        summary_message_id: Optional[int] = None,
         answers: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO applications (guild_id, user_id, app_type, thread_id, channel_id, answers)
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+                INSERT INTO applications (guild_id, user_id, app_type, thread_id, channel_id, summary_message_id, answers)
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
                 RETURNING *
                 """,
                 guild_id,
@@ -58,9 +59,18 @@ class ApplicationsRepository(RepositoryBase):
                 app_type,
                 thread_id,
                 channel_id,
+                summary_message_id,
                 json.dumps(answers or {}, separators=(",", ":"), ensure_ascii=False),
             )
             return dict(row)
+
+    async def set_summary_message_id(self, *, app_id: int, message_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE applications SET summary_message_id = $2, updated_at = NOW() WHERE id = $1",
+                app_id,
+                message_id,
+            )
 
     async def get_by_thread_id(self, thread_id: int) -> Optional[dict[str, Any]]:
         async with self.pool.acquire() as conn:
