@@ -269,66 +269,69 @@ class ApplicationsCog(commands.Cog):
             log.exception("Failed to start insurer wizard user_id=%s", user.id)
 
     async def _process_wizard_message(self, message: discord.Message):
-        if not isinstance(message.channel, discord.DMChannel):
+        if message.guild is not None and not isinstance(message.channel, discord.DMChannel):
             return
         db = get_database()
         repo = ApplicationsRepository(db.pool)
-        state = None
-        guild_id = None
-        for guild in self.bot.guilds:
-            maybe = await repo.get_wizard_state(guild_id=guild.id, user_id=message.author.id)
-            if maybe:
-                state = maybe
-                guild_id = guild.id
-                break
-        if not state or guild_id is None:
+        state = await repo.get_active_wizard_state_for_user(user_id=message.author.id)
+        if not state:
+            await message.channel.send("No active wizard. Run /create_insurance_card (or whatever command) to start.")
             return
 
+        guild_id = int(state["guild_id"])
         draft = state.get("draft") or {}
         step = int(state.get("step") or 0)
         content = (message.content or "").strip()
-        if step < 4 and not content:
-            await message.channel.send("This field is required. Please reply with text.")
-            return
-
-        if step == 0:
-            draft["display_name"] = content
-        elif step == 1:
-            draft["coverage_summary"] = content
-        elif step == 2:
-            draft["pricing_text"] = content
-        elif step == 3:
-            draft["rules_exclusions"] = content
-        elif step == 4:
-            delay_match = re.search(r"activation_delay_minutes\s*:\s*(\d+)", content, re.I)
-            duration_match = re.search(r"coverage_duration_minutes\s*:\s*(\d+)", content, re.I)
-            image_match = re.search(r"image_url\s*:\s*(.*)", content, re.I)
-            if not delay_match or not duration_match:
-                await message.channel.send("Invalid format. Please send all lines exactly as requested.")
-                return
-            delay = int(delay_match.group(1))
-            duration = int(duration_match.group(1))
-            image_url = image_match.group(1).strip() if image_match else ""
-            if delay < 0:
-                await message.channel.send("activation_delay_minutes must be >= 0.")
-                return
-            if duration < MIN_COVERAGE_DURATION_MINUTES or duration > MAX_COVERAGE_DURATION_MINUTES:
-                await message.channel.send(f"coverage_duration_minutes must be between {MIN_COVERAGE_DURATION_MINUTES} and {MAX_COVERAGE_DURATION_MINUTES}.")
-                return
-            if image_url and not _is_valid_image_url(image_url):
-                await message.channel.send("image_url must be https and end with png/jpg/jpeg/webp.")
-                return
-            draft["activation_delay_minutes"] = delay
-            draft["coverage_duration_minutes"] = duration
-            draft["image_url"] = image_url or None
-
-        next_step = step + 1
-        if next_step < len(INSURER_WIZARD_STEPS):
-            await repo.upsert_wizard_state(guild_id=guild_id, user_id=message.author.id, step=next_step, draft=draft)
-            await message.channel.send(INSURER_WIZARD_STEPS[next_step])
-            return
 
         try:
+            log.info(
+                "insurance_card_wizard_dm_matched user_id=%s step=%s content_length=%s",
+                message.author.id,
+                step,
+                len(content),
+            )
+
+            if step < 4 and not content:
+                await message.channel.send("This field is required. Please reply with text.")
+                return
+
+            if step == 0:
+                draft["display_name"] = content
+            elif step == 1:
+                draft["coverage_summary"] = content
+            elif step == 2:
+                draft["pricing_text"] = content
+            elif step == 3:
+                draft["rules_exclusions"] = content
+            elif step == 4:
+                delay_match = re.search(r"activation_delay_minutes\s*:\s*(\d+)", content, re.I)
+                duration_match = re.search(r"coverage_duration_minutes\s*:\s*(\d+)", content, re.I)
+                image_match = re.search(r"image_url\s*:\s*(.*)", content, re.I)
+                if not delay_match or not duration_match:
+                    await message.channel.send("Invalid format. Please send all lines exactly as requested.")
+                    return
+                delay = int(delay_match.group(1))
+                duration = int(duration_match.group(1))
+                image_url = image_match.group(1).strip() if image_match else ""
+                if delay < 0:
+                    await message.channel.send("activation_delay_minutes must be >= 0.")
+                    return
+                if duration < MIN_COVERAGE_DURATION_MINUTES or duration > MAX_COVERAGE_DURATION_MINUTES:
+                    await message.channel.send(f"coverage_duration_minutes must be between {MIN_COVERAGE_DURATION_MINUTES} and {MAX_COVERAGE_DURATION_MINUTES}.")
+                    return
+                if image_url and not _is_valid_image_url(image_url):
+                    await message.channel.send("image_url must be https and end with png/jpg/jpeg/webp.")
+                    return
+                draft["activation_delay_minutes"] = delay
+                draft["coverage_duration_minutes"] = duration
+                draft["image_url"] = image_url or None
+
+            next_step = step + 1
+            if next_step < len(INSURER_WIZARD_STEPS):
+                await repo.upsert_wizard_state(guild_id=guild_id, user_id=message.author.id, step=next_step, draft=draft)
+                await message.channel.send(INSURER_WIZARD_STEPS[next_step])
+                return
+
             profile = await repo.upsert_insurer_profile(guild_id=guild_id, user_id=message.author.id, data=draft)
             await repo.clear_wizard_state(guild_id=guild_id, user_id=message.author.id)
             embed = discord.Embed(title=profile["display_name"], color=discord.Color.green())
@@ -353,8 +356,8 @@ class ApplicationsCog(commands.Cog):
                 if isinstance(app_channel, discord.TextChannel):
                     await app_channel.send(f"Provider Profile Updated: <@{message.author.id}>")
         except Exception:
-            log.exception("Failed saving insurer profile user_id=%s", message.author.id)
-            await message.channel.send("Failed to save profile. Please retry /insurer_card_setup.")
+            log.exception("insurance_card_wizard_dm_error user_id=%s", message.author.id)
+            await message.channel.send("Wizard error — please run /create_insurance_card again.")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -396,7 +399,7 @@ class ApplicationsCog(commands.Cog):
                 else:
                     questions = HOST_QUESTIONS if app["app_type"] == HOST_APP_TYPE else INSURER_QUESTIONS
                     await message.channel.send(questions[next_question])
-            elif isinstance(message.channel, discord.DMChannel):
+            elif message.guild is None or isinstance(message.channel, discord.DMChannel):
                 await self._process_wizard_message(message)
         except Exception:
             log.exception("on_message processing failed channel_id=%s", getattr(message.channel, "id", None))
