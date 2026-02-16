@@ -112,6 +112,7 @@ class JumpMonitor:
             try:
                 key_data = await users_repo.get_user_api_key(discord_id)
                 if not key_data:
+                    log.warning("Skipping jump monitor poll due to missing API key discord_id=%s guild_id=%s", discord_id, session.get("guild_id"))
                     jump_status[discord_id] = {
                         "energy_current": None,
                         "drug_cd": None,

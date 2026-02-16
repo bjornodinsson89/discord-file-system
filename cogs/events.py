@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import config
-from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager, GuildSettingsRepository
+from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager, GuildSettingsRepository, require_api_key
 from utils.database import get_pool
 from utils.embeds import (
     create_success_embed, create_error_embed, create_warning_embed, create_info_embed,
@@ -725,21 +725,10 @@ async def refresh_item_icons(interaction: discord.Interaction):
         return
 
     db = get_database()
+    if not await require_api_key(interaction, db, "refresh item icons"):
+        return
     row = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
-    if not row:
-        await interaction.followup.send(
-            embed=create_error_embed("API Key Required", "Use the bot's API key setup first."),
-            ephemeral=True,
-        )
-        return
-
     encrypted = row.get("encrypted_key") or row.get("api_key_encrypted")
-    if not encrypted:
-        await interaction.followup.send(
-            embed=create_error_embed("API Key Required", "Use the bot's API key setup first."),
-            ephemeral=True,
-        )
-        return
 
     try:
         api_key = get_security_manager().decrypt_api_key(encrypted)
@@ -1341,11 +1330,10 @@ class Jump99kUserControlsView(discord.ui.View):
                 await interaction.followup.send("You are blacklisted.", ephemeral=True)
                 return
 
+            if not await require_api_key(interaction, db, "verify your payment"):
+                return
             key_row = await users_repo.get_user_api_key(interaction.user.id)
             encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
-            if not key_row or not encrypted_key:
-                await interaction.followup.send("Link your Torn API key first.", ephemeral=True)
-                return
 
             host_key = await users_repo.get_user_api_key(int(session["host_discord_id"]))
             host_torn_id = int(host_key["torn_user_id"]) if host_key and host_key.get("torn_user_id") else 0
@@ -1394,7 +1382,7 @@ class Jump99kUserControlsView(discord.ui.View):
                 ephemeral=True,
             )
         except TornAPIError:
-            await interaction.followup.send("Torn API may be down; try again shortly.", ephemeral=True)
+            await interaction.followup.send("Torn API may be down right now. Please try again in a minute.", ephemeral=True)
         except Exception:
             log.exception(
                 "99k verify_payment failed session_id=%s guild_id=%s user_id=%s",
@@ -1451,10 +1439,9 @@ class Jump99kSignupView(discord.ui.View):
                 await interaction.followup.send("You are blacklisted.", ephemeral=True)
                 return
 
-            key_row = await users_repo.get_user_api_key(interaction.user.id)
-            if not key_row:
-                await interaction.followup.send("Link your Torn API key before joining.", ephemeral=True)
+            if not await require_api_key(interaction, db, "join a 99k jump"):
                 return
+            key_row = await users_repo.get_user_api_key(interaction.user.id)
 
             settings = await GuildSettingsRepository(db).get_or_create(interaction.guild_id)
             timeout_minutes = int(settings.get("reservation_timeout_minutes") or config.DEFAULT_RESERVATION_TIMEOUT)
@@ -1551,8 +1538,7 @@ class HostTaxGateView(discord.ui.View):
         users_repo = UsersRepository(get_pool())
         key_row = await users_repo.get_user_api_key(self.host_discord_id)
         encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
-        if not encrypted_key:
-            await interaction.response.send_message("Link your Torn API key before starting a 99k jump.", ephemeral=True)
+        if not await require_api_key(interaction, db, "start a 99k jump"):
             return
 
         try:
@@ -1567,11 +1553,11 @@ class HostTaxGateView(discord.ui.View):
                 since_timestamp=int(since_dt.timestamp()),
             )
         except TornAPIError:
-            await interaction.response.send_message("Torn API may be down. Try again in a minute.", ephemeral=True)
+            await interaction.response.send_message("Torn API may be down right now. Please try again in a minute.", ephemeral=True)
             return
         except Exception:
             log.exception("Host tax verification failed guild_id=%s user_id=%s", self.guild_id, self.host_discord_id)
-            await interaction.response.send_message("Torn API may be down. Try again in a minute.", ephemeral=True)
+            await interaction.response.send_message("Torn API may be down right now. Please try again in a minute.", ephemeral=True)
             return
 
         if not entry:
@@ -2223,6 +2209,7 @@ async def readiness_worker():
                 try:
                     key_row = await users_repo.get_user_api_key(discord_id)
                     if not key_row:
+                        log.warning("Skipping readiness refresh due to missing API key discord_id=%s guild_id=%s", discord_id, guild.id)
                         continue
 
                     key_data = dict(key_row)
@@ -2288,6 +2275,7 @@ async def auto_verify_99k_payments():
                 key_row = await users_repo.get_user_api_key(participant_id)
                 encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
                 if not key_row or not encrypted_key:
+                    log.warning("Skipping auto_verify_99k_payments due to missing API key discord_id=%s guild_id=%s", participant_id, signup.get("guild_id"))
                     continue
                 host_key = await users_repo.get_user_api_key(int(signup["host_discord_id"]))
                 host_torn_id = int(host_key["torn_user_id"]) if host_key and host_key.get("torn_user_id") else 0

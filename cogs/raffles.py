@@ -13,7 +13,7 @@ from repositories.torn_items import TornItemsRepository
 from repositories.users import UsersRepository
 from services.raffle_payment import RafflePaymentService
 from services.payment_receipts import PaymentReceiptService
-from utils import GuildSettingsRepository, get_database, get_security_manager, get_torn_api
+from utils import GuildSettingsRepository, get_database, get_security_manager, get_torn_api, require_api_key
 from utils.database import get_pool
 from utils.embeds import create_error_embed
 from utils.icon_strips import build_icon_strip_file
@@ -398,10 +398,14 @@ class RaffleCreateModal(discord.ui.Modal):
             end_trigger = "tickets_sold"
             hours_after_sold_out = None
             users_repo = UsersRepository(get_pool())
+            if not await require_api_key(interaction, get_database(), "create a raffle"):
+                return
             creator_key = await users_repo.get_user_api_key(interaction.user.id)
             if not creator_key or not creator_key.get("torn_user_id"):
-                await interaction.response.send_message(
-                    embed=create_error_embed("Missing API key", "You must link your Torn API key first to create raffles."),
+                await interaction.followup.send(
+                    "❗ You need to register your Torn API key before you can create a raffle.\n"
+                    "Run `/set api key` to register it.\n"
+                    "This is required to verify payments and fetch your energy/cooldowns.",
                     ephemeral=True,
                 )
                 return
@@ -623,11 +627,11 @@ async def _reserve_raffle_tickets(
             return
     # PAID ENTRY
     users_repo = UsersRepository(get_pool())
+    if not await require_api_key(interaction, get_database(), "enter a raffle"):
+        return
     buyer_key = await users_repo.get_user_api_key(interaction.user.id)
     if not buyer_key or not buyer_key.get("torn_user_id"):
-        await _send_error(
-            "❌ You must link your Torn API key first to buy paid raffle tickets."
-        )
+        await _send_error("❌ Could not resolve your linked Torn account. Run `/set api key` to register it.")
         return
     creator_torn_id = raffle.get("creator_torn_id")
     if not creator_torn_id:
