@@ -301,6 +301,8 @@ async def _can_review_applications(interaction: discord.Interaction) -> bool:
 intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
+intents.guild_messages = True
+intents.dm_messages = True
 intents.messages = True
 intents.message_content = True
 
@@ -461,6 +463,8 @@ async def register_persistent_signup_views() -> None:
 @bot.event
 async def on_ready():
     """Bot ready handler."""
+    if not bot.intents.message_content:
+        log.warning("MessageContent intent is disabled; DM wizard replies may not be readable.")
     log.info(f"Bot logged in as {bot.user}")
     log.info(f"Bot ID: {bot.user.id}")
     log.info(f"Discord.py version: {discord.__version__}")

@@ -254,6 +254,20 @@ class ApplicationsRepository(RepositoryBase):
             )
             return dict(row) if row else None
 
+    async def get_active_wizard_state_for_user(self, *, user_id: int) -> Optional[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT *
+                FROM insurer_profile_wizards
+                WHERE user_id = $1
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                user_id,
+            )
+            return dict(row) if row else None
+
     async def clear_wizard_state(self, *, guild_id: int, user_id: int) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
