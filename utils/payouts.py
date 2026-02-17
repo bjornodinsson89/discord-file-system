@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import re
 from typing import Dict, Iterable, List
 
 _CANONICAL_TO_LABEL = {
@@ -32,12 +33,45 @@ _ALIAS_TO_CANONICAL = {
 }
 
 
+
+_TOKEN_SPLIT_RE = re.compile(r"[,;\n|]+")
 class PayoutParseError(ValueError):
     """Raised when a payout string cannot be parsed."""
 
 
 def _normalize_item_name(raw: str) -> str:
     return " ".join((raw or "").strip().lower().replace("_", " ").split())
+
+
+def _parse_token(token: str) -> tuple[str, str] | None:
+    if "=" in token:
+        left, right = token.split("=", 1)
+        return left.strip(), right.strip()
+    if ":" in token:
+        left, right = token.split(":", 1)
+        return left.strip(), right.strip()
+
+    match = re.fullmatch(r"(.+?)\s+x\s*(\d+)", token, re.IGNORECASE)
+    if match:
+        return match.group(1).strip(), match.group(2)
+
+    match = re.fullmatch(r"x\s*(\d+)\s+(.+)", token, re.IGNORECASE)
+    if match:
+        return match.group(2).strip(), match.group(1)
+
+    match = re.fullmatch(r"(\d+)\s*x\s*(.+)", token, re.IGNORECASE)
+    if match:
+        return match.group(2).strip(), match.group(1)
+
+    match = re.fullmatch(r"(.+?)\s+(\d+)", token)
+    if match:
+        return match.group(1).strip(), match.group(2)
+
+    match = re.fullmatch(r"(\d+)\s+(.+)", token)
+    if match:
+        return match.group(2).strip(), match.group(1)
+
+    return None
 
 
 def parse_payout_string(text: str) -> List[Dict[str, int | str]]:
@@ -47,26 +81,34 @@ def parse_payout_string(text: str) -> List[Dict[str, int | str]]:
         return []
 
     merged: "OrderedDict[str, int]" = OrderedDict()
-    tokens = [token.strip() for token in source.split(",") if token.strip()]
+    tokens = [token.strip() for token in _TOKEN_SPLIT_RE.split(source) if token.strip()]
     if not tokens:
         return []
 
-    for index, token in enumerate(tokens, start=1):
-        if "=" in token:
-            left, right = token.split("=", 1)
-        elif ":" in token:
-            left, right = token.split(":", 1)
-        else:
+    index = 0
+    visible_index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        visible_index += 1
+
+        parsed = _parse_token(token)
+        if parsed is None and index + 1 < len(tokens) and tokens[index + 1].isdigit():
+            combined = f"{token} {tokens[index + 1]}"
+            parsed = _parse_token(combined)
+            if parsed is not None:
+                index += 1
+
+        if parsed is None:
             raise PayoutParseError(
-                f"Token #{index} ('{token}') is invalid. Use item=qty or item:qty (example: xanax=4, edvd=6)."
+                f"Token #{visible_index} ('{token}') is invalid. Use item=qty or item:qty (example: xanax=4, edvd=6)."
             )
 
+        left, qty_text = parsed
         item_name = _normalize_item_name(left)
-        qty_text = right.strip()
 
         if not item_name:
             raise PayoutParseError(
-                f"Token #{index} ('{token}') is missing an item name. Example: xanax=4."
+                f"Token #{visible_index} ('{token}') is missing an item name. Example: xanax=4."
             )
 
         canonical = _ALIAS_TO_CANONICAL.get(item_name)
@@ -80,15 +122,16 @@ def parse_payout_string(text: str) -> List[Dict[str, int | str]]:
             qty = int(qty_text)
         except (TypeError, ValueError):
             raise PayoutParseError(
-                f"Token #{index} ('{token}') has invalid quantity '{qty_text}'. Quantity must be an integer >= 1."
+                f"Token #{visible_index} ('{token}') has invalid quantity '{qty_text}'. Quantity must be an integer >= 1."
             )
 
         if qty < 1:
             raise PayoutParseError(
-                f"Token #{index} ('{token}') has invalid quantity {qty}. Quantity must be >= 1."
+                f"Token #{visible_index} ('{token}') has invalid quantity {qty}. Quantity must be >= 1."
             )
 
         merged[canonical] = merged.get(canonical, 0) + qty
+        index += 1
 
     return [{"item": item, "qty": qty} for item, qty in merged.items()]
 
