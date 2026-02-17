@@ -66,6 +66,9 @@ log = logging.getLogger("happy_jumper")
 
 
 HOST_TAX_VERIFY_WINDOW_MINUTES = 30
+TORN_NAME_CACHE_TTL_MINUTES = 10
+_TORN_NAME_CACHE: dict[int, tuple[str, datetime]] = {}
+_TORN_NAME_FAIL_LOG_CACHE: dict[int, datetime] = {}
 
 
 
@@ -1137,12 +1140,62 @@ def _format_energy_pair(current: int | None, maximum: int | None) -> str:
     if current is None or maximum is None:
         return "|?/?|"
     return f"|{int(current)}/{int(maximum)}|"
+
+
+def _should_log_torn_name_failure(discord_id: int) -> bool:
+    now = datetime.now(timezone.utc)
+    cached = _TORN_NAME_FAIL_LOG_CACHE.get(discord_id)
+    if cached and cached > now:
+        return False
+    _TORN_NAME_FAIL_LOG_CACHE[discord_id] = now + timedelta(minutes=TORN_NAME_CACHE_TTL_MINUTES)
+    return True
+
+
+async def _get_torn_display_name_for_discord(guild_id: int, discord_id: int) -> Optional[str]:
+    now = datetime.now(timezone.utc)
+    cached = _TORN_NAME_CACHE.get(discord_id)
+    if cached and cached[1] > now:
+        return cached[0]
+
+    user_row = await UsersRepository(get_pool()).get_user_api_key(discord_id)
+    encrypted_key = (user_row or {}).get("encrypted_key") or (user_row or {}).get("api_key_encrypted")
+    if not encrypted_key:
+        if _should_log_torn_name_failure(discord_id):
+            log.debug("Torn name resolve skipped: no API key guild_id=%s discord_id=%s", guild_id, discord_id)
+        return None
+
+    try:
+        api_key = get_security_manager().decrypt_api_key(encrypted_key)
+        data = await get_torn_api().get_user_data(api_key)
+        name = (data.get("profile", {}) or {}).get("name") or data.get("name")
+        if name:
+            _TORN_NAME_CACHE[discord_id] = (str(name), now + timedelta(minutes=TORN_NAME_CACHE_TTL_MINUTES))
+            return str(name)
+
+        if _should_log_torn_name_failure(discord_id):
+            log.debug("Torn name resolve returned empty name guild_id=%s discord_id=%s", guild_id, discord_id)
+        return None
+    except (TornAPIError, TornAPIRateLimitError):
+        if _should_log_torn_name_failure(discord_id):
+            log.debug("Torn name resolve failed via Torn API guild_id=%s discord_id=%s", guild_id, discord_id)
+        return None
+    except Exception:
+        if _should_log_torn_name_failure(discord_id):
+            log.debug("Torn name resolve unexpected failure guild_id=%s discord_id=%s", guild_id, discord_id)
+        return None
+
+
 def _truncate_name_16(name: str) -> str:
     raw = (name or "").strip() or "User"
-    return raw if len(raw) <= 12 else f"{raw[:12]}…"
+    return raw if len(raw) <= 14 else f"{raw[:13]}…"
 
 
 async def _resolve_roster_name(guild: discord.Guild | None, discord_id: int) -> str:
+    guild_id = int(guild.id) if guild else 0
+    torn_name = await _get_torn_display_name_for_discord(guild_id, discord_id)
+    if torn_name:
+        return _truncate_name_16(torn_name)
+
     if guild:
         member = guild.get_member(discord_id)
         if member is None:
@@ -1157,6 +1210,39 @@ async def _resolve_roster_name(guild: discord.Guild | None, discord_id: int) -> 
 
 def _build_roster_embed(lines: list[str]) -> discord.Embed:
     return discord.Embed(title="Jump Roster", description="\n".join(lines), color=discord.Color.blurple())
+
+
+async def _build_session_roster_embed(
+    *,
+    bot: commands.Bot,
+    session_id: int,
+    guild_id: int,
+    host_discord_id: int,
+    payment_type: str,
+    payment_amount: int,
+) -> discord.Embed:
+    guild = bot.get_guild(int(guild_id))
+    host_member = guild.get_member(int(host_discord_id)) if guild else None
+    if host_member is None and guild:
+        try:
+            host_member = await guild.fetch_member(int(host_discord_id))
+        except Exception:
+            host_member = None
+
+    host_name = await _get_torn_display_name_for_discord(int(guild_id), int(host_discord_id))
+    if not host_name:
+        host_name = host_member.display_name if host_member is not None else str(host_discord_id)
+
+    return discord.Embed(
+        title="Jump Roster",
+        description=(
+            f"Session ID: **#{session_id}**\n"
+            f"Host: {host_name}\n"
+            f"Payment: **{payment_amount}x {'Xanax' if payment_type == 'xanax' else 'eDVD'}**\n"
+            "Members will appear here after payment verification."
+        ),
+        color=discord.Color.blurple(),
+    )
 
 
 async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageable, message: discord.Message | None = None) -> tuple[discord.Embed, str]:
@@ -1799,15 +1885,13 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                         reason="99k jump session channel",
                     )
 
-                    panel_embed = discord.Embed(
-                        title="Jump Roster",
-                        description=(
-                            f"Session ID: **#{session_id}**\n"
-                            f"Host ID: {interaction.user.id}\n"
-                            f"Payment: **{price_amount}x {'Xanax' if raw_payment_type == 'xanax' else 'eDVD'}**\n"
-                            "Members will appear here after payment verification."
-                        ),
-                        color=discord.Color.blurple(),
+                    panel_embed = await _build_session_roster_embed(
+                        bot=interaction.client,
+                        session_id=int(session_id),
+                        guild_id=int(interaction.guild_id),
+                        host_discord_id=int(interaction.user.id),
+                        payment_type=str(raw_payment_type),
+                        payment_amount=int(price_amount),
                     )
                     roster_msg = await private_channel.send(embed=panel_embed, view=Jump99kRosterView(session_id))
                     await repo.set_private_channel(session_id, channel_id=private_channel.id, roster_message_id=roster_msg.id)
