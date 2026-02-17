@@ -2125,7 +2125,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
         max_length=20,
         placeholder="xanax",
     )
-    max_slots = discord.ui.TextInput(label="Max slots", required=True, max_length=1, placeholder="5")
+    max_slots = discord.ui.TextInput(label="Max slots", required=True, max_length=2, placeholder="5")
     spot_price = discord.ui.TextInput(
         label="Payment amount",
         required=True,
@@ -2145,6 +2145,24 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
         self.settings = settings
         self.session = session
 
+        def _parse_slots(value, *, fallback: int | None = None) -> int | None:
+            try:
+                parsed = int(str(value).strip())
+            except (TypeError, ValueError):
+                return fallback
+            if 1 <= parsed <= 7:
+                return parsed
+            return fallback
+
+        default_slots = _parse_slots(settings.get("default_max_slots"), fallback=5)
+        prefill_slots = default_slots
+        if session:
+            prefill_slots = _parse_slots(session.get("max_slots"), fallback=default_slots)
+
+        prefill_text = str(prefill_slots)
+        self.max_slots.default = prefill_text
+        self.max_slots.placeholder = prefill_text
+
     async def on_submit(self, interaction: discord.Interaction):
         repo = JumpsRepository(get_pool())
         try:
@@ -2152,10 +2170,10 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
             try:
                 slots = int(str(self.max_slots.value).strip())
             except ValueError:
-                await interaction.response.send_message(embed=create_error_embed("Invalid max slots", "Max slots must be a number from 1 to 5."), ephemeral=True)
+                await interaction.response.send_message(embed=create_error_embed("Invalid max slots", "Max slots must be a number from 1 to 7."), ephemeral=True)
                 return
-            if slots < 1 or slots > 5:
-                await interaction.response.send_message(embed=create_error_embed("Invalid max slots", "Max slots must be from 1 to 5."), ephemeral=True)
+            if slots < 1 or slots > 7:
+                await interaction.response.send_message(embed=create_error_embed("Invalid max slots", "Max slots must be from 1 to 7."), ephemeral=True)
                 return
 
             try:
