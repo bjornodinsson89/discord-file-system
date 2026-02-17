@@ -327,7 +327,7 @@ class RaffleCreateModal(discord.ui.Modal):
         max_length=200,
     )
     payment_type = discord.ui.TextInput(
-        label="Payment type (Giveaway, Xanax 💊, Erotic DvD 📀)",
+        label="Payment type (Giveaway / Xanax / eDVD)",
         placeholder="Giveaway / Xanax / Erotic DvD",
         required=True,
         max_length=20,
