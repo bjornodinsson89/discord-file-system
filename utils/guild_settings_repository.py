@@ -31,6 +31,7 @@ class GuildSettingsRepository:
         "raffle_announcement_channel_id",
         "raffle_purchase_channel_id",
         "pool_channel_id",
+        "pools_post_channel_id",
         "raffle_announce_enabled",
         "insurance_channel_id",
         "applications_channel_id",
@@ -60,6 +61,7 @@ class GuildSettingsRepository:
         "applications_channel_id",
         "welcome_channel_id",
         "pool_channel_id",
+        "pools_post_channel_id",
         "host99k_role_id",
         "insurer_role_id",
         "default_max_slots",
@@ -77,6 +79,7 @@ class GuildSettingsRepository:
         "raffle_purchase_channel_id": None,
         "welcome_channel_id": None,
         "pool_channel_id": None,
+        "pools_post_channel_id": None,
         "admin_role_ids": None,
         "jump_ping_role_ids": [],
         "host99k_role_id": None,
@@ -240,6 +243,8 @@ class GuildSettingsRepository:
         data["guild_id"] = guild_id
         if row:
             data.update(row)
+        for field in self.BIGINT_FIELDS:
+            data[field] = self._normalize_bigint(data.get(field))
         data["admin_role_ids"] = self._normalize_admin_role_ids(
             data.get("admin_role_ids"), guild_id=guild_id, field_name="admin_role_ids"
         )
@@ -358,6 +363,7 @@ class GuildSettingsRepository:
             "applications_channel_id": None,
             "welcome_channel_id": None,
             "pool_channel_id": None,
+            "pools_post_channel_id": None,
             "host99k_role_id": None,
             "insurer_role_id": None,
             "welcome_enabled": False,

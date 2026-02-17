@@ -280,8 +280,8 @@ class SetupPanelView(OwnerView):
             f"Insurance: {channel_name('insurance_channel_id')}\n"
             f"Applications: {channel_name('applications_channel_id')}\n"
             f"Welcome: {channel_name('welcome_channel_id')}\n"
-            f"Pools: {channel_name('pool_channel_id')}\n"
-            f"Pools post: {channel_name('pools_channel_id')}"
+            f"Pools Purchase Channel: {channel_name('pool_channel_id')}\n"
+            f"Pools Announcement Channel: {channel_name('pools_post_channel_id')}"
         ), inline=False)
         jump_ping_mentions = []
         for rid in (s.get("jump_ping_role_ids") or []):
@@ -419,7 +419,7 @@ class SetupPanelView(OwnerView):
     @discord.ui.button(label="Channels", style=discord.ButtonStyle.primary)
     async def channels_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
-            await _send_or_edit(interaction, create_info_embed("Channels", "Use buttons below to pick each channel."), ChannelsViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+            await _send_or_edit(interaction, create_info_embed("Channels", "Use buttons below to pick each channel.\n\nPurchase channel = where the ticket panel lives\nAnnouncement channel = where updates are posted\n\nThis is where users go to buy pool tickets. The purchase panel will be posted here.\nThis is where the bot posts pool announcements and updates."), ChannelsViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
@@ -540,7 +540,7 @@ class ChannelsViewPage1(BackView):
                 await interaction.response.defer(ephemeral=True, thinking=False)
             await _send_or_edit(
                 interaction,
-                create_info_embed("Channels", "Use buttons below to pick each channel."),
+                create_info_embed("Channels", "Use buttons below to pick each channel.\n\nPurchase channel = where the ticket panel lives\nAnnouncement channel = where updates are posted\n\nThis is where users go to buy pool tickets. The purchase panel will be posted here.\nThis is where the bot posts pool announcements and updates."),
                 ChannelsViewPage2(
                     owner_id=self.owner_id,
                     db=self.db,
@@ -577,7 +577,7 @@ class ChannelsViewPage2(BackView):
                 await interaction.response.defer(ephemeral=True, thinking=False)
             await _send_or_edit(
                 interaction,
-                create_info_embed("Channels", "Use buttons below to pick each channel."),
+                create_info_embed("Channels", "Use buttons below to pick each channel.\n\nPurchase channel = where the ticket panel lives\nAnnouncement channel = where updates are posted\n\nThis is where users go to buy pool tickets. The purchase panel will be posted here.\nThis is where the bot posts pool announcements and updates."),
                 ChannelsViewPage1(
                     owner_id=self.owner_id,
                     db=self.db,
@@ -597,7 +597,7 @@ class ChannelsViewPage2(BackView):
                 await interaction.response.defer(ephemeral=True, thinking=False)
             await _send_or_edit(
                 interaction,
-                create_info_embed("Channels", "Use buttons below to pick each channel."),
+                create_info_embed("Channels", "Use buttons below to pick each channel.\n\nPurchase channel = where the ticket panel lives\nAnnouncement channel = where updates are posted\n\nThis is where users go to buy pool tickets. The purchase panel will be posted here.\nThis is where the bot posts pool announcements and updates."),
                 ChannelsViewPage3(
                     owner_id=self.owner_id,
                     db=self.db,
@@ -623,8 +623,8 @@ class ChannelsViewPage3(BackView):
         super().__init__(**kwargs)
         self.remove_item(self.back_btn)
         self.add_item(ChannelSelect(self.panel, "welcome_channel_id", "Set welcome channel", row=0))
-        self.add_item(ChannelSelect(self.panel, "pool_channel_id", "Set pools channel", row=1))
-        self.add_item(ChannelSelect(self.panel, "pools_channel_id", "Set pools post channel", row=2))
+        self.add_item(ChannelSelect(self.panel, "pool_channel_id", "Set pools PURCHASE channel (ticket panel / buy button)", row=1))
+        self.add_item(ChannelSelect(self.panel, "pools_post_channel_id", "Set pools ANNOUNCEMENT channel (pool updates / winners)", row=2))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -634,7 +634,7 @@ class ChannelsViewPage3(BackView):
                 await interaction.response.defer(ephemeral=True, thinking=False)
             await _send_or_edit(
                 interaction,
-                create_info_embed("Channels", "Use buttons below to pick each channel."),
+                create_info_embed("Channels", "Use buttons below to pick each channel.\n\nPurchase channel = where the ticket panel lives\nAnnouncement channel = where updates are posted\n\nThis is where users go to buy pool tickets. The purchase panel will be posted here.\nThis is where the bot posts pool announcements and updates."),
                 ChannelsViewPage2(
                     owner_id=self.owner_id,
                     db=self.db,

@@ -97,7 +97,7 @@ def _pool_channel_missing_permissions(channel: discord.abc.GuildChannel, me: dis
     return missing
 
 
-async def _resolve_pool_post_channel(
+async def _resolve_pool_purchase_channel(
     interaction: discord.Interaction,
     settings: dict,
 ) -> tuple[discord.abc.Messageable | None, str | None]:
@@ -109,7 +109,7 @@ async def _resolve_pool_post_channel(
     me = guild.me or guild.get_member(interaction.client.user.id)
     configured_id = settings.get("pool_channel_id")
     if not configured_id:
-        return fallback_channel, "ℹ️ Pools channel is not configured. Run `/setup` → Channels → **Set pools channel**."
+        return None, "❌ Configure **Pools PURCHASE channel** in `/setup` first."
 
     target = guild.get_channel(int(configured_id))
     if target is None:
@@ -119,17 +119,15 @@ async def _resolve_pool_post_channel(
             target = None
 
     if target is None:
-        return fallback_channel, (
-            "⚠️ Configured pools channel is invalid or no longer exists. "
-            "Using this channel instead. Update `/setup` → Channels → **Set pools channel**."
+        return None, (
+            "❌ Configured **Pools PURCHASE channel** is invalid or no longer exists. Update `/setup`."
         )
 
     if me and isinstance(target, discord.abc.GuildChannel):
         missing = _pool_channel_missing_permissions(target, me)
         if missing:
-            return fallback_channel, (
-                f"⚠️ I cannot post in {target.mention} (missing: {', '.join(missing)}). "
-                "Using this channel instead."
+            return None, (
+                f"❌ I cannot post purchase panel in {target.mention} (missing: {', '.join(missing)})."
             )
 
     return target, None
@@ -420,29 +418,19 @@ class PoolsCog(commands.Cog):
             return
 
         settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
-        announce_channel_id = settings.get("raffle_announcement_channel_id")
-        if not announce_channel_id:
-            await interaction.response.send_message(
-                "❌ Configure **raffle announcement channel** in `/setup` first.",
-                ephemeral=True,
-            )
+        purchase_channel, purchase_channel_error = await _resolve_pool_purchase_channel(interaction, settings)
+        if purchase_channel is None or not hasattr(purchase_channel, "send"):
+            await interaction.response.send_message(purchase_channel_error or "❌ Unable to resolve Pools PURCHASE channel.", ephemeral=True)
             return
 
-        panel_channel, pool_channel_warning = await _resolve_pool_post_channel(interaction, settings)
-        if panel_channel is None or not hasattr(panel_channel, "send"):
-            await interaction.response.send_message("❌ Unable to resolve a channel to post the pool.", ephemeral=True)
-            return
-
+        announce_channel_id = settings.get("pools_post_channel_id") or settings.get("pool_channel_id")
         guild = interaction.guild
-        announce_channel = guild.get_channel(int(announce_channel_id)) if guild else None
-        if announce_channel is None and guild:
+        announce_channel = guild.get_channel(int(announce_channel_id)) if (guild and announce_channel_id) else None
+        if announce_channel is None and guild and announce_channel_id:
             try:
                 announce_channel = await guild.fetch_channel(int(announce_channel_id))
             except Exception:
                 announce_channel = None
-        if announce_channel is None:
-            await interaction.response.send_message("❌ Configured raffle announcement channel is invalid or inaccessible.", ephemeral=True)
-            return
 
         pool_id = await repo.create_pool(
             guild_id=interaction.guild_id,
@@ -451,12 +439,12 @@ class PoolsCog(commands.Cog):
             tickets_total=tickets_total,
             max_per_user=max_per_user,
             announce_channel_id=int(announce_channel_id),
-            panel_channel_id=int(panel_channel.id),
+            panel_channel_id=int(purchase_channel.id),
         )
         pool = await repo.get_pool(pool_id)
         panel_embed = await _build_pool_panel_embed(pool, sold=0)
-        panel_msg = await panel_channel.send(embed=panel_embed, view=PoolPurchasePanelView(pool_id=pool_id))
-        await repo.set_panel_ref(pool_id, panel_channel.id, panel_msg.id)
+        panel_msg = await purchase_channel.send(embed=panel_embed, view=PoolPurchasePanelView(pool_id=pool_id))
+        await repo.set_panel_ref(pool_id, purchase_channel.id, panel_msg.id)
 
         if bool(settings.get("raffle_announce_enabled", True)):
             announce_embed = discord.Embed(
@@ -468,12 +456,13 @@ class PoolsCog(commands.Cog):
                 ),
                 color=discord.Color.green(),
             )
-            announce_embed.add_field(name="", value=f"👉 Buy in {panel_channel.mention}", inline=False)
-            await announce_channel.send(embed=announce_embed)
+            announce_embed.add_field(name="", value=f"👉 Purchase tickets in <#{int(purchase_channel.id)}>", inline=False)
+            if announce_channel is not None and hasattr(announce_channel, "send"):
+                await announce_channel.send(embed=announce_embed)
 
-        result_message = f"✅ Xanax Pool created in {panel_channel.mention}.\n{panel_msg.jump_url}"
-        if pool_channel_warning:
-            result_message = f"{result_message}\n\n{pool_channel_warning}"
+        result_message = f"✅ Xanax Pool purchase panel created in {purchase_channel.mention}.\n{panel_msg.jump_url}"
+        if purchase_channel_error:
+            result_message = f"{result_message}\n\n{purchase_channel_error}"
         await interaction.response.send_message(result_message, ephemeral=True)
 
 
