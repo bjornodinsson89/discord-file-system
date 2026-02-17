@@ -589,8 +589,8 @@ class ChannelsViewPage3(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.remove_item(self.back_btn)
-        self.add_item(ChannelSelect(self.panel, "raffle_purchase_channel_id", "Set raffle purchase panel channel", row=0))
-        self.add_item(ChannelSelect(self.panel, "raffle_giveaway_purchase_channel_id", "Set raffle giveaway purchase panel channel", row=1))
+        self.add_item(ChannelSelect(self.panel, "raffle_purchase_channel_id", "Set paid raffle purchase panel channel", row=0))
+        self.add_item(ChannelSelect(self.panel, "raffle_giveaway_purchase_channel_id", "Set giveaway purchase panel channel (Free/Giveaway)", row=1))
         self.add_item(ChannelSelect(self.panel, "applications_channel_id", "Set application thread channel", row=2))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)

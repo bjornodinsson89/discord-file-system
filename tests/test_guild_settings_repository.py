@@ -30,6 +30,8 @@ def test_repo_casts_bigints_and_admin_roles():
             "jump_announce_channel_id": "456",
             "pool_channel_id": "789",
             "pools_post_channel_id": "790",
+            "raffle_announcement_channel_id": "7901",
+            "raffle_purchase_channel_id": "7902",
             "raffle_giveaway_purchase_channel_id": "791",
             "admin_role_ids": ["1", 2],
             "jump_ping_role_ids": ["11", 12, "11"],
@@ -40,6 +42,8 @@ def test_repo_casts_bigints_and_admin_roles():
     assert normalized["jump_announce_channel_id"] == 456
     assert normalized["pool_channel_id"] == 789
     assert normalized["pools_post_channel_id"] == 790
+    assert normalized["raffle_announcement_channel_id"] == 7901
+    assert normalized["raffle_purchase_channel_id"] == 7902
     assert normalized["raffle_giveaway_purchase_channel_id"] == 791
     assert normalized["admin_role_ids"] == [1, 2]
     assert normalized["jump_ping_role_ids"] == [11, 12]

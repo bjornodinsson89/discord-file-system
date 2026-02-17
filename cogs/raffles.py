@@ -65,6 +65,25 @@ def _safe_int(value) -> int | None:
         return None
 
 
+def _resolve_purchase_panel_channel_id(settings: dict, *, is_giveaway: bool) -> tuple[int | None, str | None, str | None]:
+    if is_giveaway:
+        giveaway_channel_id = _safe_int(settings.get("raffle_giveaway_purchase_channel_id"))
+        if giveaway_channel_id:
+            return giveaway_channel_id, "raffle_giveaway_purchase_channel_id", None
+        paid_channel_id = _safe_int(settings.get("raffle_purchase_channel_id"))
+        if paid_channel_id:
+            return paid_channel_id, "raffle_purchase_channel_id", None
+        return None, None, "❌ Set giveaway purchase panel channel in `/setup` (or set paid raffle purchase panel channel as fallback)."
+
+    paid_channel_id = _safe_int(settings.get("raffle_purchase_channel_id"))
+    if paid_channel_id:
+        return paid_channel_id, "raffle_purchase_channel_id", None
+    raffle_channel_id = _safe_int(settings.get("raffle_channel_id"))
+    if raffle_channel_id:
+        return raffle_channel_id, "raffle_channel_id", None
+    return None, None, "❌ Set paid raffle purchase panel channel in `/setup` (or set raffle channel fallback)."
+
+
 def _raffle_closed_status(raffle: dict | None) -> bool:
     if not raffle:
         return True
@@ -358,6 +377,7 @@ class RaffleCreateModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             raw_payment_type = str(self.payment_type.value)
+            raw_price_input = str(self.ticket_price.value or "").strip()
             try:
                 payment_type = parse_payment_type(raw_payment_type, allow_free=True)
             except ValueError as exc:
@@ -366,15 +386,20 @@ class RaffleCreateModal(discord.ui.Modal):
                     ephemeral=True,
                 )
                 return
-            price = int(self.ticket_price.value)
+            is_giveaway = not raw_price_input or raw_price_input.lower() == "free" or payment_type == "free"
+            if is_giveaway:
+                payment_type = "free"
+                price = 0
+            else:
+                price = int(raw_price_input)
+                if price <= 0:
+                    await interaction.response.send_message(
+                        embed=create_error_embed("Invalid ticket price", "Ticket Price must be greater than 0 for paid raffles."),
+                        ephemeral=True,
+                    )
+                    return
             total = int(self.tickets_available.value)
             max_per = int(self.max_per_user.value or 0)
-            if payment_type != "free" and price <= 0:
-                await interaction.response.send_message(
-                    embed=create_error_embed("Invalid ticket price", "Ticket Price must be greater than 0 for paid raffles."),
-                    ephemeral=True,
-                )
-                return
             if total < 1:
                 await interaction.response.send_message(
                     embed=create_error_embed("Invalid total tickets", "Total Tickets must be 1 or greater."),
@@ -1133,18 +1158,20 @@ class RafflesCog(commands.Cog):
             settings_repo = GuildSettingsRepository(db)
             settings = await settings_repo.get_or_create(interaction.guild_id)
             is_giveaway = str(draft["ticket_payment_type"] or "").lower() == "free"
-            default_purchase_channel_id = settings.get("raffle_purchase_channel_id") or settings.get("raffle_channel_id")
-            if is_giveaway:
-                purchase_channel_id = settings.get("raffle_giveaway_purchase_channel_id") or default_purchase_channel_id
-            else:
-                purchase_channel_id = default_purchase_channel_id
+            purchase_channel_id, purchase_channel_key, purchase_channel_error = _resolve_purchase_panel_channel_id(
+                settings,
+                is_giveaway=is_giveaway,
+            )
             if not purchase_channel_id:
-                await interaction.response.send_message(
-                    "❌ Configure **raffle purchase panel channel** in `/setup` before creating raffles."
-                    " For giveaways, you can also set a dedicated giveaway purchase panel channel.",
-                    ephemeral=True,
-                )
+                await interaction.response.send_message(purchase_channel_error or "❌ Unable to resolve raffle purchase panel channel.", ephemeral=True)
                 return
+            log.info(
+                "Resolved raffle purchase panel channel raffle_id=%s is_giveaway=%s chosen_channel_id=%s settings_key=%s",
+                raffle_id,
+                is_giveaway,
+                purchase_channel_id,
+                purchase_channel_key,
+            )
             guild = interaction.guild
             purchase_channel = guild.get_channel(int(purchase_channel_id)) if guild else None
             if purchase_channel is None and guild:

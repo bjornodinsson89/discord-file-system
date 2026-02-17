@@ -58,6 +58,9 @@ class GuildSettingsRepository:
         "jump_99k_channel_id",
         "jump_announce_channel_id",
         "raffle_channel_id",
+        "raffle_announcement_channel_id",
+        "raffle_purchase_channel_id",
+        "raffle_giveaway_purchase_channel_id",
         "insurance_channel_id",
         "applications_channel_id",
         "welcome_channel_id",
@@ -67,7 +70,6 @@ class GuildSettingsRepository:
         "insurer_role_id",
         "default_max_slots",
         "host_tax_cash_amount",
-        "raffle_giveaway_purchase_channel_id",
     }
     DEFAULT_KEYS = {
         "guild_id": None,
