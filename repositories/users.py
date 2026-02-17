@@ -13,20 +13,22 @@ class UsersRepository(RepositoryBase):
             return dict(row) if row else None
 
 
-    async def upsert_user_api_key(self, *, discord_id: int, torn_user_id: int, encrypted_key: str) -> None:
+    async def upsert_user_api_key(self, *, discord_id: int, torn_user_id: int, torn_name: str | None, encrypted_key: str) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO user_api_keys (discord_id, torn_user_id, encrypted_key, created_at, updated_at)
-                VALUES ($1, $2, $3, NOW(), NOW())
+                INSERT INTO user_api_keys (discord_id, torn_user_id, torn_name, encrypted_key, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, NOW(), NOW())
                 ON CONFLICT (discord_id)
                 DO UPDATE SET
                     torn_user_id = EXCLUDED.torn_user_id,
+                    torn_name = EXCLUDED.torn_name,
                     encrypted_key = EXCLUDED.encrypted_key,
                     updated_at = NOW()
                 """,
                 discord_id,
                 torn_user_id,
+                torn_name,
                 encrypted_key,
             )
 

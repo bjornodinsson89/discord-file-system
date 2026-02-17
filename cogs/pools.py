@@ -44,7 +44,7 @@ async def _xanax_thumbnail_url() -> str:
     return image_url.strip() or XANAX_FALLBACK_ICON_URL
 
 
-async def _resolve_torn_identity(discord_id: int) -> tuple[str, int]:
+async def _resolve_torn_identity(discord_id: int) -> tuple[str, int, bool]:
     try:
         safe_discord_id = int(discord_id or 0)
     except (TypeError, ValueError):
@@ -55,10 +55,10 @@ async def _resolve_torn_identity(discord_id: int) -> tuple[str, int]:
         row = await UsersRepository(get_pool()).get_user_api_key(safe_discord_id)
 
     torn_id = int((row or {}).get("torn_user_id") or 0)
-    torn_name = str((row or {}).get("torn_name") or (row or {}).get("torn_username") or "").strip()
-    if not torn_name and torn_id:
+    torn_name = str((row or {}).get("torn_name") or "").strip()
+    if not torn_name:
         torn_name = "User"
-    return torn_name, torn_id
+    return torn_name, torn_id, bool(torn_id)
 
 
 async def _build_pool_panel_embed(pool: dict, sold: int) -> discord.Embed:
@@ -249,7 +249,7 @@ class PoolVerifyPaymentView(discord.ui.View):
 
         creator_key = await users_repo.get_user_api_key(int(pool["created_by_discord_id"]))
         creator_torn_id = int((creator_key or {}).get("torn_user_id") or 0)
-        creator_name = str((creator_key or {}).get("torn_name") or (creator_key or {}).get("torn_username") or "").strip() or "Pool creator"
+        creator_name = str((creator_key or {}).get("torn_name") or "").strip() or "User"
         if not creator_torn_id:
             await interaction.followup.send("❌ Pool creator Torn ID is not configured.", ephemeral=True)
             return
@@ -347,9 +347,9 @@ async def _start_pool_purchase(
         creator_discord_id = int(pool.get("created_by_discord_id") or 0)
     except (TypeError, ValueError):
         creator_discord_id = 0
-    creator_name, creator_torn_id = await _resolve_torn_identity(creator_discord_id)
-    if creator_torn_id == 0:
-        payment_line = "Send payment to the pool creator (Torn ID not configured)"
+    creator_name, creator_torn_id, has_torn_id = await _resolve_torn_identity(creator_discord_id)
+    if not has_torn_id:
+        payment_line = "Send 💊 {0} Xanax to User in Torn (Torn ID not configured), then click **Verify Payment**.".format(total_cost)
     else:
         payment_line = (
             f"Send 💊 {total_cost} Xanax to {creator_name} [{creator_torn_id}] in Torn, then click **Verify Payment**."

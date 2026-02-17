@@ -145,7 +145,7 @@ class TornAPIClient:
 
         raise TornAPIError("Request timed out")
 
-    async def validate_api_key(self, api_key: str) -> Tuple[int, int, set]:
+    async def validate_api_key(self, api_key: str) -> Tuple[int, int, str, set]:
         """Validate API key by fetching user identity from Torn API v2."""
         user = await self._request("/user", {"selections": "basic,discord", "key": api_key})
         discord_raw = (user.get("discord") or {}).get("discord_id") if isinstance(user, dict) else None
@@ -153,7 +153,8 @@ class TornAPIClient:
             raise TornAPIError("Torn did not return discord_id; ensure key has 'discord' permission")
         discord_id = int(discord_raw)
         torn_id = int(user["profile"]["id"])
-        return discord_id, torn_id, set()
+        torn_name = str((user.get("profile") or {}).get("name") or user.get("name") or "").strip()
+        return discord_id, torn_id, torn_name, set()
 
     async def get_user_data(self, api_key: str) -> Dict:
         return await self._request("/user", {"selections": "basic,discord,bars,cooldowns", "key": api_key})
