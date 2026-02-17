@@ -93,24 +93,41 @@ def _parse_optional_session_start(raw_value: str, settings: dict) -> tuple[Optio
     tzinfo = _resolve_guild_timezone(settings)
     now = datetime.now(tzinfo)
 
-    match = re.fullmatch(r"\s*(\d{1,2})[-/](\d{1,2})(?:\s+|T)(\d{1,2}):(\d{2})\s*", value)
+    match = re.fullmatch(
+        r"\s*(?:(\d{4})[-/])?(\d{1,2})[-/](\d{1,2})(?:\s+|T)(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm])?\s*",
+        value,
+    )
     if not match:
         raise ValueError("invalid start")
 
-    month = int(match.group(1))
-    day = int(match.group(2))
-    hour = int(match.group(3))
-    minute = int(match.group(4))
+    year_text, month_text, day_text, hour_text, minute_text, meridiem_text = match.groups()
 
-    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+    year = int(year_text) if year_text else now.year
+    month = int(month_text)
+    day = int(day_text)
+    hour = int(hour_text)
+    minute = int(minute_text) if minute_text is not None else 0
+
+    if minute < 0 or minute > 59:
+        raise ValueError("invalid start")
+
+    if meridiem_text:
+        if hour < 1 or hour > 12:
+            raise ValueError("invalid start")
+        meridiem = meridiem_text.lower()
+        if meridiem == "am":
+            hour = 0 if hour == 12 else hour
+        else:
+            hour = 12 if hour == 12 else hour + 12
+    elif hour < 0 or hour > 23:
         raise ValueError("invalid start")
 
     try:
-        aware = datetime(now.year, month, day, hour, minute, tzinfo=tzinfo)
+        aware = datetime(year, month, day, hour, minute, tzinfo=tzinfo)
     except ValueError as exc:
         raise ValueError("invalid start") from exc
 
-    if aware < (now - timedelta(minutes=5)):
+    if not year_text and aware < (now - timedelta(minutes=5)):
         next_year = now.year + 1
         while next_year <= now.year + 4:
             try:
@@ -1954,7 +1971,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
         label="Start (optional)",
         required=False,
         max_length=16,
-        placeholder="MM-DD HH:MM (24h). Blank=none. Ex: 02-18 21:00",
+        placeholder="MM-DD HH:MM / MM/DD HH:MM / MM-DD Hpm",
     )
     notes = discord.ui.TextInput(label="Notes", placeholder="Add jump instructions", required=False, style=discord.TextStyle.paragraph, max_length=1000)
 
@@ -1995,7 +2012,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 start_time, scheduled = _parse_optional_session_start(self.possible_tct_start.value, self.settings)
             except ValueError:
                 await interaction.response.send_message(
-                    "Invalid start. Use: MM-DD HH:MM (24h), or leave blank. Example: 02-18 21:00",
+                    "Invalid start. Use MM-DD HH:MM, MM/DD HH:MM, or MM-DD Hpm (or leave blank).",
                     ephemeral=True,
                 )
                 return

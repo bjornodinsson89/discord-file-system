@@ -23,3 +23,12 @@ def test_string_and_human_helpers():
     items = [{"item": "xanax", "qty": 4}, {"item": "erotic_dvd", "qty": 6}, {"item": "ecstasy", "qty": 1}]
     assert payout_items_to_string(items) == "xanax=4, edvd=6, ecstasy=1"
     assert payout_items_to_human(items) == "4x Xanax • 6x eDVD • 1x Ecstasy"
+
+
+def test_parse_supports_flexible_token_formats_and_separators():
+    items = parse_payout_string("xan=4; Erotic DvD:3 | x2 ecstasy\n2x edvd")
+    assert items == [
+        {"item": "xanax", "qty": 4},
+        {"item": "erotic_dvd", "qty": 5},
+        {"item": "ecstasy", "qty": 2},
+    ]
