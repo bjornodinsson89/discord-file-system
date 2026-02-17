@@ -30,6 +30,7 @@ class GuildSettingsRepository:
         "raffle_channel_id",
         "raffle_announcement_channel_id",
         "raffle_purchase_channel_id",
+        "raffle_giveaway_purchase_channel_id",
         "pool_channel_id",
         "pools_post_channel_id",
         "raffle_announce_enabled",
@@ -66,6 +67,7 @@ class GuildSettingsRepository:
         "insurer_role_id",
         "default_max_slots",
         "host_tax_cash_amount",
+        "raffle_giveaway_purchase_channel_id",
     }
     DEFAULT_KEYS = {
         "guild_id": None,
@@ -77,6 +79,7 @@ class GuildSettingsRepository:
         "applications_channel_id": None,
         "raffle_announcement_channel_id": None,
         "raffle_purchase_channel_id": None,
+        "raffle_giveaway_purchase_channel_id": None,
         "welcome_channel_id": None,
         "pool_channel_id": None,
         "pools_post_channel_id": None,
@@ -359,6 +362,7 @@ class GuildSettingsRepository:
             "raffle_channel_id": None,
             "raffle_announcement_channel_id": None,
             "raffle_purchase_channel_id": None,
+            "raffle_giveaway_purchase_channel_id": None,
             "insurance_channel_id": None,
             "applications_channel_id": None,
             "welcome_channel_id": None,
@@ -416,6 +420,11 @@ class GuildSettingsRepository:
 
     async def set_announce_channel(self, guild_id: int, announce_channel_id: int) -> Dict[str, Any]:
         return await self.upsert_settings(guild_id, announce_channel_id=announce_channel_id)
+
+
+    @staticmethod
+    def resolve_raffle_giveaway_purchase_channel_id(settings: Dict[str, Any]) -> Optional[int]:
+        return GuildSettingsRepository._normalize_bigint(settings.get("raffle_giveaway_purchase_channel_id"))
 
     @staticmethod
     def resolve_admin_role_ids(settings: Dict[str, Any]) -> list[int]:

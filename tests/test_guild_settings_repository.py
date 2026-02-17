@@ -30,6 +30,7 @@ def test_repo_casts_bigints_and_admin_roles():
             "jump_announce_channel_id": "456",
             "pool_channel_id": "789",
             "pools_post_channel_id": "790",
+            "raffle_giveaway_purchase_channel_id": "791",
             "admin_role_ids": ["1", 2],
             "jump_ping_role_ids": ["11", 12, "11"],
             "reservation_timeout_minutes": "10",
@@ -39,6 +40,7 @@ def test_repo_casts_bigints_and_admin_roles():
     assert normalized["jump_announce_channel_id"] == 456
     assert normalized["pool_channel_id"] == 789
     assert normalized["pools_post_channel_id"] == 790
+    assert normalized["raffle_giveaway_purchase_channel_id"] == 791
     assert normalized["admin_role_ids"] == [1, 2]
     assert normalized["jump_ping_role_ids"] == [11, 12]
     assert normalized["reservation_timeout_minutes"] == 10
@@ -167,3 +169,10 @@ def test_repo_merge_defaults_includes_pools_post_channel_id():
     merged = repo._merge_defaults({}, guild_id=102)
     assert "pools_post_channel_id" in merged
     assert merged["pools_post_channel_id"] is None
+
+
+def test_repo_merge_defaults_includes_raffle_giveaway_purchase_channel_id():
+    repo = GuildSettingsRepository(_DB())
+    merged = repo._merge_defaults({}, guild_id=103)
+    assert "raffle_giveaway_purchase_channel_id" in merged
+    assert merged["raffle_giveaway_purchase_channel_id"] is None
