@@ -900,29 +900,34 @@ class RafflePrizeImageUrlModal(discord.ui.Modal):
             or "imgur.com" in normalized
         )
     async def on_submit(self, interaction: discord.Interaction):
-        if interaction.user.id != self.prompt_view.creator_discord_id:
-            await interaction.response.send_message(
-                "❌ Only the raffle creator can set the prize image.",
-                ephemeral=True,
-            )
-            return
-        raffle = await self.prompt_view.repo.get_raffle(self.prompt_view.raffle_id)
-        if raffle and raffle.get("is_bundle"):
-            await interaction.response.send_message(
-                embed=create_error_embed("Not Allowed", "Bundle raffles do not support large prize images."),
-                ephemeral=True,
-            )
-            return
-        image_url = str(self.prize_image_url.value).strip()
-        if not self._is_valid_url(image_url):
-            await interaction.response.send_message(
-                "❌ Invalid image URL. Use http(s) and either an image extension or imgur.com URL.",
-                ephemeral=True,
-            )
-            return
-        await self.prompt_view.repo.set_prize_image_url(self.prompt_view.raffle_id, image_url)
-        await self.prompt_view.update_purchase_panel_image(image_url)
-        await interaction.response.send_message("✅ Prize image added", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            if interaction.user.id != self.prompt_view.creator_discord_id:
+                await interaction.followup.send(
+                    "❌ Only the raffle creator can set the prize image.",
+                    ephemeral=True,
+                )
+                return
+            raffle = await self.prompt_view.repo.get_raffle(self.prompt_view.raffle_id)
+            if raffle and raffle.get("is_bundle"):
+                await interaction.followup.send(
+                    embed=create_error_embed("Not Allowed", "Bundle raffles do not support large prize images."),
+                    ephemeral=True,
+                )
+                return
+            image_url = str(self.prize_image_url.value).strip()
+            if not self._is_valid_url(image_url):
+                await interaction.followup.send(
+                    "❌ Invalid image URL. Use http(s) and either an image extension or imgur.com URL.",
+                    ephemeral=True,
+                )
+                return
+            await self.prompt_view.repo.set_prize_image_url(self.prompt_view.raffle_id, image_url)
+            await self.prompt_view.update_purchase_panel_image(image_url)
+            await interaction.followup.send("✅ Prize image added", ephemeral=True)
+        except Exception:
+            log.exception("Failed to handle raffle prize image modal submission raffle_id=%s", self.prompt_view.raffle_id)
+            await interaction.followup.send("❌ Failed to set prize image. Please try again.", ephemeral=True)
 class RafflePrizeImagePromptView(discord.ui.View):
     """Prompt the raffle creator to optionally add a prize image URL."""
     def __init__(
@@ -962,24 +967,29 @@ class RafflePrizeImagePromptView(discord.ui.View):
                 embed = discord.Embed(title=f"🎟️ Raffle #{self.raffle_id}")
             embed.set_image(url=image_url)
             await panel_message.edit(embed=embed, view=RafflePurchasePanelView(raffle_id=self.raffle_id))
-        except Exception as e:
-            log.error(f"Failed to update purchase panel image for raffle {self.raffle_id}: {e}")
+        except Exception:
+            log.exception("Failed to update purchase panel image for raffle %s", self.raffle_id)
     @discord.ui.button(label="📷 Add Prize Image (optional)", style=discord.ButtonStyle.primary)
     async def add_prize_image(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.creator_discord_id:
-            await interaction.response.send_message(
-                "❌ Only the raffle creator can set the prize image.",
-                ephemeral=True,
-            )
-            return
-        raffle = await self.repo.get_raffle(self.raffle_id)
-        if raffle and raffle.get("is_bundle"):
-            await interaction.response.send_message(
-                embed=create_error_embed("Not Allowed", "Bundle raffles do not support large prize images."),
-                ephemeral=True,
-            )
-            return
-        await interaction.response.send_modal(RafflePrizeImageUrlModal(self))
+        try:
+            if interaction.user.id != self.creator_discord_id:
+                await interaction.response.send_message(
+                    "❌ Only the raffle creator can set the prize image.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_modal(RafflePrizeImageUrlModal(self))
+        except Exception:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "❌ Failed to open prize image form. Please try again.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Failed to open prize image form. Please try again.",
+                    ephemeral=True,
+                )
     @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary)
     async def skip_upload(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator_discord_id:
