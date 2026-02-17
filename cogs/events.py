@@ -29,7 +29,7 @@ from views import (
 )
 from views.components import InsuranceOfferView
 from utils.payouts import parse_payout_string, payout_items_to_human, PayoutParseError
-from utils.torn_api import TornAPIError, TornAPIRateLimitError
+from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 from utils.payment_normalization import parse_payment_type
 from setup_panel import (
     DEFAULT_WELCOME_TEMPLATE,
@@ -815,6 +815,158 @@ async def stats(interaction: discord.Interaction):
 # ============================================================================
 # SLASH COMMANDS - ADMIN ACTIONS
 # ============================================================================
+
+
+@bot.tree.command(name="refresh_api_keys", description="Refresh Torn API key metadata for all users (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def refresh_api_keys(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        await interaction.followup.send(
+            embed=create_error_embed("Guild Only", "This command can only be used by a guild member."),
+            ephemeral=True,
+        )
+        return
+
+    member = interaction.user
+    is_allowed = interaction.guild.owner_id == member.id or member.guild_permissions.administrator
+    if not is_allowed:
+        await interaction.followup.send(
+            embed=create_error_embed("Not Authorized", "Only the guild owner or an Administrator can use this command."),
+            ephemeral=True,
+        )
+        return
+
+    db = get_database()
+    users_repo = UsersRepository(db.pool)
+    rows = await users_repo.list_all_user_api_keys()
+
+    if not rows:
+        await interaction.followup.send(
+            embed=create_info_embed("No API Keys", "No stored user API keys were found to refresh."),
+            ephemeral=True,
+        )
+        return
+
+    torn = get_torn_api()
+    security = get_security_manager()
+
+    total = len(rows)
+    refreshed = 0
+    failed = 0
+    skipped = 0
+    failure_samples: list[str] = []
+
+    progress_message = await interaction.followup.send(
+        embed=create_info_embed("Refreshing API Keys", f"Starting refresh for **{total}** stored keys..."),
+        ephemeral=True,
+    )
+
+    def _record_failure(reason: str) -> None:
+        nonlocal failed
+        failed += 1
+        if len(failure_samples) < 15:
+            failure_samples.append(reason[:300])
+
+    for index, row in enumerate(rows, start=1):
+        raw_discord_id = row.get("discord_id")
+        try:
+            discord_id = int(raw_discord_id)
+        except (TypeError, ValueError):
+            skipped += 1
+            if len(failure_samples) < 15:
+                failure_samples.append(f"Row {index}: invalid discord_id={raw_discord_id!r}")
+            continue
+
+        encrypted = row.get("encrypted_key") or row.get("api_key_encrypted")
+        if not encrypted:
+            skipped += 1
+            if len(failure_samples) < 15:
+                failure_samples.append(f"<@{discord_id}>: missing encrypted key")
+            continue
+
+        try:
+            api_key = security.decrypt_api_key(encrypted)
+        except Exception:
+            _record_failure(f"<@{discord_id}>: failed to decrypt API key")
+            continue
+
+        try:
+            data = await torn.get_user_data(api_key)
+        except TornAPIRateLimitError as exc:
+            _record_failure(f"<@{discord_id}>: Torn API rate limited ({exc})")
+            continue
+        except TornAPIPermissionError as exc:
+            _record_failure(f"<@{discord_id}>: Torn API permission denied ({exc})")
+            continue
+        except TornAPIError as exc:
+            _record_failure(f"<@{discord_id}>: Torn API error ({exc})")
+            continue
+        except Exception:
+            _record_failure(f"<@{discord_id}>: unexpected API failure")
+            continue
+
+        try:
+            discord_raw = data["discord"]["discord_id"]
+            discord_id_api = int(discord_raw)
+        except Exception:
+            _record_failure(f"<@{discord_id}>: API response missing discord linkage")
+            continue
+
+        if discord_id_api != discord_id:
+            _record_failure(f"<@{discord_id}>: discord mismatch (api={discord_id_api})")
+            continue
+
+        profile = data.get("profile") if isinstance(data, dict) else {}
+        try:
+            torn_user_id = int(profile["id"])
+        except Exception:
+            _record_failure(f"<@{discord_id}>: API response missing profile id")
+            continue
+
+        torn_name_raw = None
+        if isinstance(profile, dict):
+            torn_name_raw = profile.get("name") or profile.get("username")
+        if torn_name_raw is None and isinstance(data, dict):
+            torn_name_raw = data.get("name")
+        torn_name = str(torn_name_raw).strip() if torn_name_raw is not None else None
+        if torn_name == "":
+            torn_name = None
+
+        try:
+            await users_repo.update_torn_identity(
+                discord_id=discord_id,
+                torn_user_id=torn_user_id,
+                torn_name=torn_name,
+            )
+            refreshed += 1
+        except Exception:
+            _record_failure(f"<@{discord_id}>: database update failed")
+
+        if index % 25 == 0 or index == total:
+            await progress_message.edit(
+                embed=create_info_embed(
+                    "Refreshing API Keys",
+                    f"Processed **{index}/{total}**\nRefreshed: **{refreshed}** | Failed: **{failed}** | Skipped: **{skipped}**",
+                )
+            )
+
+    summary_lines = [
+        f"Processed: **{total}**",
+        f"Refreshed: **{refreshed}**",
+        f"Failed: **{failed}**",
+        f"Skipped: **{skipped}**",
+    ]
+    if failure_samples:
+        summary_lines.append("")
+        summary_lines.append("**Sample failures:**")
+        summary_lines.extend([f"• {sample}" for sample in failure_samples])
+
+    await progress_message.edit(
+        embed=create_success_embed("API Key Refresh Complete", "\n".join(summary_lines))
+    )
+
 
 @bot.tree.command(name="refresh_item_icons", description="Refresh Torn item icon index (Admin only)")
 @app_commands.default_permissions(administrator=True)
