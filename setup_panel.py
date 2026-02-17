@@ -144,7 +144,7 @@ def _missing_channel_perms(channel: discord.abc.GuildChannel, me: discord.Member
     return missing
 
 
-async def _respond_callback_error(interaction: discord.Interaction, error: Exception):
+async def _respond_callback_error(interaction: discord.Interaction, error: Exception, error_code: str = "setup_callback_error"):
     log.exception(
         'Setup callback error guild_id=%s user_id=%s',
         interaction.guild_id,
@@ -153,7 +153,7 @@ async def _respond_callback_error(interaction: discord.Interaction, error: Excep
     )
     msg = (
         "Unexpected setup error. Please try again, or rerun /setup if this continues. "
-        "Check bot logs for: setup_next_roles_view_error"
+        f"Check bot logs for: {error_code}"
     )
     if interaction.response.is_done():
         await interaction.followup.send(embed=create_error_embed('Setup failed', msg), ephemeral=True)
@@ -224,7 +224,7 @@ class TemplateModal(discord.ui.Modal):
         try:
             await self.panel.save_changes(interaction, {self.field_name: str(self.template_input.value).strip() or None})
         except Exception as error:
-            await _respond_callback_error(interaction, error)
+            await _respond_callback_error(interaction, error, "setup_channels_save_error")
 
 
 class TimeoutModal(discord.ui.Modal):
@@ -277,11 +277,12 @@ class SetupPanelView(OwnerView):
             f"Jump announcement: {channel_name('jump_announce_channel_id')}\n"
             f"Raffle announcement: {channel_name('raffle_announcement_channel_id')}\n"
             f"Raffle purchase panel: {channel_name('raffle_purchase_channel_id')}\n"
+            f"Raffle giveaway purchase panel: {channel_name('raffle_giveaway_purchase_channel_id')}\n"
             f"Insurance: {channel_name('insurance_channel_id')}\n"
             f"Applications: {channel_name('applications_channel_id')}\n"
             f"Welcome: {channel_name('welcome_channel_id')}\n"
-            f"Pools Purchase Channel: {channel_name('pool_channel_id')}\n"
-            f"Pools Announcement Channel: {channel_name('pools_post_channel_id')}"
+            f"Pools management: {channel_name('pool_channel_id')}\n"
+            f"Pools purchase panel: {channel_name('pools_post_channel_id')}"
         ), inline=False)
         jump_ping_mentions = []
         for rid in (s.get("jump_ping_role_ids") or []):
@@ -419,7 +420,7 @@ class SetupPanelView(OwnerView):
     @discord.ui.button(label="Channels", style=discord.ButtonStyle.primary)
     async def channels_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
-            await _send_or_edit(interaction, create_info_embed("Channels", "Use buttons below to pick each channel.\n\nPurchase channel = where the ticket panel lives\nAnnouncement channel = where updates are posted\n\nThis is where users go to buy pool tickets. The purchase panel will be posted here.\nThis is where the bot posts pool announcements and updates."), ChannelsViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+            await _send_or_edit(interaction, _channels_embed(), ChannelsViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
@@ -512,7 +513,19 @@ class ChannelSelect(discord.ui.ChannelSelect):
                 return
             await self.panel._set_channel(interaction, self.key, self.values[0])
         except Exception as error:
-            await _respond_callback_error(interaction, error)
+            await _respond_callback_error(interaction, error, "setup_channels_save_error")
+
+
+def _channels_embed() -> discord.Embed:
+    return create_info_embed(
+        "Channels",
+        "Use buttons below to pick each channel.\n\n"
+        "- **Pools management channel**: where pool management and commands live.\n"
+        "- **Pools purchase panel channel**: where the pool buy-in panel is posted.\n"
+        "- **Raffle announcement channel**: where new raffle announcements are posted.\n"
+        "- **Raffle purchase panel channel**: where paid raffle purchase panels are posted.\n"
+        "- **Raffle giveaway purchase panel channel**: where giveaway raffle panels are posted (falls back to raffle purchase panel channel).",
+    )
 
 
 def _log_channels_view_navigation_error(interaction: discord.Interaction, error: Exception, error_code: str) -> None:
@@ -528,9 +541,9 @@ def _log_channels_view_navigation_error(interaction: discord.Interaction, error:
 class ChannelsViewPage1(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.add_item(ChannelSelect(self.panel, "jump_99k_channel_id", "Set jump (99k) channel", row=0))
-        self.add_item(ChannelSelect(self.panel, "jump_announce_channel_id", "Set jump announcement channel", row=1))
-        self.add_item(ChannelSelect(self.panel, "raffle_announcement_channel_id", "Set raffle announcement channel", row=2))
+        self.add_item(ChannelSelect(self.panel, "welcome_channel_id", "Set welcome channel", row=0))
+        self.add_item(ChannelSelect(self.panel, "pool_channel_id", "Set pools management channel", row=1))
+        self.add_item(ChannelSelect(self.panel, "pools_post_channel_id", "Set pools purchase panel channel", row=2))
 
     @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
     async def next_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -538,36 +551,18 @@ class ChannelsViewPage1(BackView):
             log.info("Setup channels next callback guild_id=%s user_id=%s", interaction.guild_id, interaction.user.id)
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True, thinking=False)
-            await _send_or_edit(
-                interaction,
-                create_info_embed("Channels", "Use buttons below to pick each channel.\n\nPurchase channel = where the ticket panel lives\nAnnouncement channel = where updates are posted\n\nThis is where users go to buy pool tickets. The purchase panel will be posted here.\nThis is where the bot posts pool announcements and updates."),
-                ChannelsViewPage2(
-                    owner_id=self.owner_id,
-                    db=self.db,
-                    settings=self.settings,
-                    guild=self.guild,
-                    panel=self.panel,
-                ),
-            )
+            await _send_or_edit(interaction, _channels_embed(), ChannelsViewPage2(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
         except Exception as error:
-            _log_channels_view_navigation_error(interaction, error, "setup_next_channels_view_error")
-            message = (
-                "Couldn't open the next setup page. Please try again. "
-                "If this keeps happening, share this error code: `setup_next_channels_view_error`."
-            )
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=create_error_embed("Setup navigation failed", message), ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=create_error_embed("Setup navigation failed", message), ephemeral=True)
+            await _respond_callback_error(interaction, error, "setup_channels_next_error")
 
 
 class ChannelsViewPage2(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.remove_item(self.back_btn)
-        self.add_item(ChannelSelect(self.panel, "raffle_purchase_channel_id", "Set raffle purchase panel channel", row=0))
-        self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Set insurance channel", row=1))
-        self.add_item(ChannelSelect(self.panel, "applications_channel_id", "Set applications channel", row=2))
+        self.add_item(ChannelSelect(self.panel, "jump_99k_channel_id", "Set jump (99k) channel", row=0))
+        self.add_item(ChannelSelect(self.panel, "jump_announce_channel_id", "Set jump announcement channel", row=1))
+        self.add_item(ChannelSelect(self.panel, "raffle_announcement_channel_id", "Set raffle announcement channel", row=2))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -575,19 +570,9 @@ class ChannelsViewPage2(BackView):
             log.info("Setup channels back callback guild_id=%s user_id=%s", interaction.guild_id, interaction.user.id)
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True, thinking=False)
-            await _send_or_edit(
-                interaction,
-                create_info_embed("Channels", "Use buttons below to pick each channel.\n\nPurchase channel = where the ticket panel lives\nAnnouncement channel = where updates are posted\n\nThis is where users go to buy pool tickets. The purchase panel will be posted here.\nThis is where the bot posts pool announcements and updates."),
-                ChannelsViewPage1(
-                    owner_id=self.owner_id,
-                    db=self.db,
-                    settings=self.settings,
-                    guild=self.guild,
-                    panel=self.panel,
-                ),
-            )
+            await _send_or_edit(interaction, _channels_embed(), ChannelsViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
         except Exception as error:
-            await _respond_callback_error(interaction, error)
+            await _respond_callback_error(interaction, error, "setup_channels_next_error")
 
     @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
     async def channels_next_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -595,36 +580,18 @@ class ChannelsViewPage2(BackView):
             log.info("Setup channels next callback guild_id=%s user_id=%s", interaction.guild_id, interaction.user.id)
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True, thinking=False)
-            await _send_or_edit(
-                interaction,
-                create_info_embed("Channels", "Use buttons below to pick each channel.\n\nPurchase channel = where the ticket panel lives\nAnnouncement channel = where updates are posted\n\nThis is where users go to buy pool tickets. The purchase panel will be posted here.\nThis is where the bot posts pool announcements and updates."),
-                ChannelsViewPage3(
-                    owner_id=self.owner_id,
-                    db=self.db,
-                    settings=self.settings,
-                    guild=self.guild,
-                    panel=self.panel,
-                ),
-            )
+            await _send_or_edit(interaction, _channels_embed(), ChannelsViewPage3(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
         except Exception as error:
-            _log_channels_view_navigation_error(interaction, error, "setup_next_channels_view_error")
-            message = (
-                "Couldn't open the next setup page. Please try again. "
-                "If this keeps happening, share this error code: `setup_next_channels_view_error`."
-            )
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=create_error_embed("Setup navigation failed", message), ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=create_error_embed("Setup navigation failed", message), ephemeral=True)
+            await _respond_callback_error(interaction, error, "setup_channels_next_error")
 
 
 class ChannelsViewPage3(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.remove_item(self.back_btn)
-        self.add_item(ChannelSelect(self.panel, "welcome_channel_id", "Set welcome channel", row=0))
-        self.add_item(ChannelSelect(self.panel, "pool_channel_id", "Set pools PURCHASE channel (ticket panel / buy button)", row=1))
-        self.add_item(ChannelSelect(self.panel, "pools_post_channel_id", "Set pools ANNOUNCEMENT channel (pool updates / winners)", row=2))
+        self.add_item(ChannelSelect(self.panel, "raffle_purchase_channel_id", "Set raffle purchase panel channel", row=0))
+        self.add_item(ChannelSelect(self.panel, "raffle_giveaway_purchase_channel_id", "Set raffle giveaway purchase panel channel", row=1))
+        self.add_item(ChannelSelect(self.panel, "applications_channel_id", "Set application thread channel", row=2))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -632,19 +599,36 @@ class ChannelsViewPage3(BackView):
             log.info("Setup channels back callback guild_id=%s user_id=%s", interaction.guild_id, interaction.user.id)
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True, thinking=False)
-            await _send_or_edit(
-                interaction,
-                create_info_embed("Channels", "Use buttons below to pick each channel.\n\nPurchase channel = where the ticket panel lives\nAnnouncement channel = where updates are posted\n\nThis is where users go to buy pool tickets. The purchase panel will be posted here.\nThis is where the bot posts pool announcements and updates."),
-                ChannelsViewPage2(
-                    owner_id=self.owner_id,
-                    db=self.db,
-                    settings=self.settings,
-                    guild=self.guild,
-                    panel=self.panel,
-                ),
-            )
+            await _send_or_edit(interaction, _channels_embed(), ChannelsViewPage2(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
         except Exception as error:
-            await _respond_callback_error(interaction, error)
+            await _respond_callback_error(interaction, error, "setup_channels_next_error")
+
+    @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
+    async def channels_next_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            log.info("Setup channels next callback guild_id=%s user_id=%s", interaction.guild_id, interaction.user.id)
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            await _send_or_edit(interaction, _channels_embed(), ChannelsViewPage4(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+        except Exception as error:
+            await _respond_callback_error(interaction, error, "setup_channels_next_error")
+
+
+class ChannelsViewPage4(BackView):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.remove_item(self.back_btn)
+        self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Set insurance requests channel", row=0))
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
+    async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            log.info("Setup channels back callback guild_id=%s user_id=%s", interaction.guild_id, interaction.user.id)
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            await _send_or_edit(interaction, _channels_embed(), ChannelsViewPage3(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+        except Exception as error:
+            await _respond_callback_error(interaction, error, "setup_channels_next_error")
 
     @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
     async def channels_next_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -655,26 +639,10 @@ class ChannelsViewPage3(BackView):
             await _send_or_edit(
                 interaction,
                 create_info_embed("Roles", "Configure admin, host, and insurer roles."),
-                RolesViewPage1(
-                    owner_id=self.owner_id,
-                    db=self.db,
-                    settings=self.settings,
-                    guild=self.guild,
-                    panel=self.panel,
-                ),
+                RolesViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
             )
         except Exception as error:
-            log.exception(
-                "setup_next_roles_view_error guild_id=%s user_id=%s",
-                interaction.guild_id,
-                interaction.user.id if interaction.user else None,
-                exc_info=(type(error), error, error.__traceback__),
-            )
-            message = "Setup failed (setup_next_roles_view_error). Please try again. If it persists, contact an admin."
-            if interaction.response.is_done():
-                await interaction.followup.send(message, ephemeral=True)
-            else:
-                await interaction.response.send_message(message, ephemeral=True)
+            await _respond_callback_error(interaction, error, "setup_roles_next_error")
 
 
 class AdminRoleSelect(discord.ui.RoleSelect):

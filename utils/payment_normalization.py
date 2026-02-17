@@ -20,15 +20,15 @@ def parse_payment_type(raw: str, *, allow_free: bool) -> str:
     if token in {"erotic dvd", "edvd", "e dvd", "eroticdvd"}:
         return "erotic_dvd"
 
-    if allow_free and token in {"free", "0", "none"}:
+    if allow_free and token in {"giveaway", "free", "0", "none"}:
         return "free"
 
     if allow_free:
-        raise ValueError("Enter free, xanax, or edvd")
+        raise ValueError("Enter giveaway, xanax, or edvd")
     raise ValueError("Enter xanax or edvd")
 
 
 def display_payment_options(*, allow_free: bool) -> str:
     if allow_free:
-        return "Free | Xanax 💊 | Erotic DvD 📀"
+        return "Giveaway | Xanax 💊 | Erotic DvD 📀"
     return "Xanax 💊 | Erotic DvD 📀"

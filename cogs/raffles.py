@@ -38,7 +38,7 @@ _QTY_PATTERNS = [
 ]
 def _payment_text(payment_type: str, amount: int) -> str:
     if payment_type == "free":
-        return "FREE"
+        return "Giveaway"
     if payment_type == "xanax":
         return f"💊 {amount} Xanax"
     if payment_type == "erotic_dvd":
@@ -327,8 +327,8 @@ class RaffleCreateModal(discord.ui.Modal):
         max_length=200,
     )
     payment_type = discord.ui.TextInput(
-        label="Free | Xanax 💊 | Erotic DvD 📀",
-        placeholder="free",
+        label="Payment type (Giveaway, Xanax 💊, Erotic DvD 📀)",
+        placeholder="Giveaway / Xanax / Erotic DvD",
         required=True,
         max_length=20,
     )
@@ -591,7 +591,7 @@ async def _reserve_raffle_tickets(
     if quantity > max_buy_now:
         quantity = max_buy_now
 
-    # Handle FREE ENTRY
+    # Handle GIVEAWAY ENTRY
     if raffle["ticket_payment_type"] == "free":
         # Check raffle
         try:
@@ -608,7 +608,7 @@ async def _reserve_raffle_tickets(
                 title="✅ Entry Confirmed!",
                 description=f"🎁 **Raffle:** {raffle['prize']}\n"
                            f"🎟️ **Tickets:** {quantity}\n"
-                           f"💰 **Price:** 🎫 FREE",
+                           f"💰 **Price:** 🎫 Giveaway",
                 color=discord.Color.green()
             )
             # Check if sold out
@@ -622,7 +622,7 @@ async def _reserve_raffle_tickets(
             await _send_response(embed=embed, ephemeral=True)
             return
         except Exception as e:
-            log.error(f"Failed free entry: {e}")
+            log.error(f"Failed giveaway entry: {e}")
             await _send_error("❌ Failed to enter raffle")
             return
     # PAID ENTRY
@@ -1132,10 +1132,16 @@ class RafflesCog(commands.Cog):
             db = get_database()
             settings_repo = GuildSettingsRepository(db)
             settings = await settings_repo.get_or_create(interaction.guild_id)
-            purchase_channel_id = settings.get("raffle_purchase_channel_id") or settings.get("raffle_channel_id")
+            is_giveaway = str(draft["ticket_payment_type"] or "").lower() == "free"
+            default_purchase_channel_id = settings.get("raffle_purchase_channel_id") or settings.get("raffle_channel_id")
+            if is_giveaway:
+                purchase_channel_id = settings.get("raffle_giveaway_purchase_channel_id") or default_purchase_channel_id
+            else:
+                purchase_channel_id = default_purchase_channel_id
             if not purchase_channel_id:
                 await interaction.response.send_message(
-                    "❌ Configure **raffle purchase panel channel** in `/setup` before creating raffles.",
+                    "❌ Configure **raffle purchase panel channel** in `/setup` before creating raffles."
+                    " For giveaways, you can also set a dedicated giveaway purchase panel channel.",
                     ephemeral=True,
                 )
                 return
@@ -1203,7 +1209,7 @@ class RafflesCog(commands.Cog):
                             channel_id=announce_channel.id,
                             message_id=announce_message.id,
                         )
-            response_text = f"✅ Raffle created. Purchase panel posted in {purchase_channel.mention}.\n{panel_message.jump_url}"
+            response_text = f"✅ Raffle created. {'Giveaway' if is_giveaway else 'Purchase'} panel posted in {purchase_channel.mention}.\n{panel_message.jump_url}"
             if is_bundle:
                 await interaction.response.send_message(response_text, ephemeral=True)
             else:
@@ -1399,7 +1405,7 @@ class RafflesCog(commands.Cog):
         for raffle in raffles:
             value = f"🎟️ Tickets: {raffle['tickets_sold']}/{raffle['tickets_available']}\n"
             if raffle.get("is_free") or raffle["ticket_payment_type"] == "free":
-                value += "💰 Price: FREE"
+                value += "💰 Price: Giveaway"
             else:
                 value += f"💰 Price: {_payment_text(raffle['ticket_payment_type'], raffle['ticket_price'])}"
             value += "\n⏰ Draw occurs 30 seconds after sellout."
