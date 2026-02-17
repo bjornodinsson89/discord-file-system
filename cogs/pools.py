@@ -44,6 +44,23 @@ async def _xanax_thumbnail_url() -> str:
     return image_url.strip() or XANAX_FALLBACK_ICON_URL
 
 
+async def _resolve_torn_identity(discord_id: int) -> tuple[str, int]:
+    try:
+        safe_discord_id = int(discord_id or 0)
+    except (TypeError, ValueError):
+        safe_discord_id = 0
+
+    row = None
+    if safe_discord_id > 0:
+        row = await UsersRepository(get_pool()).get_user_api_key(safe_discord_id)
+
+    torn_id = int((row or {}).get("torn_user_id") or 0)
+    torn_name = str((row or {}).get("torn_name") or (row or {}).get("torn_username") or "").strip()
+    if not torn_name and torn_id:
+        torn_name = "User"
+    return torn_name, torn_id
+
+
 async def _build_pool_panel_embed(pool: dict, sold: int) -> discord.Embed:
     ticket_price = int(pool["ticket_price_xanax"])
     xanax_total = int(sold) * ticket_price
@@ -232,6 +249,7 @@ class PoolVerifyPaymentView(discord.ui.View):
 
         creator_key = await users_repo.get_user_api_key(int(pool["created_by_discord_id"]))
         creator_torn_id = int((creator_key or {}).get("torn_user_id") or 0)
+        creator_name = str((creator_key or {}).get("torn_name") or (creator_key or {}).get("torn_username") or "").strip() or "Pool creator"
         if not creator_torn_id:
             await interaction.followup.send("❌ Pool creator Torn ID is not configured.", ephemeral=True)
             return
@@ -272,7 +290,7 @@ class PoolVerifyPaymentView(discord.ui.View):
         )
         if not match:
             await interaction.followup.send(
-                f"❌ Payment not found. Send **💊 {total_cost} Xanax** to the pool creator, then press Verify again.",
+                f"❌ Payment not found. Send **💊 {total_cost} Xanax** to {creator_name} [{creator_torn_id}] in Torn, then press Verify again.",
                 ephemeral=True,
             )
             return
@@ -325,12 +343,24 @@ async def _start_pool_purchase(
         quantity = max_buy
 
     total_cost = quantity * int(pool["ticket_price_xanax"])
+    try:
+        creator_discord_id = int(pool.get("created_by_discord_id") or 0)
+    except (TypeError, ValueError):
+        creator_discord_id = 0
+    creator_name, creator_torn_id = await _resolve_torn_identity(creator_discord_id)
+    if creator_torn_id == 0:
+        payment_line = "Send payment to the pool creator (Torn ID not configured)"
+    else:
+        payment_line = (
+            f"Send 💊 {total_cost} Xanax to {creator_name} [{creator_torn_id}] in Torn, then click **Verify Payment**."
+        )
+
     embed = discord.Embed(
         title="💊 Pool Tickets Reserved",
         description=(
             f"🎟️ **Tickets:** {quantity}\n"
             f"💰 **Total:** 💊 {total_cost} Xanax\n\n"
-            "Send the Xanax to the pool creator in Torn, then click **Verify Payment**."
+            + payment_line
         ),
         color=discord.Color.blue(),
     )

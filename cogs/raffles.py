@@ -65,6 +65,19 @@ def _safe_int(value) -> int | None:
         return None
 
 
+async def _resolve_torn_identity(discord_id: int) -> tuple[str, int]:
+    safe_discord_id = _safe_int(discord_id) or 0
+    row = None
+    if safe_discord_id > 0:
+        row = await UsersRepository(get_pool()).get_user_api_key(safe_discord_id)
+
+    torn_id = int((row or {}).get("torn_user_id") or 0)
+    torn_name = str((row or {}).get("torn_name") or (row or {}).get("torn_username") or "").strip()
+    if not torn_name and torn_id:
+        torn_name = "User"
+    return torn_name, torn_id
+
+
 def _resolve_purchase_panel_channel_id(settings: dict, *, is_giveaway: bool) -> tuple[int | None, str | None, str | None]:
     if is_giveaway:
         giveaway_channel_id = _safe_int(settings.get("raffle_giveaway_purchase_channel_id"))
@@ -658,10 +671,12 @@ async def _reserve_raffle_tickets(
     if not buyer_key or not buyer_key.get("torn_user_id"):
         await _send_error("❌ Could not resolve your linked Torn account. Run `/set api key` to register it.")
         return
-    creator_torn_id = raffle.get("creator_torn_id")
-    if not creator_torn_id:
-        creator_key = await users_repo.get_user_api_key(int(raffle["creator_discord_id"]))
-        creator_torn_id = creator_key.get("torn_user_id") if creator_key else None
+    creator_discord_id = int(raffle["creator_discord_id"])
+    creator_key = await users_repo.get_user_api_key(creator_discord_id)
+    creator_torn_id = int(raffle.get("creator_torn_id") or (creator_key or {}).get("torn_user_id") or 0)
+    creator_name = str((creator_key or {}).get("torn_name") or (creator_key or {}).get("torn_username") or "").strip()
+    if not creator_name:
+        creator_name = "User" if creator_torn_id else "Raffle creator"
     if not creator_torn_id:
         await _send_error("❌ Raffle creator Torn ID is not configured. Please contact an admin.")
         return
@@ -687,7 +702,10 @@ async def _reserve_raffle_tickets(
         )
         embed.add_field(
             name="⏰ Payment Deadline",
-            value=f"⏱️ Auto-verification at 4:30, expires at 5:00\nSend **{_payment_text(raffle['ticket_payment_type'], total_cost)}** to raffle creator in-game!",
+            value=(
+                f"⏱️ Auto-verification at 4:30, expires at 5:00\n"
+                f"Send **{_payment_text(raffle['ticket_payment_type'], total_cost)}** to {creator_name} [{creator_torn_id}] in Torn!"
+            ),
             inline=False
         )
         embed.add_field(
@@ -874,8 +892,17 @@ class PaymentVerificationView(discord.ui.View):
                 self.entry_id, manual=True
             )
             if not success:
+                creator_name = "Raffle creator"
+                creator_torn_id = 0
+                raffle = await RafflesRepository(get_pool()).get_raffle(self.raffle_id)
+                if raffle:
+                    creator_discord_id = _safe_int(raffle.get("creator_discord_id")) or 0
+                    identity_name, identity_torn_id = await _resolve_torn_identity(creator_discord_id)
+                    creator_torn_id = _safe_int(raffle.get("creator_torn_id")) or identity_torn_id
+                    if creator_torn_id:
+                        creator_name = identity_name or "User"
                 await interaction.followup.send(
-                    f"❌ {error or 'Payment not found. Make sure you sent the items to the creator.'}",
+                    f"❌ {error or f'Payment not found. Make sure you sent the items to {creator_name} [{creator_torn_id}] in Torn.'}",
                     ephemeral=True
                 )
                 return
