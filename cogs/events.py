@@ -2287,40 +2287,98 @@ async def jump99k_list(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@jump99k_group.command(name="end", description="Close active 99k session")
-async def jump99k_end(interaction: discord.Interaction):
+@jump99k_group.command(name="end", description="End a specific 99k session by ID")
+@app_commands.describe(jump_id="99k session ID to end")
+async def jump99k_end(interaction: discord.Interaction, jump_id: int):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
     if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
         return
     await interaction.response.defer(ephemeral=True)
 
     repo = JumpsRepository(get_pool())
-    session = await repo.get_active_session(interaction.guild_id)
+    session = await repo.get_session(int(jump_id))
     if not session:
-        await interaction.followup.send(embed=create_info_embed("99k end", "No open session."), ephemeral=True)
+        await interaction.followup.send(
+            embed=create_error_embed("99k end", f"Session #{int(jump_id)} not found."),
+            ephemeral=True,
+        )
         return
-    rows = await repo.list_signups(int(session["id"]))
-    completed_ids = [int(r["discord_id"]) for r in rows if r.get("status") == "signed_up"]
-    ok = await repo.close_session_and_record(session_id=int(session["id"]), guild_id=interaction.guild_id, completed_discord_ids=completed_ids, not_completed_discord_ids=[])
-    if not ok:
-        await interaction.followup.send(embed=create_error_embed("Could not close", "Session was already closed."), ephemeral=True)
+    if int(session["guild_id"]) != int(interaction.guild_id):
+        await interaction.followup.send(
+            embed=create_error_embed("99k end", f"Session #{int(jump_id)} is not in this server."),
+            ephemeral=True,
+        )
         return
+
+    if session.get("status") == "open":
+        rows = await repo.list_signups(int(session["id"]))
+        completed_ids = [int(r["discord_id"]) for r in rows if r.get("status") == "signed_up"]
+        ok = await repo.close_session_and_record(
+            session_id=int(session["id"]),
+            guild_id=int(interaction.guild_id),
+            completed_discord_ids=completed_ids,
+            not_completed_discord_ids=[],
+        )
+        if not ok:
+            await interaction.followup.send(
+                embed=create_error_embed("Could not close", f"Could not close session #{int(session['id'])}."),
+                ephemeral=True,
+            )
+            return
 
     await _refresh_roster_if_exists(interaction.client, int(session["id"]))
-
     await _disable_99k_session_messages(interaction.client, session, status_text="Session closed")
+
+    purchase_deleted = False
+    channel_deleted = False
     private_channel_id = session.get("private_channel_id")
-    if private_channel_id and interaction.guild:
+
+    roster_message_id = session.get("roster_message_id")
+    guild = interaction.guild
+    if guild is None:
+        log.warning("Guild missing during 99k cleanup for session %s", session.get("id"))
+    elif private_channel_id and roster_message_id:
         try:
-            private_channel = await interaction.guild.fetch_channel(int(private_channel_id))
-            await private_channel.delete(reason="99k session finished")
+            private_channel = guild.get_channel(int(private_channel_id))
+            if private_channel is None:
+                private_channel = await guild.fetch_channel(int(private_channel_id))
+            message = await private_channel.fetch_message(int(roster_message_id))
+            await message.delete(reason=f"99k session {session['id']} ended: remove purchase panel")
+            purchase_deleted = True
+        except discord.NotFound:
+            purchase_deleted = True
+        except discord.Forbidden:
+            purchase_deleted = False
         except Exception:
+            purchase_deleted = False
+            log.exception("Failed to remove purchase panel for 99k session %s", session.get("id"))
+
+    if guild and private_channel_id:
+        try:
+            private_channel = guild.get_channel(int(private_channel_id))
+            if private_channel is None:
+                private_channel = await guild.fetch_channel(int(private_channel_id))
+            await private_channel.delete(reason=f"99k session {session['id']} ended")
+            channel_deleted = True
+        except discord.NotFound:
+            channel_deleted = True
+        except discord.Forbidden:
+            channel_deleted = False
+        except Exception:
+            channel_deleted = False
             log.exception("Failed to delete private 99k channel for session %s", session.get("id"))
-            await _disable_99k_session_messages(interaction.client, session, status_text="Session closed")
-        await repo.clear_private_channel(int(session["id"]))
+
+    await repo.clear_private_channel(int(session["id"]))
 
     await repo.mark_cleaned(int(session["id"]))
-    await interaction.followup.send(embed=create_success_embed("99k session ended", f"Closed session #{session['id']}."), ephemeral=True)
+    await interaction.followup.send(
+        embed=create_success_embed(
+            "99k session ended",
+            f"Ended session #{session['id']}. Private channel deleted: {'✅' if channel_deleted else '❌'}. "
+            f"Purchase panel removed: {'✅' if purchase_deleted else '❌'}.",
+        ),
+        ephemeral=True,
+    )
 
 
 bot.tree.add_command(jump99k_group)
