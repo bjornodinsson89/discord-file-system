@@ -248,7 +248,15 @@ class JumpsRepository(RepositoryBase):
 
     async def list_signups(self, session_id: int) -> list[dict]:
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch("SELECT *, participant_discord_id AS discord_id, participant_torn_user_id AS torn_user_id FROM jump_99k_signups WHERE session_id = $1 ORDER BY signed_up_at ASC", session_id)
+            rows = await conn.fetch(
+                """
+                SELECT *, participant_discord_id AS discord_id, participant_torn_user_id AS torn_user_id
+                FROM jump_99k_signups
+                WHERE session_id = $1
+                ORDER BY is_priority DESC, id ASC
+                """,
+                session_id,
+            )
             return [dict(r) for r in rows]
 
     async def upsert_readiness_snapshot(self, *, session_id: int, guild_id: int, discord_id: int, energy: int, energy_max: int, drug_cooldown: int, booster_cooldown: int | None, status_text: str) -> None:
@@ -296,7 +304,7 @@ class JumpsRepository(RepositoryBase):
                 WHERE s.session_id=$1
                   AND s.payment_verified=TRUE
                   AND s.status IN ('signed_up', 'completed', 'not_completed')
-                ORDER BY s.signed_up_at ASC
+                ORDER BY s.is_priority DESC, s.id ASC
                 """,
                 session_id,
             )
@@ -325,6 +333,7 @@ class JumpsRepository(RepositoryBase):
                 rows = await conn.fetch(
                     """
                     SELECT s.*, ses.price_item, ses.price_amount, ses.host_discord_id, ses.created_at
+                         , ses.priority_increment, ses.priority_enabled
                     FROM jump_99k_signups s
                     JOIN jump_99k_sessions ses ON ses.id = s.session_id
                     WHERE ses.status='open'
@@ -340,6 +349,36 @@ class JumpsRepository(RepositoryBase):
             except Exception as exc:
                 _raise_reserved_until_migration_error(exc)
             return [dict(row) for row in rows]
+
+    async def set_priority_enabled(self, *, session_id: int, enabled: bool) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE jump_99k_sessions SET priority_enabled = $2, updated_at = NOW() WHERE id = $1 RETURNING id",
+                session_id,
+                enabled,
+            )
+            return row is not None
+
+    async def reserve_priority(self, *, session_id: int, buyer_discord_id: int, signup_id: int, ttl_seconds: int = 300) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT public.jump_99k_reserve_priority($1, $2, $3, $4)",
+                session_id,
+                str(int(buyer_discord_id)),
+                signup_id,
+                ttl_seconds,
+            )
+            return bool(result)
+
+    async def finalize_priority(self, *, session_id: int, buyer_discord_id: int, signup_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT public.jump_99k_finalize_priority($1, $2, $3)",
+                session_id,
+                str(int(buyer_discord_id)),
+                signup_id,
+            )
+            return bool(result)
 
     async def mark_signup_payment_verified(self, *, session_id: int, discord_id: int) -> bool:
         async with self.pool.acquire() as conn:

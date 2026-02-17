@@ -1172,13 +1172,38 @@ async def _disable_99k_session_messages(bot_client: commands.Bot, session: dict,
                 pass
 
 
-def _format_99k_price_item_label(price_item: str | None) -> str:
+def _format_99k_price_item_plain(price_item: str | None) -> str:
     normalized = str(price_item or "").strip().lower()
     if normalized == "xanax":
-        return "Xanax 💊"
+        return "Xanax"
     if normalized in {"erotic dvd", "erotic_dvd", "edvd"}:
-        return "Erotic DvD 📀"
+        return "Erotic DvD"
     return str(price_item or "Unknown")
+
+
+def _format_99k_price_item_label(price_item: str | None) -> str:
+    base = _format_99k_price_item_plain(price_item)
+    normalized = str(price_item or "").strip().lower()
+    if normalized == "xanax":
+        return f"{base} 💊"
+    if normalized in {"erotic dvd", "erotic_dvd", "edvd"}:
+        return f"{base} 📀"
+    return base
+
+
+def _priority_status_text(session: dict) -> str:
+    if not bool(session.get("priority_enabled")):
+        return "Priority spot: Not offered"
+
+    if session.get("priority_taken_signup_id"):
+        return "Priority spot: Taken"
+
+    reserved_until = session.get("priority_reserved_until")
+    if reserved_until and reserved_until >= datetime.now(timezone.utc):
+        return "Priority spot: Reserved"
+
+    item_label = _format_99k_price_item_plain(session.get("price_item"))
+    return f"Priority spot: Available (+1 {item_label})"
 
 
 def _is_99k_closed(status: str | None) -> bool:
@@ -1229,11 +1254,13 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int, hos
     is_closed = _is_99k_closed(session.get("status"))
     is_full = not is_closed and max_slots > 0 and signed_up >= max_slots
     status_text = "Closed" if is_closed else ("Full" if is_full else "Open")
+    priority_text = _priority_status_text(session)
     return (
         f"📣✨ **99k Happy Jump** ✨ — **Session #{session_id}**\n"
         f"👤 Host: {host_label}\n"
         f"🕒 {tct_start_text}\n"
         f"💰 Spot price: {price_amount}x {price_item_label}\n"
+        f"⭐ {priority_text}\n"
         f"📝 Notes: {notes_or_placeholder}\n"
         f"👥 Signed up: {signed_up}/{max_slots} • ✅ Paid: {paid}\n"
         f"🔒 Status: {status_text}\n"
@@ -1246,6 +1273,7 @@ def build_99k_jump_created_announcement_content(session: dict, settings: dict | 
     max_slots = int(session.get("max_slots") or 0)
     price_amount = int(session.get("price_amount") or 0)
     price_item_label = _format_99k_price_item_label(session.get("price_item"))
+    priority_text = _priority_status_text(session)
     settings = settings or {}
     jump_channel_id = int(settings.get("jump_99k_channel_id") or 0)
     if jump_channel_id > 0:
@@ -1257,6 +1285,7 @@ def build_99k_jump_created_announcement_content(session: dict, settings: dict | 
         f"{tct_start_text}.\n"
         f"{purchase_line}\n"
         f"Please secure your spot with {price_amount}x {price_item_label}.\n"
+        f"{priority_text}.\n"
         f"{max_slots}/{max_slots} available spots"
     )
 
@@ -1544,6 +1573,7 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
     for idx, row in enumerate(participants, start=2):
         discord_id = int(row.get("discord_id") or 0)
         name = await _display_name_for(discord_id)
+        priority_label = " [Priority jump]" if bool(row.get("is_priority")) else ""
 
         has_readiness = row.get("checked_at") is not None
         energy = int(row.get("energy") or 0) if has_readiness else None
@@ -1559,7 +1589,7 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
             emoji = "🟥"
 
         lines.append(
-            f"{idx}) Name:{name} E-lvl {_format_energy_pair(energy, energy_max)} Dcd |{_format_cd_hhmm(drug_cd)}| Bcd |{_format_cd_hhmm(booster_cd)}| {emoji}"
+            f"{idx}) Name:{name}{priority_label} E-lvl {_format_energy_pair(energy, energy_max)} Dcd |{_format_cd_hhmm(drug_cd)}| Bcd |{_format_cd_hhmm(booster_cd)}| {emoji}"
         )
 
     embed = _build_roster_embed(lines)
@@ -1764,11 +1794,21 @@ class Jump99kUserControlsView(discord.ui.View):
 
             api_key = security.decrypt_api_key(encrypted_key)
             since_ts = int((session["created_at"] - timedelta(seconds=60)).timestamp())
+            base_amount = int(session.get("price_amount") or 0)
+            priority_increment = int(session.get("priority_increment") or 1)
+            priority_amount = base_amount + priority_increment
+
             item = str(session.get("price_item", "")).lower()
             if item == "xanax":
-                payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, int(session["price_amount"]), since_timestamp=since_ts)
+                payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, priority_amount, since_timestamp=since_ts)
+                paid_amount = priority_amount if payment else base_amount
+                if not payment:
+                    payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, base_amount, since_timestamp=since_ts)
             elif item == "erotic_dvd":
-                payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, int(session["price_amount"]), since_timestamp=since_ts)
+                payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, priority_amount, since_timestamp=since_ts)
+                paid_amount = priority_amount if payment else base_amount
+                if not payment:
+                    payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, base_amount, since_timestamp=since_ts)
             else:
                 await interaction.followup.send("Unsupported payment item for this session.", ephemeral=True)
                 return
@@ -1776,6 +1816,18 @@ class Jump99kUserControlsView(discord.ui.View):
             if not payment:
                 await interaction.followup.send("Payment not found yet…", ephemeral=True)
                 return
+
+            signup = await repo.get_signup(self.session_id, interaction.user.id)
+            if not signup:
+                await interaction.followup.send("Signup not found.", ephemeral=True)
+                return
+
+            if paid_amount == priority_amount:
+                await repo.finalize_priority(
+                    session_id=self.session_id,
+                    buyer_discord_id=interaction.user.id,
+                    signup_id=int(signup["id"]),
+                )
 
             await repo.mark_signup_payment_verified(session_id=self.session_id, discord_id=interaction.user.id)
             payer_torn = int(key_row.get("torn_user_id") or 0) or None
@@ -1787,7 +1839,7 @@ class Jump99kUserControlsView(discord.ui.View):
             payer_torn_id=payer_torn,
             payee_discord_id=int(session["host_discord_id"]) or None,
             payee_torn_id=host_torn_id,
-            amount=int(session["price_amount"]),
+            amount=paid_amount,
             currency_type=str(session["price_item"]),
             metadata=payment,
             verifier_discord_id=interaction.user.id,
@@ -1878,11 +1930,47 @@ class Jump99kSignupView(discord.ui.View):
             )
             await _refresh_99k_panel(interaction.client, self.session_id)
 
+            buyer_signup = await repo.get_signup(self.session_id, interaction.user.id)
+            if not buyer_signup:
+                await interaction.followup.send("Could not load your signup. Please try again.", ephemeral=True)
+                return
+
+            now_utc = datetime.now(timezone.utc)
+            priority_reserved_until = session.get("priority_reserved_until")
+            priority_offerable = (
+                bool(session.get("priority_enabled"))
+                and session.get("priority_taken_signup_id") is None
+                and (priority_reserved_until is None or priority_reserved_until < now_utc)
+            )
+
+            if priority_offerable:
+                base_price = int(session.get("price_amount") or 0)
+                priority_increment = int(session.get("priority_increment") or 1)
+                priority_price = base_price + priority_increment
+                item_label = _format_99k_price_item_plain(session.get("price_item"))
+                priority_embed = discord.Embed(
+                    title="Priority spot available",
+                    description=(
+                        f"Normal: {base_price} {item_label}(s)\n"
+                        f"Priority: {priority_price} {item_label}(s)"
+                    ),
+                    color=discord.Color.blurple(),
+                )
+                await interaction.followup.send(
+                    embed=priority_embed,
+                    view=Jump99kPriorityOfferView(
+                        session_id=self.session_id,
+                        signup_id=int(buyer_signup["id"]),
+                        buyer_discord_id=interaction.user.id,
+                    ),
+                    ephemeral=True,
+                )
+                return
+
             host_discord_id = int(session.get("host_discord_id") or 0)
             host_label = await _resolve_99k_host_label(users_repo, host_discord_id)
             price_amount = int(session.get("price_amount") or 0)
             item_label = _format_99k_price_item_label(session.get("price_item"))
-
             reserve_embed = discord.Embed(
                 title="Spot Reserved",
                 description=(
@@ -1918,98 +2006,116 @@ class Jump99kSignupView(discord.ui.View):
                 interaction.user.id if interaction.user else None,
             )
             await interaction.followup.send("Sorry—could not process signup right now. Please try again.", ephemeral=True)
-class HostTaxGateView(discord.ui.View):
-    def __init__(self, *, guild_id: int, host_discord_id: int):
-        super().__init__(timeout=300)
-        self.guild_id = int(guild_id)
+
+
+class Jump99kPriorityHostToggleView(discord.ui.View):
+    def __init__(self, *, session_id: int, host_discord_id: int):
+        super().__init__(timeout=600)
+        self.session_id = int(session_id)
         self.host_discord_id = int(host_discord_id)
 
-    async def _open_start_modal(self, interaction: discord.Interaction, settings: dict):
-        await interaction.response.send_modal(Jump99kSessionModal(settings, session=None))
+    def bind_custom_ids(self) -> None:
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                action = "yes" if child.label == "YES" else "no"
+                child.custom_id = f"jump99k_priority_host:{action}:{self.session_id}"
 
-    @discord.ui.button(label="✅ Verify Tax Payment", style=discord.ButtonStyle.success)
-    async def verify_tax(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def _apply(self, interaction: discord.Interaction, enabled: bool) -> None:
         if int(interaction.user.id) != self.host_discord_id:
-            await interaction.response.send_message("Only the host can verify this payment.", ephemeral=True)
+            await interaction.response.send_message("Not authorized", ephemeral=True)
             return
 
-        db = get_database()
-        settings = await GuildSettingsRepository(db).get_or_create(self.guild_id)
-        if not bool(settings.get("host_tax_enabled")):
-            await self._open_start_modal(interaction, settings)
+        custom_id = str((interaction.data or {}).get("custom_id") or "")
+        parts = custom_id.split(":")
+        if len(parts) != 3 or parts[0] != "jump99k_priority_host" or not parts[2].isdigit() or int(parts[2]) != self.session_id:
+            await interaction.response.send_message("Not authorized", ephemeral=True)
             return
 
-        recipient = int(settings.get("host_tax_recipient_torn_id") or 0)
-        tax_type = str(settings.get("host_tax_type") or "").strip().lower()
-        item_id = int(settings.get("host_tax_item_id") or 0) if settings.get("host_tax_item_id") is not None else None
-        quantity = int(settings.get("host_tax_quantity") or 0) if settings.get("host_tax_quantity") is not None else None
-        cash_amount = int(settings.get("host_tax_cash_amount") or 0) if settings.get("host_tax_cash_amount") is not None else None
-        if recipient < 1 or tax_type not in {"item", "cash"}:
-            await interaction.response.send_message("Host tax is enabled but not configured correctly. Ask an admin to update /setup.", ephemeral=True)
-            return
+        repo = JumpsRepository(get_pool())
+        await repo.set_priority_enabled(session_id=self.session_id, enabled=enabled)
+        for child in self.children:
+            child.disabled = True
 
-        since_dt = datetime.now(timezone.utc) - timedelta(minutes=HOST_TAX_VERIFY_WINDOW_MINUTES)
-        host_tax_repo = HostTaxRepository(get_pool())
-        recent = await host_tax_repo.get_recent_receipt(
-            guild_id=self.guild_id,
-            discord_user_id=self.host_discord_id,
-            recipient_torn_id=recipient,
-            tax_type=tax_type,
-            item_id=item_id if tax_type == "item" else None,
-            quantity=quantity if tax_type == "item" else None,
-            cash_amount=cash_amount if tax_type == "cash" else None,
-            since_dt=since_dt,
-        )
-        if recent:
-            await self._open_start_modal(interaction, settings)
-            return
+        confirmation = "Priority spot has been enabled for this jump." if enabled else "Priority spot has been disabled for this jump."
+        await interaction.response.edit_message(content=confirmation, view=self)
+        await _refresh_99k_panel(interaction.client, self.session_id)
 
+    @discord.ui.button(label="YES", style=discord.ButtonStyle.success, custom_id="jump99k_priority_host:yes:0")
+    async def yes(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._apply(interaction, True)
+
+    @discord.ui.button(label="NO", style=discord.ButtonStyle.secondary, custom_id="jump99k_priority_host:no:0")
+    async def no(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._apply(interaction, False)
+
+
+class Jump99kPriorityOfferView(discord.ui.View):
+    def __init__(self, *, session_id: int, signup_id: int, buyer_discord_id: int):
+        super().__init__(timeout=300)
+        self.session_id = int(session_id)
+        self.signup_id = int(signup_id)
+        self.buyer_discord_id = int(buyer_discord_id)
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                action = "accept" if "Accept" in (child.label or "") else "decline"
+                child.custom_id = f"jump99k_priority_offer:{action}:{self.session_id}"
+
+    async def _continue(self, interaction: discord.Interaction, priority_reserved: bool, note: str | None = None) -> None:
+        repo = JumpsRepository(get_pool())
         users_repo = UsersRepository(get_pool())
-        key_row = await users_repo.get_user_api_key(self.host_discord_id)
-        encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
-        if not await require_api_key(interaction, db, "start a 99k jump"):
+        session = await repo.get_session(self.session_id)
+        if not session:
+            await interaction.response.send_message("Session not found.", ephemeral=True)
             return
 
-        try:
-            api_key = get_security_manager().decrypt_api_key(encrypted_key)
-            entry = await get_torn_api().verify_host_tax_payment(
-                api_key=api_key,
-                recipient_torn_id=recipient,
-                tax_type=tax_type,
-                item_id=item_id if tax_type == "item" else None,
-                quantity=quantity if tax_type == "item" else None,
-                cash_amount=cash_amount if tax_type == "cash" else None,
-                since_timestamp=int(since_dt.timestamp()),
-            )
-        except TornAPIError:
-            await interaction.response.send_message("Torn API may be down right now. Please try again in a minute.", ephemeral=True)
-            return
-        except Exception:
-            log.exception("Host tax verification failed guild_id=%s user_id=%s", self.guild_id, self.host_discord_id)
-            await interaction.response.send_message("Torn API may be down right now. Please try again in a minute.", ephemeral=True)
-            return
+        host_discord_id = int(session.get("host_discord_id") or 0)
+        host_label = await _resolve_99k_host_label(users_repo, host_discord_id)
+        price_amount = int(session.get("price_amount") or 0)
+        priority_increment = int(session.get("priority_increment") or 1)
+        item_label = _format_99k_price_item_plain(session.get("price_item"))
+        target_amount = price_amount + priority_increment if priority_reserved else price_amount
 
-        if not entry:
-            await interaction.response.send_message("Not found yet. Send it, then try again.", ephemeral=True)
-            return
-
-        paid_at = datetime.fromtimestamp(int(entry.get("timestamp") or int(datetime.now(timezone.utc).timestamp())), tz=timezone.utc)
-        await host_tax_repo.create_receipt(
-            guild_id=self.guild_id,
-            discord_user_id=self.host_discord_id,
-            recipient_torn_id=recipient,
-            tax_type=tax_type,
-            item_id=item_id if tax_type == "item" else None,
-            quantity=quantity if tax_type == "item" else None,
-            cash_amount=cash_amount if tax_type == "cash" else None,
-            torn_log_id=_extract_torn_log_id(entry),
-            paid_at=paid_at,
+        reserve_embed = discord.Embed(
+            title="Spot Reserved",
+            description=(
+                (f"{note}\n" if note else "")
+                + "Spot reserved.\n"
+                + f"Send **{target_amount}x {item_label}** to **{host_label}** in Torn, then press **Verify Payment**."
+            ),
+            color=discord.Color.green(),
         )
-        await self._open_start_modal(interaction, settings)
+        await interaction.response.edit_message(embed=reserve_embed, view=Jump99kUserControlsView(self.session_id))
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Cancelled.", ephemeral=True)
+    @discord.ui.button(label="Accept Priority", style=discord.ButtonStyle.success, custom_id="jump99k_priority_offer_accept")
+    async def accept(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if int(interaction.user.id) != self.buyer_discord_id:
+            await interaction.response.send_message("Not authorized", ephemeral=True)
+            return
+        custom_id = str((interaction.data or {}).get("custom_id") or "")
+        if custom_id != f"jump99k_priority_offer:accept:{self.session_id}":
+            await interaction.response.send_message("Not authorized", ephemeral=True)
+            return
+
+        repo = JumpsRepository(get_pool())
+        reserved = await repo.reserve_priority(
+            session_id=self.session_id,
+            buyer_discord_id=self.buyer_discord_id,
+            signup_id=self.signup_id,
+            ttl_seconds=300,
+        )
+        note = "Priority was just taken. Continuing with normal purchase." if not reserved else None
+        await self._continue(interaction, priority_reserved=reserved, note=note)
+
+    @discord.ui.button(label="No Thanks", style=discord.ButtonStyle.secondary, custom_id="jump99k_priority_offer_decline")
+    async def decline(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if int(interaction.user.id) != self.buyer_discord_id:
+            await interaction.response.send_message("Not authorized", ephemeral=True)
+            return
+        custom_id = str((interaction.data or {}).get("custom_id") or "")
+        if custom_id != f"jump99k_priority_offer:decline:{self.session_id}":
+            await interaction.response.send_message("Not authorized", ephemeral=True)
+            return
+        await self._continue(interaction, priority_reserved=False)
 
 
 class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
@@ -2191,6 +2297,24 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     )
             verb = "updated" if self.session else "created"
             await interaction.response.send_message(embed=create_success_embed("99k session saved", f"Session #{session_id} {verb}."), ephemeral=True)
+
+            if not self.session:
+                created_session = await repo.get_session(int(session_id))
+                if created_session:
+                    base_price = int(created_session.get("price_amount") or 0)
+                    priority_increment = int(created_session.get("priority_increment") or 1)
+                    priority_price = base_price + priority_increment
+                    payment_item_display_name = _format_99k_price_item_plain(created_session.get("price_item"))
+                    host_priority_view = Jump99kPriorityHostToggleView(
+                        session_id=int(session_id),
+                        host_discord_id=int(interaction.user.id),
+                    )
+                    host_priority_view.bind_custom_ids()
+                    await interaction.followup.send(
+                        content=f"Would you like to offer a priority spot on this jump for {priority_price} {payment_item_display_name}(s)?",
+                        view=host_priority_view,
+                        ephemeral=True,
+                    )
         except Exception as e:
             log.exception("99k session modal submit failed: %s", e)
             err = create_error_embed("99k start failed", f"{type(e).__name__}: {e}")
@@ -2804,16 +2928,32 @@ async def auto_verify_99k_payments():
 
                 api_key = security.decrypt_api_key(encrypted_key)
                 since_ts = int((signup["created_at"] - timedelta(seconds=60)).timestamp())
+                base_amount = int(signup.get("price_amount") or 0)
+                priority_increment = int(signup.get("priority_increment") or 1)
+                priority_amount = base_amount + priority_increment
                 item = str(signup.get("price_item", "")).lower()
                 if item == "xanax":
-                    payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, int(signup["price_amount"]), since_timestamp=since_ts)
+                    payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, priority_amount, since_timestamp=since_ts)
+                    paid_amount = priority_amount if payment else base_amount
+                    if not payment:
+                        payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, base_amount, since_timestamp=since_ts)
                 elif item == "erotic_dvd":
-                    payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, int(signup["price_amount"]), since_timestamp=since_ts)
+                    payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, priority_amount, since_timestamp=since_ts)
+                    paid_amount = priority_amount if payment else base_amount
+                    if not payment:
+                        payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, base_amount, since_timestamp=since_ts)
                 else:
                     continue
 
                 if not payment:
                     continue
+
+                if paid_amount == priority_amount:
+                    await repo.finalize_priority(
+                        session_id=session_id,
+                        buyer_discord_id=participant_id,
+                        signup_id=int(signup["id"]),
+                    )
 
                 await repo.mark_signup_payment_verified(session_id=session_id, discord_id=participant_id)
                 payer_torn = int(key_row.get("torn_user_id") or 0) or None
@@ -2824,7 +2964,7 @@ async def auto_verify_99k_payments():
                     payer_torn_id=payer_torn,
                     payee_discord_id=int(signup["host_discord_id"]) or None,
                     payee_torn_id=host_torn_id,
-                    amount=int(signup["price_amount"]),
+                    amount=paid_amount,
                     currency_type=str(signup["price_item"]),
                     metadata=payment,
                     verifier_discord_id=participant_id,
