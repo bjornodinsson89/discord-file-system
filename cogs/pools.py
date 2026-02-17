@@ -63,7 +63,9 @@ async def _resolve_torn_identity(discord_id: int) -> tuple[str, int, bool]:
 
 async def _build_pool_panel_embed(pool: dict, sold: int) -> discord.Embed:
     ticket_price = int(pool["ticket_price_xanax"])
-    xanax_total = int(sold) * ticket_price
+    tickets_total = int(pool["tickets_total"])
+    current_pool_total = int(sold) * ticket_price
+    max_pool_total = ticket_price * tickets_total
     embed = discord.Embed(
         title="Xanax Pool",
         description="Use the buttons below to buy tickets or check your total.",
@@ -72,7 +74,8 @@ async def _build_pool_panel_embed(pool: dict, sold: int) -> discord.Embed:
     embed.add_field(name="Price per ticket", value=f"💊 {ticket_price} Xanax", inline=True)
     embed.add_field(name="Tickets available", value=str(max(0, int(pool["tickets_total"]) - int(sold))), inline=True)
     embed.add_field(name="Max per user", value="Unlimited" if int(pool["max_per_user"]) == 0 else str(pool["max_per_user"]), inline=True)
-    embed.add_field(name="Pool Total", value=f"{xanax_total} Xanax in the pool", inline=False)
+    embed.add_field(name="Current Pool Total", value=f"💊 {current_pool_total} Xanax", inline=True)
+    embed.add_field(name="Max Pool Total", value=f"💊 {max_pool_total} Xanax ({tickets_total} tickets)", inline=True)
     embed.set_thumbnail(url=await _xanax_thumbnail_url())
     return embed
 
@@ -342,7 +345,10 @@ async def _start_pool_purchase(
     if quantity > max_buy:
         quantity = max_buy
 
-    total_cost = quantity * int(pool["ticket_price_xanax"])
+    ticket_price = int(pool["ticket_price_xanax"])
+    tickets_total = int(pool["tickets_total"])
+    max_pool_total = ticket_price * tickets_total
+    total_cost = quantity * ticket_price
     try:
         creator_discord_id = int(pool.get("created_by_discord_id") or 0)
     except (TypeError, ValueError):
@@ -359,7 +365,8 @@ async def _start_pool_purchase(
         title="💊 Pool Tickets Reserved",
         description=(
             f"🎟️ **Tickets:** {quantity}\n"
-            f"💰 **Total:** 💊 {total_cost} Xanax\n\n"
+            f"💰 **Total:** 💊 {total_cost} Xanax\n"
+            f"🏦 **Max Pool Total:** 💊 {max_pool_total} Xanax ({tickets_total} tickets)\n\n"
             + payment_line
         ),
         color=discord.Color.blue(),
@@ -477,12 +484,14 @@ class PoolsCog(commands.Cog):
         await repo.set_panel_ref(pool_id, purchase_channel.id, panel_msg.id)
 
         if bool(settings.get("raffle_announce_enabled", True)):
+            max_pool_total = int(ticket_price) * int(tickets_total)
             announce_embed = discord.Embed(
                 title="💊 Xanax Pool Started",
                 description=(
                     f"Price per ticket: **💊 {ticket_price} Xanax**\n"
                     f"Tickets available: **{tickets_total}**\n"
-                    f"Max per user: **{'Unlimited' if max_per_user == 0 else max_per_user}**"
+                    f"Max per user: **{'Unlimited' if max_per_user == 0 else max_per_user}**\n"
+                    f"Max Pool Total: **💊 {max_pool_total} Xanax ({tickets_total} tickets)**"
                 ),
                 color=discord.Color.green(),
             )
