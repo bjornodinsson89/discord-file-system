@@ -655,7 +655,7 @@ class ChannelsViewPage3(BackView):
             await _send_or_edit(
                 interaction,
                 create_info_embed("Roles", "Configure admin, host, and insurer roles."),
-                RolesView(
+                RolesViewPage1(
                     owner_id=self.owner_id,
                     db=self.db,
                     settings=self.settings,
@@ -664,20 +664,22 @@ class ChannelsViewPage3(BackView):
                 ),
             )
         except Exception as error:
-            _log_channels_view_navigation_error(interaction, error, "setup_next_channels_view_error")
-            message = (
-                "Couldn't open the next setup page. Please try again. "
-                "If this keeps happening, share this error code: `setup_next_channels_view_error`."
+            log.exception(
+                "setup_next_roles_view_error guild_id=%s user_id=%s",
+                interaction.guild_id,
+                interaction.user.id if interaction.user else None,
+                exc_info=(type(error), error, error.__traceback__),
             )
+            message = "Setup failed (setup_next_roles_view_error). Please try again. If it persists, contact an admin."
             if interaction.response.is_done():
-                await interaction.followup.send(embed=create_error_embed("Setup navigation failed", message), ephemeral=True)
+                await interaction.followup.send(message, ephemeral=True)
             else:
-                await interaction.response.send_message(embed=create_error_embed("Setup navigation failed", message), ephemeral=True)
+                await interaction.response.send_message(message, ephemeral=True)
 
 
 class AdminRoleSelect(discord.ui.RoleSelect):
-    def __init__(self, panel: SetupPanelView, setting_key: str = "admin_role_ids", placeholder: str = "Set admin role(s)"):
-        super().__init__(placeholder=placeholder, min_values=0, max_values=10)
+    def __init__(self, panel: SetupPanelView, setting_key: str = "admin_role_ids", placeholder: str = "Set admin role(s)", *, row: int | None = None):
+        super().__init__(placeholder=placeholder, min_values=0, max_values=10, row=row)
         self.panel = panel
         self.setting_key = setting_key
 
@@ -715,8 +717,8 @@ class AdminRoleSelect(discord.ui.RoleSelect):
 
 
 class SingleRoleSelect(discord.ui.RoleSelect):
-    def __init__(self, panel: SetupPanelView, key: str, placeholder: str):
-        super().__init__(placeholder=placeholder, min_values=1, max_values=1)
+    def __init__(self, panel: SetupPanelView, key: str, placeholder: str, *, row: int | None = None):
+        super().__init__(placeholder=placeholder, min_values=1, max_values=1, row=row)
         self.panel = panel
         self.key = key
 
@@ -737,13 +739,60 @@ class SingleRoleSelect(discord.ui.RoleSelect):
             await _respond_callback_error(interaction, error)
 
 
-class RolesView(BackView):
+class RolesViewPage1(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.add_item(AdminRoleSelect(self.panel))
-        self.add_item(SingleRoleSelect(self.panel, "host99k_role_id", "Set 99k_Jump_Host role"))
-        self.add_item(SingleRoleSelect(self.panel, "insurer_role_id", "Set HJ_Insureance_provider role"))
-        self.add_item(AdminRoleSelect(self.panel, setting_key="jump_ping_role_ids", placeholder="Set jump ping role(s)"))
+        self.add_item(AdminRoleSelect(self.panel, row=0))
+        self.add_item(SingleRoleSelect(self.panel, "host99k_role_id", "Set 99k_Jump_Host role", row=1))
+        self.add_item(SingleRoleSelect(self.panel, "insurer_role_id", "Set HJ_Insureance_provider role", row=2))
+
+    @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
+    async def next_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            await _send_or_edit(
+                interaction,
+                create_info_embed("Roles", "Configure admin, host, and insurer roles."),
+                RolesViewPage2(
+                    owner_id=self.owner_id,
+                    db=self.db,
+                    settings=self.settings,
+                    guild=self.guild,
+                    panel=self.panel,
+                ),
+            )
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+
+class RolesViewPage2(BackView):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.remove_item(self.back_btn)
+        self.add_item(AdminRoleSelect(self.panel, setting_key="jump_ping_role_ids", placeholder="Set jump ping role(s)", row=0))
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
+    async def roles_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            await _send_or_edit(
+                interaction,
+                create_info_embed("Roles", "Configure admin, host, and insurer roles."),
+                RolesViewPage1(
+                    owner_id=self.owner_id,
+                    db=self.db,
+                    settings=self.settings,
+                    guild=self.guild,
+                    panel=self.panel,
+                ),
+            )
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+
+RolesView = RolesViewPage1
 
 
 
