@@ -67,7 +67,7 @@ class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
         try:
             api_key = self.api_key.value.strip()
             torn_api = get_torn_api()
-            discord_id_api, torn_id, _perms = await torn_api.validate_api_key(api_key)
+            discord_id_api, torn_id, torn_name, _perms = await torn_api.validate_api_key(api_key)
             
             if discord_id_api != interaction.user.id:
                 await interaction.followup.send(embed=create_error_embed(
@@ -78,7 +78,7 @@ class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
             encrypted = security.encrypt(api_key)
             
             db = get_database()
-            await UsersRepository(db.pool).upsert_user_api_key(discord_id=interaction.user.id, torn_user_id=torn_id, encrypted_key=encrypted)
+            await UsersRepository(db.pool).upsert_user_api_key(discord_id=interaction.user.id, torn_user_id=torn_id, torn_name=torn_name, encrypted_key=encrypted)
             try:
                 await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="api_key_registered", target_type="user", target_id=interaction.user.id, payload={"torn_id": torn_id}, guild_id=interaction.guild_id, source="views/components.py:ApiKeyModal.on_submit")
             except Exception:
