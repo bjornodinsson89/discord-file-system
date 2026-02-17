@@ -191,6 +191,15 @@ class JumpsRepository(RepositoryBase):
             )
             return [dict(row) for row in rows]
 
+    async def list_open_sessions_for_guild(self, guild_id: int) -> list[dict]:
+        """Return all open 99k sessions for a specific guild."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status='open' ORDER BY created_at DESC",
+                guild_id,
+            )
+            return [dict(row) for row in rows]
+
     async def get_session(self, session_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_sessions WHERE id = $1", session_id)
