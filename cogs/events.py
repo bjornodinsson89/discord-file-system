@@ -1183,6 +1183,31 @@ def _is_99k_closed(status: str | None) -> bool:
     return str(status or "").strip().lower() in {"closed", "cancelled", "finished", "completed", "expired"}
 
 
+def _slugify_discord_channel_name(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or "jump"
+
+
+def _build_99k_private_channel_name(host_torn_name: str, session_id: int, existing_names: set[str]) -> str:
+    base_slug = _slugify_discord_channel_name(host_torn_name)
+    owner_slug = base_slug if base_slug.endswith("s") else f"{base_slug}s"
+    desired_name = f"{owner_slug}-99k-jump"
+    if desired_name not in existing_names:
+        return desired_name
+
+    with_session_id = f"{desired_name}-{int(session_id)}"
+    if with_session_id not in existing_names:
+        return with_session_id
+
+    suffix = 2
+    while True:
+        candidate = f"{with_session_id}-{suffix}"
+        if candidate not in existing_names:
+            return candidate
+        suffix += 1
+
+
 async def _resolve_99k_host_label(users_repo: UsersRepository, host_discord_id: int) -> str:
     host_row = await users_repo.get_user_api_key(host_discord_id)
     host_torn_id = int((host_row or {}).get("torn_user_id") or 0)
@@ -2114,9 +2139,14 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                         if role:
                             overwrites[role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True)
 
+                    host_row = await users_repo.get_user_api_key(int(interaction.user.id))
+                    host_torn_name = str((host_row or {}).get("torn_name") or "").strip() or "User"
+                    existing_names = {c.name for c in interaction.guild.channels}
+                    channel_name = _build_99k_private_channel_name(host_torn_name, int(session_id), existing_names)
+
                     category = interaction.channel.category if isinstance(interaction.channel, discord.TextChannel) else None
                     private_channel = await interaction.guild.create_text_channel(
-                        name=f"jump-{session_id}",
+                        name=channel_name,
                         category=category,
                         overwrites=overwrites,
                         reason="99k jump session channel",
