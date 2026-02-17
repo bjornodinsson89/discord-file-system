@@ -2246,22 +2246,45 @@ async def jump99k_list(interaction: discord.Interaction):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
     if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
         return
+    await interaction.response.defer(ephemeral=True)
+
     repo = JumpsRepository(get_pool())
-    session = await repo.get_active_session(interaction.guild_id)
-    if not session:
-        await interaction.response.send_message(embed=create_info_embed("99k sessions", "No open sessions."), ephemeral=True)
+    sessions = await repo.list_open_sessions_for_guild(int(interaction.guild_id))
+    if not sessions:
+        await interaction.followup.send(embed=create_info_embed("99k sessions", "No open sessions."), ephemeral=True)
         return
-    rows = await repo.list_signups_with_readiness(int(session["id"]))
-    lines = []
-    for r in rows:
-        green = int(r.get("energy") or 0) == 1000 and int(r.get("drug_cooldown") or 0) == 0
-        color = "🟢" if green else "🔴"
-        if r.get("overdose_flag"):
-            color = "🟠"
-        lines.append(f"{color} <@{r['discord_id']}> • E {r.get('energy') or 0}/{r.get('energy_max') or 0} • CD {r.get('drug_cooldown') or 0}s • {r.get('status_text') or 'unknown'}")
-    if not lines:
-        lines = ["No signups yet."]
-    await interaction.response.send_message(embed=create_info_embed(f"99k Session #{session['id']}", "\n".join(lines)), ephemeral=True)
+
+    summary_lines = []
+    for session in sessions[:10]:
+        signup_count = await repo.signup_count(int(session["id"]))
+        scheduled = session.get("scheduled_start_text") or "not set"
+        summary_lines.append(
+            f"`#{session['id']}` **{session.get('title') or 'Untitled'}** • Start: {scheduled} • "
+            f"Signups: {signup_count}/{session.get('max_slots') or 0} • Host: <@{session.get('host_discord_id')}>"
+        )
+
+    newest = sessions[0]
+    readiness_rows = await repo.list_signups_with_readiness(int(newest["id"]))
+    readiness_lines = []
+    for row in readiness_rows[:25]:
+        ready = int(row.get("energy") or 0) == 1000 and int(row.get("drug_cooldown") or 0) == 0
+        marker = "🟢" if ready else "🔴"
+        if row.get("overdose_flag"):
+            marker = f"{marker}🟠"
+        readiness_lines.append(
+            f"{marker} <@{row['discord_id']}> • E {row.get('energy') or 0}/{row.get('energy_max') or 0} • "
+            f"CD {row.get('drug_cooldown') or 0}s • {row.get('status_text') or 'unknown'}"
+        )
+
+    description = "\n".join(summary_lines)
+    if len(sessions) > 10:
+        description += f"\n…and {len(sessions) - 10} more open session(s)."
+
+    embed = create_info_embed("99k open sessions", description)
+    readiness_value = "\n".join(readiness_lines) if readiness_lines else "No signups yet."
+    embed.add_field(name=f"Newest session readiness (#{newest['id']})", value=readiness_value, inline=False)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @jump99k_group.command(name="end", description="Close active 99k session")
@@ -2269,16 +2292,18 @@ async def jump99k_end(interaction: discord.Interaction):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
     if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
         return
+    await interaction.response.defer(ephemeral=True)
+
     repo = JumpsRepository(get_pool())
     session = await repo.get_active_session(interaction.guild_id)
     if not session:
-        await interaction.response.send_message(embed=create_info_embed("99k end", "No open session."), ephemeral=True)
+        await interaction.followup.send(embed=create_info_embed("99k end", "No open session."), ephemeral=True)
         return
     rows = await repo.list_signups(int(session["id"]))
     completed_ids = [int(r["discord_id"]) for r in rows if r.get("status") == "signed_up"]
     ok = await repo.close_session_and_record(session_id=int(session["id"]), guild_id=interaction.guild_id, completed_discord_ids=completed_ids, not_completed_discord_ids=[])
     if not ok:
-        await interaction.response.send_message(embed=create_error_embed("Could not close", "Session was already closed."), ephemeral=True)
+        await interaction.followup.send(embed=create_error_embed("Could not close", "Session was already closed."), ephemeral=True)
         return
 
     await _refresh_roster_if_exists(interaction.client, int(session["id"]))
@@ -2295,7 +2320,7 @@ async def jump99k_end(interaction: discord.Interaction):
         await repo.clear_private_channel(int(session["id"]))
 
     await repo.mark_cleaned(int(session["id"]))
-    await interaction.response.send_message(embed=create_success_embed("99k session ended", f"Closed session #{session['id']}."), ephemeral=True)
+    await interaction.followup.send(embed=create_success_embed("99k session ended", f"Closed session #{session['id']}."), ephemeral=True)
 
 
 bot.tree.add_command(jump99k_group)
