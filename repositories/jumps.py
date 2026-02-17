@@ -51,6 +51,8 @@ class JumpsRepository(RepositoryBase):
         insurance_channel_id: Optional[int],
         default_max_slots: int,
     ) -> dict:
+        if default_max_slots < 1 or default_max_slots > 7:
+            raise ValueError("default_max_slots must be between 1 and 7.")
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
