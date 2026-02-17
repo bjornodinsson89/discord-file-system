@@ -1183,7 +1183,16 @@ def _is_99k_closed(status: str | None) -> bool:
     return str(status or "").strip().lower() in {"closed", "cancelled", "finished", "completed", "expired"}
 
 
-def build_99k_announcement_content(session: dict, signed_up: int, paid: int) -> str:
+async def _resolve_99k_host_label(users_repo: UsersRepository, host_discord_id: int) -> str:
+    host_row = await users_repo.get_user_api_key(host_discord_id)
+    host_torn_id = int((host_row or {}).get("torn_user_id") or 0)
+    host_torn_name = str((host_row or {}).get("torn_name") or "").strip() or "User"
+    if host_torn_id > 0:
+        return f"{host_torn_name} [{host_torn_id}]"
+    return f"{host_torn_name} [ID not linked]"
+
+
+def build_99k_announcement_content(session: dict, signed_up: int, paid: int, host_label: str) -> str:
     session_id = int(session["id"])
     tct_start_text = _format_session_start_display(session)
     price_amount = int(session.get("price_amount") or 0)
@@ -1195,6 +1204,7 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int) -> 
     status_text = "Closed" if is_closed else ("Full" if is_full else "Open")
     return (
         f"📣✨ **99k Happy Jump** ✨ — **Session #{session_id}**\n"
+        f"👤 Host: {host_label}\n"
         f"🕒 {tct_start_text}\n"
         f"💰 Spot price: {price_amount}x {price_item_label}\n"
         f"📝 Notes: {notes_or_placeholder}\n"
@@ -1273,6 +1283,7 @@ async def upsert_99k_announcement(
     session = await repo.get_session(session_id)
     if not session or int(session.get("guild_id", 0)) != int(guild_id):
         return
+    users_repo = UsersRepository(get_pool())
 
     signups = await repo.list_signups(session_id)
     signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
@@ -1293,7 +1304,9 @@ async def upsert_99k_announcement(
         except Exception:
             return
 
-    content = build_99k_announcement_content(session, signed_up, paid)
+    host_discord_id = int(session.get("host_discord_id") or 0)
+    host_label = await _resolve_99k_host_label(users_repo, host_discord_id)
+    content = build_99k_announcement_content(session, signed_up, paid, host_label)
     view = Jump99kSignupView(session_id=session_id, is_full=is_full, is_closed=is_closed)
 
     announce_channel_id = session.get("announce_channel_id")
@@ -1831,9 +1844,17 @@ class Jump99kSignupView(discord.ui.View):
             )
             await _refresh_99k_panel(interaction.client, self.session_id)
 
+            host_discord_id = int(session.get("host_discord_id") or 0)
+            host_label = await _resolve_99k_host_label(users_repo, host_discord_id)
+            price_amount = int(session.get("price_amount") or 0)
+            item_label = _format_99k_price_item_label(session.get("price_item"))
+
             reserve_embed = discord.Embed(
                 title="Spot Reserved",
-                description="Spot reserved. Send payment in Torn, then press Verify Payment.",
+                description=(
+                    "Spot reserved.\n"
+                    f"Send **{price_amount}x {item_label}** to **{host_label}** in Torn, then press **Verify Payment**."
+                ),
                 color=discord.Color.green(),
             )
             await interaction.followup.send(
