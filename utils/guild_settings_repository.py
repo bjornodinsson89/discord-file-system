@@ -238,7 +238,10 @@ class GuildSettingsRepository:
                 normalized[key] = self._normalize_role_id_list(value, guild_id=guild_id, field_name=key)
                 continue
             if key in {"reservation_timeout_minutes", "default_max_slots", "host_tax_recipient_torn_id", "host_tax_item_id", "host_tax_quantity"} and value is not None:
-                normalized[key] = int(value)
+                normalized_value = int(value)
+                if key == "default_max_slots" and not 1 <= normalized_value <= 7:
+                    raise ValueError("default_max_slots must be between 1 and 7")
+                normalized[key] = normalized_value
                 continue
             normalized[key] = value
         return normalized

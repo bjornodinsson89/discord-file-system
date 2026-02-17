@@ -322,7 +322,7 @@ class Jump99kSetupModal(discord.ui.Modal, title="99k Setup"):
     host_role_id = discord.ui.TextInput(label="Host role", placeholder="@99k Host", required=True, max_length=20)
     announce_channel_id = discord.ui.TextInput(label="Announce channel", placeholder="#announcements", required=False, max_length=20)
     payee_discord_id = discord.ui.TextInput(label="Payee", placeholder="@HostUser", required=False, max_length=20)
-    default_max_slots = discord.ui.TextInput(label="Default max slots", placeholder="5", required=False, default="5", max_length=3)
+    default_max_slots = discord.ui.TextInput(label="Default max slots (1-7)", placeholder="5", required=False, default="5", max_length=3)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
@@ -335,6 +335,10 @@ class Jump99kSetupModal(discord.ui.Modal, title="99k Setup"):
             default_slots = int(str(self.default_max_slots.value).strip() or "5")
         except ValueError:
             await interaction.response.send_message(embed=create_error_embed("Invalid input", "Role/channel/payee IDs and slots must be numeric."), ephemeral=True)
+            return
+
+        if default_slots < 1 or default_slots > 7:
+            await interaction.response.send_message(embed=create_error_embed("Invalid input", "Default max slots must be between 1 and 7."), ephemeral=True)
             return
 
         db = get_database()

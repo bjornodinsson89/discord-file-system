@@ -845,7 +845,7 @@ class WelcomeView(BackView):
 
 
 class DefaultMaxSlotsModal(discord.ui.Modal):
-    max_slots = discord.ui.TextInput(label="Default max slots (1-5)", required=True, max_length=1)
+    max_slots = discord.ui.TextInput(label="Default max slots (1-7)", required=True, max_length=1)
 
     def __init__(self, panel: "SetupPanelView", current: int | None):
         super().__init__(title="Set 99k Default Max Slots")
@@ -854,8 +854,8 @@ class DefaultMaxSlotsModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         raw = str(self.max_slots.value).strip()
-        if not raw.isdigit() or not 1 <= int(raw) <= 5:
-            await interaction.response.send_message(embed=create_error_embed("Invalid value", "Default max slots must be between 1 and 5."), ephemeral=True)
+        if not raw.isdigit() or not 1 <= int(raw) <= 7:
+            await interaction.response.send_message(embed=create_error_embed("Invalid value", "Default max slots must be between 1 and 7."), ephemeral=True)
             return
         await self.panel.save_changes(interaction, {"default_max_slots": int(raw)})
 class FeatureTogglesView(BackView):
