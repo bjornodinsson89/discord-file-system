@@ -28,6 +28,7 @@ def test_repo_casts_bigints_and_admin_roles():
         {
             "announce_channel_id": "123",
             "jump_announce_channel_id": "456",
+            "pool_channel_id": "789",
             "admin_role_ids": ["1", 2],
             "jump_ping_role_ids": ["11", 12, "11"],
             "reservation_timeout_minutes": "10",
@@ -35,6 +36,7 @@ def test_repo_casts_bigints_and_admin_roles():
     )
     assert normalized["announce_channel_id"] == 123
     assert normalized["jump_announce_channel_id"] == 456
+    assert normalized["pool_channel_id"] == 789
     assert normalized["admin_role_ids"] == [1, 2]
     assert normalized["jump_ping_role_ids"] == [11, 12]
     assert normalized["reservation_timeout_minutes"] == 10
@@ -149,3 +151,10 @@ def test_repo_ensure_guild_exists_creates_when_missing(monkeypatch):
 
     asyncio.run(repo.ensure_guild_exists(12345))
     assert called["count"] == 1
+
+
+def test_repo_merge_defaults_includes_pool_channel_id():
+    repo = GuildSettingsRepository(_DB())
+    merged = repo._merge_defaults({}, guild_id=101)
+    assert "pool_channel_id" in merged
+    assert merged["pool_channel_id"] is None

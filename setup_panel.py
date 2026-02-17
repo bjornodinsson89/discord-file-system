@@ -279,7 +279,8 @@ class SetupPanelView(OwnerView):
             f"Raffle purchase panel: {channel_name('raffle_purchase_channel_id')}\n"
             f"Insurance: {channel_name('insurance_channel_id')}\n"
             f"Applications: {channel_name('applications_channel_id')}\n"
-            f"Welcome: {channel_name('welcome_channel_id')}"
+            f"Welcome: {channel_name('welcome_channel_id')}\n"
+            f"Pools: {channel_name('pool_channel_id')}"
         ), inline=False)
         jump_ping_mentions = []
         for rid in (s.get("jump_ping_role_ids") or []):
@@ -540,6 +541,12 @@ class ChannelsView(BackView):
             await _respond_callback_error(interaction, error)
 
 
+class PoolChannelPickerView(BackView):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.add_item(ChannelSelect(self.panel, "pool_channel_id", "Set pools channel"))
+
+
 class ChannelsViewPage2(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -547,6 +554,25 @@ class ChannelsViewPage2(BackView):
         self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Set insurance channel"))
         self.add_item(ChannelSelect(self.panel, "applications_channel_id", "Set applications channel"))
         self.add_item(ChannelSelect(self.panel, "welcome_channel_id", "Set welcome channel"))
+
+    @discord.ui.button(label="Set pools channel", style=discord.ButtonStyle.secondary, row=3)
+    async def set_pools_channel_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            await _send_or_edit(
+                interaction,
+                create_info_embed("Pools channel", "Pick a text channel for pool postings. Clear selection to unset."),
+                PoolChannelPickerView(
+                    owner_id=self.owner_id,
+                    db=self.db,
+                    settings=self.settings,
+                    guild=self.guild,
+                    panel=self.panel,
+                ),
+            )
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
