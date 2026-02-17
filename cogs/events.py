@@ -136,28 +136,30 @@ def _parse_optional_session_start(raw_value: str, settings: dict) -> tuple[Optio
             except ValueError:
                 next_year += 1
 
-    return aware, aware.strftime("%Y-%m-%d %H:%M")
+    aware_utc = aware.astimezone(timezone.utc)
+    unix_ts = int(aware_utc.timestamp())
+    scheduled_display = f"<t:{unix_ts}:F>"
+    return aware_utc, scheduled_display
 
 
 def _format_session_start_display(session: dict) -> str:
-    start_time = session.get("start_time")
-    if not start_time:
-        return "Start: Not set"
+    return f"Start: {_format_session_start_ts(session, 'F')} (time displayed in your timezone)"
 
-    if isinstance(start_time, str):
+
+def _format_session_start_ts(session: dict, style: str = "F") -> str:
+    st = session.get("start_time")
+    if not st:
+        return "Not set"
+    if isinstance(st, str):
         try:
-            start_time = datetime.fromisoformat(start_time)
+            st = datetime.fromisoformat(st)
         except ValueError:
-            return str(start_time)
-
-    if not isinstance(start_time, datetime):
-        return "Start: Not set"
-
-    if start_time.tzinfo is None:
-        start_time = start_time.replace(tzinfo=timezone.utc)
-
-    unix_ts = int(start_time.timestamp())
-    return f"Start: <t:{unix_ts}:F> (time displayed in your timezone)"
+            return "Not set"
+    if not isinstance(st, datetime):
+        return "Not set"
+    if st.tzinfo is None:
+        st = st.replace(tzinfo=timezone.utc)
+    return f"<t:{int(st.timestamp())}:{style}>"
 
 def _host_tax_requirement_text(settings: dict) -> str:
     tax_type = str(settings.get("host_tax_type") or "").strip().lower()
@@ -1476,12 +1478,16 @@ async def _build_session_roster_embed(
         return f"<@{int(discord_id)}>"
 
     host_name = await _display_name_for(int(host_discord_id))
+    repo = JumpsRepository(get_pool())
+    session = await repo.get_session(int(session_id))
+    start_line = _format_session_start_ts(session, "F") if session else "Not set"
 
     return discord.Embed(
         title="Jump Roster",
         description=(
             f"Session ID: **#{session_id}**\n"
             f"Host: {host_name}\n"
+            f"Start: {start_line}\n"
             f"Payment: **{payment_amount}x {'Xanax' if payment_type == 'xanax' else 'eDVD'}**\n"
             "Members will appear here after payment verification."
         ),
@@ -1527,7 +1533,10 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
     host_ready = host_energy is not None and host_energy_max is not None and int(host_energy) >= 1000 and int(host_drug_cd or 0) == 0
     host_emoji = "🟩" if host_ready else "🟥"
 
+    start_display = _format_session_start_ts(session, "F")
     lines = [
+        f"Start: {start_display}",
+        "",
         f"1) Name:{host_name} E-lvl {_format_energy_pair(host_energy, host_energy_max)} Dcd |{_format_cd_hhmm(host_drug_cd)}| Bcd |{_format_cd_hhmm(host_booster_cd)}| {host_emoji}"
     ]
 
@@ -2021,7 +2030,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
         label="Start (optional)",
         required=False,
         max_length=16,
-        placeholder="MM-DD HH:MM / MM/DD HH:MM / MM-DD Hpm",
+        placeholder="MM-DD 5:30pm / MM/DD 5:30pm / MM-DD 17:30",
     )
     notes = discord.ui.TextInput(label="Notes", placeholder="Add jump instructions", required=False, style=discord.TextStyle.paragraph, max_length=1000)
 
@@ -2062,7 +2071,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 start_time, scheduled = _parse_optional_session_start(self.possible_tct_start.value, self.settings)
             except ValueError:
                 await interaction.response.send_message(
-                    "Invalid start. Use MM-DD HH:MM, MM/DD HH:MM, or MM-DD Hpm (or leave blank).",
+                    "Invalid start. Use MM-DD 5:30pm, MM/DD 5:30pm, or MM-DD 17:30 (or leave blank).",
                     ephemeral=True,
                 )
                 return
@@ -2257,7 +2266,7 @@ async def jump99k_list(interaction: discord.Interaction):
     summary_lines = []
     for session in sessions[:10]:
         signup_count = await repo.signup_count(int(session["id"]))
-        scheduled = session.get("scheduled_start_text") or "not set"
+        scheduled = _format_session_start_ts(session, "F")
         summary_lines.append(
             f"`#{session['id']}` **{session.get('title') or 'Untitled'}** • Start: {scheduled} • "
             f"Signups: {signup_count}/{session.get('max_slots') or 0} • Host: <@{session.get('host_discord_id')}>"
