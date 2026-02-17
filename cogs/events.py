@@ -259,17 +259,41 @@ async def ensure_admin(interaction: discord.Interaction) -> bool:
 
 
 async def assert99kHost(interaction: discord.Interaction, settings: dict | None) -> bool:
-    if not interaction.guild or not isinstance(interaction.user, discord.Member) or not settings:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        embed = create_error_embed("Guild only", "This command can only be used in a server.")
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        return False
+
+    if not settings:
+        embed = create_error_embed("Missing configuration", "99k Host settings are not configured for this server.")
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         return False
 
     member = interaction.user
     has_admin = bool(member.guild_permissions.administrator)
-    host_role = settings.get("host_role_id")
-    has_role = bool(host_role) and any(role.id == int(host_role) for role in member.roles)
-    if has_admin and has_role:
+
+    raw_host_role_id = settings.get("host_role_id")
+    if raw_host_role_id in (None, ""):
+        raw_host_role_id = settings.get("host99k_role_id")
+
+    host_role_id: int | None = None
+    try:
+        if raw_host_role_id not in (None, ""):
+            host_role_id = int(raw_host_role_id)
+    except (TypeError, ValueError):
+        host_role_id = None
+
+    has_role = bool(host_role_id) and any(role.id == host_role_id for role in member.roles)
+    if has_admin or has_role:
         return True
 
-    embed = create_error_embed("Clearance required.", "You need Administrator and the configured 99k Host role.")
+    embed = create_error_embed("Clearance required.", "You need Administrator or the configured 99k Host role.")
     if interaction.response.is_done():
         await interaction.followup.send(embed=embed, ephemeral=True)
     else:
