@@ -140,7 +140,7 @@ def _format_session_start_display(session: dict) -> str:
         start_time = start_time.replace(tzinfo=timezone.utc)
 
     unix_ts = int(start_time.timestamp())
-    return f"Start: <t:{unix_ts}:D> <t:{unix_ts}:t>"
+    return f"Start: <t:{unix_ts}:F> (time displayed in your timezone)"
 
 def _host_tax_requirement_text(settings: dict) -> str:
     tax_type = str(settings.get("host_tax_type") or "").strip().lower()
@@ -1007,13 +1007,22 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int) -> 
     )
 
 
-def build_99k_jump_created_announcement_content(session: dict) -> str:
+def build_99k_jump_created_announcement_content(session: dict, settings: dict | None = None) -> str:
     tct_start_text = _format_session_start_display(session)
     max_slots = int(session.get("max_slots") or 0)
     price_amount = int(session.get("price_amount") or 0)
     price_item_label = _format_99k_price_item_label(session.get("price_item"))
+    settings = settings or {}
+    jump_channel_id = int(settings.get("jump_99k_channel_id") or 0)
+    if jump_channel_id > 0:
+        purchase_line = f"To purchase a spot, go to <#{jump_channel_id}> and use the signup message/buttons."
+    else:
+        purchase_line = "To purchase a spot, use the jump signup channel configured in /setup."
     return (
-        f"🔔 There will be a jump. {tct_start_text} (time displayed in your timezone). Please secure your spot with {price_amount}x {price_item_label}.\n"
+        f"🔔 There will be a jump.\n"
+        f"{tct_start_text}.\n"
+        f"{purchase_line}\n"
+        f"Please secure your spot with {price_amount}x {price_item_label}.\n"
         f"{max_slots}/{max_slots} available spots"
     )
 
@@ -1045,7 +1054,7 @@ async def post_99k_jump_created_announcement(
     try:
         role_ids = GuildSettingsRepository._normalize_role_id_list(settings.get("jump_ping_role_ids"))
         role_mentions = " ".join(f"<@&{rid}>" for rid in role_ids)
-        content = build_99k_jump_created_announcement_content(session)
+        content = build_99k_jump_created_announcement_content(session, settings)
         prefix = f"{role_mentions}\n" if role_mentions else ""
         await channel.send(f"{prefix}{content}")
     except Exception:
@@ -1205,7 +1214,7 @@ async def _resolve_roster_name(guild: discord.Guild | None, discord_id: int) -> 
                 member = None
         if member is not None:
             return _truncate_name_16(member.display_name)
-    return _truncate_name_16(f"User{str(discord_id)[-4:]}")
+    return _truncate_name_16(f"<@{int(discord_id)}>")
 
 
 def _build_roster_embed(lines: list[str]) -> discord.Embed:
@@ -1221,17 +1230,17 @@ async def _build_session_roster_embed(
     payment_type: str,
     payment_amount: int,
 ) -> discord.Embed:
-    guild = bot.get_guild(int(guild_id))
-    host_member = guild.get_member(int(host_discord_id)) if guild else None
-    if host_member is None and guild:
-        try:
-            host_member = await guild.fetch_member(int(host_discord_id))
-        except Exception:
-            host_member = None
+    async def _display_name_for(discord_id: int) -> str:
+        torn = await _get_torn_display_name_for_discord(int(guild_id), int(discord_id))
+        if torn:
+            return torn
+        g = bot.get_guild(int(guild_id)) if hasattr(bot, "get_guild") else None
+        member = g.get_member(int(discord_id)) if g else None
+        if member and getattr(member, "display_name", None):
+            return member.display_name
+        return f"<@{int(discord_id)}>"
 
-    host_name = await _get_torn_display_name_for_discord(int(guild_id), int(host_discord_id))
-    if not host_name:
-        host_name = host_member.display_name if host_member is not None else str(host_discord_id)
+    host_name = await _display_name_for(int(host_discord_id))
 
     return discord.Embed(
         title="Jump Roster",
@@ -1265,7 +1274,17 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
         )
 
     guild = channel.guild if isinstance(channel, discord.abc.GuildChannel) else None
-    host_name = await _resolve_roster_name(guild, host_id)
+
+    async def _display_name_for(discord_id: int) -> str:
+        torn = await _get_torn_display_name_for_discord(int(session["guild_id"]), int(discord_id))
+        if torn:
+            return torn
+        member = guild.get_member(int(discord_id)) if guild else None
+        if member and getattr(member, "display_name", None):
+            return member.display_name
+        return f"<@{int(discord_id)}>"
+
+    host_name = await _display_name_for(host_id)
     host_energy = (host_readiness or {}).get("energy")
     host_energy_max = (host_readiness or {}).get("energy_max")
     host_drug_cd = (host_readiness or {}).get("drug_cooldown") if host_readiness else None
@@ -1280,7 +1299,7 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
     participants = [row for row in signups if int(row.get("discord_id") or 0) != host_id]
     for idx, row in enumerate(participants, start=2):
         discord_id = int(row.get("discord_id") or 0)
-        name = await _resolve_roster_name(guild, discord_id)
+        name = await _display_name_for(discord_id)
 
         has_readiness = row.get("checked_at") is not None
         energy = int(row.get("energy") or 0) if has_readiness else None
