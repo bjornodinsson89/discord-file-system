@@ -85,6 +85,56 @@ async def _refresh_pool_panel_message(bot: commands.Bot, pool_id: int) -> None:
     await message.edit(embed=embed, view=PoolPurchasePanelView(pool_id=pool_id, disabled=(pool.get("status") != "active")))
 
 
+def _pool_channel_missing_permissions(channel: discord.abc.GuildChannel, me: discord.Member) -> list[str]:
+    perms = channel.permissions_for(me)
+    missing: list[str] = []
+    if not perms.view_channel:
+        missing.append("View Channel")
+    if not perms.send_messages:
+        missing.append("Send Messages")
+    if not perms.embed_links:
+        missing.append("Embed Links")
+    return missing
+
+
+async def _resolve_pool_post_channel(
+    interaction: discord.Interaction,
+    settings: dict,
+) -> tuple[discord.abc.Messageable | None, str | None]:
+    fallback_channel = interaction.channel
+    guild = interaction.guild
+    if not guild:
+        return fallback_channel, None
+
+    me = guild.me or guild.get_member(interaction.client.user.id)
+    configured_id = settings.get("pool_channel_id")
+    if not configured_id:
+        return fallback_channel, "ℹ️ Pools channel is not configured. Run `/setup` → Channels → **Set pools channel**."
+
+    target = guild.get_channel(int(configured_id))
+    if target is None:
+        try:
+            target = await guild.fetch_channel(int(configured_id))
+        except Exception:
+            target = None
+
+    if target is None:
+        return fallback_channel, (
+            "⚠️ Configured pools channel is invalid or no longer exists. "
+            "Using this channel instead. Update `/setup` → Channels → **Set pools channel**."
+        )
+
+    if me and isinstance(target, discord.abc.GuildChannel):
+        missing = _pool_channel_missing_permissions(target, me)
+        if missing:
+            return fallback_channel, (
+                f"⚠️ I cannot post in {target.mention} (missing: {', '.join(missing)}). "
+                "Using this channel instead."
+            )
+
+    return target, None
+
+
 class PoolCustomQuantityModal(discord.ui.Modal):
     quantity = discord.ui.TextInput(label="Ticket quantity", placeholder="3", required=True, max_length=10)
 
@@ -370,20 +420,28 @@ class PoolsCog(commands.Cog):
             return
 
         settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
-        panel_channel_id = settings.get("raffle_purchase_channel_id") or settings.get("raffle_channel_id")
         announce_channel_id = settings.get("raffle_announcement_channel_id")
-        if not panel_channel_id or not announce_channel_id:
+        if not announce_channel_id:
             await interaction.response.send_message(
-                "❌ Configure **raffle purchase panel channel** and **raffle announcement channel** in `/setup` first.",
+                "❌ Configure **raffle announcement channel** in `/setup` first.",
                 ephemeral=True,
             )
             return
 
+        panel_channel, pool_channel_warning = await _resolve_pool_post_channel(interaction, settings)
+        if panel_channel is None or not hasattr(panel_channel, "send"):
+            await interaction.response.send_message("❌ Unable to resolve a channel to post the pool.", ephemeral=True)
+            return
+
         guild = interaction.guild
-        panel_channel = guild.get_channel(int(panel_channel_id)) if guild else None
         announce_channel = guild.get_channel(int(announce_channel_id)) if guild else None
-        if panel_channel is None or announce_channel is None:
-            await interaction.response.send_message("❌ One or more configured channels are invalid or inaccessible.", ephemeral=True)
+        if announce_channel is None and guild:
+            try:
+                announce_channel = await guild.fetch_channel(int(announce_channel_id))
+            except Exception:
+                announce_channel = None
+        if announce_channel is None:
+            await interaction.response.send_message("❌ Configured raffle announcement channel is invalid or inaccessible.", ephemeral=True)
             return
 
         pool_id = await repo.create_pool(
@@ -393,7 +451,7 @@ class PoolsCog(commands.Cog):
             tickets_total=tickets_total,
             max_per_user=max_per_user,
             announce_channel_id=int(announce_channel_id),
-            panel_channel_id=int(panel_channel_id),
+            panel_channel_id=int(panel_channel.id),
         )
         pool = await repo.get_pool(pool_id)
         panel_embed = await _build_pool_panel_embed(pool, sold=0)
@@ -413,10 +471,11 @@ class PoolsCog(commands.Cog):
             announce_embed.add_field(name="", value=f"👉 Buy in {panel_channel.mention}", inline=False)
             await announce_channel.send(embed=announce_embed)
 
-        await interaction.response.send_message(
-            f"✅ Xanax Pool created in {panel_channel.mention}.\n{panel_msg.jump_url}",
-            ephemeral=True,
-        )
+        result_message = f"✅ Xanax Pool created in {panel_channel.mention}.\n{panel_msg.jump_url}"
+        if pool_channel_warning:
+            result_message = f"{result_message}\n\n{pool_channel_warning}"
+        await interaction.response.send_message(result_message, ephemeral=True)
+
 
     @app_commands.command(name="pool_list", description="List active Xanax Pools")
     async def pool_list(self, interaction: discord.Interaction):
