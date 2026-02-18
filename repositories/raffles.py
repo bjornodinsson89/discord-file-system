@@ -264,6 +264,50 @@ class RafflesRepository(RepositoryBase):
                 raffle_id,
             )
 
+    async def update_prize_verification(
+        self,
+        raffle_id: int,
+        *,
+        status: str,
+        checked_at: Optional[datetime] = None,
+        verified_at: Optional[datetime] = None,
+        verified_by_discord_id: Optional[int] = None,
+        verification_log_id: Optional[str] = None,
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE raffles
+                SET prize_verification_status = $2,
+                    prize_verification_checked_at = COALESCE($3, NOW()),
+                    prize_verified_at = $4,
+                    prize_verified_by_discord_id = $5,
+                    prize_verification_log_id = $6
+                WHERE raffle_id = $1
+                """,
+                raffle_id,
+                status,
+                checked_at,
+                verified_at,
+                str(verified_by_discord_id) if verified_by_discord_id else None,
+                verification_log_id,
+            )
+
+    async def get_pending_prize_verification_rows(self) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT raffle_id, announcement_message_id
+                FROM raffles
+                WHERE status = 'completed'
+                  AND COALESCE(is_free, FALSE) = FALSE
+                  AND winner_discord_id IS NOT NULL
+                  AND announcement_message_id IS NOT NULL
+                  AND COALESCE(prize_verification_status, '') <> 'VERIFIED'
+                """
+            )
+            return [dict(row) for row in rows]
+
     async def get_pending_prize_confirm_dm_rows(self) -> list[dict]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(

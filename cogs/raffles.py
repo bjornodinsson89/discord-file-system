@@ -50,6 +50,37 @@ def _payment_text(payment_type: str, amount: int) -> str:
 _FALLBACK_ITEM_NAMES = {206: "Xanax", 366: "Erotic DVD"}
 
 
+_PRIZE_VERIFY_COOLDOWN_SECONDS = 60
+_PRIZE_VERIFY_WINDOW_SECONDS = 7 * 24 * 60 * 60
+
+
+def _format_discord_timestamp(value: datetime | None) -> str:
+    if value is None:
+        return "Unknown"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return f"<t:{int(value.timestamp())}:F>"
+
+
+def _extract_prize_map(prize_items: list[dict]) -> dict[int, int]:
+    expected: dict[int, int] = {}
+    for item in prize_items:
+        item_id = _safe_int(item.get("item_id"))
+        qty = _safe_int(item.get("qty"))
+        if not item_id or not qty:
+            continue
+        expected[item_id] = expected.get(item_id, 0) + qty
+    return expected
+
+
+def _extract_log_id(entry: dict) -> str:
+    for key in ("id", "log_id", "log", "logid"):
+        value = entry.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return "unknown"
+
+
 def _disable_view(view: discord.ui.View | None) -> discord.ui.View | None:
     if view is None:
         return None
@@ -133,6 +164,29 @@ async def _build_prize_instruction_text(repo: RafflesRepository, raffle: dict) -
         lines.append(f"- {qty} × {item_name} ({item_id})")
     return "\n".join(lines), items, True
 
+
+
+
+class AdminPrizeVerificationView(discord.ui.View):
+    def __init__(self, raffle_id: int, *, verified: bool = False):
+        super().__init__(timeout=None)
+        button = discord.ui.Button(
+            label="Verified ✅" if verified else "Verify Prize",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"raffle:verify_prize:{raffle_id}",
+            disabled=verified,
+        )
+        button.callback = self.verify_prize
+        self.add_item(button)
+        self.raffle_id = raffle_id
+
+    async def verify_prize(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        cog = interaction.client.get_cog("RafflesCog")
+        if cog is None:
+            await interaction.followup.send("Raffle system unavailable.", ephemeral=True)
+            return
+        await cog.handle_admin_prize_verification(interaction, self.raffle_id, self)
 
 class RafflePrizeConfirmDMView(discord.ui.View):
     def __init__(self, raffle_id: int, creator_discord_id: int, *, disabled: bool = False):
@@ -1111,7 +1165,13 @@ class RafflesCog(commands.Cog):
                     ),
                     message_id=int(dm_row["prize_confirm_dm_message_id"]),
                 )
-            if panel_raffles or active_raffles or pending_dm:
+            pending_verify = await repo.get_pending_prize_verification_rows()
+            for verify_row in pending_verify:
+                self.bot.add_view(
+                    AdminPrizeVerificationView(raffle_id=int(verify_row["raffle_id"])),
+                    message_id=int(verify_row["announcement_message_id"]),
+                )
+            if panel_raffles or active_raffles or pending_dm or pending_verify:
                 log.info(
                     "Registered %s message-bound and %s fallback raffle purchase views",
                     len(panel_raffles),
@@ -1132,6 +1192,262 @@ class RafflesCog(commands.Cog):
         return draft
     def pop_pack_draft(self, creator_discord_id: int) -> None:
         self._pack_drafts.pop(creator_discord_id, None)
+    def _is_admin_raffle(self, raffle: dict) -> bool:
+        return str(raffle.get("ticket_payment_type") or "").lower() != "free" and not bool(raffle.get("is_free"))
+
+    async def _send_admin_winner_announcement(self, raffle: dict, winner: dict) -> None:
+        if not self._is_admin_raffle(raffle):
+            return
+
+        guild = self.bot.get_guild(int(raffle["guild_id"]))
+        if guild is None:
+            return
+
+        db = get_database()
+        settings = await GuildSettingsRepository(db).get_or_create(guild.id)
+        announce_channel_id = _safe_int(settings.get("raffle_announcement_channel_id")) or _safe_int(raffle.get("announcement_channel_id"))
+        if not announce_channel_id:
+            return
+
+        channel = guild.get_channel(int(announce_channel_id))
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(int(announce_channel_id))
+            except Exception:
+                channel = None
+        if not channel or not hasattr(channel, "send"):
+            return
+
+        repo = RafflesRepository(get_pool())
+        updated_raffle = await repo.get_raffle(int(raffle["raffle_id"])) or raffle
+        entries = await repo.get_raffle_entries(int(raffle["raffle_id"]))
+        total_entries = sum(int(e.get("num_tickets") or 0) for e in entries if bool(e.get("payment_verified")))
+        winner_discord_id = int(updated_raffle.get("winner_discord_id") or winner.get("discord_id"))
+        winner_member = guild.get_member(winner_discord_id)
+        winner_display = winner_member.display_name if winner_member else f"User {winner_discord_id}"
+        prize_items = await repo.get_prize_items_payload(updated_raffle)
+        if prize_items:
+            item_repo = TornItemsRepository(get_pool())
+            parts = []
+            for item in prize_items:
+                item_id = int(item["item_id"])
+                item_name = await _resolve_item_name(item_repo, item_id)
+                parts.append(f"{int(item['qty'])} × {item_name}")
+            prize_text = "\n".join(parts)
+        else:
+            prize_text = str(updated_raffle.get("prize") or "Unknown")
+        draw_time = updated_raffle.get("drawn_at")
+        draw_ts = _format_discord_timestamp(draw_time)
+
+        admin_roles = GuildSettingsRepository.resolve_admin_role_ids(settings)
+        admin_mention = " ".join(f"<@&{rid}>" for rid in admin_roles) if admin_roles else "@admins"
+
+        embed = discord.Embed(
+            title="🏆 Raffle Winner Announcement",
+            color=discord.Color.gold(),
+            description=(
+                f"**Raffle:** {updated_raffle.get('prize')} (#{int(updated_raffle['raffle_id'])})\n"
+                f"**Prize:** {prize_text}\n"
+                f"**Winner:** {winner_display} (`{winner_discord_id}`)\n"
+                f"**Entries:** {total_entries}\n"
+                f"**Drawn:** {draw_ts}"
+            ),
+        )
+
+        content = f"<@{winner_discord_id}> {admin_mention}"
+        verify_view = AdminPrizeVerificationView(int(updated_raffle["raffle_id"]), verified=str(updated_raffle.get("prize_verification_status") or "").upper() == "VERIFIED")
+
+        announcement_message = None
+        existing_channel_id = _safe_int(updated_raffle.get("announcement_channel_id"))
+        existing_message_id = _safe_int(updated_raffle.get("announcement_message_id"))
+        if existing_channel_id and existing_message_id:
+            existing_channel = guild.get_channel(existing_channel_id)
+            if existing_channel is None:
+                try:
+                    existing_channel = await guild.fetch_channel(existing_channel_id)
+                except Exception:
+                    existing_channel = None
+            if existing_channel and hasattr(existing_channel, "fetch_message"):
+                try:
+                    message = await existing_channel.fetch_message(existing_message_id)
+                    await message.edit(content=content, embed=embed, view=verify_view)
+                    announcement_message = message
+                except Exception:
+                    announcement_message = None
+
+        if announcement_message is None:
+            announcement_message = await channel.send(content=content, embed=embed, view=verify_view)
+
+        await repo.set_announcement_ref(int(updated_raffle["raffle_id"]), int(announcement_message.channel.id), int(announcement_message.id))
+
+    async def handle_admin_prize_verification(self, interaction: discord.Interaction, raffle_id: int, view: AdminPrizeVerificationView) -> None:
+        repo = RafflesRepository(get_pool())
+        raffle = await repo.get_raffle(int(raffle_id))
+        if not raffle or not self._is_admin_raffle(raffle):
+            await interaction.followup.send("This verification is only available for admin raffles.", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        if guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.followup.send("Only admins can verify prizes.", ephemeral=True)
+            return
+
+        settings = await GuildSettingsRepository(get_database()).get_or_create(guild.id)
+        admin_roles = set(GuildSettingsRepository.resolve_admin_role_ids(settings))
+        member_roles = {r.id for r in interaction.user.roles}
+        is_admin = interaction.user.guild_permissions.administrator or bool(member_roles & admin_roles)
+        if not is_admin:
+            await interaction.followup.send("Only admins can verify prizes.", ephemeral=True)
+            return
+
+        if str(raffle.get("prize_verification_status") or "").upper() == "VERIFIED":
+            await interaction.followup.send("Already verified.", ephemeral=True)
+            return
+
+        now = datetime.now(timezone.utc)
+        checked_at = raffle.get("prize_verification_checked_at")
+        if checked_at and checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=timezone.utc)
+        if checked_at and (now - checked_at).total_seconds() < _PRIZE_VERIFY_COOLDOWN_SECONDS:
+            await interaction.followup.send("Verification was attempted recently. Try again in a minute.", ephemeral=True)
+            return
+
+        await repo.update_prize_verification(int(raffle_id), status="CHECKING", checked_at=now)
+
+        users_repo = UsersRepository(get_pool())
+        winner_discord_id = _safe_int(raffle.get("winner_discord_id")) or 0
+        winner_api = await users_repo.get_user_api_key(winner_discord_id)
+        encrypted_key = (winner_api or {}).get("encrypted_key") or (winner_api or {}).get("api_key_encrypted")
+        if not encrypted_key:
+            await repo.update_prize_verification(int(raffle_id), status="ERROR", checked_at=now)
+            await interaction.followup.send("Winner has no linked Torn API. Cannot verify automatically.", ephemeral=True)
+            await self._publish_verification_update(raffle, "ERROR", "Winner has no linked Torn API. Cannot verify automatically.", view=view)
+            return
+
+        security = get_security_manager()
+        torn_api = get_torn_api()
+        try:
+            api_key = security.decrypt_api_key(encrypted_key)
+            logs = await torn_api.get_item_send_receive_logs(api_key, limit=100)
+        except Exception as exc:
+            summary = f"Torn log lookup failed ({type(exc).__name__})."
+            await repo.update_prize_verification(int(raffle_id), status="ERROR", checked_at=now)
+            await self._publish_verification_update(raffle, "ERROR", summary, view=view)
+            await interaction.followup.send("Verification failed due to Torn API error.", ephemeral=True)
+            return
+
+        prize_items = await repo.get_prize_items_payload(raffle)
+        expected_map = _extract_prize_map(prize_items)
+        drawn_at = raffle.get("drawn_at") or raffle.get("tickets_fully_sold_at") or raffle.get("created_at")
+        since_ts = int(drawn_at.replace(tzinfo=timezone.utc).timestamp()) if drawn_at and drawn_at.tzinfo is None else int(drawn_at.timestamp()) if drawn_at else 0
+        max_ts = since_ts + _PRIZE_VERIFY_WINDOW_SECONDS if since_ts else 0
+
+        candidates = []
+        for entry in logs:
+            details_id = _safe_int((entry.get("details") or {}).get("id"))
+            if details_id != 4102:
+                continue
+            data = entry.get("data") or {}
+            ts = _safe_int(entry.get("timestamp")) or 0
+            if since_ts and ts < since_ts:
+                continue
+            if max_ts and ts > max_ts:
+                continue
+            if expected_map:
+                found: dict[int, int] = {}
+                for item in data.get("items") or []:
+                    iid = _safe_int(item.get("id"))
+                    qty = _safe_int(item.get("qty")) or 0
+                    if iid:
+                        found[iid] = found.get(iid, 0) + qty
+                if found != expected_map:
+                    continue
+            candidates.append(entry)
+
+        matched = None
+        if candidates:
+            candidates.sort(key=lambda e: (_safe_int(e.get("timestamp")) or 0) - since_ts)
+            matched = candidates[0]
+
+        if not matched:
+            checked_logs = len(logs)
+            not_found = f"Checked last {checked_logs} logs, no matching item send found for {raffle.get('prize')} after {_format_discord_timestamp(drawn_at)}."
+            await repo.update_prize_verification(int(raffle_id), status="NOT_FOUND", checked_at=now)
+            await self._publish_verification_update(raffle, "NOT_FOUND", not_found, view=view)
+            await interaction.followup.send("Verification complete: no matching log found.", ephemeral=True)
+            return
+
+        matched_ts = _safe_int(matched.get("timestamp")) or int(now.timestamp())
+        matched_data = matched.get("data") or {}
+        sender_id = _safe_int(matched_data.get("sender"))
+        log_id = _extract_log_id(matched)
+        safe_details = f"Verified ✅\nLog: `{log_id}` at <t:{matched_ts}:F>\nSender Torn ID: {sender_id or 'Unknown'}"
+        await repo.update_prize_verification(
+            int(raffle_id),
+            status="VERIFIED",
+            checked_at=now,
+            verified_at=now,
+            verified_by_discord_id=interaction.user.id,
+            verification_log_id=log_id,
+        )
+        await self._publish_verification_update(raffle, "VERIFIED", safe_details, view=view, matched=matched)
+        await interaction.followup.send("✅ Prize verified.", ephemeral=True)
+
+    async def _publish_verification_update(self, raffle: dict, status: str, summary: str, *, view: AdminPrizeVerificationView, matched: dict | None = None) -> None:
+        guild = self.bot.get_guild(int(raffle["guild_id"]))
+        if guild is None:
+            return
+        repo = RafflesRepository(get_pool())
+        refreshed = await repo.get_raffle(int(raffle["raffle_id"])) or raffle
+
+        channel_id = _safe_int(refreshed.get("announcement_channel_id"))
+        message_id = _safe_int(refreshed.get("announcement_message_id"))
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if channel is None and channel_id:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except Exception:
+                channel = None
+
+        message = None
+        if channel and message_id and hasattr(channel, "fetch_message"):
+            try:
+                message = await channel.fetch_message(message_id)
+            except Exception:
+                message = None
+
+        if message is None:
+            fallback_channel_id = _safe_int(refreshed.get("announcement_channel_id"))
+            if fallback_channel_id:
+                fallback = guild.get_channel(fallback_channel_id)
+                if fallback is None:
+                    try:
+                        fallback = await guild.fetch_channel(fallback_channel_id)
+                    except Exception:
+                        fallback = None
+                if fallback and hasattr(fallback, "send"):
+                    message = await fallback.send(f"Raffle #{int(refreshed['raffle_id'])} verification: {summary}")
+                    await repo.set_announcement_ref(int(refreshed["raffle_id"]), int(message.channel.id), int(message.id))
+                    return
+            return
+
+        embed = message.embeds[0].copy() if message.embeds else discord.Embed(title="Raffle Winner Announcement", color=discord.Color.gold())
+        value = summary
+        if matched:
+            data = matched.get("data") or {}
+            items = []
+            for item in data.get("items") or []:
+                iid = _safe_int(item.get("id"))
+                qty = _safe_int(item.get("qty")) or 0
+                if iid:
+                    item_name = await _resolve_item_name(TornItemsRepository(get_pool()), iid)
+                    items.append(f"- {qty} × {item_name} ({iid})")
+            if items:
+                value = f"{summary}\nItems:\n" + "\n".join(items)
+        embed.add_field(name=f"Verification: {status}", value=value[:1024], inline=False)
+        verified = status == "VERIFIED"
+        await message.edit(embed=embed, view=AdminPrizeVerificationView(int(refreshed["raffle_id"]), verified=verified))
+
     async def _get_payment_meta(self, payment_type: str) -> dict | None:
         name = "xanax" if payment_type == "xanax" else "erotic dvd"
         if name in self._payment_meta_cache:
@@ -1413,6 +1729,7 @@ class RafflesCog(commands.Cog):
         if raffle:
             await self._disable_raffle_panels(raffle, status_text="Raffle completed.")
             await self._send_prize_delivery_dm(raffle)
+            await self._send_admin_winner_announcement(raffle, result)
         # Send winner notification
         verification_cog = self.bot.get_cog("RaffleVerificationCog")
         if verification_cog:
@@ -1528,6 +1845,7 @@ class RafflesCog(commands.Cog):
                         if updated_raffle:
                             await self._disable_raffle_panels(updated_raffle, status_text="Raffle completed.")
                             await self._send_prize_delivery_dm(updated_raffle)
+                            await self._send_admin_winner_announcement(updated_raffle, result)
                         verification_cog = self.bot.get_cog("RaffleVerificationCog")
                         if verification_cog:
                             await verification_cog.send_winner_notification(result)
