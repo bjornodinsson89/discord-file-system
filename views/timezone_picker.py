@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import discord
-import asyncpg
-import logging
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from repositories.users import UsersRepository
@@ -11,8 +9,6 @@ from utils.embeds import create_error_embed
 from utils.timezones import REGION_LABELS, get_region_timezones
 
 PAGE_SIZE = 25
-
-log = logging.getLogger("happy_jumper")
 
 
 async def send_timezone_picker(interaction: discord.Interaction) -> None:
@@ -95,30 +91,7 @@ class TimezoneDropdown(discord.ui.Select):
 
         db = get_database()
         users_repo = UsersRepository(db.pool)
-        try:
-            await users_repo.update_timezone(int(interaction.user.id), timezone_name)
-        except asyncpg.UndefinedColumnError:
-            log.exception("Failed saving timezone because user_api_keys.timezone_name column is missing")
-            await interaction.response.send_message(
-                embed=create_error_embed(
-                    "Timezone unavailable",
-                    "Database migration missing: user_api_keys.timezone_name. Apply migrations and redeploy.",
-                ),
-                ephemeral=True,
-            )
-            return
-        except RuntimeError as exc:
-            if "user_api_keys.timezone_name" not in str(exc):
-                raise
-            log.exception("Failed saving timezone because user_api_keys.timezone_name column is missing")
-            await interaction.response.send_message(
-                embed=create_error_embed(
-                    "Timezone unavailable",
-                    "Database migration missing: user_api_keys.timezone_name. Apply migrations and redeploy.",
-                ),
-                ephemeral=True,
-            )
-            return
+        await users_repo.update_timezone(int(interaction.user.id), timezone_name)
 
         embed = discord.Embed(
             title="Set Timezone",
