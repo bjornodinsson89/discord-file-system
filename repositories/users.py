@@ -47,7 +47,7 @@ class UsersRepository(RepositoryBase):
                         torn_user_id = EXCLUDED.torn_user_id,
                         torn_name = EXCLUDED.torn_name,
                         encrypted_key = EXCLUDED.encrypted_key,
-                        timezone_name = COALESCE(EXCLUDED.timezone_name, user_api_keys.timezone_name),
+                        timezone_name = COALESCE(NULLIF(BTRIM(EXCLUDED.timezone_name), ''), user_api_keys.timezone_name),
                         updated_at = NOW()
                     """,
                     discord_id,
