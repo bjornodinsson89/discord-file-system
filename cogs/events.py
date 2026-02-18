@@ -13,7 +13,6 @@ import json
 import re
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 from typing import Optional
 
 import config
@@ -73,25 +72,82 @@ _TORN_NAME_FAIL_LOG_CACHE: dict[int, datetime] = {}
 
 
 
-def _resolve_guild_timezone(settings: dict):
-    timezone_name = str(
-        settings.get("timezone")
-        or settings.get("guild_timezone")
-        or settings.get("tz")
-        or "UTC"
-    ).strip() or "UTC"
-    try:
-        return ZoneInfo(timezone_name)
-    except Exception:
-        return timezone.utc
-
-
-def _parse_optional_session_start(raw_value: str, settings: dict) -> tuple[Optional[datetime], Optional[str]]:
+def _parse_optional_session_start(raw_value: str, _settings: dict) -> tuple[Optional[datetime], Optional[str]]:
     value = str(raw_value or "").strip()
     if not value:
         return None, None
-    tzinfo = _resolve_guild_timezone(settings)
-    now = datetime.now(tzinfo)
+
+    def _to_discord_ts(dt_utc: datetime) -> tuple[datetime, str]:
+        unix_ts = int(dt_utc.timestamp())
+        return dt_utc, f"<t:{unix_ts}:F>"
+
+    now_utc = datetime.now(timezone.utc)
+
+    # 99k scheduling stores UTC only. Discord <t:...> then renders local viewer time.
+    # Without timezone profile settings, plain date/time input is interpreted as UTC.
+
+    discord_ts_match = re.fullmatch(r"<t:(\d{1,17})(?::[tTdDfFR])?>", value)
+    if discord_ts_match:
+        try:
+            unix_ts = int(discord_ts_match.group(1))
+            return _to_discord_ts(datetime.fromtimestamp(unix_ts, tz=timezone.utc))
+        except (TypeError, ValueError, OSError):
+            raise ValueError("invalid start")
+
+    relative_match = re.fullmatch(r"in\s+((?:\d+\s*[dhm]\s*)+)", value, re.IGNORECASE)
+    if relative_match:
+        duration = relative_match.group(1)
+        parts = re.findall(r"(\d+)\s*([dhm])", duration, flags=re.IGNORECASE)
+        if not parts:
+            raise ValueError("invalid start")
+        delta = timedelta()
+        for amount_text, unit in parts:
+            amount = int(amount_text)
+            normalized = unit.lower()
+            if normalized == "d":
+                delta += timedelta(days=amount)
+            elif normalized == "h":
+                delta += timedelta(hours=amount)
+            elif normalized == "m":
+                delta += timedelta(minutes=amount)
+        if delta <= timedelta(0):
+            raise ValueError("invalid start")
+        return _to_discord_ts(now_utc + delta)
+
+    iso_candidate = value.replace(" ", "T", 1) if " " in value and "T" not in value else value
+    try:
+        parsed_iso = datetime.fromisoformat(iso_candidate)
+    except ValueError:
+        parsed_iso = None
+    if parsed_iso and parsed_iso.tzinfo is not None:
+        return _to_discord_ts(parsed_iso.astimezone(timezone.utc))
+
+    offset_match = re.fullmatch(
+        r"\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+|T)(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm])?\s*([+-]\d{2}:?\d{2})\s*",
+        value,
+    )
+    if offset_match:
+        year_text, month_text, day_text, hour_text, minute_text, meridiem_text, offset_text = offset_match.groups()
+        year = int(year_text)
+        month = int(month_text)
+        day = int(day_text)
+        hour = int(hour_text)
+        minute = int(minute_text) if minute_text is not None else 0
+        if meridiem_text:
+            if hour < 1 or hour > 12:
+                raise ValueError("invalid start")
+            meridiem = meridiem_text.lower()
+            hour = (0 if hour == 12 else hour) if meridiem == "am" else (12 if hour == 12 else hour + 12)
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise ValueError("invalid start")
+        cleaned_offset = f"{offset_text[:3]}:{offset_text[-2:]}" if len(offset_text) == 5 else offset_text
+        try:
+            parsed_offset = datetime.fromisoformat(
+                f"{year:04d}-{month:02d}-{day:02d}T{hour:02d}:{minute:02d}:00{cleaned_offset}"
+            )
+        except ValueError as exc:
+            raise ValueError("invalid start") from exc
+        return _to_discord_ts(parsed_offset.astimezone(timezone.utc))
 
     match = re.fullmatch(
         r"\s*(?:(\d{4})[-/])?(\d{1,2})[-/](\d{1,2})(?:\s+|T)(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm])?\s*",
@@ -101,49 +157,44 @@ def _parse_optional_session_start(raw_value: str, settings: dict) -> tuple[Optio
         raise ValueError("invalid start")
 
     year_text, month_text, day_text, hour_text, minute_text, meridiem_text = match.groups()
-
-    year = int(year_text) if year_text else now.year
+    year = int(year_text) if year_text else now_utc.year
     month = int(month_text)
     day = int(day_text)
     hour = int(hour_text)
     minute = int(minute_text) if minute_text is not None else 0
-
     if minute < 0 or minute > 59:
         raise ValueError("invalid start")
-
     if meridiem_text:
         if hour < 1 or hour > 12:
             raise ValueError("invalid start")
         meridiem = meridiem_text.lower()
-        if meridiem == "am":
-            hour = 0 if hour == 12 else hour
-        else:
-            hour = 12 if hour == 12 else hour + 12
+        hour = (0 if hour == 12 else hour) if meridiem == "am" else (12 if hour == 12 else hour + 12)
     elif hour < 0 or hour > 23:
         raise ValueError("invalid start")
 
     try:
-        aware = datetime(year, month, day, hour, minute, tzinfo=tzinfo)
+        aware_utc = datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
     except ValueError as exc:
         raise ValueError("invalid start") from exc
 
-    if not year_text and aware < (now - timedelta(minutes=5)):
-        next_year = now.year + 1
-        while next_year <= now.year + 4:
+    if not year_text and aware_utc < (now_utc - timedelta(minutes=5)):
+        next_year = now_utc.year + 1
+        while next_year <= now_utc.year + 4:
             try:
-                aware = aware.replace(year=next_year)
+                aware_utc = aware_utc.replace(year=next_year)
                 break
             except ValueError:
                 next_year += 1
 
-    aware_utc = aware.astimezone(timezone.utc)
     unix_ts = int(aware_utc.timestamp())
-    scheduled_display = f"<t:{unix_ts}:F>"
-    return aware_utc, scheduled_display
+    return aware_utc, f"<t:{unix_ts}:F>"
 
 
 def _format_session_start_display(session: dict) -> str:
-    return f"Start: {_format_session_start_ts(session, 'F')} (time displayed in your timezone)"
+    absolute = _format_session_start_ts(session, "F")
+    if absolute == "Not set":
+        return "Start: Not set"
+    return f"Start: {absolute} ({_format_session_start_ts(session, 'R')})"
 
 
 def _format_session_start_ts(session: dict, style: str = "F") -> str:
@@ -1246,7 +1297,7 @@ async def _resolve_99k_host_label(users_repo: UsersRepository, host_discord_id: 
 
 def build_99k_announcement_content(session: dict, signed_up: int, paid: int, host_label: str) -> str:
     session_id = int(session["id"])
-    tct_start_text = _format_session_start_display(session)
+    start_text = _format_session_start_display(session)
     price_amount = int(session.get("price_amount") or 0)
     price_item_label = _format_99k_price_item_label(session.get("price_item"))
     notes_or_placeholder = str(session.get("notes") or "None")
@@ -1258,7 +1309,7 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int, hos
     return (
         f"📣✨ **99k Happy Jump** ✨ — **Session #{session_id}**\n"
         f"👤 Host: {host_label}\n"
-        f"🕒 {tct_start_text}\n"
+        f"🕒 {start_text}\n"
         f"💰 Spot price: {price_amount}x {price_item_label}\n"
         f"⭐ {priority_text}\n"
         f"📝 Notes: {notes_or_placeholder}\n"
@@ -1269,7 +1320,7 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int, hos
 
 
 def build_99k_jump_created_announcement_content(session: dict, settings: dict | None = None) -> str:
-    tct_start_text = _format_session_start_display(session)
+    start_text = _format_session_start_display(session)
     max_slots = int(session.get("max_slots") or 0)
     price_amount = int(session.get("price_amount") or 0)
     price_item_label = _format_99k_price_item_label(session.get("price_item"))
@@ -1282,7 +1333,7 @@ def build_99k_jump_created_announcement_content(session: dict, settings: dict | 
         purchase_line = "To purchase a spot, use the jump signup channel configured in /setup."
     return (
         f"🔔 There will be a jump.\n"
-        f"{tct_start_text}.\n"
+        f"{start_text}.\n"
         f"{purchase_line}\n"
         f"Please secure your spot with {price_amount}x {price_item_label}.\n"
         f"{priority_text}.\n"
@@ -2135,8 +2186,8 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
     possible_tct_start = discord.ui.TextInput(
         label="Start (optional)",
         required=False,
-        max_length=16,
-        placeholder="MM-DD 5:30pm / MM/DD 5:30pm / MM-DD 17:30",
+        max_length=48,
+        placeholder="MM-DD 5:30pm, 2026-02-20 20:00 -0700, <t:1760000000:F>, in 90m",
     )
     notes = discord.ui.TextInput(label="Notes", placeholder="Add jump instructions", required=False, style=discord.TextStyle.paragraph, max_length=1000)
 
@@ -2195,7 +2246,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 start_time, scheduled = _parse_optional_session_start(self.possible_tct_start.value, self.settings)
             except ValueError:
                 await interaction.response.send_message(
-                    "Invalid start. Use MM-DD 5:30pm, MM/DD 5:30pm, or MM-DD 17:30 (or leave blank).",
+                    "Invalid start time. Use MM-DD 8:00pm (UTC), or include an offset like -0700, or paste a Discord timestamp like <t:...>.",
                     ephemeral=True,
                 )
                 return
