@@ -28,6 +28,17 @@ def _status_label(status: str, winner_id: int | None) -> str:
     return "Ended (no entrants)"
 
 
+def _status_color(status: str, winner_id: int | None) -> discord.Color:
+    normalized = str(status or "").lower()
+    if normalized == "active":
+        return discord.Color.from_rgb(46, 204, 113)
+    if normalized == "cancelled":
+        return discord.Color.from_rgb(231, 76, 60)
+    if winner_id:
+        return discord.Color.light_grey()
+    return discord.Color.dark_grey()
+
+
 class FreeRaffleModal(discord.ui.Modal, title="Free Raffle"):
     prize = discord.ui.TextInput(label="Prize", required=True, max_length=200)
     note = discord.ui.TextInput(
@@ -59,7 +70,7 @@ class FreeRaffleModal(discord.ui.Modal, title="Free Raffle"):
             )
             raffle_id = int(raffle["id"])
 
-            embed = await self.cog.build_raffle_embed(raffle_id)
+            embed = await self.cog.build_raffle_embed(raffle)
             public_view = self.cog.public_view(raffle_id)
             public_message = await interaction.channel.send(embed=embed, view=public_view)
             await repo.set_message_id(raffle_id, int(public_message.id))
@@ -137,36 +148,41 @@ class FreeRaffleCog(commands.Cog):
         image = str(item.get("image_url") or "").strip()
         return image or None
 
-    async def build_free_raffle_embed(self, raffle: dict) -> discord.Embed:
+    async def build_raffle_embed(self, raffle: dict) -> discord.Embed:
         raffle_id = int(raffle["id"])
         repo = FreeRaffleRepository(get_pool())
 
         winner_id = await repo.get_winner(raffle_id)
         entry_count = await repo.get_entry_count(raffle_id)
-
-        embed = discord.Embed(title="🎟️ Free Raffle", color=discord.Color.blurple())
-        embed.add_field(name="Prize", value=str(raffle.get("prize_text") or "Unknown"), inline=False)
+        status = _status_label(str(raffle.get("status") or ""), winner_id)
+        color = _status_color(str(raffle.get("status") or ""), winner_id)
+        prize_text = str(raffle.get("prize_text") or "Unknown Prize").strip() or "Unknown Prize"
         note_text = str(raffle.get("note_text") or "").strip()
-        if note_text:
-            embed.add_field(name="Note", value=note_text, inline=False)
-        embed.add_field(name="Entries", value=str(entry_count), inline=True)
-        embed.add_field(name="Status", value=_status_label(str(raffle.get("status") or ""), winner_id), inline=True)
-        embed.add_field(name="Host", value=f"<@{int(raffle['host_discord_id'])}>", inline=True)
-        if winner_id:
-            embed.add_field(name="Winner", value=f"<@{winner_id}>", inline=False)
 
-        thumbnail_url = await self.resolve_thumbnail(str(raffle.get("prize_text") or ""))
+        thumbnail_url = await self.resolve_thumbnail(prize_text)
+        title = "🎉 FREE RAFFLE 🎉" if thumbnail_url else "🎉 FREE RAFFLE 🎉 🎁"
+        description = (
+            "Tap **🎟️ Enter** for a chance to win! Ends when the host draws a winner.\n\n"
+            f"**🪓 Prize: {prize_text}**\n\n"
+            "**How to Enter**\n"
+            "✅ Click **🎟️ Enter**\n"
+            "✅ One entry per person\n"
+            "✅ Winner announced automatically"
+        )
+
+        embed = discord.Embed(title=title, description=description, color=color)
+        embed.add_field(name="🎟️ Entries", value=f"**{entry_count}**", inline=True)
+        embed.add_field(name="⏳ Status", value=f"**{status}**", inline=True)
+        embed.add_field(name="👑 Host", value=f"<@{int(raffle['host_discord_id'])}>", inline=False)
+        if note_text:
+            embed.add_field(name="📝 Note", value=note_text, inline=False)
+        if winner_id:
+            embed.add_field(name="🏆 Winner", value=f"<@{winner_id}>", inline=False)
+
         if thumbnail_url:
             embed.set_thumbnail(url=thumbnail_url)
 
         return embed
-
-    async def build_raffle_embed(self, raffle_id: int) -> discord.Embed:
-        repo = FreeRaffleRepository(get_pool())
-        raffle = await repo.get_raffle(raffle_id)
-        if not raffle:
-            return discord.Embed(title="🎟️ Free Raffle", description="Raffle not found.", color=discord.Color.red())
-        return await self.build_free_raffle_embed(raffle)
 
     async def refresh_public_message(self, raffle_id: int) -> None:
         repo = FreeRaffleRepository(get_pool())
@@ -207,7 +223,7 @@ class FreeRaffleCog(commands.Cog):
 
         try:
             message = channel.get_partial_message(int(message_id))
-            embed = await self.build_free_raffle_embed(raffle)
+            embed = await self.build_raffle_embed(raffle)
             view = self.build_free_raffle_view(
                 raffle_id=int(raffle["id"]),
                 host_discord_id=int(raffle["host_discord_id"]),
@@ -247,7 +263,7 @@ class FreeRaffleCog(commands.Cog):
                 if interaction.message is not None:
                     refreshed_raffle = await repo.get_raffle(raffle_id)
                     if refreshed_raffle:
-                        embed = await self.build_free_raffle_embed(refreshed_raffle)
+                        embed = await self.build_raffle_embed(refreshed_raffle)
                         view = self.build_free_raffle_view(
                             raffle_id=int(refreshed_raffle["id"]),
                             host_discord_id=int(refreshed_raffle["host_discord_id"]),

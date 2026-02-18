@@ -15,8 +15,8 @@ class EnterRaffleView(discord.ui.View):
         self.raffle_id = raffle_id
         self.on_enter = on_enter
         button = discord.ui.Button(
-            label="Enter Raffle",
-            style=discord.ButtonStyle.success,
+            label="🎟️ Enter",
+            style=discord.ButtonStyle.green,
             custom_id=f"fr_enter:{raffle_id}",
             disabled=disabled,
         )
@@ -35,8 +35,8 @@ class HostControlsView(discord.ui.View):
         self.on_cancel = on_cancel
 
         draw_button = discord.ui.Button(
-            label="Draw Winner",
-            style=discord.ButtonStyle.primary,
+            label="🏁 Draw Winner",
+            style=discord.ButtonStyle.blurple,
             custom_id=f"fr_draw:{raffle_id}",
             disabled=disabled,
         )
@@ -44,8 +44,8 @@ class HostControlsView(discord.ui.View):
         self.add_item(draw_button)
 
         cancel_button = discord.ui.Button(
-            label="Cancel Raffle",
-            style=discord.ButtonStyle.danger,
+            label="❌ Cancel",
+            style=discord.ButtonStyle.red,
             custom_id=f"fr_cancel:{raffle_id}",
             disabled=disabled,
         )
