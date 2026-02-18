@@ -1693,12 +1693,7 @@ async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) 
                 break
 
     embed = _build_roster_embed(lines)
-    view = Jump99kRosterPanelView(
-        session_id,
-        roster_size=roster_size,
-        enabled_start_positions=enabled_start_positions,
-        enabled_end_positions=enabled_end_positions,
-    )
+    view = Jump99kRosterView(session_id)
     return embed, view
 
 
