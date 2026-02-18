@@ -28,20 +28,10 @@ class EnterRaffleView(discord.ui.View):
 
 
 class HostControlsView(discord.ui.View):
-    def __init__(self, raffle_id: int, on_draw: HostHandler, on_cancel: HostHandler, *, disabled: bool = False):
+    def __init__(self, raffle_id: int, on_cancel: HostHandler, *, disabled: bool = False):
         super().__init__(timeout=None)
         self.raffle_id = raffle_id
-        self.on_draw = on_draw
         self.on_cancel = on_cancel
-
-        draw_button = discord.ui.Button(
-            label="🏁 Draw Winner",
-            style=discord.ButtonStyle.blurple,
-            custom_id=f"fr_draw:{raffle_id}",
-            disabled=disabled,
-        )
-        draw_button.callback = self._on_draw
-        self.add_item(draw_button)
 
         cancel_button = discord.ui.Button(
             label="❌ Cancel",
@@ -52,8 +42,6 @@ class HostControlsView(discord.ui.View):
         cancel_button.callback = self._on_cancel
         self.add_item(cancel_button)
 
-    async def _on_draw(self, interaction: discord.Interaction) -> None:
-        await self.on_draw(interaction, self.raffle_id)
 
     async def _on_cancel(self, interaction: discord.Interaction) -> None:
         await self.on_cancel(interaction, self.raffle_id)

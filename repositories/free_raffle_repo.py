@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .base import RepositoryBase
 
@@ -14,6 +14,7 @@ class FreeRaffleRepository(RepositoryBase):
         host_discord_id: int,
         prize_text: str,
         note_text: str | None,
+        ends_at: datetime,
     ) -> dict:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -24,9 +25,10 @@ class FreeRaffleRepository(RepositoryBase):
                     host_discord_id,
                     prize_text,
                     note_text,
-                    status
+                    status,
+                    ends_at
                 )
-                VALUES ($1, $2, $3, $4, $5, 'active')
+                VALUES ($1, $2, $3, $4, $5, 'active', $6)
                 RETURNING *
                 """,
                 guild_id,
@@ -34,6 +36,7 @@ class FreeRaffleRepository(RepositoryBase):
                 host_discord_id,
                 prize_text,
                 note_text,
+                ends_at,
             )
             return dict(row)
 
@@ -119,7 +122,14 @@ class FreeRaffleRepository(RepositoryBase):
     async def get_winner(self, raffle_id: int) -> int | None:
         async with self.pool.acquire() as conn:
             value = await conn.fetchval(
-                "SELECT discord_id FROM free_raffle_winners WHERE raffle_id = $1",
+                """
+                SELECT COALESCE(
+                    winner_discord_id,
+                    (SELECT discord_id::TEXT FROM free_raffle_winners WHERE raffle_id = $1)
+                )
+                FROM free_raffles
+                WHERE id = $1
+                """,
                 raffle_id,
             )
             return int(value) if value is not None else None
@@ -142,3 +152,100 @@ class FreeRaffleRepository(RepositoryBase):
                     guild_id,
                 )
             return [dict(row) for row in rows]
+
+    async def list_expired_active_raffles(self, *, now: datetime, limit: int = 10) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM free_raffles
+                WHERE status = 'active'
+                  AND ends_at <= $1
+                ORDER BY ends_at ASC
+                LIMIT $2
+                """,
+                now,
+                limit,
+            )
+            return [dict(row) for row in rows]
+
+    async def draw_expired_raffle(self, raffle_id: int, *, now: datetime | None = None) -> dict | None:
+        draw_time = now or datetime.now(timezone.utc)
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                raffle_row = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM free_raffles
+                    WHERE id = $1
+                      AND status = 'active'
+                      AND ends_at <= $2
+                    FOR UPDATE
+                    """,
+                    raffle_id,
+                    draw_time,
+                )
+                if raffle_row is None:
+                    return None
+
+                entry_rows = await conn.fetch(
+                    "SELECT discord_id FROM free_raffle_entries WHERE raffle_id = $1",
+                    raffle_id,
+                )
+                entrant_ids = [int(row["discord_id"]) for row in entry_rows]
+                winner_id: int | None = None
+                if entrant_ids:
+                    import secrets
+
+                    winner_id = int(secrets.choice(entrant_ids))
+
+                updated_row = await conn.fetchrow(
+                    """
+                    UPDATE free_raffles
+                    SET status = 'ended',
+                        winner_discord_id = $3,
+                        drawn_at = $2,
+                        ended_at = COALESCE(ended_at, $2),
+                        updated_at = NOW()
+                    WHERE id = $1
+                      AND status = 'active'
+                    RETURNING *
+                    """,
+                    raffle_id,
+                    draw_time,
+                    str(winner_id) if winner_id is not None else None,
+                )
+                if updated_row is None:
+                    return None
+
+                if winner_id is not None:
+                    await conn.execute(
+                        """
+                        INSERT INTO free_raffle_winners (raffle_id, discord_id)
+                        VALUES ($1, $2)
+                        ON CONFLICT (raffle_id) DO UPDATE
+                        SET discord_id = EXCLUDED.discord_id,
+                            created_at = NOW()
+                        """,
+                        raffle_id,
+                        winner_id,
+                    )
+
+                return {
+                    "raffle": dict(updated_row),
+                    "winner_id": winner_id,
+                    "entries_count": len(entrant_ids),
+                }
+
+    async def backfill_missing_ends_at(self) -> int:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE free_raffles
+                SET ends_at = created_at + INTERVAL '1 day',
+                    updated_at = NOW()
+                WHERE status = 'active'
+                  AND ends_at IS NULL
+                """
+            )
+            return int(result.split()[-1])
