@@ -108,6 +108,16 @@ class FreeRaffleCog(commands.Cog):
     def public_view(self, raffle_id: int, *, disabled: bool = False) -> EnterRaffleView:
         return EnterRaffleView(raffle_id=raffle_id, on_enter=self.handle_enter, disabled=disabled)
 
+    def build_free_raffle_view(
+        self,
+        raffle_id: int,
+        host_discord_id: int | None = None,
+        status: str | None = None,
+        **_: object,
+    ) -> EnterRaffleView:
+        disabled = str(status or "").lower() != "active"
+        return self.public_view(raffle_id=raffle_id, disabled=disabled)
+
     def host_controls_view(self, raffle_id: int, *, disabled: bool = False) -> HostControlsView:
         return HostControlsView(
             raffle_id=raffle_id,
@@ -127,11 +137,9 @@ class FreeRaffleCog(commands.Cog):
         image = str(item.get("image_url") or "").strip()
         return image or None
 
-    async def build_raffle_embed(self, raffle_id: int) -> discord.Embed:
+    async def build_free_raffle_embed(self, raffle: dict) -> discord.Embed:
+        raffle_id = int(raffle["id"])
         repo = FreeRaffleRepository(get_pool())
-        raffle = await repo.get_raffle(raffle_id)
-        if not raffle:
-            return discord.Embed(title="🎟️ Free Raffle", description="Raffle not found.", color=discord.Color.red())
 
         winner_id = await repo.get_winner(raffle_id)
         entry_count = await repo.get_entry_count(raffle_id)
@@ -153,6 +161,13 @@ class FreeRaffleCog(commands.Cog):
 
         return embed
 
+    async def build_raffle_embed(self, raffle_id: int) -> discord.Embed:
+        repo = FreeRaffleRepository(get_pool())
+        raffle = await repo.get_raffle(raffle_id)
+        if not raffle:
+            return discord.Embed(title="🎟️ Free Raffle", description="Raffle not found.", color=discord.Color.red())
+        return await self.build_free_raffle_embed(raffle)
+
     async def refresh_public_message(self, raffle_id: int) -> None:
         repo = FreeRaffleRepository(get_pool())
         raffle = await repo.get_raffle(raffle_id)
@@ -168,20 +183,47 @@ class FreeRaffleCog(commands.Cog):
         if channel is None:
             try:
                 channel = await self.bot.fetch_channel(int(channel_id))
-            except Exception:
+            except Exception as exc:
+                log.error(
+                    "Failed refreshing free raffle message: raffle_id=%s channel_id=%s message_id=%s error_type=%s error=%s",
+                    raffle_id,
+                    channel_id,
+                    message_id,
+                    type(exc).__name__,
+                    exc,
+                )
                 return
 
-        if not hasattr(channel, "fetch_message"):
+        if not hasattr(channel, "get_partial_message"):
+            log.error(
+                "Failed refreshing free raffle message: raffle_id=%s channel_id=%s message_id=%s error_type=%s error=%s",
+                raffle_id,
+                channel_id,
+                message_id,
+                "UnsupportedChannel",
+                "channel does not support partial messages",
+            )
             return
 
         try:
-            message = await channel.fetch_message(int(message_id))
-        except Exception:
+            message = channel.get_partial_message(int(message_id))
+            embed = await self.build_free_raffle_embed(raffle)
+            view = self.build_free_raffle_view(
+                raffle_id=int(raffle["id"]),
+                host_discord_id=int(raffle["host_discord_id"]),
+                status=str(raffle.get("status") or ""),
+            )
+            await message.edit(embed=embed, view=view)
+        except Exception as exc:
+            log.error(
+                "Failed refreshing free raffle message: raffle_id=%s channel_id=%s message_id=%s error_type=%s error=%s",
+                raffle_id,
+                channel_id,
+                message_id,
+                type(exc).__name__,
+                exc,
+            )
             return
-
-        embed = await self.build_raffle_embed(raffle_id)
-        disabled = str(raffle.get("status") or "").lower() != "active"
-        await message.edit(embed=embed, view=self.public_view(raffle_id, disabled=disabled))
 
     async def _send_ephemeral(self, interaction: discord.Interaction, message: str) -> None:
         if interaction.response.is_done():
@@ -202,8 +244,21 @@ class FreeRaffleCog(commands.Cog):
 
             inserted = await repo.add_entry(raffle_id, int(interaction.user.id))
             if inserted:
+                if interaction.message is not None:
+                    refreshed_raffle = await repo.get_raffle(raffle_id)
+                    if refreshed_raffle:
+                        embed = await self.build_free_raffle_embed(refreshed_raffle)
+                        view = self.build_free_raffle_view(
+                            raffle_id=int(refreshed_raffle["id"]),
+                            host_discord_id=int(refreshed_raffle["host_discord_id"]),
+                            status=str(refreshed_raffle.get("status") or ""),
+                        )
+                        await interaction.message.edit(embed=embed, view=view)
+                    else:
+                        await self.refresh_public_message(raffle_id)
+                else:
+                    await self.refresh_public_message(raffle_id)
                 await self._send_ephemeral(interaction, "✅ You’re entered.")
-                await self.refresh_public_message(raffle_id)
                 return
             await self._send_ephemeral(interaction, "You’re already entered.")
         except Exception:
