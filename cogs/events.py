@@ -2440,24 +2440,6 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 await interaction.response.send_message(embed=err, ephemeral=True)
 
 
-class Jump99kEditSelectModal(discord.ui.Modal, title="Edit 99k Session"):
-    jump_id = discord.ui.TextInput(label="Jump ID", placeholder="123", required=True, max_length=20)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        repo = JumpsRepository(get_pool())
-        try:
-            session_id = int(str(self.jump_id.value).strip())
-        except ValueError:
-            await interaction.response.send_message(embed=create_error_embed("Invalid Jump ID", "Jump ID must be numeric."), ephemeral=True)
-            return
-        session = await repo.get_session(session_id)
-        if not session or int(session.get("guild_id")) != int(interaction.guild_id):
-            await interaction.response.send_message(embed=create_error_embed("Not found", "Session not found for this server."), ephemeral=True)
-            return
-        settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
-        await interaction.response.send_modal(Jump99kSessionModal(settings, session=session))
-
-
 jump99k_group = app_commands.Group(name="99k", description="99k happy jump commands")
 
 
@@ -2483,11 +2465,21 @@ async def jump99k_start(interaction: discord.Interaction):
 
 
 @jump99k_group.command(name="edit", description="Edit an open 99k jump session")
-async def jump99k_edit(interaction: discord.Interaction):
+async def jump99k_edit(interaction: discord.Interaction, jump_id: int):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
     if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
         return
-    await interaction.response.send_modal(Jump99kEditSelectModal())
+
+    repo = JumpsRepository(get_pool())
+    session = await repo.get_session(int(jump_id))
+    if not session or int(session.get("guild_id")) != int(interaction.guild_id):
+        await interaction.response.send_message(
+            embed=create_error_embed("Not found", "Session not found for this server."),
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_modal(Jump99kSessionModal(settings, session=session))
 
 
 @jump99k_group.command(name="list", description="List 99k sessions and readiness")
