@@ -576,6 +576,12 @@ async def _global_view_error(self, interaction: discord.Interaction, error: Exce
 
 async def _global_modal_error(self, interaction: discord.Interaction, error: Exception):
     log.exception("Unhandled modal interaction error: %s", error)
+    if isinstance(error, discord.HTTPException) and getattr(error, "code", None) == 50035 and "Invalid Form Body" in str(error):
+        await _send_interaction_error(
+            interaction,
+            "This interaction is outdated. Please re-run: /99k edit jump_id:<id> (example: /99k edit jump_id:22).",
+        )
+        return
     await _send_interaction_error(interaction, "An unexpected error occurred. Please try again.")
 
 
