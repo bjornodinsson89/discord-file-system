@@ -356,6 +356,165 @@ class JumpsRepository(RepositoryBase):
             )
             return [dict(r) for r in rows]
 
+
+    async def get_jump_progress(self, session_id: int) -> dict:
+        async with self.pool.acquire() as conn:
+            session_row = await conn.fetchrow(
+                """
+                SELECT host_jump_state, host_jump_started_at, host_jump_ended_at
+                FROM jump_99k_sessions
+                WHERE id = $1
+                """,
+                session_id,
+            )
+            if not session_row:
+                return {"host": {"state": "waiting", "started_at": None, "ended_at": None}, "signups": []}
+
+            signup_rows = await conn.fetch(
+                """
+                SELECT
+                    s.id,
+                    s.participant_discord_id AS discord_id,
+                    COALESCE(NULLIF(s.jump_state, ''), 'waiting') AS state,
+                    s.jump_started_at AS started_at,
+                    s.jump_ended_at AS ended_at
+                FROM jump_99k_signups s
+                WHERE s.session_id = $1
+                  AND s.payment_verified = TRUE
+                  AND s.status IN ('signed_up', 'completed', 'not_completed')
+                ORDER BY s.is_priority DESC, s.id ASC
+                """,
+                session_id,
+            )
+
+        return {
+            "host": {
+                "state": str(session_row.get("host_jump_state") or "waiting"),
+                "started_at": session_row.get("host_jump_started_at"),
+                "ended_at": session_row.get("host_jump_ended_at"),
+            },
+            "signups": [dict(row) for row in signup_rows],
+        }
+
+    async def run_jump_transition_by_position(self, *, session_id: int, position: int, action: str) -> tuple[bool, str]:
+        normalized_action = str(action or "").strip().lower()
+        if normalized_action not in {"start", "end"}:
+            return False, "Invalid action."
+        if int(position) < 1:
+            return False, "Invalid roster position."
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                session = await conn.fetchrow(
+                    """
+                    SELECT id,
+                           COALESCE(NULLIF(host_jump_state, ''), 'waiting') AS host_jump_state,
+                           host_jump_started_at,
+                           host_jump_ended_at
+                    FROM jump_99k_sessions
+                    WHERE id = $1
+                      AND status = 'open'
+                    FOR UPDATE
+                    """,
+                    session_id,
+                )
+                if not session:
+                    return False, "Session not found."
+
+                signup_rows = await conn.fetch(
+                    """
+                    SELECT id,
+                           participant_discord_id AS discord_id,
+                           COALESCE(NULLIF(jump_state, ''), 'waiting') AS jump_state,
+                           jump_started_at,
+                           jump_ended_at
+                    FROM jump_99k_signups
+                    WHERE session_id = $1
+                      AND payment_verified = TRUE
+                      AND status IN ('signed_up', 'completed', 'not_completed')
+                    ORDER BY is_priority DESC, id ASC
+                    FOR UPDATE
+                    """,
+                    session_id,
+                )
+
+                roster_size = 1 + len(signup_rows)
+                if int(position) > roster_size:
+                    return False, f"Position {int(position)} is outside the active roster."
+
+                states = [str(session.get("host_jump_state") or "waiting")]
+                states.extend(str(r.get("jump_state") or "waiting") for r in signup_rows)
+
+                in_progress_pos = next((idx for idx, state in enumerate(states, start=1) if state == "in_progress"), None)
+
+                if normalized_action == "start":
+                    if in_progress_pos is not None:
+                        return False, "A jump is already in progress. End it first."
+                    next_waiting_pos = next((idx for idx, state in enumerate(states, start=1) if state == "waiting"), None)
+                    if next_waiting_pos is None:
+                        return False, "All roster positions are already done."
+                    if int(position) != int(next_waiting_pos):
+                        return False, f"Only Start {int(next_waiting_pos)} is allowed right now."
+
+                    if int(position) == 1:
+                        await conn.execute(
+                            """
+                            UPDATE jump_99k_sessions
+                            SET host_jump_state = 'in_progress',
+                                host_jump_started_at = COALESCE(host_jump_started_at, NOW()),
+                                host_jump_ended_at = NULL,
+                                updated_at = NOW()
+                            WHERE id = $1
+                            """,
+                            session_id,
+                        )
+                    else:
+                        target_signup = signup_rows[int(position) - 2]
+                        await conn.execute(
+                            """
+                            UPDATE jump_99k_signups
+                            SET jump_state = 'in_progress',
+                                jump_started_at = COALESCE(jump_started_at, NOW()),
+                                jump_ended_at = NULL
+                            WHERE id = $1
+                            """,
+                            int(target_signup["id"]),
+                        )
+
+                    return True, f"Started position {int(position)}."
+
+                if in_progress_pos is None:
+                    return False, "No jump is currently in progress."
+                if int(position) != int(in_progress_pos):
+                    return False, f"Only End {int(in_progress_pos)} is allowed right now."
+
+                if int(position) == 1:
+                    await conn.execute(
+                        """
+                        UPDATE jump_99k_sessions
+                        SET host_jump_state = 'done',
+                            host_jump_started_at = COALESCE(host_jump_started_at, NOW()),
+                            host_jump_ended_at = NOW(),
+                            updated_at = NOW()
+                        WHERE id = $1
+                        """,
+                        session_id,
+                    )
+                else:
+                    target_signup = signup_rows[int(position) - 2]
+                    await conn.execute(
+                        """
+                        UPDATE jump_99k_signups
+                        SET jump_state = 'done',
+                            jump_started_at = COALESCE(jump_started_at, NOW()),
+                            jump_ended_at = NOW()
+                        WHERE id = $1
+                        """,
+                        int(target_signup["id"]),
+                    )
+
+                return True, f"Ended position {int(position)}."
+
     async def cancel_expired_unpaid(self) -> int:
         async with self.pool.acquire() as conn:
             try:
