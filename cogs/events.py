@@ -2440,6 +2440,8 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 await interaction.response.send_message(embed=err, ephemeral=True)
 
 
+
+
 jump99k_group = app_commands.Group(name="99k", description="99k happy jump commands")
 
 
@@ -2465,14 +2467,22 @@ async def jump99k_start(interaction: discord.Interaction):
 
 
 @jump99k_group.command(name="edit", description="Edit an open 99k jump session")
+@app_commands.describe(jump_id="Existing jump session ID")
 async def jump99k_edit(interaction: discord.Interaction, jump_id: int):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
     if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
         return
 
+    if int(jump_id) <= 0:
+        await interaction.response.send_message(
+            embed=create_error_embed("Invalid Jump ID", "Jump ID must be a positive number."),
+            ephemeral=True,
+        )
+        return
+
     repo = JumpsRepository(get_pool())
     session = await repo.get_session(int(jump_id))
-    if not session or int(session.get("guild_id")) != int(interaction.guild_id):
+    if not session or int(session.get("guild_id") or 0) != int(interaction.guild_id or 0):
         await interaction.response.send_message(
             embed=create_error_embed("Not found", "Session not found for this server."),
             ephemeral=True,

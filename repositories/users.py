@@ -76,16 +76,21 @@ class UsersRepository(RepositoryBase):
 
     async def update_timezone(self, discord_id: int, timezone_name: str) -> None:
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE user_api_keys
-                SET timezone_name = $2,
-                    updated_at = NOW()
-                WHERE discord_id = $1
-                """,
-                discord_id,
-                timezone_name,
-            )
+            try:
+                await conn.execute(
+                    """
+                    UPDATE public.user_api_keys
+                    SET timezone_name = $2,
+                        updated_at = NOW()
+                    WHERE discord_id = $1
+                    """,
+                    discord_id,
+                    timezone_name,
+                )
+            except asyncpg.UndefinedColumnError as exc:
+                if "timezone_name" not in str(exc):
+                    raise
+                raise RuntimeError("Database migration missing: user_api_keys.timezone_name.") from exc
 
     async def update_torn_identity(self, *, discord_id: int, torn_user_id: int, torn_name: str | None) -> None:
         async with self.pool.acquire() as conn:
