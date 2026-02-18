@@ -13,6 +13,7 @@ import json
 import re
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional
 
 import config
@@ -72,10 +73,10 @@ _TORN_NAME_FAIL_LOG_CACHE: dict[int, datetime] = {}
 
 
 
-def _parse_optional_session_start(raw_value: str, _settings: dict) -> tuple[Optional[datetime], Optional[str]]:
+def _parse_optional_session_start(raw_value: str, _settings: dict, *, host_timezone_name: str | None = None) -> tuple[Optional[datetime], Optional[str], bool]:
     value = str(raw_value or "").strip()
     if not value:
-        return None, None
+        return None, None, False
 
     def _to_discord_ts(dt_utc: datetime) -> tuple[datetime, str]:
         unix_ts = int(dt_utc.timestamp())
@@ -90,7 +91,8 @@ def _parse_optional_session_start(raw_value: str, _settings: dict) -> tuple[Opti
     if discord_ts_match:
         try:
             unix_ts = int(discord_ts_match.group(1))
-            return _to_discord_ts(datetime.fromtimestamp(unix_ts, tz=timezone.utc))
+            dt_utc, scheduled = _to_discord_ts(datetime.fromtimestamp(unix_ts, tz=timezone.utc))
+            return dt_utc, scheduled, False
         except (TypeError, ValueError, OSError):
             raise ValueError("invalid start")
 
@@ -112,7 +114,8 @@ def _parse_optional_session_start(raw_value: str, _settings: dict) -> tuple[Opti
                 delta += timedelta(minutes=amount)
         if delta <= timedelta(0):
             raise ValueError("invalid start")
-        return _to_discord_ts(now_utc + delta)
+        dt_utc, scheduled = _to_discord_ts(now_utc + delta)
+        return dt_utc, scheduled, False
 
     iso_candidate = value.replace(" ", "T", 1) if " " in value and "T" not in value else value
     try:
@@ -120,7 +123,8 @@ def _parse_optional_session_start(raw_value: str, _settings: dict) -> tuple[Opti
     except ValueError:
         parsed_iso = None
     if parsed_iso and parsed_iso.tzinfo is not None:
-        return _to_discord_ts(parsed_iso.astimezone(timezone.utc))
+        dt_utc, scheduled = _to_discord_ts(parsed_iso.astimezone(timezone.utc))
+        return dt_utc, scheduled, False
 
     offset_match = re.fullmatch(
         r"\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+|T)(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm])?\s*([+-]\d{2}:?\d{2})\s*",
@@ -147,7 +151,8 @@ def _parse_optional_session_start(raw_value: str, _settings: dict) -> tuple[Opti
             )
         except ValueError as exc:
             raise ValueError("invalid start") from exc
-        return _to_discord_ts(parsed_offset.astimezone(timezone.utc))
+        dt_utc, scheduled = _to_discord_ts(parsed_offset.astimezone(timezone.utc))
+        return dt_utc, scheduled, False
 
     match = re.fullmatch(
         r"\s*(?:(\d{4})[-/])?(\d{1,2})[-/](\d{1,2})(?:\s+|T)(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm])?\s*",
@@ -172,22 +177,36 @@ def _parse_optional_session_start(raw_value: str, _settings: dict) -> tuple[Opti
     elif hour < 0 or hour > 23:
         raise ValueError("invalid start")
 
+    parse_timezone = timezone.utc
+    used_utc_fallback = False
+    if host_timezone_name:
+        try:
+            parse_timezone = ZoneInfo(host_timezone_name)
+        except ZoneInfoNotFoundError:
+            parse_timezone = timezone.utc
+            used_utc_fallback = True
+    else:
+        used_utc_fallback = True
+
     try:
-        aware_utc = datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+        aware_local = datetime(year, month, day, hour, minute, tzinfo=parse_timezone)
     except ValueError as exc:
         raise ValueError("invalid start") from exc
 
-    if not year_text and aware_utc < (now_utc - timedelta(minutes=5)):
-        next_year = now_utc.year + 1
-        while next_year <= now_utc.year + 4:
-            try:
-                aware_utc = aware_utc.replace(year=next_year)
-                break
-            except ValueError:
-                next_year += 1
+    if not year_text:
+        local_now = now_utc.astimezone(parse_timezone)
+        if aware_local < (local_now - timedelta(minutes=5)):
+            next_year = local_now.year + 1
+            while next_year <= local_now.year + 4:
+                try:
+                    aware_local = aware_local.replace(year=next_year)
+                    break
+                except ValueError:
+                    next_year += 1
 
+    aware_utc = aware_local.astimezone(timezone.utc)
     unix_ts = int(aware_utc.timestamp())
-    return aware_utc, f"<t:{unix_ts}:F>"
+    return aware_utc, f"<t:{unix_ts}:F>", used_utc_fallback
 
 
 def _format_session_start_display(session: dict) -> str:
@@ -749,6 +768,37 @@ async def set_api_key(interaction: discord.Interaction):
     embed = create_api_key_guide_embed()
     view = ApiKeyIntroView()
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+@bot.tree.command(name="set_timezone", description="Set your IANA timezone for session time parsing")
+@app_commands.describe(timezone="IANA timezone, e.g. America/Denver")
+async def set_timezone(interaction: discord.Interaction, timezone: str):
+    await interaction.response.defer(ephemeral=True)
+    timezone_value = str(timezone or "").strip()
+    try:
+        ZoneInfo(timezone_value)
+    except ZoneInfoNotFoundError:
+        await interaction.followup.send(
+            embed=create_error_embed("Invalid timezone", "Use a valid IANA timezone like `America/Denver`."),
+            ephemeral=True,
+        )
+        return
+
+    db = get_database()
+    users_repo = UsersRepository(db.pool)
+    existing = await users_repo.get_user_api_key(interaction.user.id)
+    if not existing:
+        await interaction.followup.send(
+            "Register your Torn API key first using /set_api_key.",
+            ephemeral=True,
+        )
+        return
+
+    await users_repo.update_timezone(interaction.user.id, timezone_value)
+    await interaction.followup.send(
+        f"Timezone set to {timezone_value}. Future session times will be interpreted correctly.",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="remove_api_key", description="Delete your stored Torn API key")
@@ -2242,11 +2292,18 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 await interaction.response.send_message(embed=create_error_embed("Invalid spot price", "Spot price must be between 1 and 50."), ephemeral=True)
                 return
 
+            users_repo = UsersRepository(get_pool())
+            host_row = await users_repo.get_user_api_key(int(interaction.user.id))
+            host_timezone_name = str((host_row or {}).get("timezone_name") or "").strip() or None
             try:
-                start_time, scheduled = _parse_optional_session_start(self.possible_tct_start.value, self.settings)
+                start_time, scheduled, used_utc_fallback = _parse_optional_session_start(
+                    self.possible_tct_start.value,
+                    self.settings,
+                    host_timezone_name=host_timezone_name,
+                )
             except ValueError:
                 await interaction.response.send_message(
-                    "Invalid start time. Use MM-DD 8:00pm (UTC), or include an offset like -0700, or paste a Discord timestamp like <t:...>.",
+                    "Invalid start time. Use MM-DD 8:00pm, include an offset like -0700, or paste a Discord timestamp like <t:...>.",
                     ephemeral=True,
                 )
                 return
@@ -2271,7 +2328,6 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     announce_message_id=None,
                 )
 
-                users_repo = UsersRepository(get_pool())
                 host_snapshot = await _fetch_and_upsert_host_readiness_snapshot(
                     repo=repo,
                     users_repo=users_repo,
@@ -2366,6 +2422,11 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     )
             verb = "updated" if self.session else "created"
             await interaction.response.send_message(embed=create_success_embed("99k session saved", f"Session #{session_id} {verb}."), ephemeral=True)
+            if used_utc_fallback and str(self.possible_tct_start.value or "").strip():
+                await interaction.followup.send(
+                    "Timezone not set; entered times are treated as UTC. Run /set_timezone to fix.",
+                    ephemeral=True,
+                )
 
             if not self.session:
                 created_session = await repo.get_session(int(session_id))

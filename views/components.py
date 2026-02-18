@@ -8,6 +8,7 @@ import json
 import re
 from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from utils import get_database, get_security_manager, get_torn_api, require_api_key, has_api_key
 from utils.discord_channels import resolve_guild_channel
 from utils.torn_api import TornAPIError, TornAPIPermissionError
@@ -61,31 +62,62 @@ class ApiKeyIntroView(ui.View):
 
 class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
     api_key = ui.TextInput(label="Torn API key", placeholder="Paste a Full Access API key, or tap Create API Key to generate a scoped key for this bot.", min_length=16, max_length=16)
-    
+    timezone_name = ui.TextInput(
+        label="Timezone (IANA, e.g. America/Denver)",
+        required=False,
+        max_length=64,
+        placeholder="America/Denver",
+    )
+
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
             api_key = self.api_key.value.strip()
+            raw_timezone = str(self.timezone_name.value or "").strip()
+            timezone_for_store: str | None = None
+            timezone_is_missing = True
+            if raw_timezone:
+                try:
+                    ZoneInfo(raw_timezone)
+                    timezone_for_store = raw_timezone
+                    timezone_is_missing = False
+                except ZoneInfoNotFoundError:
+                    timezone_for_store = None
+                    timezone_is_missing = True
+
             torn_api = get_torn_api()
             discord_id_api, torn_id, torn_name, _perms = await torn_api.validate_api_key(api_key)
-            
+
             if discord_id_api != interaction.user.id:
                 await interaction.followup.send(embed=create_error_embed(
                     "Discord ID Mismatch", f"Key belongs to Discord user {discord_id_api}"), ephemeral=True)
                 return
-            
+
             security = get_security_manager()
             encrypted = security.encrypt(api_key)
-            
+
             db = get_database()
-            await UsersRepository(db.pool).upsert_user_api_key(discord_id=interaction.user.id, torn_user_id=torn_id, torn_name=torn_name, encrypted_key=encrypted)
+            users_repo = UsersRepository(db.pool)
+            await users_repo.upsert_user_api_key(
+                discord_id=interaction.user.id,
+                torn_user_id=torn_id,
+                torn_name=torn_name,
+                encrypted_key=encrypted,
+                timezone_name=timezone_for_store,
+            )
             try:
                 await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="api_key_registered", target_type="user", target_id=interaction.user.id, payload={"torn_id": torn_id}, guild_id=interaction.guild_id, source="views/components.py:ApiKeyModal.on_submit")
             except Exception:
                 log.exception("Failed to write api_key_registered audit log")
-            
+
             await interaction.followup.send(embed=create_success_embed(
                 "API Key Registered", f"Torn ID: `{torn_id}`"), ephemeral=True)
+            if timezone_is_missing:
+                await interaction.followup.send(
+                    "Your timezone isn’t set, so session start times may look wrong. "
+                    "Run `/set_timezone America/Denver`. Examples: `America/Denver`, `America/New_York`, `Europe/London`.",
+                    ephemeral=True,
+                )
         except TornAPIPermissionError as e:
             await interaction.followup.send(embed=create_error_embed("Insufficient Permissions", str(e)), ephemeral=True)
         except TornAPIError as e:
