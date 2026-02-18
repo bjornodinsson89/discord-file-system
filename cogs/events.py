@@ -28,6 +28,7 @@ from views import (
     ApiKeyIntroView, ConfirmRemoveKeyView, ApplicationReviewView, InsurerBrowserView
 )
 from views.components import InsuranceOfferView
+from views.timezone_picker import TimezonePromptView, send_timezone_picker
 from utils.payouts import parse_payout_string, payout_items_to_human, PayoutParseError
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 from utils.payment_normalization import parse_payment_type
@@ -667,6 +668,7 @@ async def on_ready():
     await register_persistent_roster_views()
     await register_persistent_signup_views()
     await register_persistent_pool_views(bot)
+    bot.add_view(TimezonePromptView())
 
     # Start background workers
     if not cleanup_worker.is_running():
@@ -770,35 +772,19 @@ async def set_api_key(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-@bot.tree.command(name="set_timezone", description="Set your IANA timezone for session time parsing")
-@app_commands.describe(timezone="IANA timezone, e.g. America/Denver")
-async def set_timezone(interaction: discord.Interaction, timezone: str):
-    await interaction.response.defer(ephemeral=True)
-    timezone_value = str(timezone or "").strip()
-    try:
-        ZoneInfo(timezone_value)
-    except ZoneInfoNotFoundError:
-        await interaction.followup.send(
-            embed=create_error_embed("Invalid timezone", "Use a valid IANA timezone like `America/Denver`."),
-            ephemeral=True,
-        )
-        return
-
+@bot.tree.command(name="set_timezone", description="Set your timezone for session time parsing")
+async def set_timezone(interaction: discord.Interaction):
     db = get_database()
     users_repo = UsersRepository(db.pool)
     existing = await users_repo.get_user_api_key(interaction.user.id)
     if not existing:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             "Register your Torn API key first using /set_api_key.",
             ephemeral=True,
         )
         return
 
-    await users_repo.update_timezone(interaction.user.id, timezone_value)
-    await interaction.followup.send(
-        f"Timezone set to {timezone_value}. Future session times will be interpreted correctly.",
-        ephemeral=True,
-    )
+    await send_timezone_picker(interaction)
 
 
 @bot.tree.command(name="remove_api_key", description="Delete your stored Torn API key")
