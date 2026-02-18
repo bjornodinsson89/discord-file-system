@@ -34,27 +34,30 @@ class UsersRepository(RepositoryBase):
         torn_user_id: int,
         torn_name: str | None = None,
         encrypted_key: str,
+        timezone_name: str | None = None,
     ) -> None:
         async with self.pool.acquire() as conn:
             try:
                 await conn.execute(
                     """
-                    INSERT INTO user_api_keys (discord_id, torn_user_id, torn_name, encrypted_key, created_at, updated_at)
-                    VALUES ($1, $2, $3, $4, NOW(), NOW())
+                    INSERT INTO user_api_keys (discord_id, torn_user_id, torn_name, encrypted_key, timezone_name, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
                     ON CONFLICT (discord_id)
                     DO UPDATE SET
                         torn_user_id = EXCLUDED.torn_user_id,
                         torn_name = EXCLUDED.torn_name,
                         encrypted_key = EXCLUDED.encrypted_key,
+                        timezone_name = COALESCE(EXCLUDED.timezone_name, user_api_keys.timezone_name),
                         updated_at = NOW()
                     """,
                     discord_id,
                     torn_user_id,
                     torn_name,
                     encrypted_key,
+                    timezone_name,
                 )
             except asyncpg.UndefinedColumnError as exc:
-                if "torn_name" not in str(exc):
+                if "torn_name" not in str(exc) and "timezone_name" not in str(exc):
                     raise
                 await conn.execute(
                     """
@@ -70,6 +73,19 @@ class UsersRepository(RepositoryBase):
                     torn_user_id,
                     encrypted_key,
                 )
+
+    async def update_timezone(self, discord_id: int, timezone_name: str) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE user_api_keys
+                SET timezone_name = $2,
+                    updated_at = NOW()
+                WHERE discord_id = $1
+                """,
+                discord_id,
+                timezone_name,
+            )
 
     async def update_torn_identity(self, *, discord_id: int, torn_user_id: int, torn_name: str | None) -> None:
         async with self.pool.acquire() as conn:
