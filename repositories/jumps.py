@@ -160,7 +160,10 @@ class JumpsRepository(RepositoryBase):
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
-                SET private_channel_id = $2, roster_message_id = $3, updated_at = NOW()
+                SET private_channel_id = $2,
+                    roster_channel_id = $2,
+                    roster_message_id = $3,
+                    updated_at = NOW()
                 WHERE id = $1
                 """,
                 session_id,
@@ -168,12 +171,55 @@ class JumpsRepository(RepositoryBase):
                 roster_message_id,
             )
 
+    async def set_roster_panel_message(self, session_id: int, *, channel_id: int, message_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET roster_channel_id = $2,
+                    roster_message_id = $3,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+                channel_id,
+                message_id,
+            )
+
+    async def clear_roster_panel_message(self, session_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET roster_channel_id = NULL,
+                    roster_message_id = NULL,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+            )
+
+    async def touch_roster_refreshed(self, session_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET roster_last_refreshed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+            )
+
     async def clear_private_channel(self, session_id: int) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
-                SET private_channel_id = NULL, roster_message_id = NULL, updated_at = NOW()
+                SET private_channel_id = NULL,
+                    roster_channel_id = NULL,
+                    roster_message_id = NULL,
+                    updated_at = NOW()
                 WHERE id = $1
                 """,
                 session_id,
@@ -667,18 +713,28 @@ class JumpsRepository(RepositoryBase):
             rows = await conn.fetch("SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open' ORDER BY created_at DESC", guild_id)
             return [dict(r) for r in rows]
 
-    async def list_active_sessions_with_roster_panels(self) -> list[dict]:
+    async def list_active_sessions_with_roster_panel(self) -> list[dict]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, guild_id, private_channel_id, roster_message_id, status
+                SELECT id,
+                       guild_id,
+                       host_discord_id,
+                       private_channel_id,
+                       roster_channel_id,
+                       roster_message_id,
+                       status
                 FROM jump_99k_sessions
-                WHERE status <> 'closed'
+                WHERE status = 'open'
                   AND roster_message_id IS NOT NULL
-                  AND private_channel_id IS NOT NULL
+                  AND roster_channel_id IS NOT NULL
                 """
             )
             return [dict(r) for r in rows]
+
+    async def list_active_sessions_with_roster_panels(self) -> list[dict]:
+        """Backwards-compatible alias for callers still using the plural method name."""
+        return await self.list_active_sessions_with_roster_panel()
 
     async def list_open_sessions_with_announcement_panels(self) -> list[dict]:
         async with self.pool.acquire() as conn:

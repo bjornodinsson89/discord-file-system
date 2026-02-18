@@ -634,7 +634,7 @@ async def register_persistent_application_review_views() -> None:
 async def register_persistent_roster_views() -> None:
     """Register persistent roster panel views for active sessions."""
     db = get_database()
-    sessions = await JumpsRepository(db.pool).list_active_sessions_with_roster_panels()
+    sessions = await JumpsRepository(db.pool).list_active_sessions_with_roster_panel()
     for session in sessions:
         bot.add_view(Jump99kRosterView(int(session["id"])))
 
@@ -687,6 +687,8 @@ async def on_ready():
         raffle_completion_worker.start()
     if not auto_verify_99k_payments.is_running():
         auto_verify_99k_payments.start()
+    if not roster_panel_refresh_worker.is_running():
+        roster_panel_refresh_worker.start()
     
     log.info("✓ Bot is ready!")
 
@@ -1580,44 +1582,7 @@ def _build_roster_embed(lines: list[str]) -> discord.Embed:
     return discord.Embed(title="Jump Roster", description="\n".join(lines), color=discord.Color.blurple())
 
 
-async def _build_session_roster_embed(
-    *,
-    bot: commands.Bot,
-    session_id: int,
-    guild_id: int,
-    host_discord_id: int,
-    payment_type: str,
-    payment_amount: int,
-) -> discord.Embed:
-    async def _display_name_for(discord_id: int) -> str:
-        torn = await _get_torn_display_name_for_discord(int(guild_id), int(discord_id))
-        if torn:
-            return torn
-        g = bot.get_guild(int(guild_id)) if hasattr(bot, "get_guild") else None
-        member = g.get_member(int(discord_id)) if g else None
-        if member and getattr(member, "display_name", None):
-            return member.display_name
-        return f"<@{int(discord_id)}>"
-
-    host_name = await _display_name_for(int(host_discord_id))
-    repo = JumpsRepository(get_pool())
-    session = await repo.get_session(int(session_id))
-    start_line = _format_session_start_ts(session, "F") if session else "Not set"
-
-    return discord.Embed(
-        title="Jump Roster",
-        description=(
-            f"Session ID: **#{session_id}**\n"
-            f"Host: {host_name}\n"
-            f"Start: {start_line}\n"
-            f"Payment: **{payment_amount}x {'Xanax' if payment_type == 'xanax' else 'eDVD'}**\n"
-            "Members will appear here after payment verification."
-        ),
-        color=discord.Color.blurple(),
-    )
-
-
-async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageable, message: discord.Message | None = None) -> tuple[discord.Embed, str]:
+async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) -> tuple[discord.Embed, discord.ui.View]:
     repo = JumpsRepository(get_pool())
     session = await repo.get_session(session_id)
     if not session:
@@ -1686,10 +1651,19 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
         )
 
     embed = _build_roster_embed(lines)
-    roster_text = "\n".join(lines)
+    view = Jump99kRosterView(session_id)
+    return embed, view
+
+
+async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageable, message: discord.Message | None = None) -> tuple[discord.Embed, str]:
+    embed, view = await build_roster_panel(session_id, channel)
+    roster_text = embed.description or ""
 
     if message is not None:
-        await message.edit(embed=embed, view=Jump99kRosterView(session_id))
+        await message.edit(embed=embed, view=view)
+
+    repo = JumpsRepository(get_pool())
+    await repo.touch_roster_refreshed(session_id)
     return embed, roster_text
 
 
@@ -1699,19 +1673,26 @@ async def _refresh_roster_if_exists(bot_client: commands.Bot, session_id: int) -
     if not session:
         return
 
-    private_channel_id = session.get("private_channel_id")
+    roster_channel_id = session.get("roster_channel_id") or session.get("private_channel_id")
     roster_message_id = session.get("roster_message_id")
-    if not private_channel_id or not roster_message_id:
+    if not roster_channel_id or not roster_message_id:
         return
 
     guild = bot_client.get_guild(int(session["guild_id"]))
-    if not guild:
-        return
 
     try:
-        channel = guild.get_channel(int(private_channel_id)) or await guild.fetch_channel(int(private_channel_id))
+        channel = bot_client.get_channel(int(roster_channel_id))
+        if channel is None:
+            if guild:
+                channel = guild.get_channel(int(roster_channel_id))
+            if channel is None:
+                channel = await bot_client.fetch_channel(int(roster_channel_id))
         roster_message = await channel.fetch_message(int(roster_message_id))
         await _refresh_roster_panel(int(session_id), channel, roster_message)
+    except (discord.NotFound, discord.Forbidden):
+        await repo.clear_roster_panel_message(int(session_id))
+    except discord.HTTPException:
+        log.warning("Roster refresh HTTPException for session=%s", session_id)
     except Exception:
         log.exception("Failed to refresh roster panel for session=%s", session_id)
 
@@ -2384,16 +2365,15 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                         reason="99k jump session channel",
                     )
 
-                    panel_embed = await _build_session_roster_embed(
-                        bot=interaction.client,
-                        session_id=int(session_id),
-                        guild_id=int(interaction.guild_id),
-                        host_discord_id=int(interaction.user.id),
-                        payment_type=str(raw_payment_type),
-                        payment_amount=int(price_amount),
-                    )
-                    roster_msg = await private_channel.send(embed=panel_embed, view=Jump99kRosterView(session_id))
+                    panel_embed, panel_view = await build_roster_panel(int(session_id), private_channel)
+                    roster_msg = await private_channel.send(embed=panel_embed, view=panel_view)
                     await repo.set_private_channel(session_id, channel_id=private_channel.id, roster_message_id=roster_msg.id)
+                    await repo.set_roster_panel_message(
+                        int(session_id),
+                        channel_id=int(private_channel.id),
+                        message_id=int(roster_msg.id),
+                    )
+                    await repo.touch_roster_refreshed(int(session_id))
 
             target_channel_id = int(announce_channel_id) if announce_channel_id else (interaction.channel.id if interaction.channel else None)
             await upsert_99k_announcement(
@@ -2946,6 +2926,45 @@ async def cleanup_worker():
 
 @cleanup_worker.before_loop
 async def before_cleanup_worker():
+    await bot.wait_until_ready()
+
+
+@tasks.loop(seconds=15)
+async def roster_panel_refresh_worker():
+    """Refresh active 99k roster panels and button states."""
+    try:
+        repo = JumpsRepository(get_pool())
+        sessions = await repo.list_active_sessions_with_roster_panel()
+        for session in sessions:
+            session_id = int(session["id"])
+            roster_channel_id = session.get("roster_channel_id")
+            roster_message_id = session.get("roster_message_id")
+            if not roster_channel_id or not roster_message_id:
+                continue
+
+            try:
+                channel = bot.get_channel(int(roster_channel_id))
+                if channel is None:
+                    channel = await bot.fetch_channel(int(roster_channel_id))
+
+                message = await channel.fetch_message(int(roster_message_id))
+                embed, view = await build_roster_panel(session_id, channel)
+                await message.edit(embed=embed, view=view)
+                await repo.touch_roster_refreshed(session_id)
+            except (discord.NotFound, discord.Forbidden):
+                await repo.clear_roster_panel_message(session_id)
+            except discord.HTTPException:
+                log.warning("Roster auto-refresh HTTPException session=%s", session_id)
+            except Exception:
+                log.exception("Roster auto-refresh failed session=%s", session_id)
+            finally:
+                await asyncio.sleep(0.2)
+    except Exception:
+        log.exception("roster_panel_refresh_worker failed")
+
+
+@roster_panel_refresh_worker.before_loop
+async def before_roster_panel_refresh_worker():
     await bot.wait_until_ready()
 
 
