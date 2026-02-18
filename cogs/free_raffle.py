@@ -48,27 +48,31 @@ class FreeRaffleModal(discord.ui.Modal, title="Free Raffle"):
 
         await interaction.response.defer(ephemeral=True, thinking=False)
 
-        repo = FreeRaffleRepository(get_pool())
-        raffle = await repo.create_raffle(
-            guild_id=int(interaction.guild_id),
-            channel_id=int(interaction.channel_id),
-            host_discord_id=int(interaction.user.id),
-            prize_text=str(self.prize.value).strip(),
-            note_text=(str(self.note.value).strip() or None),
-        )
-        raffle_id = int(raffle["id"])
+        try:
+            repo = FreeRaffleRepository(get_pool())
+            raffle = await repo.create_raffle(
+                guild_id=int(interaction.guild_id),
+                channel_id=int(interaction.channel_id),
+                host_discord_id=int(interaction.user.id),
+                prize_text=str(self.prize.value).strip(),
+                note_text=(str(self.note.value).strip() or None),
+            )
+            raffle_id = int(raffle["id"])
 
-        embed = await self.cog.build_raffle_embed(raffle_id)
-        public_view = self.cog.public_view(raffle_id)
-        public_message = await interaction.channel.send(embed=embed, view=public_view)
-        await repo.set_message_id(raffle_id, int(public_message.id))
+            embed = await self.cog.build_raffle_embed(raffle_id)
+            public_view = self.cog.public_view(raffle_id)
+            public_message = await interaction.channel.send(embed=embed, view=public_view)
+            await repo.set_message_id(raffle_id, int(public_message.id))
 
-        host_view = self.cog.host_controls_view(raffle_id)
-        await interaction.followup.send(
-            "✅ Free raffle created. Host controls are below.",
-            ephemeral=True,
-            view=host_view,
-        )
+            host_view = self.cog.host_controls_view(raffle_id)
+            await interaction.followup.send(
+                "✅ Free raffle created. Host controls are below.",
+                ephemeral=True,
+                view=host_view,
+            )
+        except Exception:
+            log.exception("Failed creating free raffle")
+            await interaction.followup.send("❌ Failed to create free raffle. Please try again.", ephemeral=True)
 
 
 class FreeRaffleCog(commands.Cog):
@@ -76,13 +80,21 @@ class FreeRaffleCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._views_registered = False
 
     async def cog_load(self) -> None:
-        repo = FreeRaffleRepository(get_pool())
+        self._views_registered = False
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        if self._views_registered:
+            return
         try:
+            repo = FreeRaffleRepository(get_pool())
             for raffle in await repo.list_active_raffles():
                 raffle_id = int(raffle["id"])
                 self.bot.add_view(self.public_view(raffle_id))
+            self._views_registered = True
         except Exception:
             log.exception("Failed registering free raffle views")
 
@@ -105,7 +117,11 @@ class FreeRaffleCog(commands.Cog):
         )
 
     async def resolve_thumbnail(self, prize_text: str) -> str | None:
-        item = await TornItemsRepository(get_pool()).get_item_meta_by_name(prize_text)
+        try:
+            item = await TornItemsRepository(get_pool()).get_item_meta_by_name(prize_text)
+        except Exception:
+            log.exception("Failed resolving free raffle thumbnail for prize '%s'", prize_text)
+            return None
         if not item:
             return None
         image = str(item.get("image_url") or "").strip()
@@ -174,21 +190,25 @@ class FreeRaffleCog(commands.Cog):
         await interaction.response.send_message(message, ephemeral=True)
 
     async def handle_enter(self, interaction: discord.Interaction, raffle_id: int) -> None:
-        repo = FreeRaffleRepository(get_pool())
-        raffle = await repo.get_raffle(raffle_id)
-        if not raffle:
-            await self._send_ephemeral(interaction, "Raffle not found.")
-            return
-        if str(raffle.get("status") or "").lower() != "active":
-            await self._send_ephemeral(interaction, "Raffle is not active.")
-            return
+        try:
+            repo = FreeRaffleRepository(get_pool())
+            raffle = await repo.get_raffle(raffle_id)
+            if not raffle:
+                await self._send_ephemeral(interaction, "Raffle not found.")
+                return
+            if str(raffle.get("status") or "").lower() != "active":
+                await self._send_ephemeral(interaction, "Raffle is not active.")
+                return
 
-        inserted = await repo.add_entry(raffle_id, int(interaction.user.id))
-        if inserted:
-            await self._send_ephemeral(interaction, "✅ You’re entered.")
-            await self.refresh_public_message(raffle_id)
-            return
-        await self._send_ephemeral(interaction, "You’re already entered.")
+            inserted = await repo.add_entry(raffle_id, int(interaction.user.id))
+            if inserted:
+                await self._send_ephemeral(interaction, "✅ You’re entered.")
+                await self.refresh_public_message(raffle_id)
+                return
+            await self._send_ephemeral(interaction, "You’re already entered.")
+        except Exception:
+            log.exception("Failed handling free raffle entry for raffle_id=%s", raffle_id)
+            await self._send_ephemeral(interaction, "Failed to enter raffle. Please try again.")
 
     async def _assert_host(self, interaction: discord.Interaction, raffle: dict | None) -> bool:
         if not raffle:
@@ -200,118 +220,126 @@ class FreeRaffleCog(commands.Cog):
         return True
 
     async def handle_cancel(self, interaction: discord.Interaction, raffle_id: int) -> None:
-        repo = FreeRaffleRepository(get_pool())
-        raffle = await repo.get_raffle(raffle_id)
-        if not await self._assert_host(interaction, raffle):
-            return
+        try:
+            repo = FreeRaffleRepository(get_pool())
+            raffle = await repo.get_raffle(raffle_id)
+            if not await self._assert_host(interaction, raffle):
+                return
 
-        if str(raffle.get("status") or "").lower() != "active":
-            await self._send_ephemeral(interaction, "Raffle is not active.")
-            return
+            if str(raffle.get("status") or "").lower() != "active":
+                await self._send_ephemeral(interaction, "Raffle is not active.")
+                return
 
-        await repo.set_status(raffle_id, "cancelled", datetime.now(timezone.utc))
-        await self.refresh_public_message(raffle_id)
+            await repo.set_status(raffle_id, "cancelled", datetime.now(timezone.utc))
+            await self.refresh_public_message(raffle_id)
 
-        if interaction.response.is_done():
-            await interaction.edit_original_response(content="Raffle cancelled.", view=self.host_controls_view(raffle_id, disabled=True))
-        else:
-            await interaction.response.edit_message(content="Raffle cancelled.", view=self.host_controls_view(raffle_id, disabled=True))
+            if interaction.response.is_done():
+                await interaction.edit_original_response(content="Raffle cancelled.", view=self.host_controls_view(raffle_id, disabled=True))
+            else:
+                await interaction.response.edit_message(content="Raffle cancelled.", view=self.host_controls_view(raffle_id, disabled=True))
+        except Exception:
+            log.exception("Failed cancelling free raffle raffle_id=%s", raffle_id)
+            await self._send_ephemeral(interaction, "Failed to cancel raffle. Please try again.")
 
     async def handle_draw(self, interaction: discord.Interaction, raffle_id: int) -> None:
-        pool = get_pool()
-        repo = FreeRaffleRepository(pool)
+        try:
+            pool = get_pool()
+            repo = FreeRaffleRepository(pool)
 
-        raffle = await repo.get_raffle(raffle_id)
-        if not await self._assert_host(interaction, raffle):
-            return
+            raffle = await repo.get_raffle(raffle_id)
+            if not await self._assert_host(interaction, raffle):
+                return
 
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                raffle_row = await conn.fetchrow(
-                    "SELECT * FROM free_raffles WHERE id = $1 FOR UPDATE",
-                    raffle_id,
-                )
-                if not raffle_row:
-                    await self._send_ephemeral(interaction, "Raffle not found.")
-                    return
-                raffle = dict(raffle_row)
-                if str(raffle.get("status") or "").lower() != "active":
-                    await self._send_ephemeral(interaction, "Raffle is not active.")
-                    return
-
-                existing_winner = await conn.fetchval(
-                    "SELECT discord_id FROM free_raffle_winners WHERE raffle_id = $1",
-                    raffle_id,
-                )
-                if existing_winner is not None:
-                    await self._send_ephemeral(interaction, "Winner has already been drawn.")
-                    return
-
-                rows = await conn.fetch(
-                    "SELECT discord_id FROM free_raffle_entries WHERE raffle_id = $1",
-                    raffle_id,
-                )
-                entrant_ids = [int(row["discord_id"]) for row in rows]
-                ended_at = datetime.now(timezone.utc)
-
-                if not entrant_ids:
-                    await conn.execute(
-                        """
-                        UPDATE free_raffles
-                        SET status = 'ended',
-                            ended_at = $2,
-                            updated_at = NOW()
-                        WHERE id = $1
-                        """,
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    raffle_row = await conn.fetchrow(
+                        "SELECT * FROM free_raffles WHERE id = $1 FOR UPDATE",
                         raffle_id,
-                        ended_at,
                     )
-                    winner_id = None
-                else:
-                    winner_id = int(secrets.choice(entrant_ids))
-                    await conn.execute(
-                        """
-                        INSERT INTO free_raffle_winners (raffle_id, discord_id)
-                        VALUES ($1, $2)
-                        ON CONFLICT (raffle_id) DO NOTHING
-                        """,
+                    if not raffle_row:
+                        await self._send_ephemeral(interaction, "Raffle not found.")
+                        return
+                    raffle = dict(raffle_row)
+                    if str(raffle.get("status") or "").lower() != "active":
+                        await self._send_ephemeral(interaction, "Raffle is not active.")
+                        return
+
+                    existing_winner = await conn.fetchval(
+                        "SELECT discord_id FROM free_raffle_winners WHERE raffle_id = $1",
                         raffle_id,
-                        winner_id,
                     )
-                    await conn.execute(
-                        """
-                        UPDATE free_raffles
-                        SET status = 'ended',
-                            ended_at = $2,
-                            updated_at = NOW()
-                        WHERE id = $1
-                        """,
+                    if existing_winner is not None:
+                        await self._send_ephemeral(interaction, "Winner has already been drawn.")
+                        return
+
+                    rows = await conn.fetch(
+                        "SELECT discord_id FROM free_raffle_entries WHERE raffle_id = $1",
                         raffle_id,
-                        ended_at,
                     )
+                    entrant_ids = [int(row["discord_id"]) for row in rows]
+                    ended_at = datetime.now(timezone.utc)
 
-        await self.refresh_public_message(raffle_id)
+                    if not entrant_ids:
+                        await conn.execute(
+                            """
+                            UPDATE free_raffles
+                            SET status = 'ended',
+                                ended_at = $2,
+                                updated_at = NOW()
+                            WHERE id = $1
+                            """,
+                            raffle_id,
+                            ended_at,
+                        )
+                        winner_id = None
+                    else:
+                        winner_id = int(secrets.choice(entrant_ids))
+                        await conn.execute(
+                            """
+                            INSERT INTO free_raffle_winners (raffle_id, discord_id)
+                            VALUES ($1, $2)
+                            ON CONFLICT (raffle_id) DO NOTHING
+                            """,
+                            raffle_id,
+                            winner_id,
+                        )
+                        await conn.execute(
+                            """
+                            UPDATE free_raffles
+                            SET status = 'ended',
+                                ended_at = $2,
+                                updated_at = NOW()
+                            WHERE id = $1
+                            """,
+                            raffle_id,
+                            ended_at,
+                        )
 
-        raffle = await repo.get_raffle(raffle_id)
-        if raffle and winner_id:
-            channel = self.bot.get_channel(int(raffle["channel_id"]))
-            if channel is None:
-                try:
-                    channel = await self.bot.fetch_channel(int(raffle["channel_id"]))
-                except Exception:
-                    channel = None
-            if channel and hasattr(channel, "send"):
-                await channel.send(f"🎉 Winner: <@{winner_id}>")
+            await self.refresh_public_message(raffle_id)
 
-        if winner_id:
-            status_message = f"Winner drawn: <@{winner_id}>"
-        else:
-            status_message = "Raffle ended with no entrants."
+            raffle = await repo.get_raffle(raffle_id)
+            if raffle and winner_id:
+                channel = self.bot.get_channel(int(raffle["channel_id"]))
+                if channel is None:
+                    try:
+                        channel = await self.bot.fetch_channel(int(raffle["channel_id"]))
+                    except Exception:
+                        channel = None
+                if channel and hasattr(channel, "send"):
+                    await channel.send(f"🎉 Winner: <@{winner_id}>")
 
-        if interaction.response.is_done():
-            await interaction.edit_original_response(content=status_message, view=self.host_controls_view(raffle_id, disabled=True))
-        else:
-            await interaction.response.edit_message(content=status_message, view=self.host_controls_view(raffle_id, disabled=True))
+            if winner_id:
+                status_message = f"Winner drawn: <@{winner_id}>"
+            else:
+                status_message = "Raffle ended with no entrants."
+
+            if interaction.response.is_done():
+                await interaction.edit_original_response(content=status_message, view=self.host_controls_view(raffle_id, disabled=True))
+            else:
+                await interaction.response.edit_message(content=status_message, view=self.host_controls_view(raffle_id, disabled=True))
+        except Exception:
+            log.exception("Failed drawing free raffle winner for raffle_id=%s", raffle_id)
+            await self._send_ephemeral(interaction, "Failed to draw winner. Please try again.")
 
 
 async def setup(bot: commands.Bot) -> None:
