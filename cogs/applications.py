@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -286,6 +287,22 @@ class ApplicationsCog(commands.Cog):
             log.exception("Failed loading Torn identity for discord_id=%s", discord_id)
             return None
 
+    def _normalize_answers(self, answers: object) -> dict[str, Any]:
+        if answers is None:
+            return {}
+        if isinstance(answers, dict):
+            return answers
+        if isinstance(answers, str):
+            stripped = answers.strip()
+            if not stripped:
+                return {}
+            try:
+                parsed = json.loads(stripped)
+            except Exception:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
     async def _start_application(self, interaction: discord.Interaction, app_type: str, label: str):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
@@ -356,7 +373,7 @@ class ApplicationsCog(commands.Cog):
         await parent.send(f"Application #{app_id} ({app_type_label}) started for {interaction.user.mention} — {app_channel.mention}")
 
         app = await repo.get_application_by_id(app_id)
-        answers = (app or {}).get("answers") or {}
+        answers = self._normalize_answers((app or {}).get("answers"))
         summary_embed = self._build_summary_embed(interaction.user, identity, app_type, answers, app_id)
         summary_message = await app_channel.send(embed=summary_embed)
         try:
@@ -370,6 +387,7 @@ class ApplicationsCog(commands.Cog):
         await interaction.followup.send(f"Started your {label} application: {app_channel.mention}", ephemeral=True)
 
     def _build_summary_embed(self, user: discord.User | discord.Member, identity: dict[str, Any], app_type: str, answers: dict[str, Any], app_id: int) -> discord.Embed:
+        answers = self._normalize_answers(answers)
         title = f"Application Summary — {ROLE_NAME_HOST if app_type == HOST_APP_TYPE else ROLE_NAME_INSURER}"
         embed = discord.Embed(title=title, color=discord.Color.blurple())
         embed.add_field(name="Application ID", value=f"#{app_id}", inline=False)
@@ -389,7 +407,7 @@ class ApplicationsCog(commands.Cog):
         applicant = app_channel.guild.get_member(int(app["user_id"])) or self.bot.get_user(int(app["user_id"]))
         if applicant is None:
             applicant = self.bot.user
-        embed = self._build_summary_embed(applicant, identity, app["app_type"], app.get("answers") or {}, app_id)
+        embed = self._build_summary_embed(applicant, identity, app["app_type"], self._normalize_answers(app.get("answers")), app_id)
 
         target: discord.Message | None = None
         if summary_message_id:

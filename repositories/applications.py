@@ -8,6 +8,19 @@ from .base import RepositoryBase
 
 
 class ApplicationsRepository(RepositoryBase):
+    def _coerce_answers(self, row: dict[str, Any]) -> dict[str, Any]:
+        if "answers" not in row:
+            return row
+        ans = row.get("answers")
+        if isinstance(ans, str):
+            try:
+                parsed = json.loads(ans)
+                row["answers"] = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                row["answers"] = {}
+        elif ans is None:
+            row["answers"] = {}
+        return row
     async def get_insurer_profile(self, *, guild_id: int, user_id: int) -> Optional[dict[str, Any]]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -15,7 +28,7 @@ class ApplicationsRepository(RepositoryBase):
                 guild_id,
                 user_id,
             )
-            return dict(row) if row else None
+            return self._coerce_answers(dict(row)) if row else None
 
     async def get_open_application(self, *, guild_id: int, user_id: Optional[int] = None, user_discord_id: Optional[int] = None, app_type: str) -> Optional[dict[str, Any]]:
         async with self.pool.acquire() as conn:
@@ -34,7 +47,7 @@ class ApplicationsRepository(RepositoryBase):
                 int(user_discord_id if user_discord_id is not None else user_id or 0),
                 app_type,
             )
-            return dict(row) if row else None
+            return self._coerce_answers(dict(row)) if row else None
 
 
     async def create_application(
@@ -78,17 +91,17 @@ class ApplicationsRepository(RepositoryBase):
     async def get_by_thread_id(self, thread_id: int) -> Optional[dict[str, Any]]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM applications WHERE thread_id = $1", thread_id)
-            return dict(row) if row else None
+            return self._coerce_answers(dict(row)) if row else None
 
     async def get_by_application_channel_id(self, channel_id: int) -> Optional[dict[str, Any]]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM applications WHERE application_channel_id = $1", channel_id)
-            return dict(row) if row else None
+            return self._coerce_answers(dict(row)) if row else None
 
     async def get_application_by_id(self, app_id: int) -> Optional[dict[str, Any]]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM applications WHERE id = $1", app_id)
-            return dict(row) if row else None
+            return self._coerce_answers(dict(row)) if row else None
 
     async def get_by_id(self, app_id: int) -> Optional[dict[str, Any]]:
         return await self.get_application_by_id(app_id)
@@ -129,7 +142,7 @@ class ApplicationsRepository(RepositoryBase):
                 int(next_question if next_question is not None else expected_question + 1),
                 next_status,
             )
-            return dict(row) if row else None
+            return self._coerce_answers(dict(row)) if row else None
 
     async def set_review(
         self,
@@ -159,7 +172,7 @@ class ApplicationsRepository(RepositoryBase):
                 reviewed_by,
                 denial_reason,
             )
-            return dict(row) if row else None
+            return self._coerce_answers(dict(row)) if row else None
 
     async def request_changes(self, *, app_id: int, current_question: int) -> Optional[dict[str, Any]]:
         async with self.pool.acquire() as conn:
@@ -176,7 +189,7 @@ class ApplicationsRepository(RepositoryBase):
                 app_id,
                 current_question,
             )
-            return dict(row) if row else None
+            return self._coerce_answers(dict(row)) if row else None
 
     async def trim_answers_from(self, *, app_id: int, from_question: int) -> None:
         if from_question <= 1:
@@ -200,7 +213,7 @@ class ApplicationsRepository(RepositoryBase):
                 """,
                 older_than,
             )
-            return [dict(r) for r in rows]
+            return [self._coerce_answers(dict(r)) for r in rows]
 
     async def mark_expired(self, app_id: int) -> None:
         async with self.pool.acquire() as conn:
@@ -278,7 +291,7 @@ class ApplicationsRepository(RepositoryBase):
                 guild_id,
                 user_id,
             )
-            return dict(row) if row else None
+            return self._coerce_answers(dict(row)) if row else None
 
     async def get_active_wizard_state_for_user(self, *, user_id: int) -> Optional[dict[str, Any]]:
         async with self.pool.acquire() as conn:
@@ -292,7 +305,7 @@ class ApplicationsRepository(RepositoryBase):
                 """,
                 user_id,
             )
-            return dict(row) if row else None
+            return self._coerce_answers(dict(row)) if row else None
 
     async def clear_wizard_state(self, *, guild_id: int, user_id: int) -> None:
         async with self.pool.acquire() as conn:
