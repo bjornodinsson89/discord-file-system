@@ -667,7 +667,7 @@ async def register_persistent_roster_views() -> None:
     sessions = await JumpsRepository(db.pool).list_active_sessions_with_roster_panel()
     for session in sessions:
         session_id = int(session["id"])
-        bot.add_view(Jump99kRosterPanelView(session_id))
+        bot.add_view(Jump99kRosterPanelView(session_id, roster_size=Jump99kRosterPanelView.MAX_POSITIONS))
         if session.get("private_channel_id"):
             bot.add_view(Jump99kHostControlsView(session_id))
 
@@ -1717,15 +1717,21 @@ async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) 
     if in_progress_index is not None and in_progress_index <= len(roster_names):
         lines[1] = f"Now jumping: {roster_names[in_progress_index - 1]}"
 
-    max_slots = max(0, int(session.get("max_slots") or 0))
-    roster_size = min(8, 1 + max_slots)
+    max_slots = int(session.get("max_slots") or 0)
+    total_positions = 1 + max(0, max_slots)
+    total_positions = max(1, min(total_positions, Jump99kRosterPanelView.MAX_POSITIONS))
     enabled_start_positions, enabled_end_positions = _compute_enabled_positions(
         roster_states=roster_states,
-        total_positions=roster_size,
+        total_positions=total_positions,
     )
 
     embed = _build_roster_embed(lines)
-    view = Jump99kRosterPanelView(session_id, roster_size=roster_size, enabled_start_positions=enabled_start_positions, enabled_end_positions=enabled_end_positions)
+    view = Jump99kRosterPanelView(
+        session_id,
+        roster_size=total_positions,
+        enabled_start_positions=enabled_start_positions,
+        enabled_end_positions=enabled_end_positions,
+    )
     return embed, view
 
 
@@ -1847,7 +1853,9 @@ class Jump99kRosterPanelView(discord.ui.View):
     ):
         super().__init__(timeout=None)
         self.session_id = int(session_id)
-        self.roster_size = int(roster_size) if roster_size is not None else self.MAX_POSITIONS
+        if roster_size is None:
+            roster_size = self.MAX_POSITIONS
+        self.roster_size = max(1, min(int(roster_size), self.MAX_POSITIONS))
         self.enabled_start_positions = set(enabled_start_positions or set())
         self.enabled_end_positions = set(enabled_end_positions or set())
 
@@ -1868,17 +1876,17 @@ class Jump99kRosterPanelView(discord.ui.View):
         self.add_item(refresh_btn)
         self.add_item(view_btn)
 
-        for position in range(1, self.MAX_POSITIONS + 1):
+        for position in range(1, self.roster_size + 1):
             row = 1 + ((position - 1) // 2)
             start_btn = discord.ui.Button(
-                label=f"Start {position}",
+                label=f"S{position}",
                 style=discord.ButtonStyle.success,
                 custom_id=f"99k_roster_start:{self.session_id}:{position}",
                 row=row,
                 disabled=not self._is_start_enabled(position),
             )
             end_btn = discord.ui.Button(
-                label=f"End {position}",
+                label=f"E{position}",
                 style=discord.ButtonStyle.danger,
                 custom_id=f"99k_roster_end:{self.session_id}:{position}",
                 row=row,
