@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -11,6 +12,8 @@ from discord.ext import commands
 from repositories.host_apps import HostAppsRepository
 from repositories.insurance_apps import InsuranceAppsRepository
 from utils import GuildSettingsRepository, get_database
+
+logger = logging.getLogger(__name__)
 
 HOST_QUESTIONS = [
     "What is your timezone? (example: MST)",
@@ -233,32 +236,37 @@ class ApplicationsCog(commands.Cog):
         await self._start(interaction, "insurance")
 
     async def submit_answer(self, interaction: discord.Interaction, app_type: str, app_id: int, current_question: int, answer: str) -> None:
-        host_repo, insurance_repo, _, = await self._repos()
-        repo = host_repo if app_type == "host" else insurance_repo
-        app = await repo.get_by_id(app_id)
-        if not app or app.get("status") != "in_progress" or int(app.get("applicant_discord_id") or 0) != interaction.user.id:
-            await interaction.response.send_message("You cannot answer this application.", ephemeral=True)
-            return
-        updated = await repo.advance_answer(app_id, current_question, answer)
-        if not updated:
-            await interaction.response.send_message("Question is out of sync.", ephemeral=True)
-            return
-        channel = interaction.guild.get_channel(int(updated["application_channel_id"])) if interaction.guild else None
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message("Channel missing.", ephemeral=True)
-            return
-        member = interaction.guild.get_member(int(updated["applicant_discord_id"])) if interaction.guild else None
-        await self._post_or_update_summary(channel, updated, app_type, repo, member)
-        if updated.get("status") == "submitted":
-            view = HostAppReviewView(app_id) if app_type == "host" else InsuranceAppReviewView(app_id)
-            await channel.send("✅ Submitted for review.", view=view)
-        else:
-            nxt = int(updated.get("current_question") or 1)
-            q = (HOST_QUESTIONS if app_type == "host" else INSURER_QUESTIONS)[nxt - 1]
-            view = HostAppAnswerView(app_id) if app_type == "host" else InsuranceAppAnswerView(app_id)
-            await channel.send(f"Application #{app_id} — Q{nxt}/5: {q}", view=view)
-        await interaction.response.send_message("Answer saved.", ephemeral=True)
-
+        deferred = False
+        try:
+            await interaction.response.defer(thinking=False)
+            deferred = True
+            host_repo, insurance_repo, _, = await self._repos()
+            repo = host_repo if app_type == "host" else insurance_repo
+            app = await repo.get_by_id(app_id)
+            if not app or app.get("status") != "in_progress" or int(app.get("applicant_discord_id") or 0) != interaction.user.id:
+                return
+            updated = await repo.advance_answer(app_id, current_question, answer)
+            if not updated:
+                return
+            channel = interaction.guild.get_channel(int(updated["application_channel_id"])) if interaction.guild else None
+            if not isinstance(channel, discord.TextChannel):
+                return
+            member = interaction.guild.get_member(int(updated["applicant_discord_id"])) if interaction.guild else None
+            await self._post_or_update_summary(channel, updated, app_type, repo, member)
+            if updated.get("status") == "submitted":
+                view = HostAppReviewView(app_id) if app_type == "host" else InsuranceAppReviewView(app_id)
+                await channel.send("✅ Submitted for review.", view=view)
+            else:
+                nxt = int(updated.get("current_question") or 1)
+                q = (HOST_QUESTIONS if app_type == "host" else INSURER_QUESTIONS)[nxt - 1]
+                view = HostAppAnswerView(app_id) if app_type == "host" else InsuranceAppAnswerView(app_id)
+                await channel.send(f"Application #{app_id} — Q{nxt}/5: {q}", view=view)
+        except Exception:
+            logger.exception("Failed submitting application answer")
+            if not deferred and not interaction.response.is_done():
+                await interaction.response.send_message("Failed to save answer.", ephemeral=True)
+            else:
+                await interaction.followup.send("Failed to save answer.", ephemeral=True)
 
     async def _update_admin_inbox(self, guild: discord.Guild, app: dict[str, Any], app_type: str, state: str) -> None:
         inbox_key = "host_apps_admin_inbox_channel_id" if app_type == "host" else "insurance_apps_admin_inbox_channel_id"
@@ -307,31 +315,57 @@ class ApplicationsCog(commands.Cog):
             await interaction.response.send_message(f"❌ Denied by {interaction.user.mention} — Reason: {reason}", ephemeral=True)
             await self._update_admin_inbox(interaction.guild, app, app_type, "DENIED")
 
-    async def _close_or_delete(self, interaction: discord.Interaction, app_type: str, app_id: int, delete: bool) -> str:
-        host_repo, insurance_repo, settings_repo = await self._repos()
-        repo = host_repo if app_type == "host" else insurance_repo
-        app = await repo.get_by_id(app_id)
-        if not app:
-            return "Application not found."
+    async def _require_admin(self, interaction: discord.Interaction) -> tuple[bool, dict[str, Any] | None]:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return "Server only."
+            await interaction.response.send_message("Server only.", ephemeral=True)
+            return False, None
+        _, _, settings_repo = await self._repos()
         settings = await settings_repo.get_or_create(interaction.guild.id)
         if not _is_admin(interaction.user, settings):
-            return "Admin only."
-        if delete:
-            channel = interaction.guild.get_channel(int(app.get("application_channel_id") or 0))
-            if isinstance(channel, discord.TextChannel):
-                await channel.delete(reason=f"{app_type} app deleted")
-            await repo.delete_app(app_id)
-            await self._update_admin_inbox(interaction.guild, app, app_type, "DELETED")
-            return f"Deleted #{app_id}."
-        updated = await repo.close_app(app_id, interaction.user.id)
-        if updated:
+            await interaction.response.send_message("Admin only.", ephemeral=True)
+            return False, None
+        return True, settings
+
+    async def _get_app_for_channel(self, guild_id: int, channel_id: int) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+        host_repo, insurance_repo, _ = await self._repos()
+        host_app = await host_repo.get_by_channel_id(guild_id, channel_id)
+        if host_app:
+            return "host", host_app
+        insurance_app = await insurance_repo.get_by_channel_id(guild_id, channel_id)
+        if insurance_app:
+            return "insurance", insurance_app
+        return None, None
+
+    async def _close_app(self, interaction: discord.Interaction, app_type: str, app: dict[str, Any]) -> bool:
+        host_repo, insurance_repo, _ = await self._repos()
+        repo = host_repo if app_type == "host" else insurance_repo
+        updated = await repo.close_app(int(app["id"]), interaction.user.id)
+        if not updated:
+            return False
+        if interaction.guild:
             await self._update_admin_inbox(interaction.guild, updated, app_type, "CLOSED")
-        channel = interaction.guild.get_channel(int(app.get("application_channel_id") or 0))
+        channel = interaction.guild.get_channel(int(updated.get("application_channel_id") or 0)) if interaction.guild else None
         if isinstance(channel, discord.TextChannel):
             await channel.send(f"Closed by {interaction.user.mention}")
-        return f"Closed #{app_id}."
+        return True
+
+    async def _delete_app(self, interaction: discord.Interaction, app_type: str, app: dict[str, Any]) -> tuple[bool, str | None]:
+        host_repo, insurance_repo, _ = await self._repos()
+        repo = host_repo if app_type == "host" else insurance_repo
+        channel = interaction.guild.get_channel(int(app.get("application_channel_id") or 0)) if interaction.guild else None
+        if isinstance(channel, discord.TextChannel):
+            try:
+                await channel.delete(reason=f"{app_type} app deleted by {interaction.user}")
+            except discord.Forbidden:
+                return False, "I don't have permission to delete this channel."
+            except discord.HTTPException:
+                return False, "Failed to delete the channel."
+        elif interaction.channel_id == int(app.get("application_channel_id") or 0):
+            return False, "This channel no longer exists."
+        deleted = await repo.delete_app(int(app["id"]))
+        if deleted and interaction.guild:
+            await self._update_admin_inbox(interaction.guild, app, app_type, "DELETED")
+        return deleted, None
 
     async def on_interaction(self, interaction: discord.Interaction):
         if interaction.type != discord.InteractionType.component:
@@ -366,62 +400,99 @@ class ApplicationsCog(commands.Cog):
             await interaction.response.send_modal(DenyModal(self, app_type, app_id))
             return
         if action in {"cl", "del"}:
-            msg = await self._close_or_delete(interaction, app_type, app_id, delete=action == "del")
-            await interaction.response.send_message(msg, ephemeral=True)
+            ok, _ = await self._require_admin(interaction)
+            if not ok:
+                return
+            await interaction.response.defer(ephemeral=True)
+            host_repo, insurance_repo, _ = await self._repos()
+            repo = host_repo if app_type == "host" else insurance_repo
+            app = await repo.get_by_id(app_id)
+            if not app:
+                await interaction.followup.send("Application not found.", ephemeral=True)
+                return
+            if action == "cl":
+                closed = await self._close_app(interaction, app_type, app)
+                if not closed:
+                    await interaction.followup.send("Application not found.", ephemeral=True)
+                    return
+                if interaction.message:
+                    await interaction.message.edit(content=f"{interaction.message.content} — CLOSED")
+                return
+            deleted, error = await self._delete_app(interaction, app_type, app)
+            if error:
+                await interaction.followup.send(error, ephemeral=True)
+                return
+            if not deleted:
+                await interaction.followup.send("Application not found.", ephemeral=True)
+                return
+            if interaction.message:
+                await interaction.message.edit(content=f"{interaction.message.content} — DELETED")
 
-    @app_commands.command(name="host_app_close", description="Close host app")
-    async def host_app_close(self, interaction: discord.Interaction, application_id: int, confirm: str):
-        if confirm != "DELETE":
-            await interaction.response.send_message("confirm must be DELETE", ephemeral=True)
+    @app_commands.command(name="app_close", description="Close the application linked to this channel")
+    async def app_close(self, interaction: discord.Interaction):
+        ok, _ = await self._require_admin(interaction)
+        if not ok:
             return
-        await interaction.response.send_message(await self._close_or_delete(interaction, "host", application_id, delete=False), ephemeral=True)
+        if not interaction.guild:
+            await interaction.response.send_message("Server only.", ephemeral=True)
+            return
+        app_type, app = await self._get_app_for_channel(interaction.guild.id, interaction.channel_id)
+        if not app_type or not app:
+            await interaction.response.send_message("This channel is not an application channel.", ephemeral=True)
+            return
+        closed = await self._close_app(interaction, app_type, app)
+        if not closed:
+            await interaction.response.send_message("Application not found.", ephemeral=True)
+            return
+        await interaction.response.send_message("Closed.", ephemeral=True)
 
-    @app_commands.command(name="host_app_delete", description="Delete host app")
-    async def host_app_delete(self, interaction: discord.Interaction, application_id: int, confirm: str):
-        if confirm != "DELETE":
-            await interaction.response.send_message("confirm must be DELETE", ephemeral=True)
+    @app_commands.command(name="app_delete", description="Delete the application linked to this channel")
+    async def app_delete(self, interaction: discord.Interaction):
+        ok, _ = await self._require_admin(interaction)
+        if not ok:
             return
-        await interaction.response.send_message(await self._close_or_delete(interaction, "host", application_id, delete=True), ephemeral=True)
+        if not interaction.guild:
+            await interaction.response.send_message("Server only.", ephemeral=True)
+            return
+        app_type, app = await self._get_app_for_channel(interaction.guild.id, interaction.channel_id)
+        if not app_type or not app:
+            await interaction.response.send_message("This channel is not an application channel.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        deleted, error = await self._delete_app(interaction, app_type, app)
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+            return
+        if not deleted:
+            await interaction.followup.send("Application not found.", ephemeral=True)
 
-    @app_commands.command(name="insurance_app_close", description="Close insurance app")
-    async def insurance_app_close(self, interaction: discord.Interaction, application_id: int, confirm: str):
-        if confirm != "DELETE":
-            await interaction.response.send_message("confirm must be DELETE", ephemeral=True)
+    @app_commands.command(name="app_list_open", description="List open applications")
+    @app_commands.describe(type="Application type", user="Filter by applicant")
+    @app_commands.choices(type=[
+        app_commands.Choice(name="host", value="host"),
+        app_commands.Choice(name="insurance", value="insurance"),
+    ])
+    async def app_list_open(self, interaction: discord.Interaction, type: app_commands.Choice[str], user: discord.Member | None = None):
+        ok, _ = await self._require_admin(interaction)
+        if not ok:
             return
-        await interaction.response.send_message(await self._close_or_delete(interaction, "insurance", application_id, delete=False), ephemeral=True)
-
-    @app_commands.command(name="insurance_app_delete", description="Delete insurance app")
-    async def insurance_app_delete(self, interaction: discord.Interaction, application_id: int, confirm: str):
-        if confirm != "DELETE":
-            await interaction.response.send_message("confirm must be DELETE", ephemeral=True)
+        if not interaction.guild:
+            await interaction.response.send_message("Server only.", ephemeral=True)
             return
-        await interaction.response.send_message(await self._close_or_delete(interaction, "insurance", application_id, delete=True), ephemeral=True)
-
-    @app_commands.command(name="host_app_delete_user", description="Delete open host app by user")
-    async def host_app_delete_user(self, interaction: discord.Interaction, user: discord.Member, confirm: str):
-        if confirm != "DELETE":
-            await interaction.response.send_message("confirm must be DELETE", ephemeral=True)
+        host_repo, insurance_repo, _ = await self._repos()
+        repo = host_repo if type.value == "host" else insurance_repo
+        open_apps = await repo.list_open(interaction.guild.id, user.id if user else None)
+        if not open_apps:
+            await interaction.response.send_message("No open applications found.", ephemeral=True)
             return
-        host_repo, _, _ = await self._repos()
-        app = await host_repo.get_open_app(interaction.guild.id, user.id) if interaction.guild else None
-        if not app:
-            await interaction.response.send_message("No open host app for user.", ephemeral=True)
-            return
-        result = await self._close_or_delete(interaction, "host", int(app["id"]), delete=True)
-        await interaction.response.send_message(f"{result} Channel: <#{app['application_channel_id']}>", ephemeral=True)
-
-    @app_commands.command(name="insurance_app_delete_user", description="Delete open insurance app by user")
-    async def insurance_app_delete_user(self, interaction: discord.Interaction, user: discord.Member, confirm: str):
-        if confirm != "DELETE":
-            await interaction.response.send_message("confirm must be DELETE", ephemeral=True)
-            return
-        _, insurance_repo, _ = await self._repos()
-        app = await insurance_repo.get_open_app(interaction.guild.id, user.id) if interaction.guild else None
-        if not app:
-            await interaction.response.send_message("No open insurance app for user.", ephemeral=True)
-            return
-        result = await self._close_or_delete(interaction, "insurance", int(app["id"]), delete=True)
-        await interaction.response.send_message(f"{result} Channel: <#{app['application_channel_id']}>", ephemeral=True)
+        lines = []
+        for app in open_apps[:15]:
+            applicant_id = int(app.get("applicant_discord_id") or 0)
+            channel_id = int(app.get("application_channel_id") or 0)
+            lines.append(f"#{app['id']} — <@{applicant_id}> — <#{channel_id}> — {app['status']}")
+        if len(open_apps) > 15:
+            lines.append(f"and {len(open_apps) - 15} more…")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
