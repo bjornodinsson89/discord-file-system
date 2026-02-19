@@ -70,6 +70,7 @@ HOST_TAX_VERIFY_WINDOW_MINUTES = 30
 TORN_NAME_CACHE_TTL_MINUTES = 10
 _TORN_NAME_CACHE: dict[int, tuple[str, datetime]] = {}
 _TORN_NAME_FAIL_LOG_CACHE: dict[int, datetime] = {}
+_READINESS_MISSING_KEY_LOG_CACHE: dict[tuple[int, int], datetime] = {}
 
 
 
@@ -273,7 +274,25 @@ async def _fetch_and_upsert_host_readiness_snapshot(
     host_discord_id: int,
 ) -> dict | None:
     """Fetch host readiness from Torn and upsert snapshot if an API key is available."""
-    key_row = await users_repo.get_user_api_key(host_discord_id)
+    return await _fetch_and_upsert_user_readiness_snapshot(
+        repo=repo,
+        users_repo=users_repo,
+        session_id=session_id,
+        guild_id=guild_id,
+        discord_id=host_discord_id,
+    )
+
+
+async def _fetch_and_upsert_user_readiness_snapshot(
+    *,
+    repo: JumpsRepository,
+    users_repo: UsersRepository,
+    session_id: int,
+    guild_id: int,
+    discord_id: int,
+) -> dict | None:
+    """Fetch readiness from Torn and upsert snapshot if an API key is available."""
+    key_row = await users_repo.get_user_api_key(discord_id)
     encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
     if not encrypted_key:
         return None
@@ -298,7 +317,7 @@ async def _fetch_and_upsert_host_readiness_snapshot(
         await repo.upsert_readiness_snapshot(
             session_id=session_id,
             guild_id=guild_id,
-            discord_id=host_discord_id,
+            discord_id=discord_id,
             energy=energy_current,
             energy_max=energy_max,
             drug_cooldown=drug_cd,
@@ -310,7 +329,7 @@ async def _fetch_and_upsert_host_readiness_snapshot(
     return {
         "session_id": session_id,
         "guild_id": guild_id,
-        "discord_id": host_discord_id,
+        "discord_id": discord_id,
         "energy": energy_current,
         "energy_max": energy_max,
         "drug_cooldown": drug_cd,
@@ -1649,6 +1668,11 @@ async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) 
     host_booster_cd = (host_readiness or {}).get("booster_cooldown") if host_readiness else None
     host_ready = host_energy is not None and host_energy_max is not None and int(host_energy) >= 1000 and int(host_drug_cd or 0) == 0
     host_emoji = "🟩" if host_ready else "🟥"
+    host_readiness_text = (
+        f"E-lvl {_format_energy_pair(host_energy, host_energy_max)} Dcd |{_format_cd_hhmm(host_drug_cd)}| Bcd |{_format_cd_hhmm(host_booster_cd)}|"
+        if host_energy is not None and host_energy_max is not None
+        else "API key required"
+    )
 
     participants = [row for row in signups if int(row.get("discord_id") or 0) != host_id]
     progress_signups = progress.get("signups") or []
@@ -1673,7 +1697,7 @@ async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) 
         lines.append("")
 
     lines.append(
-        f"1) Name:{host_name} E-lvl {_format_energy_pair(host_energy, host_energy_max)} Dcd |{_format_cd_hhmm(host_drug_cd)}| Bcd |{_format_cd_hhmm(host_booster_cd)}| {host_emoji} • {_state_label(host_state)}"
+        f"1) Name:{host_name} {host_readiness_text} {host_emoji} • {_state_label(host_state)}"
     )
 
     for idx, row in enumerate(participants, start=2):
@@ -1696,8 +1720,13 @@ async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) 
             emoji = "🟥"
 
         state = participant_states[idx - 2] if idx - 2 < len(participant_states) else "waiting"
+        readiness_text = (
+            f"E-lvl {_format_energy_pair(energy, energy_max)} Dcd |{_format_cd_hhmm(drug_cd)}| Bcd |{_format_cd_hhmm(booster_cd)}|"
+            if has_readiness
+            else "API key required"
+        )
         lines.append(
-            f"{idx}) Name:{name}{priority_label} E-lvl {_format_energy_pair(energy, energy_max)} Dcd |{_format_cd_hhmm(drug_cd)}| Bcd |{_format_cd_hhmm(booster_cd)}| {emoji} • {_state_label(state)}"
+            f"{idx}) Name:{name}{priority_label} {readiness_text} {emoji} • {_state_label(state)}"
         )
 
     if in_progress_index is not None and in_progress_index <= len(roster_names):
@@ -2151,6 +2180,43 @@ class Jump99kManualAddPickerView(discord.ui.View):
         if interaction.guild:
             await _grant_private_channel_access(interaction.guild, session, int(selected.id))
 
+        missing_api_key = not bool((user_row or {}).get("encrypted_key") or (user_row or {}).get("api_key_encrypted"))
+        if missing_api_key:
+            private_channel_id = session.get("private_channel_id")
+            private_channel = None
+            if interaction.client and private_channel_id:
+                try:
+                    private_channel = interaction.client.get_channel(int(private_channel_id)) or await interaction.client.fetch_channel(int(private_channel_id))
+                except Exception:
+                    private_channel = None
+            if private_channel:
+                try:
+                    await private_channel.send(
+                        f"{selected.mention} please run /set_api_key (or your existing API key command) so the bot can poll your energy/cooldowns for readiness."
+                    )
+                except Exception:
+                    log.exception("Manual add API key reminder failed in private channel session_id=%s user_id=%s", self.session_id, selected.id)
+
+            try:
+                await selected.send(
+                    "You were manually added to a 99k session. Please run /set_api_key (or your existing API key command) so the bot can poll your energy/cooldowns for readiness."
+                )
+            except discord.Forbidden:
+                pass
+            except Exception:
+                log.exception("Manual add API key reminder DM failed session_id=%s user_id=%s", self.session_id, selected.id)
+        else:
+            try:
+                await _fetch_and_upsert_user_readiness_snapshot(
+                    repo=repo,
+                    users_repo=users_repo,
+                    session_id=self.session_id,
+                    guild_id=int(session.get("guild_id") or 0),
+                    discord_id=int(selected.id),
+                )
+            except Exception:
+                log.exception("Manual add one-off readiness refresh failed session_id=%s user_id=%s", self.session_id, selected.id)
+
         roster_channel_id = session.get("roster_channel_id") or session.get("private_channel_id")
         roster_message_id = session.get("roster_message_id")
         if roster_channel_id and roster_message_id and interaction.client:
@@ -2168,6 +2234,11 @@ class Jump99kManualAddPickerView(discord.ui.View):
 
         self._disable_controls()
         await interaction.response.edit_message(content=f"✅ Added {selected.mention} to the jump.", view=self)
+        if missing_api_key:
+            await interaction.followup.send(
+                f"Added {selected.mention}, but their Energy/Cooldowns will not populate until they set an API key.",
+                ephemeral=True,
+            )
 
 
 class Jump99kHostControlsView(discord.ui.View):
@@ -3418,7 +3489,17 @@ async def readiness_worker():
                 try:
                     key_row = await users_repo.get_user_api_key(discord_id)
                     if not key_row:
-                        log.warning("Skipping readiness refresh due to missing API key discord_id=%s guild_id=%s", discord_id, guild.id)
+                        throttle_key = (session_id, discord_id)
+                        now = datetime.now(timezone.utc)
+                        expiry = _READINESS_MISSING_KEY_LOG_CACHE.get(throttle_key)
+                        if not expiry or expiry <= now:
+                            log.info(
+                                "Skipping readiness refresh due to missing API key discord_id=%s guild_id=%s session_id=%s",
+                                discord_id,
+                                guild.id,
+                                session_id,
+                            )
+                            _READINESS_MISSING_KEY_LOG_CACHE[throttle_key] = now + timedelta(hours=1)
                         continue
 
                     key_data = dict(key_row)
