@@ -268,24 +268,43 @@ class JumpsRepository(RepositoryBase):
         async with self.pool.acquire() as conn:
             return int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_signups WHERE session_id = $1 AND status IN ('signed_up','completed','not_completed')", session_id))
 
+    async def _create_or_restore_signup_on_conn(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        session_id: int,
+        guild_id: int,
+        discord_id: int,
+        torn_user_id: Optional[int],
+        reserved_until: Optional[datetime] = None,
+    ) -> None:
+        try:
+            await conn.execute(
+                """
+                INSERT INTO jump_99k_signups (session_id, guild_id, participant_discord_id, participant_torn_user_id, status, reserved_until)
+                VALUES ($1,$2,$3,$4,'signed_up',$5)
+                ON CONFLICT (session_id, participant_discord_id)
+                DO UPDATE SET status = 'signed_up', participant_torn_user_id = EXCLUDED.participant_torn_user_id, reserved_until = EXCLUDED.reserved_until
+                """,
+                session_id,
+                guild_id,
+                discord_id,
+                torn_user_id,
+                reserved_until,
+            )
+        except Exception as exc:
+            _raise_reserved_until_migration_error(exc)
+
     async def create_or_restore_signup(self, *, session_id: int, guild_id: int, discord_id: int, torn_user_id: Optional[int], reserved_until: Optional[datetime] = None) -> None:
         async with self.pool.acquire() as conn:
-            try:
-                await conn.execute(
-                    """
-                    INSERT INTO jump_99k_signups (session_id, guild_id, participant_discord_id, participant_torn_user_id, status, reserved_until)
-                    VALUES ($1,$2,$3,$4,'signed_up',$5)
-                    ON CONFLICT (session_id, participant_discord_id)
-                    DO UPDATE SET status = 'signed_up', participant_torn_user_id = EXCLUDED.participant_torn_user_id, reserved_until = EXCLUDED.reserved_until
-                    """,
-                    session_id,
-                    guild_id,
-                    discord_id,
-                    torn_user_id,
-                    reserved_until,
-                )
-            except Exception as exc:
-                _raise_reserved_until_migration_error(exc)
+            await self._create_or_restore_signup_on_conn(
+                conn,
+                session_id=session_id,
+                guild_id=guild_id,
+                discord_id=discord_id,
+                torn_user_id=torn_user_id,
+                reserved_until=reserved_until,
+            )
 
     async def cancel_signup(self, *, session_id: int, discord_id: int) -> bool:
         async with self.pool.acquire() as conn:
@@ -604,13 +623,14 @@ class JumpsRepository(RepositoryBase):
                 by_discord_id,
             )
 
-    async def create_manual_signup(
+    async def manual_add_as_verified_signup(
         self,
         *,
         session_id: int,
+        guild_id: int,
         user_discord_id: int,
         added_by_discord_id: int,
-        torn_id: int | None,
+        torn_user_id: int | None,
         torn_name: str | None,
         reason: str | None,
     ) -> tuple[bool, str]:
@@ -630,7 +650,7 @@ class JumpsRepository(RepositoryBase):
                     session_id,
                 )
                 if not session or str(session.get("status") or "").lower() != "open":
-                    return False, "Session is not available for signup."
+                    return False, "Session is not open."
 
                 existing_signup = await conn.fetchrow(
                     """
@@ -655,7 +675,6 @@ class JumpsRepository(RepositoryBase):
                             SELECT COUNT(*)
                             FROM jump_99k_signups
                             WHERE session_id = $1
-                              AND payment_verified = TRUE
                               AND status IN ('signed_up', 'completed', 'not_completed')
                             """,
                             session_id,
@@ -665,103 +684,101 @@ class JumpsRepository(RepositoryBase):
                     if current_slots >= max_slots:
                         return False, "This session is full."
 
-                has_participant_torn_name = bool(
-                    await conn.fetchval(
-                        """
-                        SELECT EXISTS (
-                            SELECT 1
-                            FROM information_schema.columns
-                            WHERE table_schema = 'public'
-                              AND table_name = 'jump_99k_signups'
-                              AND column_name = 'participant_torn_name'
-                        )
-                        """
-                    )
+                await self._create_or_restore_signup_on_conn(
+                    conn,
+                    session_id=session_id,
+                    guild_id=guild_id,
+                    discord_id=user_discord_id,
+                    torn_user_id=torn_user_id,
+                    reserved_until=None,
                 )
 
-                if has_participant_torn_name:
+                column_rows = await conn.fetch(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'jump_99k_signups'
+                      AND column_name = ANY($1::text[])
+                    """,
+                    [
+                        "payment_verified",
+                        "payment_verified_at",
+                        "reserved_until",
+                        "participant_torn_name",
+                        "payment_source",
+                        "added_manually",
+                        "added_by_discord_id",
+                        "manual_reason",
+                        "manual_added_at",
+                    ],
+                )
+                existing_columns = {str(row["column_name"]) for row in column_rows}
+
+                set_parts: list[str] = []
+                params: list[Any] = [session_id, user_discord_id]
+                next_param = 3
+
+                if "payment_verified" in existing_columns:
+                    set_parts.append("payment_verified = TRUE")
+                if "payment_verified_at" in existing_columns:
+                    set_parts.append("payment_verified_at = NOW()")
+                if "reserved_until" in existing_columns:
+                    set_parts.append("reserved_until = NULL")
+                if "participant_torn_name" in existing_columns:
+                    set_parts.append(f"participant_torn_name = ${next_param}")
+                    params.append(torn_name)
+                    next_param += 1
+                if "payment_source" in existing_columns:
+                    set_parts.append("payment_source = 'manual'")
+                if "added_manually" in existing_columns:
+                    set_parts.append("added_manually = TRUE")
+                if "added_by_discord_id" in existing_columns:
+                    set_parts.append(f"added_by_discord_id = ${next_param}")
+                    params.append(added_by_discord_id)
+                    next_param += 1
+                if "manual_reason" in existing_columns:
+                    set_parts.append(f"manual_reason = ${next_param}")
+                    params.append(normalized_reason)
+                    next_param += 1
+                if "manual_added_at" in existing_columns:
+                    set_parts.append("manual_added_at = NOW()")
+
+                if set_parts:
                     await conn.execute(
-                        """
-                        INSERT INTO jump_99k_signups (
-                            session_id,
-                            guild_id,
-                            participant_discord_id,
-                            participant_torn_user_id,
-                            participant_torn_name,
-                            status,
-                            payment_verified,
-                            payment_verified_at,
-                            payment_source,
-                            added_manually,
-                            added_by_discord_id,
-                            manual_reason,
-                            manual_added_at
-                        )
-                        VALUES (
-                            $1,
-                            $2,
-                            $3,
-                            $4,
-                            $5,
-                            'signed_up',
-                            TRUE,
-                            NOW(),
-                            'manual',
-                            TRUE,
-                            $6,
-                            $7,
-                            NOW()
-                        )
+                        f"""
+                        UPDATE jump_99k_signups
+                        SET {", ".join(set_parts)}
+                        WHERE session_id = $1
+                          AND participant_discord_id = $2
                         """,
-                        session_id,
-                        int(session["guild_id"]),
-                        user_discord_id,
-                        torn_id,
-                        torn_name,
-                        added_by_discord_id,
-                        normalized_reason,
-                    )
-                else:
-                    await conn.execute(
-                        """
-                        INSERT INTO jump_99k_signups (
-                            session_id,
-                            guild_id,
-                            participant_discord_id,
-                            participant_torn_user_id,
-                            status,
-                            payment_verified,
-                            payment_verified_at,
-                            payment_source,
-                            added_manually,
-                            added_by_discord_id,
-                            manual_reason,
-                            manual_added_at
-                        )
-                        VALUES (
-                            $1,
-                            $2,
-                            $3,
-                            $4,
-                            'signed_up',
-                            TRUE,
-                            NOW(),
-                            'manual',
-                            TRUE,
-                            $5,
-                            $6,
-                            NOW()
-                        )
-                        """,
-                        session_id,
-                        int(session["guild_id"]),
-                        user_discord_id,
-                        torn_id,
-                        added_by_discord_id,
-                        normalized_reason,
+                        *params,
                     )
 
         return True, f"Added <@{int(user_discord_id)}> to the session."
+
+    async def create_manual_signup(
+        self,
+        *,
+        session_id: int,
+        user_discord_id: int,
+        added_by_discord_id: int,
+        torn_id: int | None,
+        torn_name: str | None,
+        reason: str | None,
+    ) -> tuple[bool, str]:
+        session = await self.get_session(session_id)
+        if not session:
+            return False, "Session is not open."
+        return await self.manual_add_as_verified_signup(
+            session_id=session_id,
+            guild_id=int(session.get("guild_id") or 0),
+            user_discord_id=user_discord_id,
+            added_by_discord_id=added_by_discord_id,
+            torn_user_id=torn_id,
+            torn_name=torn_name,
+            reason=reason,
+        )
 
     async def mark_signup_payment_verified(self, *, session_id: int, discord_id: int) -> bool:
         async with self.pool.acquire() as conn:

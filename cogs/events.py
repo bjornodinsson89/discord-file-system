@@ -364,20 +364,6 @@ async def can_manage_99k_session(interaction: discord.Interaction, session: dict
     return host_role_id > 0 and any(int(role.id) == host_role_id for role in member.roles)
 
 
-def _parse_discord_user_input(raw_value: str) -> int | None:
-    text = str(raw_value or "").strip()
-    if text.startswith("<@") and text.endswith(">"):
-        text = text[2:-1]
-        if text.startswith("!"):
-            text = text[1:]
-    if not text.isdigit():
-        return None
-    user_id = int(text)
-    if user_id <= 0:
-        return None
-    return user_id
-
-
 async def assert99kHost(interaction: discord.Interaction, settings: dict | None) -> bool:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         embed = create_error_embed("Guild only", "This command can only be used in a server.")
@@ -2056,55 +2042,132 @@ class Jump99kRosterPanelView(discord.ui.View):
             await interaction.followup.send("Sorry—loading the roster failed. Please try again.", ephemeral=True)
 
 
-class Jump99kManualAddModal(discord.ui.Modal, title="Manual Add Jumper"):
-    discord_user = discord.ui.TextInput(label="Discord user", placeholder="<@123> or 123", required=True, max_length=32)
-    torn_id = discord.ui.TextInput(label="Torn ID (optional)", required=False, max_length=20)
-    torn_name = discord.ui.TextInput(label="Torn name (optional)", required=False, max_length=32)
-    reason = discord.ui.TextInput(label="Reason (optional)", style=discord.TextStyle.paragraph, required=False, max_length=200)
+async def _can_use_manual_add_controls(interaction: discord.Interaction, session: dict | None) -> bool:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member) or not session:
+        return False
+    if int(interaction.user.id) == int(session.get("host_discord_id") or 0):
+        return True
+    if interaction.user.guild_permissions.administrator:
+        return True
+    settings = await GuildSettingsRepository(get_database()).get_guild_settings(int(interaction.guild_id))
+    host_role_id = int((settings or {}).get("host99k_role_id") or (settings or {}).get("host_role_id") or 0)
+    return host_role_id > 0 and any(int(role.id) == host_role_id for role in interaction.user.roles)
 
+
+async def _grant_private_channel_access(guild: discord.Guild | None, session: dict, discord_id: int) -> None:
+    if guild is None:
+        return
+    private_channel_id = session.get("private_channel_id")
+    if not private_channel_id:
+        return
+
+    member = guild.get_member(int(discord_id))
+    if member is None:
+        try:
+            member = await guild.fetch_member(int(discord_id))
+        except Exception:
+            member = None
+    if member is None:
+        return
+
+    try:
+        channel = guild.get_channel(int(private_channel_id)) or await guild.fetch_channel(int(private_channel_id))
+    except Exception:
+        return
+    if isinstance(channel, discord.abc.GuildChannel):
+        await channel.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
+
+
+class Jump99kManualAddPickerView(discord.ui.View):
     def __init__(self, *, session_id: int):
-        super().__init__()
+        super().__init__(timeout=120)
         self.session_id = int(session_id)
+        self.user_select = discord.ui.UserSelect(
+            custom_id=f"99k_manual_add_select:{self.session_id}",
+            placeholder="Pick a user…",
+            min_values=1,
+            max_values=1,
+        )
+        self.user_select.callback = self._on_select_user
+        self.add_item(self.user_select)
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        db = get_database()
-        repo = JumpsRepository(db.pool)
+        cancel_button = discord.ui.Button(
+            label="Cancel",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"99k_manual_add_cancel:{self.session_id}",
+        )
+        cancel_button.callback = self._on_cancel
+        self.add_item(cancel_button)
+
+    def _disable_controls(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+    async def _on_cancel(self, interaction: discord.Interaction) -> None:
+        repo = JumpsRepository(get_pool())
         session = await repo.get_session(self.session_id)
-        if not session or not await can_manage_99k_session(interaction, session):
-            await interaction.response.send_message("You are not allowed to manually add jumpers.", ephemeral=True)
+        if not await _can_use_manual_add_controls(interaction, session):
+            await interaction.response.send_message("You do not have permission.", ephemeral=True)
+            return
+        self._disable_controls()
+        await interaction.response.edit_message(content="Cancelled.", view=self)
+
+    async def _on_select_user(self, interaction: discord.Interaction) -> None:
+        repo = JumpsRepository(get_pool())
+        users_repo = UsersRepository(get_pool())
+        session = await repo.get_session(self.session_id)
+        if not await _can_use_manual_add_controls(interaction, session):
+            await interaction.response.send_message("You do not have permission.", ephemeral=True)
+            return
+        if not session or str(session.get("status", "")).lower() != "open":
+            await interaction.response.send_message("Session is not open.", ephemeral=True)
             return
 
-        user_discord_id = _parse_discord_user_input(str(self.discord_user.value))
-        if user_discord_id is None:
-            await interaction.response.send_message("Enter a valid Discord user mention or ID.", ephemeral=True)
+        selected = self.user_select.values[0] if self.user_select.values else None
+        if not selected:
+            await interaction.response.send_message("Please select a user.", ephemeral=True)
             return
 
-        torn_id_raw = str(self.torn_id.value or "").strip()
-        parsed_torn_id: int | None = None
-        if torn_id_raw:
-            if not torn_id_raw.isdigit():
-                await interaction.response.send_message("Torn ID must be digits only.", ephemeral=True)
-                return
-            parsed_torn_id = int(torn_id_raw)
+        user_row = await users_repo.get_user_api_key(int(selected.id))
+        torn_user_id = None
+        torn_name = None
+        if user_row:
+            torn_user_id = int(user_row.get("torn_user_id") or 0) or None
+            torn_name = str(user_row.get("torn_name") or "").strip() or None
 
-        torn_name = str(self.torn_name.value or "").strip() or None
-        reason = str(self.reason.value or "").strip() or None
-
-        ok, message = await repo.create_manual_signup(
+        ok, msg = await repo.manual_add_as_verified_signup(
             session_id=self.session_id,
-            user_discord_id=user_discord_id,
+            guild_id=int(interaction.guild_id or 0),
+            user_discord_id=int(selected.id),
             added_by_discord_id=int(interaction.user.id),
-            torn_id=parsed_torn_id,
+            torn_user_id=torn_user_id,
             torn_name=torn_name,
-            reason=reason,
+            reason=None,
         )
         if not ok:
-            await interaction.response.send_message(message, ephemeral=True)
+            await interaction.response.send_message(msg, ephemeral=True)
             return
 
-        await interaction.response.send_message(message, ephemeral=True)
-        await _refresh_99k_panel(interaction.client, self.session_id)
-        await _refresh_roster_if_exists(interaction.client, self.session_id)
+        if interaction.guild:
+            await _grant_private_channel_access(interaction.guild, session, int(selected.id))
+
+        roster_channel_id = session.get("roster_channel_id") or session.get("private_channel_id")
+        roster_message_id = session.get("roster_message_id")
+        if roster_channel_id and roster_message_id and interaction.client:
+            try:
+                channel = interaction.client.get_channel(int(roster_channel_id)) or await interaction.client.fetch_channel(int(roster_channel_id))
+                message = await channel.fetch_message(int(roster_message_id))
+                embed, view = await build_roster_panel(self.session_id, channel)
+                await message.edit(embed=embed, view=view)
+            except Exception:
+                log.exception("Manual add roster refresh failed session_id=%s", self.session_id)
+
+        if interaction.client:
+            await _refresh_99k_panel(interaction.client, self.session_id)
+            await _refresh_roster_if_exists(interaction.client, self.session_id)
+
+        self._disable_controls()
+        await interaction.response.edit_message(content=f"✅ Added {selected.mention} to the jump.", view=self)
 
 
 class Jump99kHostControlsView(discord.ui.View):
@@ -2125,7 +2188,11 @@ class Jump99kHostControlsView(discord.ui.View):
         if not session or not await can_manage_99k_session(interaction, session):
             await interaction.response.send_message("You are not allowed to use host controls.", ephemeral=True)
             return
-        await interaction.response.send_modal(Jump99kManualAddModal(session_id=self.session_id))
+        await interaction.response.send_message(
+            "Select a user to add to this jump:",
+            view=Jump99kManualAddPickerView(session_id=self.session_id),
+            ephemeral=True,
+        )
 
 
 class Jump99kUserControlsView(discord.ui.View):
