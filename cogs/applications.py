@@ -161,11 +161,23 @@ class ApplicationsCog(commands.Cog):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             return None
 
+    def _resolve_admin_inbox_channel(self, guild: discord.Guild, settings: dict[str, Any], app_type: str) -> discord.TextChannel | None:
+        channel_id = settings.get("applications_admin_inbox_channel_id")
+        if not channel_id:
+            fallback_key = "host_apps_admin_inbox_channel_id" if app_type == "host" else "insurance_apps_admin_inbox_channel_id"
+            channel_id = settings.get(fallback_key)
+        try:
+            channel = guild.get_channel(int(channel_id or 0))
+        except (TypeError, ValueError):
+            return None
+        if isinstance(channel, discord.TextChannel):
+            return channel
+        return None
+
     async def _update_admin_panel(self, guild: discord.Guild, app_type: str, app: dict[str, Any]) -> None:
         _, _, settings_repo = await self._repos()
         settings = await settings_repo.get_or_create(guild.id)
-        inbox_key = "host_apps_admin_inbox_channel_id" if app_type == "host" else "insurance_apps_admin_inbox_channel_id"
-        inbox = guild.get_channel(int(settings.get(inbox_key) or 0))
+        inbox = self._resolve_admin_inbox_channel(guild, settings, app_type)
         if not isinstance(inbox, discord.TextChannel):
             return
         msg_id = int(app.get("admin_inbox_message_id") or 0)
@@ -192,8 +204,7 @@ class ApplicationsCog(commands.Cog):
     async def _delete_admin_panel_message(self, guild: discord.Guild, app_type: str, app: dict[str, Any]) -> None:
         _, _, settings_repo = await self._repos()
         settings = await settings_repo.get_or_create(guild.id)
-        inbox_key = "host_apps_admin_inbox_channel_id" if app_type == "host" else "insurance_apps_admin_inbox_channel_id"
-        inbox = guild.get_channel(int(settings.get(inbox_key) or 0))
+        inbox = self._resolve_admin_inbox_channel(guild, settings, app_type)
         if not isinstance(inbox, discord.TextChannel):
             return
         msg_id = int(app.get("admin_inbox_message_id") or 0)
@@ -237,6 +248,8 @@ class ApplicationsCog(commands.Cog):
             await interaction.response.send_message("Bot not ready.", ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         overwrites: dict[Any, discord.PermissionOverwrite] = {
             interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
@@ -264,8 +277,22 @@ class ApplicationsCog(commands.Cog):
         app = await repo.create_app(interaction.guild.id, interaction.user.id, app_channel.id)
         app_id = int(app["id"])
 
-        inbox_key = "host_apps_admin_inbox_channel_id" if app_type == "host" else "insurance_apps_admin_inbox_channel_id"
-        inbox = interaction.guild.get_channel(int(settings.get(inbox_key) or 0))
+        inbox = self._resolve_admin_inbox_channel(interaction.guild, settings, app_type)
+        if inbox is None:
+            logger.warning(
+                "Missing applications inbox channel for guild %s app_type %s app_id %s",
+                interaction.guild.id,
+                app_type,
+                app_id,
+            )
+            try:
+                await interaction.followup.send(
+                    "Heads up: admins haven’t set the **Applications admin inbox channel** in /setup yet, so admins may not see your application until it’s configured.",
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
+
         if isinstance(inbox, discord.TextChannel):
             embed = self._build_admin_summary_embed(
                 app_type,
@@ -288,7 +315,7 @@ class ApplicationsCog(commands.Cog):
             f"Application #{app_id} — Q1/5: {self._questions_for(app_type)[0]}",
             view=self._build_answer_view(app_type, app_id),
         )
-        await interaction.response.send_message(f"Application started: {app_channel.mention}", ephemeral=True)
+        await interaction.followup.send(f"Application started: {app_channel.mention}", ephemeral=True)
 
     async def submit_answer(self, interaction: discord.Interaction, app_type: str, app_id: int, current_question: int, answer: str) -> None:
         try:

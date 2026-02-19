@@ -280,8 +280,7 @@ class SetupPanelView(OwnerView):
             f"Raffle giveaway purchase panel: {channel_name('raffle_giveaway_purchase_channel_id')}\n"
             f"Insurance: {channel_name('insurance_channel_id')}\n"
             f"Applications category: {channel_name('applications_category_id')}\n"
-            f"Host apps inbox: {channel_name('host_apps_admin_inbox_channel_id')}\n"
-            f"Insurance apps inbox: {channel_name('insurance_apps_admin_inbox_channel_id')}\n"
+            f"Applications admin inbox: {channel_name('applications_admin_inbox_channel_id')}\n"
             f"Welcome: {channel_name('welcome_channel_id')}\n"
             f"Pools management: {channel_name('pool_channel_id')}\n"
             f"Pools purchase panel: {channel_name('pools_post_channel_id')}"
@@ -642,9 +641,8 @@ class ChannelsViewPage4(BackView):
                 create_info_embed(
                     "Applications",
                     "Configure channels for the applications system.\n\n"
-                    "- **Applications category (optional)**: parent category for private app channels.\n"
-                    "- **Host apps inbox**: required admin inbox channel for host applications.\n"
-                    "- **Insurance apps inbox**: required admin inbox channel for insurance applications.",
+                    "- **Applications category (optional)**: where private application channels are created.\n"
+                    "- **Applications admin inbox (required)**: where Host + Insurance applications are sent for approval.",
                 ),
                 ChannelsViewApplications(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
             )
@@ -659,8 +657,7 @@ class ChannelsViewApplications(BackView):
         super().__init__(**kwargs)
         self.remove_item(self.back_btn)
         self.add_item(ChannelSelect(self.panel, "applications_category_id", "Set applications category (optional)", row=0, channel_types=[discord.ChannelType.category]))
-        self.add_item(ChannelSelect(self.panel, "host_apps_admin_inbox_channel_id", "Set host apps admin inbox channel", row=1, channel_types=[discord.ChannelType.text]))
-        self.add_item(ChannelSelect(self.panel, "insurance_apps_admin_inbox_channel_id", "Set insurance apps admin inbox channel", row=2, channel_types=[discord.ChannelType.text]))
+        self.add_item(ChannelSelect(self.panel, "applications_admin_inbox_channel_id", "Set applications admin inbox channel", row=1, channel_types=[discord.ChannelType.text]))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -673,13 +670,15 @@ class ChannelsViewApplications(BackView):
 
     @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=3)
     async def save_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        host_inbox = self.guild.get_channel(int(self.settings.get("host_apps_admin_inbox_channel_id") or 0))
-        insurer_inbox = self.guild.get_channel(int(self.settings.get("insurance_apps_admin_inbox_channel_id") or 0))
-        if not isinstance(host_inbox, discord.TextChannel):
-            await interaction.response.send_message(embed=create_error_embed("Missing host inbox", "Set Host Apps Admin Inbox Channel to a text channel."), ephemeral=True)
-            return
-        if not isinstance(insurer_inbox, discord.TextChannel):
-            await interaction.response.send_message(embed=create_error_embed("Missing insurance inbox", "Set Insurance Apps Admin Inbox Channel to a text channel."), ephemeral=True)
+        applications_inbox = self.guild.get_channel(int(self.settings.get("applications_admin_inbox_channel_id") or 0))
+        if not isinstance(applications_inbox, discord.TextChannel):
+            await interaction.response.send_message(
+                embed=create_error_embed(
+                    "Missing applications admin inbox",
+                    "Set Applications admin inbox channel to a text channel.",
+                ),
+                ephemeral=True,
+            )
             return
         await _send_or_edit(
             interaction,
