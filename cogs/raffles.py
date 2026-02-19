@@ -735,11 +735,22 @@ async def _reserve_raffle_tickets(
     *,
     use_followup: bool = False,
 ):
+    _ = use_followup  # Compatibility no-op; response mode is auto-detected.
+
     async def _send_response(**kwargs):
-        if use_followup:
-            await interaction.followup.send(**kwargs)
-        else:
+        if interaction.response.is_done():
+            try:
+                await interaction.followup.send(**kwargs)
+                return
+            except Exception:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(**kwargs)
+                    return
+                raise
+        try:
             await interaction.response.send_message(**kwargs)
+        except discord.errors.InteractionResponded:
+            await interaction.followup.send(**kwargs)
 
     async def _send_error(message: str):
         await _send_response(content=message, ephemeral=True)
@@ -920,7 +931,7 @@ class RaffleQuantitySelect(discord.ui.Select):
             await interaction.response.send_message("❌ Invalid quantity", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=False)
-        await _reserve_raffle_tickets(interaction, self.repo, self.raffle_id, quantity, use_followup=True)
+        await _reserve_raffle_tickets(interaction, self.repo, self.raffle_id, quantity)
 class RafflePurchasePanelView(discord.ui.View):
     """Persistent purchase panel for raffle interactions."""
     def __init__(self, raffle_id: int):
