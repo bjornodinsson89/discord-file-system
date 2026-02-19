@@ -279,7 +279,10 @@ class SetupPanelView(OwnerView):
             f"Raffle purchase panel: {channel_name('raffle_purchase_channel_id')}\n"
             f"Raffle giveaway purchase panel: {channel_name('raffle_giveaway_purchase_channel_id')}\n"
             f"Insurance: {channel_name('insurance_channel_id')}\n"
-            f"Applications: {channel_name('applications_channel_id')}\n"
+            f"Applications (legacy): {channel_name('applications_channel_id')}\n"
+            f"Applications category: {channel_name('applications_category_id')}\n"
+            f"Host apps inbox: {channel_name('host_apps_admin_inbox_channel_id')}\n"
+            f"Insurance apps inbox: {channel_name('insurance_apps_admin_inbox_channel_id')}\n"
             f"Welcome: {channel_name('welcome_channel_id')}\n"
             f"Pools management: {channel_name('pool_channel_id')}\n"
             f"Pools purchase panel: {channel_name('pools_post_channel_id')}"
@@ -404,7 +407,7 @@ class SetupPanelView(OwnerView):
             )
             return
         mention = getattr(resolved, "mention", f"<#{resolved.id}>")
-        missing = _missing_channel_perms(resolved, me)
+        missing = [] if key == 'applications_category_id' else _missing_channel_perms(resolved, me)
         if missing:
             await interaction.response.send_message(
                 embed=create_error_embed("Missing permissions", f"Missing in {mention}: **{', '.join(missing)}**."),
@@ -489,12 +492,12 @@ class BackView(OwnerView):
 
 
 class ChannelSelect(discord.ui.ChannelSelect):
-    def __init__(self, panel: SetupPanelView, key: str, placeholder: str, *, row: int | None = None):
+    def __init__(self, panel: SetupPanelView, key: str, placeholder: str, *, row: int | None = None, channel_types: list[discord.ChannelType] | None = None):
         super().__init__(
             placeholder=placeholder,
             min_values=0,
             max_values=1,
-            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            channel_types=channel_types or [discord.ChannelType.text, discord.ChannelType.news],
             row=row,
         )
         self.panel = panel
@@ -644,6 +647,55 @@ class ChannelsViewPage4(BackView):
         except Exception as error:
             await _respond_callback_error(interaction, error, "setup_roles_next_error")
 
+
+
+
+class ChannelsViewApplications(BackView):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.remove_item(self.back_btn)
+        self.add_item(ChannelSelect(self.panel, "applications_category_id", "Set applications category (optional)", row=0, channel_types=[discord.ChannelType.category]))
+        self.add_item(ChannelSelect(self.panel, "host_apps_admin_inbox_channel_id", "Set host apps admin inbox channel", row=1, channel_types=[discord.ChannelType.text]))
+        self.add_item(ChannelSelect(self.panel, "insurance_apps_admin_inbox_channel_id", "Set insurance apps admin inbox channel", row=2, channel_types=[discord.ChannelType.text]))
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
+    async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            await _send_or_edit(interaction, _channels_embed(), ChannelsViewPage4(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+        except Exception as error:
+            await _respond_callback_error(interaction, error, "setup_channels_next_error")
+
+    @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=3)
+    async def save_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        host_inbox = self.guild.get_channel(int(self.settings.get("host_apps_admin_inbox_channel_id") or 0))
+        insurer_inbox = self.guild.get_channel(int(self.settings.get("insurance_apps_admin_inbox_channel_id") or 0))
+        category = self.guild.get_channel(int(self.settings.get("applications_category_id") or 0))
+        if not isinstance(host_inbox, discord.TextChannel):
+            await interaction.response.send_message(embed=create_error_embed("Missing host inbox", "Set Host Apps Admin Inbox Channel to a text channel."), ephemeral=True)
+            return
+        if not isinstance(insurer_inbox, discord.TextChannel):
+            await interaction.response.send_message(embed=create_error_embed("Missing insurance inbox", "Set Insurance Apps Admin Inbox Channel to a text channel."), ephemeral=True)
+            return
+        category_text = category.mention if isinstance(category, discord.CategoryChannel) else "Not set"
+        await interaction.response.send_message(
+            embed=create_success_embed("Applications settings saved", f"Category: {category_text}\nHost inbox: {host_inbox.mention}\nInsurance inbox: {insurer_inbox.mention}"),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
+    async def channels_next_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            await _send_or_edit(
+                interaction,
+                create_info_embed("Roles", "Configure admin, host, and insurer roles."),
+                RolesViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
+            )
+        except Exception as error:
+            await _respond_callback_error(interaction, error, "setup_roles_next_error")
 
 class AdminRoleSelect(discord.ui.RoleSelect):
     def __init__(self, panel: SetupPanelView, setting_key: str = "admin_role_ids", placeholder: str = "Set admin role(s)", *, row: int | None = None):
