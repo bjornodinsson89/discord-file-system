@@ -348,6 +348,36 @@ async def ensure_admin(interaction: discord.Interaction) -> bool:
     return False
 
 
+async def can_manage_99k_session(interaction: discord.Interaction, session: dict | None) -> bool:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return False
+
+    member = interaction.user
+    if member.guild_permissions.administrator:
+        return True
+
+    if session and int(session.get("host_discord_id") or 0) == int(member.id):
+        return True
+
+    settings = await GuildSettingsRepository(get_database()).get_guild_settings(int(interaction.guild_id))
+    host_role_id = int(settings.get("host99k_role_id") or settings.get("host_role_id") or 0)
+    return host_role_id > 0 and any(int(role.id) == host_role_id for role in member.roles)
+
+
+def _parse_discord_user_input(raw_value: str) -> int | None:
+    text = str(raw_value or "").strip()
+    if text.startswith("<@") and text.endswith(">"):
+        text = text[2:-1]
+        if text.startswith("!"):
+            text = text[1:]
+    if not text.isdigit():
+        return None
+    user_id = int(text)
+    if user_id <= 0:
+        return None
+    return user_id
+
+
 async def assert99kHost(interaction: discord.Interaction, settings: dict | None) -> bool:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         embed = create_error_embed("Guild only", "This command can only be used in a server.")
@@ -636,7 +666,10 @@ async def register_persistent_roster_views() -> None:
     db = get_database()
     sessions = await JumpsRepository(db.pool).list_active_sessions_with_roster_panel()
     for session in sessions:
-        bot.add_view(Jump99kRosterPanelView(int(session["id"])))
+        session_id = int(session["id"])
+        bot.add_view(Jump99kRosterPanelView(session_id))
+        if session.get("private_channel_id"):
+            bot.add_view(Jump99kHostControlsView(session_id))
 
 
 async def register_persistent_signup_views() -> None:
@@ -651,7 +684,7 @@ async def register_persistent_signup_views() -> None:
             signups = await JumpsRepository(db.pool).list_signups(session_id)
             signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
             is_full = signed_up >= max_slots
-        bot.add_view(Jump99kSignupView(session_id=session_id, is_full=is_full, is_closed=False))
+        bot.add_view(Jump99kSignupView(session_id=session_id, is_full=is_full, is_closed=False, is_locked=bool(session.get("signups_locked"))))
 
 
 
@@ -1347,8 +1380,9 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int, hos
     notes_or_placeholder = str(session.get("notes") or "None")
     max_slots = int(session.get("max_slots") or 0)
     is_closed = _is_99k_closed(session.get("status"))
+    signups_locked = bool(session.get("signups_locked"))
     is_full = not is_closed and max_slots > 0 and signed_up >= max_slots
-    status_text = "Closed" if is_closed else ("Full" if is_full else "Open")
+    status_text = "Closed" if is_closed else ("Locked" if signups_locked else ("Full" if is_full else "Open"))
     priority_text = _priority_status_text(session)
     return (
         f"📣✨ **99k Happy Jump** ✨ — **Session #{session_id}**\n"
@@ -1359,6 +1393,7 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int, hos
         f"📝 Notes: {notes_or_placeholder}\n"
         f"👥 Signed up: {signed_up}/{max_slots} • ✅ Paid: {paid}\n"
         f"🔒 Status: {status_text}\n"
+        f"{'🔒 Signups locked (jump started)' if signups_locked else '✅ Signups open'}\n"
         "_Click **Join** to reserve your spot._"
     )
 
@@ -1441,6 +1476,7 @@ async def upsert_99k_announcement(
     paid = sum(1 for row in signups if row.get("payment_verified"))
     max_slots = int(session.get("max_slots") or 0)
     is_closed = _is_99k_closed(session.get("status"))
+    is_locked = bool(session.get("signups_locked"))
     is_full = not is_closed and max_slots > 0 and signed_up >= max_slots
 
     target_channel_id = int(channel_id or session.get("announce_channel_id") or 0)
@@ -1458,7 +1494,7 @@ async def upsert_99k_announcement(
     host_discord_id = int(session.get("host_discord_id") or 0)
     host_label = await _resolve_99k_host_label(users_repo, host_discord_id)
     content = build_99k_announcement_content(session, signed_up, paid, host_label)
-    view = Jump99kSignupView(session_id=session_id, is_full=is_full, is_closed=is_closed)
+    view = Jump99kSignupView(session_id=session_id, is_full=is_full, is_closed=is_closed, is_locked=is_locked)
 
     announce_channel_id = session.get("announce_channel_id")
     announce_message_id = session.get("announce_message_id")
@@ -1693,7 +1729,7 @@ async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) 
                 break
 
     embed = _build_roster_embed(lines)
-    view = Jump99kRosterView(session_id)
+    view = Jump99kRosterPanelView(session_id, roster_size=roster_size, enabled_start_positions=enabled_start_positions, enabled_end_positions=enabled_end_positions)
     return embed, view
 
 
@@ -1836,6 +1872,7 @@ class Jump99kRosterPanelView(discord.ui.View):
                 session_id=self.session_id,
                 position=position,
                 action=action,
+                actor_discord_id=int(interaction.user.id),
             )
             if not ok:
                 await interaction.followup.send(message, ephemeral=True)
@@ -1910,6 +1947,78 @@ class Jump99kRosterPanelView(discord.ui.View):
                 interaction.user.id if interaction.user else None,
             )
             await interaction.followup.send("Sorry—loading the roster failed. Please try again.", ephemeral=True)
+
+
+class Jump99kManualAddModal(discord.ui.Modal, title="Manual Add Jumper"):
+    discord_user = discord.ui.TextInput(label="Discord user", placeholder="<@123> or 123", required=True, max_length=32)
+    torn_id = discord.ui.TextInput(label="Torn ID (optional)", required=False, max_length=20)
+    torn_name = discord.ui.TextInput(label="Torn name (optional)", required=False, max_length=32)
+    reason = discord.ui.TextInput(label="Reason (optional)", style=discord.TextStyle.paragraph, required=False, max_length=200)
+
+    def __init__(self, *, session_id: int):
+        super().__init__()
+        self.session_id = int(session_id)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        db = get_database()
+        repo = JumpsRepository(db.pool)
+        session = await repo.get_session(self.session_id)
+        if not session or not await can_manage_99k_session(interaction, session):
+            await interaction.response.send_message("You are not allowed to manually add jumpers.", ephemeral=True)
+            return
+
+        user_discord_id = _parse_discord_user_input(str(self.discord_user.value))
+        if user_discord_id is None:
+            await interaction.response.send_message("Enter a valid Discord user mention or ID.", ephemeral=True)
+            return
+
+        torn_id_raw = str(self.torn_id.value or "").strip()
+        parsed_torn_id: int | None = None
+        if torn_id_raw:
+            if not torn_id_raw.isdigit():
+                await interaction.response.send_message("Torn ID must be digits only.", ephemeral=True)
+                return
+            parsed_torn_id = int(torn_id_raw)
+
+        torn_name = str(self.torn_name.value or "").strip() or None
+        reason = str(self.reason.value or "").strip() or None
+
+        ok, message = await repo.create_manual_signup(
+            session_id=self.session_id,
+            user_discord_id=user_discord_id,
+            added_by_discord_id=int(interaction.user.id),
+            torn_id=parsed_torn_id,
+            torn_name=torn_name,
+            reason=reason,
+        )
+        if not ok:
+            await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        await interaction.response.send_message(message, ephemeral=True)
+        await _refresh_99k_panel(interaction.client, self.session_id)
+        await _refresh_roster_if_exists(interaction.client, self.session_id)
+
+
+class Jump99kHostControlsView(discord.ui.View):
+    def __init__(self, session_id: int):
+        super().__init__(timeout=None)
+        self.session_id = int(session_id)
+        add_button = discord.ui.Button(
+            label="Manual Add Jumper",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"99k_host_manual_add:{self.session_id}",
+        )
+        add_button.callback = self._on_manual_add
+        self.add_item(add_button)
+
+    async def _on_manual_add(self, interaction: discord.Interaction) -> None:
+        repo = JumpsRepository(get_pool())
+        session = await repo.get_session(self.session_id)
+        if not session or not await can_manage_99k_session(interaction, session):
+            await interaction.response.send_message("You are not allowed to use host controls.", ephemeral=True)
+            return
+        await interaction.response.send_modal(Jump99kManualAddModal(session_id=self.session_id))
 
 
 class Jump99kUserControlsView(discord.ui.View):
@@ -2056,11 +2165,13 @@ class Jump99kUserControlsView(discord.ui.View):
 
 
 class Jump99kSignupView(discord.ui.View):
-    def __init__(self, session_id: int, is_full: bool, is_closed: bool):
+    def __init__(self, session_id: int, is_full: bool, is_closed: bool, is_locked: bool = False):
         super().__init__(timeout=None)
         self.session_id = session_id
         if is_closed:
             button = discord.ui.Button(label="Closed", style=discord.ButtonStyle.secondary, disabled=True, custom_id=f"jump99k:join:{session_id}")
+        elif is_locked:
+            button = discord.ui.Button(label="Locked", style=discord.ButtonStyle.secondary, disabled=True, custom_id=f"jump99k:join:{session_id}")
         elif is_full:
             button = discord.ui.Button(label="Full", style=discord.ButtonStyle.secondary, disabled=True, custom_id=f"jump99k:join:{session_id}")
         else:
@@ -2086,6 +2197,10 @@ class Jump99kSignupView(discord.ui.View):
                 return
             if int(session.get("guild_id", 0)) != int(interaction.guild_id):
                 await interaction.followup.send("Session not found.", ephemeral=True)
+                return
+            if bool(session.get("signups_locked")):
+                await _refresh_99k_panel(interaction.client, self.session_id)
+                await interaction.followup.send("Signups are locked because the jump has started.", ephemeral=True)
                 return
 
             signups = await repo.list_signups(self.session_id)
@@ -2489,6 +2604,24 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                         message_id=int(roster_msg.id),
                     )
                     await repo.touch_roster_refreshed(int(session_id))
+
+                    host_controls_embed = discord.Embed(
+                        title="Host Controls",
+                        description="Manual add bypasses payment verification.",
+                        color=discord.Color.dark_teal(),
+                    )
+                    host_controls_msg = await private_channel.send(
+                        embed=host_controls_embed,
+                        view=Jump99kHostControlsView(int(session_id)),
+                    )
+                    try:
+                        await repo.set_host_controls_message(
+                            int(session_id),
+                            channel_id=int(private_channel.id),
+                            message_id=int(host_controls_msg.id),
+                        )
+                    except asyncpg.UndefinedColumnError:
+                        pass
 
             target_channel_id = int(announce_channel_id) if announce_channel_id else (interaction.channel.id if interaction.channel else None)
             await upsert_99k_announcement(
