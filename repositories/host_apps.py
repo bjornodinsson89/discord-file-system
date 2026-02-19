@@ -1,11 +1,29 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .base import RepositoryBase
 
 
 class HostAppsRepository(RepositoryBase):
+
+    def _normalize_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        raw = row.get("answers")
+        if isinstance(raw, str):
+            stripped = raw.strip()
+            if not stripped:
+                row["answers"] = {}
+            else:
+                try:
+                    obj = json.loads(stripped)
+                    row["answers"] = obj if isinstance(obj, dict) else {}
+                except Exception:
+                    row["answers"] = {}
+        elif raw is None:
+            row["answers"] = {}
+        return row
+
     async def get_open_app(self, guild_id: int, applicant_discord_id: int) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -21,12 +39,12 @@ class HostAppsRepository(RepositoryBase):
                 guild_id,
                 applicant_discord_id,
             )
-            return dict(row) if row else None
+            return self._normalize_row(dict(row)) if row else None
 
     async def get_by_id(self, app_id: int) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM public.host_apps WHERE id = $1", app_id)
-            return dict(row) if row else None
+            return self._normalize_row(dict(row)) if row else None
 
     async def create_app(self, guild_id: int, applicant_discord_id: int, application_channel_id: int) -> dict[str, Any]:
         async with self.pool.acquire() as conn:
@@ -40,7 +58,7 @@ class HostAppsRepository(RepositoryBase):
                 applicant_discord_id,
                 application_channel_id,
             )
-            return dict(row)
+            return self._normalize_row(dict(row))
 
     async def set_summary_message_id(self, app_id: int, message_id: int) -> None:
         async with self.pool.acquire() as conn:
@@ -98,7 +116,7 @@ class HostAppsRepository(RepositoryBase):
                         answer_text,
                         expected_question + 1,
                     )
-                return dict(updated) if updated else None
+                return self._normalize_row(dict(updated)) if updated else None
 
     async def set_status(self, app_id: int, status: str, reviewer_id: int | None, reason: str | None) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:
@@ -118,7 +136,7 @@ class HostAppsRepository(RepositoryBase):
                 reviewer_id,
                 reason,
             )
-            return dict(row) if row else None
+            return self._normalize_row(dict(row)) if row else None
 
     async def close_app(self, app_id: int, reviewer_id: int | None) -> dict[str, Any] | None:
         return await self.set_status(app_id, "closed", reviewer_id, None)

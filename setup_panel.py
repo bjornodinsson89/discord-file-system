@@ -279,7 +279,6 @@ class SetupPanelView(OwnerView):
             f"Raffle purchase panel: {channel_name('raffle_purchase_channel_id')}\n"
             f"Raffle giveaway purchase panel: {channel_name('raffle_giveaway_purchase_channel_id')}\n"
             f"Insurance: {channel_name('insurance_channel_id')}\n"
-            f"Applications (legacy): {channel_name('applications_channel_id')}\n"
             f"Applications category: {channel_name('applications_category_id')}\n"
             f"Host apps inbox: {channel_name('host_apps_admin_inbox_channel_id')}\n"
             f"Insurance apps inbox: {channel_name('insurance_apps_admin_inbox_channel_id')}\n"
@@ -594,7 +593,6 @@ class ChannelsViewPage3(BackView):
         self.remove_item(self.back_btn)
         self.add_item(ChannelSelect(self.panel, "raffle_purchase_channel_id", "Set paid raffle purchase panel channel", row=0))
         self.add_item(ChannelSelect(self.panel, "raffle_giveaway_purchase_channel_id", "Set giveaway purchase panel channel (Free/Giveaway)", row=1))
-        self.add_item(ChannelSelect(self.panel, "applications_channel_id", "Set application thread channel", row=2))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -641,8 +639,14 @@ class ChannelsViewPage4(BackView):
                 await interaction.response.defer(ephemeral=True, thinking=False)
             await _send_or_edit(
                 interaction,
-                create_info_embed("Roles", "Configure admin, host, and insurer roles."),
-                RolesViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
+                create_info_embed(
+                    "Applications",
+                    "Configure channels for the applications system.\n\n"
+                    "- **Applications category (optional)**: parent category for private app channels.\n"
+                    "- **Host apps inbox**: required admin inbox channel for host applications.\n"
+                    "- **Insurance apps inbox**: required admin inbox channel for insurance applications.",
+                ),
+                ChannelsViewApplications(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
             )
         except Exception as error:
             await _respond_callback_error(interaction, error, "setup_roles_next_error")
@@ -671,17 +675,16 @@ class ChannelsViewApplications(BackView):
     async def save_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         host_inbox = self.guild.get_channel(int(self.settings.get("host_apps_admin_inbox_channel_id") or 0))
         insurer_inbox = self.guild.get_channel(int(self.settings.get("insurance_apps_admin_inbox_channel_id") or 0))
-        category = self.guild.get_channel(int(self.settings.get("applications_category_id") or 0))
         if not isinstance(host_inbox, discord.TextChannel):
             await interaction.response.send_message(embed=create_error_embed("Missing host inbox", "Set Host Apps Admin Inbox Channel to a text channel."), ephemeral=True)
             return
         if not isinstance(insurer_inbox, discord.TextChannel):
             await interaction.response.send_message(embed=create_error_embed("Missing insurance inbox", "Set Insurance Apps Admin Inbox Channel to a text channel."), ephemeral=True)
             return
-        category_text = category.mention if isinstance(category, discord.CategoryChannel) else "Not set"
-        await interaction.response.send_message(
-            embed=create_success_embed("Applications settings saved", f"Category: {category_text}\nHost inbox: {host_inbox.mention}\nInsurance inbox: {insurer_inbox.mention}"),
-            ephemeral=True,
+        await _send_or_edit(
+            interaction,
+            create_info_embed("Roles", "Configure admin, host, and insurer roles."),
+            RolesViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
         )
 
     @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
