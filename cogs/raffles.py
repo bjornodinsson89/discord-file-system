@@ -499,7 +499,7 @@ class RaffleCreateModal(discord.ui.Modal):
             return
         try:
             end_time = datetime.utcnow() + timedelta(days=30)
-            end_trigger = "end_time" if total == 0 else "tickets_sold"
+            end_trigger = "time" if total == 0 else "tickets_sold"
             hours_after_sold_out = None
             users_repo = UsersRepository(get_pool())
             if not await require_api_key(interaction, get_database(), "create a raffle"):
@@ -529,6 +529,8 @@ class RaffleCreateModal(discord.ui.Modal):
                 "single_item_meta": single_item_meta,
                 "admin_comments": None,
             }
+            if draft["end_trigger"] == "time" and draft["end_time"] is None:
+                raise ValueError("Time-based raffles require an end_time")
             if _PACK_WORD_RE.search(draft["prize"]) and not single_item_meta:
                 raffle_cog = self.bot.get_cog("RafflesCog")
                 if raffle_cog is None:
