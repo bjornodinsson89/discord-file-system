@@ -648,7 +648,7 @@ class RafflesRepository(RepositoryBase):
                             AND NOW() >= tickets_fully_sold_at + INTERVAL '30 seconds'
                         )
                         OR (
-                            end_trigger = 'end_time'
+                            end_trigger = 'time'
                             AND end_time IS NOT NULL
                             AND NOW() >= end_time
                         )
