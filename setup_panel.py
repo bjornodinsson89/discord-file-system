@@ -397,6 +397,21 @@ class SetupPanelView(OwnerView):
             )
             return
 
+        if key == "applications_admin_inbox_channel_id":
+            news_channel_type = getattr(discord, "NewsChannel", None)
+            is_valid_admin_inbox = isinstance(resolved, discord.TextChannel) or (
+                news_channel_type is not None and isinstance(resolved, news_channel_type)
+            )
+            if not is_valid_admin_inbox:
+                await interaction.response.send_message(
+                    embed=create_error_embed(
+                        "Missing applications admin inbox",
+                        "Set Applications admin inbox channel to a text channel.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+
         me = self._resolve_bot_member(interaction)
         if me is None:
             await interaction.response.send_message(
@@ -657,7 +672,15 @@ class ChannelsViewApplications(BackView):
         super().__init__(**kwargs)
         self.remove_item(self.back_btn)
         self.add_item(ChannelSelect(self.panel, "applications_category_id", "Set applications category (optional)", row=0, channel_types=[discord.ChannelType.category]))
-        self.add_item(ChannelSelect(self.panel, "applications_admin_inbox_channel_id", "Set applications admin inbox channel", row=1, channel_types=[discord.ChannelType.text]))
+        self.add_item(
+            ChannelSelect(
+                self.panel,
+                "applications_admin_inbox_channel_id",
+                "Set applications admin inbox channel",
+                row=1,
+                channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            )
+        )
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -671,7 +694,11 @@ class ChannelsViewApplications(BackView):
     @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=3)
     async def save_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         applications_inbox = self.guild.get_channel(int(self.settings.get("applications_admin_inbox_channel_id") or 0))
-        if not isinstance(applications_inbox, discord.TextChannel):
+        news_channel_type = getattr(discord, "NewsChannel", None)
+        if not (
+            isinstance(applications_inbox, discord.TextChannel)
+            or (news_channel_type is not None and isinstance(applications_inbox, news_channel_type))
+        ):
             await interaction.response.send_message(
                 embed=create_error_embed(
                     "Missing applications admin inbox",
