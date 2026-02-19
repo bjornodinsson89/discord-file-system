@@ -17,7 +17,7 @@ class ApplicationsRepository(RepositoryBase):
             )
             return dict(row) if row else None
 
-    async def get_open_application(self, *, guild_id: int, user_id: int, app_type: str) -> Optional[dict[str, Any]]:
+    async def get_open_application(self, *, guild_id: int, user_id: Optional[int] = None, user_discord_id: Optional[int] = None, app_type: str) -> Optional[dict[str, Any]]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -26,15 +26,16 @@ class ApplicationsRepository(RepositoryBase):
                 WHERE guild_id = $1
                   AND user_id = $2
                   AND app_type = $3
-                  AND status IN ('in_progress', 'submitted')
+                  AND status IN ('pending', 'in_progress', 'submitted')
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
                 guild_id,
-                user_id,
+                int(user_discord_id if user_discord_id is not None else user_id or 0),
                 app_type,
             )
             return dict(row) if row else None
+
 
     async def create_application(
         self,
@@ -42,27 +43,29 @@ class ApplicationsRepository(RepositoryBase):
         guild_id: int,
         user_id: int,
         app_type: str,
-        thread_id: int,
+        application_channel_id: int,
+        thread_id: Optional[int],
         channel_id: int,
         summary_message_id: Optional[int] = None,
         answers: Optional[dict[str, Any]] = None,
-    ) -> dict[str, Any]:
+    ) -> int:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO applications (guild_id, user_id, app_type, thread_id, channel_id, summary_message_id, answers)
-                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-                RETURNING *
+                INSERT INTO applications (guild_id, user_id, app_type, application_channel_id, thread_id, channel_id, summary_message_id, answers)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                RETURNING id
                 """,
                 guild_id,
                 user_id,
                 app_type,
+                application_channel_id,
                 thread_id,
                 channel_id,
                 summary_message_id,
                 json.dumps(answers or {}, separators=(",", ":"), ensure_ascii=False),
             )
-            return dict(row)
+            return int(row["id"])
 
     async def set_summary_message_id(self, *, app_id: int, message_id: int) -> None:
         async with self.pool.acquire() as conn:
@@ -77,10 +80,23 @@ class ApplicationsRepository(RepositoryBase):
             row = await conn.fetchrow("SELECT * FROM applications WHERE thread_id = $1", thread_id)
             return dict(row) if row else None
 
-    async def get_by_id(self, app_id: int) -> Optional[dict[str, Any]]:
+    async def get_by_application_channel_id(self, channel_id: int) -> Optional[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM applications WHERE application_channel_id = $1", channel_id)
+            return dict(row) if row else None
+
+    async def get_application_by_id(self, app_id: int) -> Optional[dict[str, Any]]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM applications WHERE id = $1", app_id)
             return dict(row) if row else None
+
+    async def get_by_id(self, app_id: int) -> Optional[dict[str, Any]]:
+        return await self.get_application_by_id(app_id)
+
+    async def delete_application(self, app_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM applications WHERE id = $1", app_id)
+            return result.split(" ")[-1] == "1"
 
     async def advance_question_if_current(
         self,
