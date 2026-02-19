@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -126,8 +127,25 @@ class ApplicationsCog(commands.Cog):
         db = get_database()
         return HostAppsRepository(db.pool), InsuranceAppsRepository(db.pool), GuildSettingsRepository(db)
 
+    def _coerce_answers(self, raw: Any) -> dict[str, str]:
+        if raw is None:
+            return {}
+        if isinstance(raw, dict):
+            return {str(key): "" if value is None else str(value) for key, value in raw.items()}
+        if isinstance(raw, str):
+            stripped = raw.strip()
+            if not stripped:
+                return {}
+            try:
+                obj = json.loads(stripped)
+                if isinstance(obj, dict):
+                    return {str(key): "" if value is None else str(value) for key, value in obj.items()}
+            except Exception:
+                return {}
+        return {}
+
     def _summary_embed(self, app: dict[str, Any], member: discord.Member | None, app_type: str) -> discord.Embed:
-        answers = app.get("answers") or {}
+        answers = self._coerce_answers(app.get("answers"))
         embed = discord.Embed(title=f"{'Host' if app_type == 'host' else 'Insurance'} Application #{app['id']}")
         embed.add_field(name="Applicant", value=f"{member.mention if member else app['applicant_discord_id']} (`{app['applicant_discord_id']}`)", inline=False)
         embed.add_field(name="Status", value=str(app.get("status") or "in_progress"), inline=False)
