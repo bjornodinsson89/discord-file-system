@@ -396,7 +396,7 @@ class JumpsRepository(RepositoryBase):
             "signups": [dict(row) for row in signup_rows],
         }
 
-    async def run_jump_transition_by_position(self, *, session_id: int, position: int, action: str) -> tuple[bool, str]:
+    async def run_jump_transition_by_position(self, *, session_id: int, position: int, action: str, actor_discord_id: int) -> tuple[bool, str]:
         normalized_action = str(action or "").strip().lower()
         if normalized_action not in {"start", "end"}:
             return False, "Invalid action."
@@ -463,10 +463,14 @@ class JumpsRepository(RepositoryBase):
                             SET host_jump_state = 'in_progress',
                                 host_jump_started_at = COALESCE(host_jump_started_at, NOW()),
                                 host_jump_ended_at = NULL,
+                                signups_locked = TRUE,
+                                signups_locked_at = COALESCE(signups_locked_at, NOW()),
+                                signups_locked_by_discord_id = COALESCE(signups_locked_by_discord_id, $2),
                                 updated_at = NOW()
                             WHERE id = $1
                             """,
                             session_id,
+                            actor_discord_id,
                         )
                     else:
                         target_signup = signup_rows[int(position) - 2]
@@ -584,6 +588,180 @@ class JumpsRepository(RepositoryBase):
                 signup_id,
             )
             return bool(result)
+
+    async def lock_signups(self, session_id: int, *, by_discord_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET signups_locked = TRUE,
+                    signups_locked_at = COALESCE(signups_locked_at, NOW()),
+                    signups_locked_by_discord_id = COALESCE(signups_locked_by_discord_id, $2),
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+                by_discord_id,
+            )
+
+    async def create_manual_signup(
+        self,
+        *,
+        session_id: int,
+        user_discord_id: int,
+        added_by_discord_id: int,
+        torn_id: int | None,
+        torn_name: str | None,
+        reason: str | None,
+    ) -> tuple[bool, str]:
+        normalized_reason = str(reason).strip() if reason is not None else None
+        if normalized_reason == "":
+            normalized_reason = None
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                session = await conn.fetchrow(
+                    """
+                    SELECT id, guild_id, status, max_slots
+                    FROM jump_99k_sessions
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    session_id,
+                )
+                if not session or str(session.get("status") or "").lower() != "open":
+                    return False, "Session is not available for signup."
+
+                existing_signup = await conn.fetchrow(
+                    """
+                    SELECT id
+                    FROM jump_99k_signups
+                    WHERE session_id = $1
+                      AND participant_discord_id = $2
+                      AND status IN ('signed_up', 'completed', 'not_completed')
+                    LIMIT 1
+                    """,
+                    session_id,
+                    user_discord_id,
+                )
+                if existing_signup:
+                    return False, "User is already in this session."
+
+                max_slots = int(session.get("max_slots") or 0)
+                if max_slots > 0:
+                    current_slots = int(
+                        await conn.fetchval(
+                            """
+                            SELECT COUNT(*)
+                            FROM jump_99k_signups
+                            WHERE session_id = $1
+                              AND payment_verified = TRUE
+                              AND status IN ('signed_up', 'completed', 'not_completed')
+                            """,
+                            session_id,
+                        )
+                        or 0
+                    )
+                    if current_slots >= max_slots:
+                        return False, "This session is full."
+
+                has_participant_torn_name = bool(
+                    await conn.fetchval(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_schema = 'public'
+                              AND table_name = 'jump_99k_signups'
+                              AND column_name = 'participant_torn_name'
+                        )
+                        """
+                    )
+                )
+
+                if has_participant_torn_name:
+                    await conn.execute(
+                        """
+                        INSERT INTO jump_99k_signups (
+                            session_id,
+                            guild_id,
+                            participant_discord_id,
+                            participant_torn_user_id,
+                            participant_torn_name,
+                            status,
+                            payment_verified,
+                            payment_verified_at,
+                            payment_source,
+                            added_manually,
+                            added_by_discord_id,
+                            manual_reason,
+                            manual_added_at
+                        )
+                        VALUES (
+                            $1,
+                            $2,
+                            $3,
+                            $4,
+                            $5,
+                            'signed_up',
+                            TRUE,
+                            NOW(),
+                            'manual',
+                            TRUE,
+                            $6,
+                            $7,
+                            NOW()
+                        )
+                        """,
+                        session_id,
+                        int(session["guild_id"]),
+                        user_discord_id,
+                        torn_id,
+                        torn_name,
+                        added_by_discord_id,
+                        normalized_reason,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        INSERT INTO jump_99k_signups (
+                            session_id,
+                            guild_id,
+                            participant_discord_id,
+                            participant_torn_user_id,
+                            status,
+                            payment_verified,
+                            payment_verified_at,
+                            payment_source,
+                            added_manually,
+                            added_by_discord_id,
+                            manual_reason,
+                            manual_added_at
+                        )
+                        VALUES (
+                            $1,
+                            $2,
+                            $3,
+                            $4,
+                            'signed_up',
+                            TRUE,
+                            NOW(),
+                            'manual',
+                            TRUE,
+                            $5,
+                            $6,
+                            NOW()
+                        )
+                        """,
+                        session_id,
+                        int(session["guild_id"]),
+                        user_discord_id,
+                        torn_id,
+                        added_by_discord_id,
+                        normalized_reason,
+                    )
+
+        return True, f"Added <@{int(user_discord_id)}> to the session."
 
     async def mark_signup_payment_verified(self, *, session_id: int, discord_id: int) -> bool:
         async with self.pool.acquire() as conn:
@@ -872,6 +1050,21 @@ class JumpsRepository(RepositoryBase):
             rows = await conn.fetch("SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open' ORDER BY created_at DESC", guild_id)
             return [dict(r) for r in rows]
 
+    async def set_host_controls_message(self, session_id: int, *, channel_id: int, message_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET host_controls_channel_id = $2,
+                    host_controls_message_id = $3,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+                channel_id,
+                message_id,
+            )
+
     async def list_active_sessions_with_roster_panel(self) -> list[dict]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
@@ -882,7 +1075,10 @@ class JumpsRepository(RepositoryBase):
                        private_channel_id,
                        roster_channel_id,
                        roster_message_id,
-                       status
+                       status,
+                       signups_locked,
+                       signups_locked_at,
+                       signups_locked_by_discord_id
                 FROM jump_99k_sessions
                 WHERE status = 'open'
                   AND roster_message_id IS NOT NULL
@@ -899,7 +1095,7 @@ class JumpsRepository(RepositoryBase):
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, guild_id, announce_channel_id, announce_message_id, max_slots, status
+                SELECT id, guild_id, announce_channel_id, announce_message_id, max_slots, status, signups_locked, signups_locked_at, signups_locked_by_discord_id
                 FROM jump_99k_sessions
                 WHERE status = 'open'
                   AND announce_channel_id IS NOT NULL
