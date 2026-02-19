@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Literal
 
 import discord
 from discord import app_commands
@@ -284,6 +284,74 @@ class ApplicationsCog(commands.Cog):
         except Exception:
             return
 
+    async def _finalize_application(
+        self,
+        *,
+        guild: discord.Guild,
+        app_type: Literal["host", "insurance"],
+        app: dict[str, Any],
+        outcome: Literal["approved", "denied"],
+        denial_reason: str | None,
+        role_id_to_grant: int | None,
+        repo: Any,
+    ) -> None:
+        applicant_id = int(app["applicant_discord_id"])
+        member = guild.get_member(applicant_id)
+        if not member:
+            try:
+                member = await guild.fetch_member(applicant_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                member = None
+
+        role_name = ""
+        if outcome == "approved":
+            if role_id_to_grant is None:
+                raise RuntimeError("No role is configured for approved applications.")
+            if member is None:
+                raise RuntimeError("Applicant is no longer in the server, so the role cannot be granted.")
+            role = guild.get_role(role_id_to_grant)
+            me = guild.me
+            if not role or not me or not me.top_role or role >= me.top_role:
+                raise RuntimeError("I can't grant the configured role. Check role configuration and hierarchy.")
+            try:
+                await member.add_roles(role, reason=f"{app_type} application #{app['id']} approved")
+                role_name = role.name
+            except discord.Forbidden as exc:
+                raise RuntimeError("I can't grant the configured role. Check my role permissions and hierarchy.") from exc
+
+        app_label = "Host" if app_type == "host" else "Insurance"
+        if outcome == "approved":
+            dm_text = (
+                f"✅ Your {app_label} application (#{app['id']}) was approved. "
+                f"You’ve been granted the {role_name} role."
+            )
+        else:
+            dm_text = f"❌ Your {app_label} application (#{app['id']}) was denied.\nReason: {denial_reason or 'No reason provided.'}"
+        try:
+            if member is not None:
+                await member.send(dm_text)
+        except discord.Forbidden:
+            pass
+
+        channel_id = int(app.get("application_channel_id") or 0)
+        channel = guild.get_channel(channel_id)
+        if channel is None and channel_id:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except discord.NotFound:
+                channel = None
+            except discord.Forbidden:
+                channel = None
+        if channel:
+            try:
+                await channel.delete(reason=f"{app_type} application #{app['id']} {outcome}")
+            except discord.Forbidden:
+                pass
+            except discord.NotFound:
+                pass
+
+        await repo.delete_app(int(app["id"]))
+
     async def review_application(self, interaction: discord.Interaction, app_type: str, app_id: int, approve: bool, reason: str | None = None) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("Server only.", ephemeral=True)
@@ -294,26 +362,35 @@ class ApplicationsCog(commands.Cog):
             await interaction.response.send_message("Admin only.", ephemeral=True)
             return
         repo = host_repo if app_type == "host" else insurance_repo
-        status = "approved" if approve else "denied"
         current = await repo.get_by_id(app_id)
         if not current or current.get("status") != "submitted":
             await interaction.response.send_message("Application must be submitted first.", ephemeral=True)
             return
-        app = await repo.set_status(app_id, status, interaction.user.id, reason)
-        if not app:
-            await interaction.response.send_message("Application not found.", ephemeral=True)
-            return
+        await interaction.response.defer(ephemeral=True)
+
+        role_id_to_grant: int | None = None
         if approve:
             role_key = "host99k_role_id" if app_type == "host" else "insurer_role_id"
-            role = interaction.guild.get_role(int(settings.get(role_key) or 0))
-            member = interaction.guild.get_member(int(app["applicant_discord_id"]))
-            if role and member:
-                await member.add_roles(role, reason=f"{app_type} application approved")
-            await interaction.response.send_message(f"✅ Approved by {interaction.user.mention}", ephemeral=True)
-            await self._update_admin_inbox(interaction.guild, app, app_type, "APPROVED")
-        else:
-            await interaction.response.send_message(f"❌ Denied by {interaction.user.mention} — Reason: {reason}", ephemeral=True)
-            await self._update_admin_inbox(interaction.guild, app, app_type, "DENIED")
+            role_id_to_grant = int(settings.get(role_key) or 0) or None
+        try:
+            await self._finalize_application(
+                guild=interaction.guild,
+                app_type="host" if app_type == "host" else "insurance",
+                app=current,
+                outcome="approved" if approve else "denied",
+                denial_reason=reason,
+                role_id_to_grant=role_id_to_grant,
+                repo=repo,
+            )
+        except Exception as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+
+        if interaction.message:
+            try:
+                await interaction.message.edit(view=None)
+            except Exception:
+                pass
 
     async def _require_admin(self, interaction: discord.Interaction) -> tuple[bool, dict[str, Any] | None]:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
