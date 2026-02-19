@@ -44,7 +44,10 @@ class RaffleService:
             paid = int(raffle.get("tickets_sold") or 0)
             reserved = await self.raffles_repo.get_reserved_tickets_count(raffle_id)
             used = paid + reserved - existing_tickets
-            available = max(raffle["tickets_available"] - used, 0)
+            if int(raffle.get("tickets_available") or 0) == 0:
+                available = 10**9
+            else:
+                available = max(raffle["tickets_available"] - used, 0)
             if tickets > available:
                 raise BusinessRuleViolation(f"Only {available} available")
 
