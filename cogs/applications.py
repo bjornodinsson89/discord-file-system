@@ -66,6 +66,12 @@ def _is_admin_member(member: discord.Member, settings: dict[str, Any]) -> bool:
     return bool(admin_role_ids.intersection(member_role_ids))
 
 
+def _sanitize_channel_name(value: str) -> str:
+    value = re.sub(r"[^a-z0-9-]+", "-", value.lower())
+    value = re.sub(r"-+", "-", value).strip("-")
+    return (value or "application")[:90]
+
+
 class DenyModal(discord.ui.Modal, title="Deny Application"):
     denial_reason = discord.ui.TextInput(label="Denial reason", style=discord.TextStyle.paragraph, required=True, max_length=2000)
 
@@ -114,6 +120,30 @@ class ApplicationReviewView(discord.ui.View):
     async def request_changes(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.send_modal(RequestChangesModal(self.cog, self.app_id))
 
+
+
+
+class ApplicationAnswerModal(discord.ui.Modal):
+    answer_text = discord.ui.TextInput(label="Your answer", style=discord.TextStyle.paragraph, required=True, max_length=1000)
+
+    def __init__(self, cog: "ApplicationsCog", app_id: int):
+        super().__init__(title=f"Application #{app_id}")
+        self.cog = cog
+        self.app_id = app_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.cog.handle_application_answer(interaction, self.app_id, str(self.answer_text.value).strip())
+
+
+class ApplicationQuestionView(discord.ui.View):
+    def __init__(self, cog: "ApplicationsCog", app_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.app_id = app_id
+
+    @discord.ui.button(label="Answer", style=discord.ButtonStyle.primary, custom_id="app_answer")
+    async def answer(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(ApplicationAnswerModal(self.cog, self.app_id))
 
 class InsurerWizardStepModal(discord.ui.Modal):
     wizard_value = discord.ui.TextInput(label="Response", style=discord.TextStyle.paragraph, required=True, max_length=4000)
@@ -284,61 +314,65 @@ class ApplicationsCog(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
-        thread_name = f"{'99k-host' if app_type == HOST_APP_TYPE else 'insurer'}-app-{interaction.user.name}"[:90]
-        try:
-            thread = await parent.create_thread(
-                name=thread_name,
-                type=discord.ChannelType.private_thread,
-                invitable=False,
-                reason=f"Application thread for {interaction.user} ({interaction.user.id})",
-            )
-        except Exception:
-            log.exception("Failed creating application thread guild_id=%s user_id=%s app_type=%s", interaction.guild.id, interaction.user.id, app_type)
-            await interaction.followup.send("Could not start your application because thread creation failed. Please try again or contact an admin.", ephemeral=True)
+        channel_name = _sanitize_channel_name(f"{'99k-host' if app_type == HOST_APP_TYPE else 'insurer'}-app-{interaction.user.display_name}")
+
+        bot_member = interaction.guild.me
+        if not bot_member:
+            await interaction.followup.send("Bot is not ready in this server yet.", ephemeral=True)
             return
 
-        await parent.send(f"Application Thread for {interaction.user.mention}: {thread.mention}")
-        await thread.send(f"Application Thread for {interaction.user.mention}")
+        overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            bot_member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True, manage_messages=True),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        }
+        for role_id in GuildSettingsRepository.resolve_admin_role_ids(settings):
+            role = interaction.guild.get_role(int(role_id))
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
 
         try:
-            await thread.add_user(interaction.user)
+            app_channel = await interaction.guild.create_text_channel(
+                name=channel_name,
+                category=parent.category,
+                overwrites=overwrites,
+                reason="Application started",
+            )
         except Exception:
-            log.exception("Failed adding applicant to thread thread_id=%s", thread.id)
+            log.exception("Failed creating application channel guild_id=%s user_id=%s app_type=%s", interaction.guild.id, interaction.user.id, app_type)
+            await interaction.followup.send("Could not start your application because channel creation failed. Please try again or contact an admin.", ephemeral=True)
+            return
 
-        admin_role_ids = GuildSettingsRepository.resolve_admin_role_ids(settings)
-        for role_id in admin_role_ids:
-            role = interaction.guild.get_role(int(role_id))
-            if not role:
-                continue
-            for member in role.members:
-                try:
-                    await thread.add_user(member)
-                except Exception:
-                    log.exception("Failed adding admin member to app thread member_id=%s thread_id=%s", member.id, thread.id)
+        app_id = await repo.create_application(
+            guild_id=interaction.guild.id,
+            user_id=interaction.user.id,
+            app_type=app_type,
+            application_channel_id=app_channel.id,
+            thread_id=None,
+            channel_id=parent.id,
+            summary_message_id=None,
+        )
+        app_type_label = "99k Jump Host" if app_type == HOST_APP_TYPE else "Insurer"
+        await parent.send(f"Application #{app_id} ({app_type_label}) started for {interaction.user.mention} — {app_channel.mention}")
 
-        summary_embed = self._build_summary_embed(interaction.user, identity, app_type, {})
-        summary_message = await thread.send(embed=summary_embed)
+        app = await repo.get_application_by_id(app_id)
+        answers = (app or {}).get("answers") or {}
+        summary_embed = self._build_summary_embed(interaction.user, identity, app_type, answers, app_id)
+        summary_message = await app_channel.send(embed=summary_embed)
         try:
             await summary_message.pin(reason="Application Summary")
         except Exception:
             pass
+        await repo.set_summary_message_id(app_id=app_id, message_id=summary_message.id)
 
-        app = await repo.create_application(
-            guild_id=interaction.guild.id,
-            user_id=interaction.user.id,
-            app_type=app_type,
-            thread_id=thread.id,
-            channel_id=parent.id,
-            summary_message_id=summary_message.id,
-        )
+        first_q = (HOST_QUESTIONS if app_type == HOST_APP_TYPE else INSURER_QUESTIONS)[0]
+        await app_channel.send(f"Application #{app_id} — {first_q}", view=ApplicationQuestionView(self, app_id))
+        await interaction.followup.send(f"Started your {label} application: {app_channel.mention}", ephemeral=True)
 
-        first_q = HOST_QUESTIONS[0] if app_type == HOST_APP_TYPE else INSURER_QUESTIONS[0]
-        await thread.send(first_q)
-        await interaction.followup.send(f"Started your {label} application: {thread.mention}", ephemeral=True)
-
-    def _build_summary_embed(self, user: discord.User | discord.Member, identity: dict[str, Any], app_type: str, answers: dict[str, Any]) -> discord.Embed:
+    def _build_summary_embed(self, user: discord.User | discord.Member, identity: dict[str, Any], app_type: str, answers: dict[str, Any], app_id: int) -> discord.Embed:
         title = f"Application Summary — {ROLE_NAME_HOST if app_type == HOST_APP_TYPE else ROLE_NAME_INSURER}"
         embed = discord.Embed(title=title, color=discord.Color.blurple())
+        embed.add_field(name="Application ID", value=f"#{app_id}", inline=False)
         embed.add_field(name="Applicant", value=f"{user.mention} (`{user.id}`)", inline=False)
         embed.add_field(name="Torn", value=f"{identity.get('torn_name', 'Linked User')} [{identity.get('torn_user_id', 'N/A')}]", inline=False)
         questions = HOST_QUESTIONS if app_type == HOST_APP_TYPE else INSURER_QUESTIONS
@@ -346,26 +380,26 @@ class ApplicationsCog(commands.Cog):
             embed.add_field(name=f"Q{idx}", value=answers.get(f"q{idx}") or "(pending)", inline=False)
         return embed
 
-    async def _update_summary_message(self, thread: discord.Thread, app: dict[str, Any], identity: dict[str, Any]):
+    async def _update_summary_message(self, app_channel: discord.TextChannel, app: dict[str, Any], identity: dict[str, Any]):
         db = get_database()
         repo = ApplicationsRepository(db.pool)
         app_id = int(app["id"])
         summary_message_id = app.get("summary_message_id")
 
-        applicant = thread.guild.get_member(int(app["user_id"])) or self.bot.get_user(int(app["user_id"]))
+        applicant = app_channel.guild.get_member(int(app["user_id"])) or self.bot.get_user(int(app["user_id"]))
         if applicant is None:
             applicant = self.bot.user
-        embed = self._build_summary_embed(applicant, identity, app["app_type"], app.get("answers") or {})
+        embed = self._build_summary_embed(applicant, identity, app["app_type"], app.get("answers") or {}, app_id)
 
         target: discord.Message | None = None
         if summary_message_id:
             try:
-                target = await thread.fetch_message(int(summary_message_id))
+                target = await app_channel.fetch_message(int(summary_message_id))
             except (discord.NotFound, discord.Forbidden):
                 target = None
 
         if target is None:
-            target = await thread.send(embed=embed)
+            target = await app_channel.send(embed=embed)
             await repo.set_summary_message_id(app_id=app_id, message_id=target.id)
             app["summary_message_id"] = target.id
             try:
@@ -376,13 +410,13 @@ class ApplicationsCog(commands.Cog):
         try:
             await target.edit(embed=embed)
         except Exception:
-            log.exception("applications_summary_update_error app_id=%s thread_id=%s message_id=%s", app_id, thread.id, target.id)
+            log.exception("applications_summary_update_error app_id=%s channel_id=%s message_id=%s", app_id, app_channel.id, target.id)
 
-    async def _close_thread(self, thread: discord.Thread):
+    async def _close_application_channel(self, app_channel: discord.TextChannel):
         try:
-            await thread.edit(locked=True, archived=True)
+            await app_channel.set_permissions(app_channel.guild.default_role, send_messages=False)
         except Exception:
-            log.exception("Failed to archive/lock thread_id=%s", thread.id)
+            log.exception("Failed updating channel permissions channel_id=%s", app_channel.id)
 
     @app_commands.command(name="apply_99k_host", description="Apply for 99k_Jump_Host")
     async def apply_99k_host(self, interaction: discord.Interaction):
@@ -499,46 +533,65 @@ class ApplicationsCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        try:
-            if isinstance(message.channel, discord.Thread) and message.guild:
-                db = get_database()
-                repo = ApplicationsRepository(db.pool)
-                app = await repo.get_by_thread_id(message.channel.id)
-                if not app or app.get("status") != "in_progress" or int(app.get("user_id")) != message.author.id:
-                    return
-
-                answer = (message.content or "").strip()
-                if message.attachments:
-                    urls = "\n".join(a.url for a in message.attachments)
-                    answer = (answer + "\n" + urls).strip() if answer else urls
-                if not answer:
-                    return
-
-                expected = int(app.get("current_question") or 0)
-                next_status = "submitted" if expected >= 4 else None
-                next_question = 5 if expected >= 4 else expected + 1
-                updated = await repo.advance_question_if_current(
-                    app_id=int(app["id"]),
-                    expected_question=expected,
-                    answer_text=answer,
-                    next_status=next_status,
-                    next_question=next_question,
-                )
-                if not updated:
-                    return
-
-                identity = await self._fetch_torn_identity(int(app["user_id"])) or {"torn_name": "Linked User", "torn_user_id": "N/A"}
-                await self._update_summary_message(message.channel, updated, identity)
-
-                if updated["status"] == "submitted":
-                    await message.channel.send("Submitted for review.", view=ApplicationReviewView(self, int(app["id"])))
-                else:
-                    questions = HOST_QUESTIONS if app["app_type"] == HOST_APP_TYPE else INSURER_QUESTIONS
-                    await message.channel.send(questions[next_question])
-            elif message.guild is None or isinstance(message.channel, discord.DMChannel):
+        if message.guild is None or isinstance(message.channel, discord.DMChannel):
+            try:
                 await message.channel.send("This wizard uses buttons/modals now. Please click Continue in the wizard message.")
-        except Exception:
-            log.exception("on_message processing failed channel_id=%s", getattr(message.channel, "id", None))
+            except Exception:
+                log.exception("dm guidance send failed")
+
+    async def handle_application_answer(self, interaction: discord.Interaction, app_id: int, answer_text: str):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This action can only be used in a server.", ephemeral=True)
+            return
+        db = get_database()
+        repo = ApplicationsRepository(db.pool)
+        app = await repo.get_application_by_id(app_id)
+        if not app:
+            await interaction.response.send_message("Application not found.", ephemeral=True)
+            return
+        if app.get("status") != "in_progress":
+            await interaction.response.send_message("This application is no longer accepting answers.", ephemeral=True)
+            return
+        if int(app.get("user_id") or 0) != interaction.user.id:
+            await interaction.response.send_message("Only the applicant can answer.", ephemeral=True)
+            return
+        if not answer_text:
+            await interaction.response.send_message("Your answer cannot be empty.", ephemeral=True)
+            return
+
+        expected = int(app.get("current_question") or 0)
+        next_status = "submitted" if expected >= 4 else None
+        next_question = 5 if expected >= 4 else expected + 1
+        updated = await repo.advance_question_if_current(
+            app_id=int(app["id"]),
+            expected_question=expected,
+            answer_text=answer_text,
+            next_status=next_status,
+            next_question=next_question,
+        )
+        if not updated:
+            await interaction.response.send_message("This question was already answered. Use the latest question prompt.", ephemeral=True)
+            return
+
+        app_channel = interaction.guild.get_channel(int(updated["application_channel_id"]))
+        if not isinstance(app_channel, discord.TextChannel):
+            await interaction.response.send_message("Application channel is not available.", ephemeral=True)
+            return
+
+        identity = await self._fetch_torn_identity(int(app["user_id"])) or {"torn_name": "Linked User", "torn_user_id": "N/A"}
+        await self._update_summary_message(app_channel, updated, identity)
+
+        if updated["status"] == "submitted":
+            await app_channel.send("Submitted for review.", view=ApplicationReviewView(self, int(updated["id"])))
+            await interaction.response.send_message("Answer recorded. Your application is now submitted.", ephemeral=True)
+            return
+
+        questions = HOST_QUESTIONS if updated["app_type"] == HOST_APP_TYPE else INSURER_QUESTIONS
+        await app_channel.send(
+            f"Application #{app_id} — {questions[next_question]}",
+            view=ApplicationQuestionView(self, app_id),
+        )
+        await interaction.response.send_message("Answer recorded.", ephemeral=True)
 
     async def _admin_guard(self, interaction: discord.Interaction, app: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -555,7 +608,7 @@ class ApplicationsCog(commands.Cog):
     async def handle_approve(self, interaction: discord.Interaction, app_id: int):
         db = get_database()
         repo = ApplicationsRepository(db.pool)
-        app = await repo.get_by_id(app_id)
+        app = await repo.get_application_by_id(app_id)
         if not app:
             await interaction.response.send_message("Application not found.", ephemeral=True)
             return
@@ -567,7 +620,7 @@ class ApplicationsCog(commands.Cog):
             await interaction.response.send_message("Application is no longer pending review.", ephemeral=True)
             return
         await interaction.response.send_message("Approved.", ephemeral=True)
-        thread = interaction.guild.get_thread(int(app["thread_id"]))
+        app_channel = interaction.guild.get_channel(int(app["application_channel_id"]))
         role_id = settings.get("host99k_role_id") if app["app_type"] == HOST_APP_TYPE else settings.get("insurer_role_id")
         role = interaction.guild.get_role(int(role_id)) if role_id else None
         applicant = interaction.guild.get_member(int(app["user_id"]))
@@ -576,24 +629,23 @@ class ApplicationsCog(commands.Cog):
                 await applicant.add_roles(role, reason="Application approved")
             except Exception:
                 log.exception("Failed granting role app_id=%s", app_id)
-        if thread:
-            await thread.send(f"Approved by {interaction.user.mention}. Role granted: {ROLE_NAME_HOST if app['app_type'] == HOST_APP_TYPE else ROLE_NAME_INSURER}")
-            await self._close_thread(thread)
+        if isinstance(app_channel, discord.TextChannel):
+            await app_channel.send(f"Approved by {interaction.user.mention}. Role granted: {ROLE_NAME_HOST if app['app_type'] == HOST_APP_TYPE else ROLE_NAME_INSURER}")
 
         if app["app_type"] == INSURER_APP_TYPE and applicant:
             try:
                 started = await self.start_insurer_wizard(int(app["guild_id"]), applicant)
-                if not started and thread:
-                    await thread.send("Could not DM user; ask them to enable DMs and run /insurer_card_setup")
+                if not started and isinstance(app_channel, discord.TextChannel):
+                    await app_channel.send("Could not DM user; ask them to enable DMs and run /insurer_card_setup")
             except Exception:
                 log.exception("Failed to start insurer wizard after approval app_id=%s", app_id)
-                if thread:
-                    await thread.send("Could not DM user; ask them to enable DMs and run /insurer_card_setup")
+                if isinstance(app_channel, discord.TextChannel):
+                    await app_channel.send("Could not DM user; ask them to enable DMs and run /insurer_card_setup")
 
     async def handle_deny(self, interaction: discord.Interaction, app_id: int, reason: str):
         db = get_database()
         repo = ApplicationsRepository(db.pool)
-        app = await repo.get_by_id(app_id)
+        app = await repo.get_application_by_id(app_id)
         if not app:
             await interaction.response.send_message("Application not found.", ephemeral=True)
             return
@@ -606,11 +658,10 @@ class ApplicationsCog(commands.Cog):
             return
         await interaction.response.send_message("Denied.", ephemeral=True)
 
-        thread = interaction.guild.get_thread(int(app["thread_id"])) if interaction.guild else None
+        app_channel = interaction.guild.get_channel(int(app["application_channel_id"])) if interaction.guild else None
         applicant = interaction.guild.get_member(int(app["user_id"])) if interaction.guild else None
-        if thread:
-            await thread.send(f"Denied by {interaction.user.mention}.")
-            await self._close_thread(thread)
+        if isinstance(app_channel, discord.TextChannel):
+            await app_channel.send(f"Denied by {interaction.user.mention}.")
         if applicant:
             try:
                 await applicant.send(f"Your application was denied. Reason: {reason}")
@@ -620,7 +671,7 @@ class ApplicationsCog(commands.Cog):
     async def handle_request_changes(self, interaction: discord.Interaction, app_id: int, q_numbers: str, notes: str):
         db = get_database()
         repo = ApplicationsRepository(db.pool)
-        app = await repo.get_by_id(app_id)
+        app = await repo.get_application_by_id(app_id)
         if not app:
             await interaction.response.send_message("Application not found.", ephemeral=True)
             return
@@ -640,9 +691,76 @@ class ApplicationsCog(commands.Cog):
         await repo.trim_answers_from(app_id=app_id, from_question=restart_q)
         await interaction.response.send_message("Requested changes.", ephemeral=True)
 
-        thread = interaction.guild.get_thread(int(app["thread_id"])) if interaction.guild else None
-        if thread:
-            await thread.send(f"<@{app['user_id']}> Please update {', '.join(f'Q{n}' for n in nums)}. Notes: {notes}")
+        app_channel = interaction.guild.get_channel(int(app["application_channel_id"])) if interaction.guild else None
+        if isinstance(app_channel, discord.TextChannel):
+            await app_channel.send(f"<@{app['user_id']}> Please update {', '.join(f'Q{n}' for n in nums)}. Notes: {notes}")
+            questions = HOST_QUESTIONS if app["app_type"] == HOST_APP_TYPE else INSURER_QUESTIONS
+            await app_channel.send(f"Application #{app_id} — {questions[restart_q - 1]}", view=ApplicationQuestionView(self, app_id))
+
+
+    async def _delete_application_with_channel(self, guild: discord.Guild, app: dict[str, Any]) -> bool:
+        channel = guild.get_channel(int(app.get("application_channel_id") or 0))
+        if isinstance(channel, discord.TextChannel):
+            try:
+                await channel.delete(reason=f"Application #{app['id']} deleted by admin")
+            except Exception:
+                log.exception("Failed deleting application channel app_id=%s", app["id"])
+                return False
+        db = get_database()
+        repo = ApplicationsRepository(db.pool)
+        return await repo.delete_application(int(app["id"]))
+
+    @app_commands.command(name="application_delete", description="Delete an application by ID")
+    async def application_delete(self, interaction: discord.Interaction, application_id: int, confirm: str):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild.id)
+        if not _is_admin_member(interaction.user, settings):
+            await interaction.response.send_message("Admin access required.", ephemeral=True)
+            return
+        if confirm != "DELETE":
+            await interaction.response.send_message("Type DELETE to confirm.", ephemeral=True)
+            return
+        repo = ApplicationsRepository(get_database().pool)
+        app = await repo.get_application_by_id(application_id)
+        if not app:
+            await interaction.response.send_message("Application not found.", ephemeral=True)
+            return
+        ok = await self._delete_application_with_channel(interaction.guild, app)
+        if not ok:
+            await interaction.response.send_message("Failed to delete application.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"Deleted Application #{application_id}.", ephemeral=True)
+
+    @app_commands.command(name="application_delete_user", description="Delete an open user application")
+    @app_commands.describe(app_type="Application type")
+    @app_commands.choices(app_type=[
+        app_commands.Choice(name="host", value="host"),
+        app_commands.Choice(name="insurer", value="insurer"),
+    ])
+    async def application_delete_user(self, interaction: discord.Interaction, user: discord.Member, app_type: app_commands.Choice[str], confirm: str):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild.id)
+        if not _is_admin_member(interaction.user, settings):
+            await interaction.response.send_message("Admin access required.", ephemeral=True)
+            return
+        if confirm != "DELETE":
+            await interaction.response.send_message("Type DELETE to confirm.", ephemeral=True)
+            return
+        mapped_type = HOST_APP_TYPE if app_type.value == "host" else INSURER_APP_TYPE
+        repo = ApplicationsRepository(get_database().pool)
+        app = await repo.get_open_application(guild_id=interaction.guild.id, user_discord_id=user.id, app_type=mapped_type)
+        if not app:
+            await interaction.response.send_message("No open application found.", ephemeral=True)
+            return
+        ok = await self._delete_application_with_channel(interaction.guild, app)
+        if not ok:
+            await interaction.response.send_message("Failed to delete application.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"Deleted Application #{app['id']}.", ephemeral=True)
 
     @tasks.loop(minutes=30)
     async def expire_stale_applications(self):
@@ -656,10 +774,9 @@ class ApplicationsCog(commands.Cog):
                 guild = self.bot.get_guild(int(app["guild_id"]))
                 if not guild:
                     continue
-                thread = guild.get_thread(int(app["thread_id"]))
-                if thread:
-                    await thread.send("Application expired after 48h of inactivity.")
-                    await self._close_thread(thread)
+                app_channel = guild.get_channel(int(app["application_channel_id"]))
+                if isinstance(app_channel, discord.TextChannel):
+                    await app_channel.send("Application expired after 48h of inactivity.")
         except Exception:
             log.exception("Failed expiring stale applications")
 
