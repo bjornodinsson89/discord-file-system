@@ -1717,20 +1717,79 @@ async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) 
     if in_progress_index is not None and in_progress_index <= len(roster_names):
         lines[1] = f"Now jumping: {roster_names[in_progress_index - 1]}"
 
-    roster_size = min(8, 1 + len(participants))
-    enabled_start_positions: set[int] = set()
-    enabled_end_positions: set[int] = set()
-    if in_progress_index is not None and in_progress_index <= roster_size:
-        enabled_end_positions.add(in_progress_index)
-    else:
-        for idx, state in enumerate(roster_states[:roster_size], start=1):
-            if state == "waiting":
-                enabled_start_positions.add(idx)
-                break
+    max_slots = max(0, int(session.get("max_slots") or 0))
+    roster_size = min(8, 1 + max_slots)
+    enabled_start_positions, enabled_end_positions = _compute_enabled_positions(
+        roster_states=roster_states,
+        total_positions=roster_size,
+    )
 
     embed = _build_roster_embed(lines)
     view = Jump99kRosterPanelView(session_id, roster_size=roster_size, enabled_start_positions=enabled_start_positions, enabled_end_positions=enabled_end_positions)
     return embed, view
+
+
+def _build_position_owner_ids(*, session: dict, signups: list[dict], total_positions: int) -> dict[int, int]:
+    host_id = int(session.get("host_discord_id") or 0)
+    owner_ids: dict[int, int] = {}
+    if host_id > 0 and total_positions >= 1:
+        owner_ids[1] = host_id
+
+    participants = [row for row in signups if int(row.get("discord_id") or 0) != host_id]
+    for position, row in enumerate(participants, start=2):
+        if position > total_positions:
+            break
+        discord_id = int(row.get("discord_id") or 0)
+        if discord_id > 0:
+            owner_ids[position] = discord_id
+    return owner_ids
+
+
+def _compute_enabled_positions(*, roster_states: list[str], total_positions: int) -> tuple[set[int], set[int]]:
+    enabled_start_positions: set[int] = set()
+    enabled_end_positions: set[int] = set()
+    in_progress_position = next(
+        (i for i, state in enumerate(roster_states[:total_positions], start=1) if state == "in_progress"),
+        None,
+    )
+    if in_progress_position is not None:
+        enabled_end_positions = {in_progress_position}
+        enabled_start_positions = set()
+    else:
+        next_waiting_position = next(
+            (i for i, state in enumerate(roster_states[:total_positions], start=1) if state == "waiting"),
+            None,
+        )
+        enabled_start_positions = {next_waiting_position} if next_waiting_position is not None else set()
+        enabled_end_positions = set()
+    return enabled_start_positions, enabled_end_positions
+
+
+def is_host_override(member: discord.Member, session: dict, host_role_id: int | None) -> bool:
+    if int(member.id) == int(session.get("host_discord_id") or 0):
+        return True
+    if member.guild_permissions.administrator:
+        return True
+    if host_role_id and any(int(role.id) == int(host_role_id) for role in member.roles):
+        return True
+    return False
+
+
+def can_user_press_position(
+    member: discord.Member,
+    *,
+    session: dict,
+    position: int,
+    position_owner_ids: dict[int, int],
+    host_override: bool,
+) -> tuple[bool, str]:
+    if host_override:
+        return True, ""
+    if position not in position_owner_ids:
+        return False, "That slot is empty."
+    if int(member.id) != int(position_owner_ids[position]):
+        return False, "Only the assigned jumper for this slot can press this button."
+    return True, ""
 
 
 async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageable, message: discord.Message | None = None) -> tuple[discord.Embed, str]:
@@ -1840,34 +1899,74 @@ class Jump99kRosterPanelView(discord.ui.View):
             return False
         return position in self.enabled_end_positions
 
-    async def _is_authorized(self, interaction: discord.Interaction) -> bool:
-        if not interaction.guild_id or not isinstance(interaction.user, discord.Member):
-            return False
-
-        member = interaction.user
-        if member.guild_permissions.administrator:
-            return True
-
-        repo = JumpsRepository(get_pool())
-        session = await repo.get_session(self.session_id)
-        if session and int(session.get("host_discord_id") or 0) == int(member.id):
-            return True
-
-        settings = await GuildSettingsRepository(get_database()).get_guild_settings(int(interaction.guild_id))
-        host_role_id = int(settings.get("host99k_role_id") or 0)
-        if host_role_id > 0 and any(int(role.id) == host_role_id for role in member.roles):
-            return True
-
-        return False
-
     def _build_transition_handler(self, action: str, position: int):
         async def _handler(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True, thinking=True)
-            if not await self._is_authorized(interaction):
+            if not interaction.guild_id or not isinstance(interaction.user, discord.Member):
                 await interaction.followup.send("You are not allowed to control this roster.", ephemeral=True)
                 return
 
             repo = JumpsRepository(get_pool())
+            session = await repo.get_session(self.session_id)
+            if not session:
+                await interaction.followup.send("Session not found.", ephemeral=True)
+                return
+
+            signups = await repo.list_roster_signups_with_readiness(self.session_id)
+            progress = await repo.get_jump_progress(self.session_id)
+            host_id = int(session.get("host_discord_id") or 0)
+            participants = [row for row in signups if int(row.get("discord_id") or 0) != host_id]
+            participant_states: list[str] = []
+            progress_signups = progress.get("signups") or []
+            for idx, _row in enumerate(participants):
+                state = "waiting"
+                if idx < len(progress_signups):
+                    state = str(progress_signups[idx].get("state") or "waiting")
+                participant_states.append(state)
+
+            host_state = str((progress.get("host") or {}).get("state") or "waiting")
+            roster_states = [host_state, *participant_states]
+            total_positions = min(8, 1 + max(0, int(session.get("max_slots") or 0)))
+            enabled_start_positions, enabled_end_positions = _compute_enabled_positions(
+                roster_states=roster_states,
+                total_positions=total_positions,
+            )
+
+            if action == "start" and position not in enabled_start_positions:
+                only_position = next(iter(enabled_start_positions), None)
+                if only_position is None:
+                    await interaction.followup.send("Not your turn yet. No Start action is available right now.", ephemeral=True)
+                else:
+                    await interaction.followup.send(f"Not your turn yet. Only Start {only_position} is available right now.", ephemeral=True)
+                return
+            if action == "end" and position not in enabled_end_positions:
+                only_position = next(iter(enabled_end_positions), None)
+                if only_position is None:
+                    await interaction.followup.send("Not your turn yet. No End action is available right now.", ephemeral=True)
+                else:
+                    await interaction.followup.send(f"Not your turn yet. Only End {only_position} is available right now.", ephemeral=True)
+                return
+
+            settings = await GuildSettingsRepository(get_database()).get_guild_settings(int(interaction.guild_id))
+            host_role_id_raw = int(settings.get("host99k_role_id") or 0)
+            host_role_id = host_role_id_raw if host_role_id_raw > 0 else None
+            position_owner_ids = _build_position_owner_ids(
+                session=session,
+                signups=signups,
+                total_positions=total_positions,
+            )
+            host_override = is_host_override(interaction.user, session, host_role_id)
+            allowed, denial_message = can_user_press_position(
+                interaction.user,
+                session=session,
+                position=position,
+                position_owner_ids=position_owner_ids,
+                host_override=host_override,
+            )
+            if not allowed:
+                await interaction.followup.send(denial_message, ephemeral=True)
+                return
+
             ok, message = await repo.run_jump_transition_by_position(
                 session_id=self.session_id,
                 position=position,
