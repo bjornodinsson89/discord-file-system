@@ -347,6 +347,8 @@ class RafflePrizeConfirmDMView(discord.ui.View):
         await interaction.followup.send("✅ Prize send verified and logged.", ephemeral=True)
 
 def _raffle_remaining_tickets(raffle: dict, entries: list[dict]) -> int:
+    if int(raffle.get("tickets_available") or 0) == 0:
+        return 10**9
     reserved_or_paid = sum(int(e.get("num_tickets", 0)) for e in entries)
     return max(0, int(raffle["tickets_available"]) - reserved_or_paid)
 
@@ -465,9 +467,19 @@ class RaffleCreateModal(discord.ui.Modal):
                         ephemeral=True,
                     )
                     return
-            total = int(self.tickets_available.value)
+            tickets_available_raw = str(self.tickets_available.value or "").strip().lower()
+            if tickets_available_raw in {"unlimited", "inf", "infinite", "0"}:
+                total = 0
+            else:
+                total = int(self.tickets_available.value)
             max_per = int(self.max_per_user.value or 0)
-            if total < 1:
+            if total < 0:
+                await interaction.response.send_message(
+                    embed=create_error_embed("Invalid total tickets", "Total Tickets must be 0/unlimited or 1 or greater."),
+                    ephemeral=True,
+                )
+                return
+            if total != 0 and total < 1:
                 await interaction.response.send_message(
                     embed=create_error_embed("Invalid total tickets", "Total Tickets must be 1 or greater."),
                     ephemeral=True,
@@ -487,7 +499,7 @@ class RaffleCreateModal(discord.ui.Modal):
             return
         try:
             end_time = datetime.utcnow() + timedelta(days=30)
-            end_trigger = "tickets_sold"
+            end_trigger = "end_time" if total == 0 else "tickets_sold"
             hours_after_sold_out = None
             users_repo = UsersRepository(get_pool())
             if not await require_api_key(interaction, get_database(), "create a raffle"):
@@ -515,6 +527,7 @@ class RaffleCreateModal(discord.ui.Modal):
                 "end_trigger": end_trigger,
                 "hours_after_sold_out": hours_after_sold_out,
                 "single_item_meta": single_item_meta,
+                "admin_comments": None,
             }
             if _PACK_WORD_RE.search(draft["prize"]) and not single_item_meta:
                 raffle_cog = self.bot.get_cog("RafflesCog")
@@ -536,7 +549,12 @@ class RaffleCreateModal(discord.ui.Modal):
             if raffle_cog is None:
                 await interaction.response.send_message("❌ Raffle system unavailable.", ephemeral=True)
                 return
-            await raffle_cog.create_raffle_from_draft(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
+            raffle_cog.store_create_draft(interaction.user.id, draft)
+            await interaction.response.send_message(
+                "Draft saved. Add optional notes or skip to create the raffle.",
+                ephemeral=True,
+                view=RaffleCommentsChoiceView(self.bot, interaction.user.id),
+            )
         except Exception as exc:
             log.exception("raffle create modal submit failed: %s", exc)
             err_embed = create_error_embed("Raffle creation failed", f"{type(exc).__name__}: {exc}")
@@ -575,6 +593,73 @@ class RafflePackChoiceView(discord.ui.View):
             return
         raffle_cog.pop_pack_draft(interaction.user.id)
         await raffle_cog.create_raffle_from_draft(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
+
+
+class RaffleCommentsChoiceView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, creator_discord_id: int):
+        super().__init__(timeout=600)
+        self.bot = bot
+        self.creator_discord_id = creator_discord_id
+
+    @discord.ui.button(label="Add Comments", style=discord.ButtonStyle.primary)
+    async def add_comments(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.creator_discord_id:
+            await interaction.response.send_message("❌ Only the raffle creator can continue this draft.", ephemeral=True)
+            return
+        raffle_cog = self.bot.get_cog("RafflesCog")
+        if raffle_cog is None or not raffle_cog.get_create_draft(interaction.user.id):
+            await interaction.response.send_message("❌ Draft expired. Please run /raffle_create again.", ephemeral=True)
+            return
+        await interaction.response.send_modal(RaffleCommentsModal(self.bot, self.creator_discord_id))
+
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary)
+    async def skip_comments(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.creator_discord_id:
+            await interaction.response.send_message("❌ Only the raffle creator can continue this draft.", ephemeral=True)
+            return
+        raffle_cog = self.bot.get_cog("RafflesCog")
+        if raffle_cog is None:
+            await interaction.response.send_message("❌ Raffle system unavailable.", ephemeral=True)
+            return
+        draft = raffle_cog.get_create_draft(interaction.user.id)
+        if not draft:
+            await interaction.response.send_message("❌ Draft expired. Please run /raffle_create again.", ephemeral=True)
+            return
+        raffle_cog.pop_create_draft(interaction.user.id)
+        draft["admin_comments"] = None
+        await raffle_cog.create_raffle_from_draft(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
+
+
+class RaffleCommentsModal(discord.ui.Modal):
+    admin_comments = discord.ui.TextInput(
+        label="Comments / Notes (optional)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1000,
+    )
+
+    def __init__(self, bot: commands.Bot, creator_discord_id: int):
+        super().__init__(title="Add Raffle Notes")
+        self.bot = bot
+        self.creator_discord_id = creator_discord_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.creator_discord_id:
+            await interaction.response.send_message("❌ Only the raffle creator can continue this draft.", ephemeral=True)
+            return
+        raffle_cog = self.bot.get_cog("RafflesCog")
+        if raffle_cog is None:
+            await interaction.response.send_message("❌ Raffle system unavailable.", ephemeral=True)
+            return
+        draft = raffle_cog.get_create_draft(interaction.user.id)
+        if not draft:
+            await interaction.response.send_message("❌ Draft expired. Please run /raffle_create again.", ephemeral=True)
+            return
+        draft["admin_comments"] = str(self.admin_comments.value or "").strip() or None
+        raffle_cog.pop_create_draft(interaction.user.id)
+        await raffle_cog.create_raffle_from_draft(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
+
+
 class RafflePackContentsModal(discord.ui.Modal):
     contents = discord.ui.TextInput(
         label="Pack Contents",
@@ -1114,6 +1199,7 @@ class RafflesCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._pack_drafts: dict[int, tuple[dict, datetime]] = {}
+        self._raffle_create_drafts: dict[int, tuple[dict, datetime]] = {}
         self._payment_meta_cache: dict[str, dict | None] = {}
         self._post_ready_init_task: asyncio.Task | None = None
         self.check_raffles.start()
@@ -1192,6 +1278,19 @@ class RafflesCog(commands.Cog):
         return draft
     def pop_pack_draft(self, creator_discord_id: int) -> None:
         self._pack_drafts.pop(creator_discord_id, None)
+    def store_create_draft(self, creator_discord_id: int, draft: dict) -> None:
+        self._raffle_create_drafts[creator_discord_id] = (draft, datetime.utcnow() + timedelta(minutes=10))
+    def get_create_draft(self, creator_discord_id: int) -> dict | None:
+        entry = self._raffle_create_drafts.get(creator_discord_id)
+        if not entry:
+            return None
+        draft, expires_at = entry
+        if datetime.utcnow() > expires_at:
+            self._raffle_create_drafts.pop(creator_discord_id, None)
+            return None
+        return draft
+    def pop_create_draft(self, creator_discord_id: int) -> None:
+        self._raffle_create_drafts.pop(creator_discord_id, None)
     def _is_admin_raffle(self, raffle: dict) -> bool:
         return str(raffle.get("ticket_payment_type") or "").lower() != "free" and not bool(raffle.get("is_free"))
 
@@ -1498,6 +1597,7 @@ class RafflesCog(commands.Cog):
                 end_time=draft["end_time"],
                 end_trigger=draft["end_trigger"],
                 hours_after_sold_out=draft["hours_after_sold_out"],
+                admin_comments=draft.get("admin_comments"),
                 is_bundle=is_bundle,
                 bundle_text=bundle_text,
             )
@@ -1536,14 +1636,22 @@ class RafflesCog(commands.Cog):
                 return
             ticket_payment_type = draft["ticket_payment_type"]
             price_text = _payment_text(ticket_payment_type, draft["ticket_price"])
+            tickets_display = "Unlimited" if int(draft.get("tickets_available") or 0) == 0 else str(draft["tickets_available"])
+            draw_text = (
+                "⏰ **Draw occurs 30 seconds after sellout.**"
+                if draft.get("end_trigger") == "tickets_sold"
+                else "⏰ **Draw occurs at end time (or manual draw).**"
+            )
             purchase_panel_embed = discord.Embed(
                 title=f"🎟️ Raffle #{raffle_id}: {draft['prize']}",
-                description="Use the buttons below to buy tickets or check your entry.\n⏰ **Draw occurs 30 seconds after sellout.**",
+                description=f"Use the buttons below to buy tickets or check your entry.\n{draw_text}",
                 color=discord.Color.blurple(),
             )
             purchase_panel_embed.add_field(name="Price", value=price_text, inline=True)
-            purchase_panel_embed.add_field(name="Tickets", value=f"{draft['tickets_available']}", inline=True)
+            purchase_panel_embed.add_field(name="Tickets", value=tickets_display, inline=True)
             purchase_panel_embed.add_field(name="Max per user", value="Unlimited" if draft['max_tickets_per_user'] == 0 else str(draft['max_tickets_per_user']), inline=True)
+            if draft.get("admin_comments"):
+                purchase_panel_embed.add_field(name="📌 Notes", value=str(draft["admin_comments"])[:1024], inline=False)
             prize_thumbnail_url = await self._get_single_prize_thumbnail_url(draft["prize"], is_bundle)
             if prize_thumbnail_url:
                 purchase_panel_embed.set_thumbnail(url=prize_thumbnail_url)
@@ -1559,9 +1667,11 @@ class RafflesCog(commands.Cog):
                     await purchase_channel.send(embed=bundle_embed, file=bundle_file)
             announce_embed = discord.Embed(
                 title="🎉 New Raffle Created!",
-                description=f"🎁 **Prize:** {draft['prize']}\n🎟️ **Tickets:** {draft['tickets_available']} available\n💰 **Price:** {price_text} per ticket\n📋 **Max per user:** {'Unlimited' if draft['max_tickets_per_user'] == 0 else draft['max_tickets_per_user']}",
+                description=f"🎁 **Prize:** {draft['prize']}\n🎟️ **Tickets:** {tickets_display} available\n💰 **Price:** {price_text} per ticket\n📋 **Max per user:** {'Unlimited' if draft['max_tickets_per_user'] == 0 else draft['max_tickets_per_user']}",
                 color=discord.Color.green(),
             )
+            if draft.get("admin_comments"):
+                announce_embed.add_field(name="📌 Notes", value=str(draft["admin_comments"])[:1024], inline=False)
             if single_item_meta and not is_bundle:
                 announce_embed.set_thumbnail(url=single_item_meta.get("image_url"))
             announce_embed.add_field(name="", value=f"👉 Head to {purchase_channel.mention} to purchase your ticket.", inline=False)
@@ -1778,12 +1888,18 @@ class RafflesCog(commands.Cog):
             color=discord.Color.blue()
         )
         for raffle in raffles:
-            value = f"🎟️ Tickets: {raffle['tickets_sold']}/{raffle['tickets_available']}\n"
+            tickets_total = "Unlimited" if int(raffle.get("tickets_available") or 0) == 0 else str(raffle["tickets_available"])
+            value = f"🎟️ Tickets: {raffle['tickets_sold']}/{tickets_total}\n"
             if raffle.get("is_free") or raffle["ticket_payment_type"] == "free":
                 value += "💰 Price: Giveaway"
             else:
                 value += f"💰 Price: {_payment_text(raffle['ticket_payment_type'], raffle['ticket_price'])}"
-            value += "\n⏰ Draw occurs 30 seconds after sellout."
+            if raffle.get("end_trigger") == "tickets_sold":
+                value += "\n⏰ Draw occurs 30 seconds after sellout."
+            else:
+                value += "\n⏰ Draw occurs at end time (or manual draw)."
+            if raffle.get("admin_comments"):
+                value += f"\n📌 Notes: {str(raffle['admin_comments'])[:200]}"
             embed.add_field(
                 name=f"#{raffle['raffle_id']}: {raffle['prize'][:50]}",
                 value=value,

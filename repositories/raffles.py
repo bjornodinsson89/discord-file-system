@@ -20,6 +20,7 @@ class RafflesRepository(RepositoryBase):
         end_time: Optional[datetime],
         end_trigger: str,
         hours_after_sold_out: Optional[float],
+        admin_comments: Optional[str] = None,
         is_bundle: bool = False,
         bundle_text: Optional[str] = None,
     ) -> int:
@@ -37,8 +38,8 @@ class RafflesRepository(RepositoryBase):
                     guild_id, creator_discord_id, creator_torn_id, prize, ticket_payment_type,
                     ticket_price, tickets_available, max_tickets_per_user,
                     end_time, end_trigger, hours_after_sold_out, status, is_free,
-                    tickets_sold, is_bundle, bundle_text, created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $12, 0, $13, $14, NOW())
+                    tickets_sold, is_bundle, bundle_text, admin_comments, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $12, 0, $13, $14, $15, NOW())
                 RETURNING raffle_id
                 """,
                 guild_id,
@@ -55,6 +56,7 @@ class RafflesRepository(RepositoryBase):
                 ticket_payment_type == "free",
                 is_bundle,
                 bundle_text,
+                admin_comments,
             )
             return int(row["raffle_id"])
 
@@ -128,6 +130,7 @@ class RafflesRepository(RepositoryBase):
                         SET tickets_fully_sold_at = NOW()
                         WHERE raffle_id = $1 
                         AND end_trigger = 'tickets_sold'
+                        AND tickets_available > 0
                         AND tickets_fully_sold_at IS NULL
                         AND (
                             SELECT COALESCE(SUM(num_tickets), 0)
@@ -481,6 +484,7 @@ class RafflesRepository(RepositoryBase):
 
                 if (
                     row["end_trigger"] == "tickets_sold"
+                    and int(row["tickets_available"] or 0) > 0
                     and row["tickets_fully_sold_at"] is None
                     and int(row["tickets_sold"] or 0) >= int(row["tickets_available"] or 0)
                 ):
@@ -583,7 +587,7 @@ class RafflesRepository(RepositoryBase):
                 if raffle["status"] != "active":
                     return None
 
-                if int(raffle["verified_total"] or 0) < int(raffle["tickets_available"] or 0):
+                if int(raffle["tickets_available"] or 0) > 0 and int(raffle["verified_total"] or 0) < int(raffle["tickets_available"] or 0):
                     return None
 
                 entries = await conn.fetch(
@@ -637,9 +641,18 @@ class RafflesRepository(RepositoryBase):
                 """
                 SELECT * FROM raffles
                 WHERE status = 'active'
-                  AND end_trigger = 'tickets_sold'
-                  AND tickets_fully_sold_at IS NOT NULL
-                  AND NOW() >= tickets_fully_sold_at + INTERVAL '30 seconds'
+                  AND (
+                        (
+                            end_trigger = 'tickets_sold'
+                            AND tickets_fully_sold_at IS NOT NULL
+                            AND NOW() >= tickets_fully_sold_at + INTERVAL '30 seconds'
+                        )
+                        OR (
+                            end_trigger = 'end_time'
+                            AND end_time IS NOT NULL
+                            AND NOW() >= end_time
+                        )
+                  )
                 """
             )
             return [dict(row) for row in rows]
