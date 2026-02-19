@@ -46,6 +46,22 @@ class InsuranceAppsRepository(RepositoryBase):
             row = await conn.fetchrow("SELECT * FROM public.insurance_apps WHERE id = $1", app_id)
             return self._normalize_row(dict(row)) if row else None
 
+    async def get_by_channel_id(self, guild_id: int, channel_id: int) -> dict[str, Any] | None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT *
+                FROM public.insurance_apps
+                WHERE guild_id = $1
+                  AND application_channel_id = $2
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                guild_id,
+                channel_id,
+            )
+            return self._normalize_row(dict(row)) if row else None
+
     async def create_app(self, guild_id: int, applicant_discord_id: int, application_channel_id: int) -> dict[str, Any]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -145,3 +161,31 @@ class InsuranceAppsRepository(RepositoryBase):
         async with self.pool.acquire() as conn:
             result = await conn.execute("DELETE FROM public.insurance_apps WHERE id = $1", app_id)
             return result.split(" ")[-1] == "1"
+
+    async def list_open(self, guild_id: int, applicant_discord_id: int | None = None) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            if applicant_discord_id is not None:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM public.insurance_apps
+                    WHERE guild_id = $1
+                      AND status IN ('in_progress', 'submitted')
+                      AND applicant_discord_id = $2
+                    ORDER BY created_at DESC
+                    """,
+                    guild_id,
+                    applicant_discord_id,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM public.insurance_apps
+                    WHERE guild_id = $1
+                      AND status IN ('in_progress', 'submitted')
+                    ORDER BY created_at DESC
+                    """,
+                    guild_id,
+                )
+            return [self._normalize_row(dict(row)) for row in rows]
