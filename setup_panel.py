@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import discord
@@ -246,6 +247,56 @@ class TimeoutModal(discord.ui.Modal):
             await _respond_callback_error(interaction, error)
 
 
+class ApplicationsInboxChannelModal(discord.ui.Modal):
+    def __init__(self, panel: "SetupPanelView"):
+        super().__init__(title="Set applications inbox")
+        self.panel = panel
+        self.channel_input = discord.ui.TextInput(
+            label="Channel",
+            placeholder="#applications or 123456789012345678",
+            required=True,
+            max_length=64,
+        )
+        self.add_item(self.channel_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            guild = interaction.guild
+            if guild is None:
+                await interaction.response.send_message(
+                    embed=create_error_embed("Invalid context", "This action can only be used in a server."),
+                    ephemeral=True,
+                )
+                return
+
+            raw = str(self.channel_input.value).strip()
+            match = re.search(r"(\d{15,25})", raw)
+            if not match:
+                await interaction.response.send_message(
+                    embed=create_error_embed(
+                        "Invalid channel",
+                        "Enter a channel mention like `#applications` or a raw channel ID.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            channel = guild.get_channel(int(match.group(1)))
+            if not isinstance(channel, discord.TextChannel):
+                await interaction.response.send_message(
+                    embed=create_error_embed(
+                        "Invalid channel",
+                        "That channel must exist in this server and be a text channel.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            await self.panel.save_changes(interaction, {"applications_admin_inbox_channel_id": channel.id})
+        except Exception as error:
+            await _respond_callback_error(interaction, error, "setup_applications_inbox_modal_error")
+
+
 class SetupPanelView(OwnerView):
     @staticmethod
     def _resolve_bot_member(interaction: discord.Interaction) -> discord.Member | None:
@@ -398,15 +449,11 @@ class SetupPanelView(OwnerView):
             return
 
         if key == "applications_admin_inbox_channel_id":
-            news_channel_type = getattr(discord, "NewsChannel", None)
-            is_valid_admin_inbox = isinstance(resolved, discord.TextChannel) or (
-                news_channel_type is not None and isinstance(resolved, news_channel_type)
-            )
-            if not is_valid_admin_inbox:
+            if not isinstance(resolved, discord.TextChannel):
                 await interaction.response.send_message(
                     embed=create_error_embed(
                         "Missing applications admin inbox",
-                        "Set Applications admin inbox channel to a text channel.",
+                        "Set Applications admin inbox channel to a text channel (or use Set inbox by ID/mention).",
                     ),
                     ephemeral=True,
                 )
@@ -657,7 +704,8 @@ class ChannelsViewPage4(BackView):
                     "Applications",
                     "Configure channels for the applications system.\n\n"
                     "- **Applications category (optional)**: where private application channels are created.\n"
-                    "- **Applications admin inbox (required)**: where Host + Insurance applications are sent for approval.",
+                    "- **Applications admin inbox (required)**: where Host + Insurance applications are sent for approval.\n"
+                    "- Set admin inbox using the channel picker or **Set inbox by ID/mention**.",
                 ),
                 ChannelsViewApplications(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
             )
@@ -678,7 +726,7 @@ class ChannelsViewApplications(BackView):
                 "applications_admin_inbox_channel_id",
                 "Set applications admin inbox channel",
                 row=1,
-                channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+                channel_types=[discord.ChannelType.text],
             )
         )
 
@@ -691,18 +739,21 @@ class ChannelsViewApplications(BackView):
         except Exception as error:
             await _respond_callback_error(interaction, error, "setup_channels_next_error")
 
+    @discord.ui.button(label="Set inbox by ID/mention", style=discord.ButtonStyle.secondary, row=2, custom_id="setup:applications:set_inbox_by_id")
+    async def set_inbox_by_id_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await interaction.response.send_modal(ApplicationsInboxChannelModal(self.panel))
+        except Exception as error:
+            await _respond_callback_error(interaction, error, "setup_applications_inbox_by_id_button_error")
+
     @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=3)
     async def save_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         applications_inbox = self.guild.get_channel(int(self.settings.get("applications_admin_inbox_channel_id") or 0))
-        news_channel_type = getattr(discord, "NewsChannel", None)
-        if not (
-            isinstance(applications_inbox, discord.TextChannel)
-            or (news_channel_type is not None and isinstance(applications_inbox, news_channel_type))
-        ):
+        if not isinstance(applications_inbox, discord.TextChannel):
             await interaction.response.send_message(
                 embed=create_error_embed(
                     "Missing applications admin inbox",
-                    "Set Applications admin inbox channel to a text channel.",
+                    "Set Applications admin inbox channel using the picker or **Set inbox by ID/mention**.",
                 ),
                 ephemeral=True,
             )
