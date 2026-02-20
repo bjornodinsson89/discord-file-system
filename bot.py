@@ -23,6 +23,19 @@ print("STDOUT: bot process started", flush=True)
 log = logging.getLogger("happy_jumper")
 
 
+def _safe_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    stripped = value.strip()
+    if stripped == "":
+        return default
+    try:
+        return int(stripped)
+    except (TypeError, ValueError):
+        return default
+
+
 async def health_server():
     """HTTP server with DB-aware health checks."""
 
@@ -46,7 +59,7 @@ async def health_server():
     await runner.setup()
     
     # Railway injects PORT, or default to 3000
-    port = int(os.getenv('PORT', '3000'))
+    port = _safe_int_env('PORT', 3000)
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     log.info(f"Health check server started on port {port}")

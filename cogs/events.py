@@ -498,11 +498,15 @@ class Jump99kSetupModal(discord.ui.Modal, title="99k Setup"):
 
 def _is_valid_torn_url(raw_url: str) -> bool:
     url = (raw_url or "").strip()
-    if not url.lower().startswith("http"):
+    if not url:
         return False
     parsed = urlparse(url)
-    host = (parsed.netloc or "").lower()
-    return bool(host) and "torn.com" in host
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    return host == "torn.com" or host.endswith(".torn.com")
 
 
 def _excerpt(text: str, limit: int = 180) -> str:

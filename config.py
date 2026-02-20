@@ -5,7 +5,10 @@ import ssl
 from urllib.parse import parse_qs, urlparse
 import logging
 
-import certifi
+try:
+    import certifi
+except ModuleNotFoundError:  # pragma: no cover - fallback for minimal test envs
+    certifi = None
 
 
 log = logging.getLogger("happy_jumper.config")
@@ -18,12 +21,26 @@ def _env_flag(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+
+def safe_int_env(name: str, default: int | None = None, *, allow_blank: bool = True) -> int | None:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    stripped = value.strip()
+    if stripped == "":
+        return default if allow_blank else None
+    try:
+        return int(stripped)
+    except (TypeError, ValueError):
+        return default
+
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
+GUILD_ID = safe_int_env("GUILD_ID", default=None, allow_blank=True)
 CLEAN_COMMANDS = _env_flag("CLEAN_COMMANDS", False)
 
 DB_HOST = os.getenv("DB_HOST")
-DB_PORT = int(os.getenv("DB_PORT", "6543"))
+DB_PORT = safe_int_env("DB_PORT", default=6543, allow_blank=True)
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -80,7 +97,7 @@ def get_db_ssl_config() -> ssl.SSLContext | None:
 
     if value in {"allow", "prefer", "require", "true", "1", "on", "yes", "verify-ca", "verify-full"}:
         if DB_SSL_VERIFY:
-            cafile = ca_file or certifi.where()
+            cafile = ca_file or (certifi.where() if certifi is not None else None)
             context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=cafile)
             context.check_hostname = True
             context.verify_mode = ssl.CERT_REQUIRED
@@ -202,10 +219,25 @@ PAYMENT_TYPES = {
 
 def validate_config() -> None:
     required = {
-        "DATABASE_URL": DATABASE_URL,  # Check for DATABASE_URL specifically
+        "DATABASE_URL": DATABASE_URL,
         "FERNET_KEY": FERNET_KEY,
         "DISCORD_TOKEN": DISCORD_TOKEN,
     }
     missing = [name for name, value in required.items() if value in (None, "")]
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+
+    if DATABASE_URL:
+        parsed = urlparse(DATABASE_URL)
+        if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
+            log.warning("DATABASE_URL appears malformed (missing expected scheme/host).")
+
+    if FERNET_KEY:
+        try:
+            from cryptography.fernet import Fernet
+
+            Fernet(FERNET_KEY.encode("utf-8"))
+        except Exception as exc:
+            raise RuntimeError(
+                "Invalid FERNET_KEY: must be a valid Fernet urlsafe-base64 32-byte key."
+            ) from exc
