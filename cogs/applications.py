@@ -174,14 +174,62 @@ class ApplicationsCog(commands.Cog):
             return channel
         return None
 
+    async def _ensure_admin_inbox_message(self, guild: discord.Guild, app_type: str, app: dict[str, Any]) -> int | None:
+        host_repo, insurance_repo, settings_repo = await self._repos()
+        settings = await settings_repo.get_or_create(guild.id)
+        inbox_key = "host_apps_admin_inbox_channel_id" if app_type == "host" else "insurance_apps_admin_inbox_channel_id"
+        channel_id = settings.get(inbox_key) or settings.get("applications_admin_inbox_channel_id")
+        try:
+            inbox = guild.get_channel(int(channel_id or 0))
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(inbox, discord.TextChannel):
+            return None
+
+        me = guild.me
+        if me is None:
+            return None
+        perms = inbox.permissions_for(me)
+        if not (perms.view_channel and perms.send_messages and perms.embed_links):
+            return None
+
+        msg_id = int(app.get("admin_inbox_message_id") or 0)
+        if msg_id:
+            try:
+                await inbox.fetch_message(msg_id)
+                return msg_id
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        applicant = await self._get_or_fetch_member(guild, int(app.get("applicant_discord_id") or 0))
+        embed = self._build_admin_summary_embed(
+            app_type,
+            int(app["id"]),
+            applicant,
+            str(app.get("status") or "in_progress"),
+            self._questions_for(app_type),
+            self._coerce_answers(app.get("answers")),
+        )
+        jump_url = f"https://discord.com/channels/{guild.id}/{int(app.get('application_channel_id') or 0)}"
+        view = self._build_admin_inbox_view(app_type, int(app["id"]), str(app.get("status") or "in_progress"), jump_url)
+        message = await inbox.send(
+            content=f"**New {self._label_for(app_type)} Application #{int(app['id'])}** — <#{int(app.get('application_channel_id') or 0)}>",
+            embed=embed,
+            view=view,
+        )
+        repo = host_repo if app_type == "host" else insurance_repo
+        await repo.set_admin_inbox_message_id(int(app["id"]), int(message.id))
+        return int(message.id)
+
     async def _update_admin_panel(self, guild: discord.Guild, app_type: str, app: dict[str, Any]) -> None:
+        msg_id = await self._ensure_admin_inbox_message(guild, app_type, app)
+        if msg_id is None:
+            return
+
         _, _, settings_repo = await self._repos()
         settings = await settings_repo.get_or_create(guild.id)
         inbox = self._resolve_admin_inbox_channel(guild, settings, app_type)
         if not isinstance(inbox, discord.TextChannel):
-            return
-        msg_id = int(app.get("admin_inbox_message_id") or 0)
-        if not msg_id:
             return
         try:
             message = await inbox.fetch_message(msg_id)

@@ -726,7 +726,7 @@ class ChannelsViewApplications(BackView):
                 "applications_admin_inbox_channel_id",
                 "Set applications admin inbox channel",
                 row=1,
-                channel_types=[discord.ChannelType.text],
+                channel_types=[discord.ChannelType.text, discord.ChannelType.news],
             )
         )
 
@@ -748,12 +748,23 @@ class ChannelsViewApplications(BackView):
 
     @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=3)
     async def save_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        me = self.guild.me
         applications_inbox = self.guild.get_channel(int(self.settings.get("applications_admin_inbox_channel_id") or 0))
-        if not isinstance(applications_inbox, discord.TextChannel):
+        if not isinstance(applications_inbox, discord.TextChannel) or me is None:
             await interaction.response.send_message(
                 embed=create_error_embed(
                     "Missing applications admin inbox",
                     "Set Applications admin inbox channel using the picker or **Set inbox by ID/mention**.",
+                ),
+                ephemeral=True,
+            )
+            return
+        perms = applications_inbox.permissions_for(me)
+        if not (perms.view_channel and perms.send_messages and perms.embed_links):
+            await interaction.response.send_message(
+                embed=create_error_embed(
+                    "Can't access selected inbox",
+                    "I can’t see/send in that channel. The channel selector only shows channels both you and the bot can access. Grant the bot View Channel + Send Messages + Embed Links in that channel/category.",
                 ),
                 ephemeral=True,
             )
