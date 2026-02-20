@@ -13,6 +13,22 @@ class CommandAccessError(app_commands.CheckFailure):
         self.user_message = user_message
 
 
+def validate_interaction_context(interaction: discord.Interaction) -> discord.Member:
+    """Validate that command interaction is from a real guild member context."""
+    guild = getattr(interaction, "guild", None)
+    guild_id = getattr(interaction, "guild_id", None) or getattr(guild, "id", None)
+    if guild is None or guild_id is None:
+        raise CommandAccessError("This command can only be used in a server.")
+
+    member = interaction.user
+    if member is None or not hasattr(member, "roles") or not hasattr(member, "guild_permissions"):
+        raise CommandAccessError("Unable to resolve your server membership for this command.")
+
+    if getattr(member, "bot", False):
+        raise CommandAccessError("Bot accounts cannot run this command.")
+
+    return member
+
 
 def require_command_access(
     *,
@@ -22,14 +38,7 @@ def require_command_access(
     failure_message: str = "You do not have permission to use this command.",
 ):
     async def predicate(interaction: discord.Interaction) -> bool:
-        member = interaction.user
-        if (
-            not interaction.guild
-            or member is None
-            or not hasattr(member, "roles")
-            or not hasattr(member, "guild_permissions")
-        ):
-            raise CommandAccessError("This command can only be used in a server.")
+        member = validate_interaction_context(interaction)
 
         if member.id == interaction.guild.owner_id or member.guild_permissions.administrator:
             return True
@@ -38,7 +47,9 @@ def require_command_access(
             return True
 
         if include_configured_admin_roles or required_role_setting_keys:
-            settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild.id)
+            settings = await GuildSettingsRepository(get_database()).get_or_create(
+                interaction.guild.id
+            )
             if include_configured_admin_roles:
                 allowed = has_setup_permission(
                     member_id=member.id,
@@ -62,8 +73,9 @@ def require_command_access(
     return app_commands.check(predicate)
 
 
-
-def has_role_hierarchy_access(*, guild: discord.Guild, actor: discord.Member, target_role: discord.Role) -> bool:
+def has_role_hierarchy_access(
+    *, guild: discord.Guild, actor: discord.Member, target_role: discord.Role
+) -> bool:
     if actor.id == guild.owner_id:
         return True
     return actor.top_role > target_role

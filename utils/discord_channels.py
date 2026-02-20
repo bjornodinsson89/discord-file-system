@@ -5,7 +5,9 @@ from typing import Any
 import discord
 
 
-async def resolve_guild_channel(interaction: discord.Interaction, selected: Any) -> discord.abc.GuildChannel | None:
+async def resolve_guild_channel(
+    interaction: discord.Interaction, selected: Any
+) -> discord.abc.GuildChannel | None:
     """Resolve lightweight app-command channel selections to real guild channels."""
     # App command selectors can return lightweight wrappers (e.g. AppCommandChannel)
     # that expose an ID but do not implement `permissions_for`. Only return early

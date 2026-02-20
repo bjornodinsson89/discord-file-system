@@ -28,6 +28,8 @@ class JumpMonitor:
         self._last_overdose_poll_at: dict[int, datetime] = {}
         self._last_user_overdose_check: dict[tuple[int, int], datetime] = {}
         self._start_countdown: dict[int, datetime] = {}
+        self._last_heartbeat_at: dict[int, datetime] = {}
+        self.heartbeat_interval_seconds = 60
 
     async def start(self, jump_id: int) -> None:
         existing = self._tasks.get(jump_id)
@@ -50,6 +52,7 @@ class JumpMonitor:
         self._needs_refresh.discard(jump_id)
         self._last_overdose_poll_at.pop(jump_id, None)
         self._start_countdown.pop(jump_id, None)
+        self._last_heartbeat_at.pop(jump_id, None)
 
 
     async def stop_all(self) -> None:
@@ -72,6 +75,11 @@ class JumpMonitor:
 
     async def _poll_loop(self, jump_id: int) -> None:
         while True:
+            now_utc = datetime.now(timezone.utc)
+            last_heartbeat = self._last_heartbeat_at.get(jump_id)
+            if last_heartbeat is None or (now_utc - last_heartbeat).total_seconds() >= self.heartbeat_interval_seconds:
+                log.debug("jump_monitor heartbeat jump_id=%s", jump_id)
+                self._last_heartbeat_at[jump_id] = now_utc
             keep_running = await self._poll_once(jump_id)
             if not keep_running:
                 self._tasks.pop(jump_id, None)
@@ -89,7 +97,7 @@ class JumpMonitor:
         users_repo = UsersRepository(db.pool)
         jumps_repo = JumpsRepository(db.pool)
         od_tracker = OverdoseTracker(users_repo=users_repo, overdose_repo=OverdoseRepository(db.pool), jumps_repo=jumps_repo)
-        async with db.pool.acquire() as conn:
+        async with db.acquire(timeout=10, operation="jump_monitor_poll") as conn:
             session = await conn.fetchrow("SELECT * FROM happy_jump_sessions WHERE id = $1", jump_id)
             if not session:
                 return False
@@ -237,4 +245,3 @@ async def shutdown_jump_monitor() -> None:
     if _jump_monitor is not None:
         await _jump_monitor.stop_all()
         _jump_monitor = None
-

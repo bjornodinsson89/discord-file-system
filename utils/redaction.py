@@ -10,6 +10,7 @@ _SECRET_ENV_KEYS = (
     "FERNET_KEY",
     "TORN_API_KEY",
     "API_KEY",
+    "DB_PASSWORD",
 )
 
 
@@ -17,6 +18,9 @@ def redact_text(value: str | None) -> str:
     text = str(value or "")
     for key in _SECRET_ENV_KEYS:
         text = re.sub(rf"({key}\s*[=:]\s*)([^\s,;]+)", rf"\1{_REDACTED}", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}\b", _REDACTED, text)
+    text = re.sub(r"\bpostgres(?:ql)?://[^\s]+", _REDACTED, text, flags=re.IGNORECASE)
+    text = re.sub(r"\b[A-Za-z0-9_-]{43,44}=\b", _REDACTED, text)
     return text
 
 

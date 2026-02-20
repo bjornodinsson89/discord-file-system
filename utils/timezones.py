@@ -130,8 +130,7 @@ REGION_MAP: dict[str, list[str]] = {
     "africa": _unique(_REGION_PRIORITY["africa"] + _zones_for_prefix("Africa/")),
     "asia": _unique(_REGION_PRIORITY["asia"] + _zones_for_prefix("Asia/")),
     "oceania": _unique(
-        _REGION_PRIORITY["oceania"]
-        + _zones_for_prefix("Australia/", "Pacific/", "Antarctica/")
+        _REGION_PRIORITY["oceania"] + _zones_for_prefix("Australia/", "Pacific/", "Antarctica/")
     ),
     # NOTE: Etc/GMT signs are reversed by POSIX convention (Etc/GMT+5 == UTC-5).
     "utc_offsets": _unique(_REGION_PRIORITY["utc_offsets"]),

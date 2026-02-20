@@ -248,7 +248,9 @@ class GuildSettingsRepository:
                 return []
         return sorted(set(normalized))
 
-    def _normalize_updates(self, fields: Dict[str, Any], *, guild_id: Optional[int] = None) -> Dict[str, Any]:
+    def _normalize_updates(
+        self, fields: Dict[str, Any], *, guild_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         unknown = set(fields) - self.ALLOWED_FIELDS
         if unknown:
             raise ValueError(f"Unsupported guild settings field(s): {', '.join(sorted(unknown))}")
@@ -262,7 +264,9 @@ class GuildSettingsRepository:
                 normalized[key] = self._normalize_bool(value)
                 continue
             if key == "admin_role_ids":
-                normalized_ids = self._normalize_admin_role_ids(value, guild_id=guild_id, field_name=key)
+                normalized_ids = self._normalize_admin_role_ids(
+                    value, guild_id=guild_id, field_name=key
+                )
                 if normalized_ids is None:
                     normalized[key] = None
                 else:
@@ -270,9 +274,21 @@ class GuildSettingsRepository:
                     normalized[key] = unique_int_ids
                 continue
             if key == "jump_ping_role_ids":
-                normalized[key] = self._normalize_role_id_list(value, guild_id=guild_id, field_name=key)
+                normalized[key] = self._normalize_role_id_list(
+                    value, guild_id=guild_id, field_name=key
+                )
                 continue
-            if key in {"reservation_timeout_minutes", "default_max_slots", "host_tax_recipient_torn_id", "host_tax_item_id", "host_tax_quantity"} and value is not None:
+            if (
+                key
+                in {
+                    "reservation_timeout_minutes",
+                    "default_max_slots",
+                    "host_tax_recipient_torn_id",
+                    "host_tax_item_id",
+                    "host_tax_quantity",
+                }
+                and value is not None
+            ):
                 normalized_value = int(value)
                 if key == "default_max_slots" and not 1 <= normalized_value <= 7:
                     raise ValueError("default_max_slots must be between 1 and 7")
@@ -298,7 +314,6 @@ class GuildSettingsRepository:
         )
         return data
 
-
     async def _db_insert_or_get_settings(self, guild_id: int) -> Optional[dict[str, Any]]:
         if not hasattr(self._db, "pool"):
             return None
@@ -314,7 +329,9 @@ class GuildSettingsRepository:
             )
             return dict(row) if row else None
 
-    async def _db_insert_settings(self, guild_id: int, fields: Dict[str, Any]) -> Optional[dict[str, Any]]:
+    async def _db_insert_settings(
+        self, guild_id: int, fields: Dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
         if not hasattr(self._db, "pool"):
             return None
         async with self._db.pool.acquire() as conn:
@@ -333,8 +350,8 @@ class GuildSettingsRepository:
 
             row = await conn.fetchrow(
                 f"""
-                INSERT INTO public.guild_settings ({', '.join(columns)})
-                VALUES ({', '.join(placeholders)})
+                INSERT INTO public.guild_settings ({", ".join(columns)})
+                VALUES ({", ".join(placeholders)})
                 ON CONFLICT (guild_id) DO NOTHING
                 RETURNING *
                 """,
@@ -343,10 +360,14 @@ class GuildSettingsRepository:
             if row:
                 return dict(row)
 
-            existing = await conn.fetchrow("SELECT * FROM public.guild_settings WHERE guild_id = $1", guild_id)
+            existing = await conn.fetchrow(
+                "SELECT * FROM public.guild_settings WHERE guild_id = $1", guild_id
+            )
             return dict(existing) if existing else None
 
-    async def _db_update_settings(self, guild_id: int, fields: Dict[str, Any]) -> Optional[dict[str, Any]]:
+    async def _db_update_settings(
+        self, guild_id: int, fields: Dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
         if not hasattr(self._db, "pool"):
             return None
         async with self._db.pool.acquire() as conn:
@@ -436,7 +457,9 @@ class GuildSettingsRepository:
         if not hasattr(self._db, "pool"):
             return
         async with self._db.pool.acquire() as conn:
-            existing = await conn.fetchrow("SELECT guild_id FROM public.guild_settings WHERE guild_id = $1", guild_id)
+            existing = await conn.fetchrow(
+                "SELECT guild_id FROM public.guild_settings WHERE guild_id = $1", guild_id
+            )
         if existing:
             return
         await self.create_default_guild_settings(guild_id)
@@ -459,7 +482,9 @@ class GuildSettingsRepository:
     async def upsert(self, guild_id: int, **fields: Any) -> Dict[str, Any]:
         return await self.upsert_settings(guild_id, **fields)
 
-    async def upsert_guild_settings(self, guild_id: int, updates_dict: Dict[str, Any] | None = None, **fields: Any) -> Dict[str, Any]:
+    async def upsert_guild_settings(
+        self, guild_id: int, updates_dict: Dict[str, Any] | None = None, **fields: Any
+    ) -> Dict[str, Any]:
         updates = dict(updates_dict or {})
         updates.update(fields)
         return await self.upsert_settings(guild_id, **updates)
@@ -467,12 +492,15 @@ class GuildSettingsRepository:
     async def set_announce_channel(self, guild_id: int, announce_channel_id: int) -> Dict[str, Any]:
         return await self.upsert_settings(guild_id, announce_channel_id=announce_channel_id)
 
-
     @staticmethod
     def resolve_raffle_giveaway_purchase_channel_id(settings: Dict[str, Any]) -> Optional[int]:
-        return GuildSettingsRepository._normalize_bigint(settings.get("raffle_giveaway_purchase_channel_id"))
+        return GuildSettingsRepository._normalize_bigint(
+            settings.get("raffle_giveaway_purchase_channel_id")
+        )
 
     @staticmethod
     def resolve_admin_role_ids(settings: Dict[str, Any]) -> list[int]:
-        normalized = GuildSettingsRepository._normalize_admin_role_ids(settings.get("admin_role_ids"))
+        normalized = GuildSettingsRepository._normalize_admin_role_ids(
+            settings.get("admin_role_ids")
+        )
         return [] if normalized is None else normalized
