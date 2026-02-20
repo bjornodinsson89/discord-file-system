@@ -33,6 +33,7 @@ else:
 
 DB_SSL = os.getenv("DB_SSL", "disable")
 DB_SSL_CA_FILE = os.getenv("DB_SSL_CA_FILE")
+DB_SSL_VERIFY = _env_flag("DB_SSL_VERIFY", True)
 
 FERNET_KEY = os.getenv("FERNET_KEY")
 
@@ -48,9 +49,9 @@ def get_db_ssl_config() -> ssl.SSLContext | None:
             pass
 
     if value in {"allow", "prefer", "require", "true", "1", "on", "yes"}:
-        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
+        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=ca_file or None)
+        context.check_hostname = bool(DB_SSL_VERIFY)
+        context.verify_mode = ssl.CERT_REQUIRED if DB_SSL_VERIFY else ssl.CERT_NONE
         return context
 
     if value in {"verify-ca", "verify-full"}:

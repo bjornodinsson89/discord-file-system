@@ -30,11 +30,14 @@ def pool_is_open(pool: Optional[asyncpg.Pool]) -> bool:
 async def create_pool() -> asyncpg.Pool:
     ssl_mode = config.get_db_ssl_config()
     db_url = (config.DATABASE_URL or "").strip() or None
+    ssl_mode_name = (config.DB_SSL or "disable").strip().lower()
     log.info(
         "Initializing DB pool (ssl_mode=%s, using_dsn=%s)",
-        (config.DB_SSL or "disable").strip().lower(),
+        ssl_mode_name,
         bool(db_url),
     )
+    if ssl_mode_name not in {"", "disable", "false", "0", "off", "no"} and not bool(getattr(config, "DB_SSL_VERIFY", True)):
+        log.warning("DB SSL is enabled while certificate verification is disabled (DB_SSL_VERIFY=false)")
     pool_kwargs = {
         "ssl": ssl_mode,
         "min_size": 2,

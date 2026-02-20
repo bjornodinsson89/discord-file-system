@@ -17,6 +17,11 @@ BEGIN
     END LOOP;
 END $$;
 
+-- Forward-safe normalization before re-adding status checks that disallow legacy values.
+UPDATE public.jump_99k_signups
+SET status = 'paid'
+WHERE status IN ('signed_up', 'confirmed');
+
 ALTER TABLE public.jump_99k_signups
     ADD CONSTRAINT jump_99k_signups_status_check
     CHECK (status IN ('reserved', 'paid', 'cancelled', 'expired', 'completed', 'not_completed'));

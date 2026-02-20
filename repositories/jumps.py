@@ -8,12 +8,13 @@ from typing import Any, Optional
 import asyncpg
 from constants.jump99k import (
     SIGNUP_ACTIVE_STATUSES,
-    SIGNUP_ALLOWED_STATUSES,
+    ALLOWED_SIGNUP_STATUSES,
     SIGNUP_STATUS_CANCELLED,
     SIGNUP_STATUS_EXPIRED,
     SIGNUP_STATUS_NOT_COMPLETED,
     SIGNUP_STATUS_PAID,
     SIGNUP_STATUS_RESERVED,
+    validate_status,
 )
 
 from .base import RepositoryBase
@@ -55,7 +56,7 @@ class SignupStatusSchemaMismatchError(RuntimeError):
     """Raised when DB schema constraints reject signup status values."""
 
 
-_ALLOWED_SIGNUP_STATUSES = set(SIGNUP_ALLOWED_STATUSES)
+_ALLOWED_SIGNUP_STATUSES = set(ALLOWED_SIGNUP_STATUSES)
 
 
 def _raise_reserved_until_migration_error(exc: Exception) -> None:
@@ -84,8 +85,8 @@ class JumpsRepository(RepositoryBase):
                 INSERT INTO jump_99k_cleanup_tasks (guild_id, session_id, task_type, channel_id, message_id, attempts, next_retry_at, last_error, updated_at)
                 VALUES ($1,$2,$3,$4,$5,$6,NOW() + make_interval(mins => LEAST((2 ^ GREATEST($6, 0))::int, 60)),$7,NOW())
                 ON CONFLICT (session_id, task_type, channel_id, message_id)
-                DO UPDATE SET attempts = LEAST(jump_99k_cleanup_tasks.attempts, EXCLUDED.attempts),
-                              next_retry_at = EXCLUDED.next_retry_at,
+                DO UPDATE SET attempts = jump_99k_cleanup_tasks.attempts + 1,
+                              next_retry_at = NOW() + make_interval(mins => LEAST((2 ^ GREATEST(jump_99k_cleanup_tasks.attempts + 1, 0))::int, 60)),
                               last_error = EXCLUDED.last_error,
                               updated_at = NOW()
                 """,
@@ -389,6 +390,30 @@ class JumpsRepository(RepositoryBase):
                 session_id,
             )
 
+
+    async def clear_cleanup_message_target(self, *, session_id: int, channel_id: int | None, message_id: int | None) -> None:
+        async with self.pool.acquire() as conn:
+            session = await conn.fetchrow(
+                "SELECT announce_channel_id, announce_message_id, roster_channel_id, roster_message_id, host_controls_channel_id, host_controls_message_id FROM jump_99k_sessions WHERE id=$1",
+                session_id,
+            )
+            if not session:
+                return
+            if int(session.get("announce_channel_id") or 0) == int(channel_id or 0) and int(session.get("announce_message_id") or 0) == int(message_id or 0):
+                await conn.execute("UPDATE jump_99k_sessions SET announce_channel_id=NULL, announce_message_id=NULL, updated_at=NOW() WHERE id=$1", session_id)
+            if int(session.get("roster_channel_id") or 0) == int(channel_id or 0) and int(session.get("roster_message_id") or 0) == int(message_id or 0):
+                await conn.execute("UPDATE jump_99k_sessions SET roster_channel_id=NULL, roster_message_id=NULL, updated_at=NOW() WHERE id=$1", session_id)
+            if int(session.get("host_controls_channel_id") or 0) == int(channel_id or 0) and int(session.get("host_controls_message_id") or 0) == int(message_id or 0):
+                await conn.execute("UPDATE jump_99k_sessions SET host_controls_channel_id=NULL, host_controls_message_id=NULL, updated_at=NOW() WHERE id=$1", session_id)
+
+    async def clear_cleanup_channel_target(self, *, session_id: int, channel_id: int | None) -> None:
+        if channel_id is None:
+            return
+        async with self.pool.acquire() as conn:
+            current_id = await conn.fetchval("SELECT private_channel_id FROM jump_99k_sessions WHERE id=$1", session_id)
+            if int(current_id or 0) == int(channel_id):
+                await conn.execute("UPDATE jump_99k_sessions SET private_channel_id=NULL, updated_at=NOW() WHERE id=$1", session_id)
+
     async def get_active_session(self, guild_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open' ORDER BY created_at DESC LIMIT 1", guild_id)
@@ -470,9 +495,7 @@ class JumpsRepository(RepositoryBase):
         status: str,
         reserved_until: Optional[datetime] = None,
     ) -> None:
-        normalized_status = str(status or "").strip().lower()
-        if normalized_status not in _ALLOWED_SIGNUP_STATUSES:
-            raise ValueError(f"status must be one of {_ALLOWED_SIGNUP_STATUSES}.")
+        normalized_status = validate_status(status)
         try:
             await conn.execute(
                 """
@@ -819,8 +842,27 @@ class JumpsRepository(RepositoryBase):
             try:
                 rows = await conn.fetch(
                     """
-                    SELECT s.*, ses.price_item, ses.price_amount, ses.host_discord_id, ses.created_at
-                         , ses.priority_increment, ses.priority_enabled
+                    SELECT
+                        s.id,
+                        s.session_id,
+                        s.guild_id,
+                        s.participant_discord_id,
+                        s.participant_torn_user_id,
+                        s.participant_torn_name,
+                        s.status,
+                        s.payment_verified,
+                        s.payment_verified_at,
+                        s.signed_up_at,
+                        s.created_at AS signup_created_at,
+                        s.updated_at,
+                        s.reserved_until,
+                        s.is_priority,
+                        ses.price_item,
+                        ses.price_amount,
+                        ses.host_discord_id,
+                        ses.created_at AS session_created_at,
+                        ses.priority_increment,
+                        ses.priority_enabled
                     FROM jump_99k_signups s
                     JOIN jump_99k_sessions ses ON ses.id = s.session_id
                     WHERE ses.status='open'
@@ -836,7 +878,10 @@ class JumpsRepository(RepositoryBase):
                 )
             except Exception as exc:
                 _raise_reserved_until_migration_error(exc)
-            return [dict(row) for row in rows]
+            mapped = [dict(row) for row in rows]
+            for row in mapped:
+                row.setdefault("created_at", row.get("signup_created_at"))
+            return mapped
 
     async def set_priority_enabled(self, *, session_id: int, enabled: bool) -> bool:
         async with self.pool.acquire() as conn:
