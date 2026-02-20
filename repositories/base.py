@@ -46,6 +46,7 @@ async def create_pool() -> asyncpg.Pool:
     ssl_mode_name = (config.DB_SSL or "disable").strip().lower()
     verify_enabled = bool(getattr(config, "DB_SSL_VERIFY", True))
     ca_file_present = bool((getattr(config, "DB_SSL_CA_FILE", None) or "").strip())
+    db_host = (config.DB_HOST or "").strip() or None
 
     log.info(
         "Initializing DB pool (ssl_mode=%s, using_dsn=%s)",
@@ -62,7 +63,9 @@ async def create_pool() -> asyncpg.Pool:
     }
 
     async def _build_pool(ssl_context) -> asyncpg.Pool:
-        pool_kwargs = {**base_pool_kwargs, "ssl": ssl_context}
+        pool_kwargs = dict(base_pool_kwargs)
+        if ssl_context is not None:
+            pool_kwargs["ssl"] = ssl_context
         if db_url:
             return await asyncpg.create_pool(dsn=db_url, **pool_kwargs)
         return await asyncpg.create_pool(
@@ -81,8 +84,9 @@ async def create_pool() -> asyncpg.Pool:
         if cert_exc is None:
             raise
         hint = (
-            "If using a managed DB with valid CA, set DB_SSL_VERIFY=true and do not disable verify. "
-            "If your provider uses a custom/self-signed CA, set DB_SSL_CA_FILE to the CA bundle. "
+            "TLS certificate verification failed. Ensure CA certificates are installed in the runtime image "
+            "or set DB_SSL_CA_FILE to a valid PEM bundle. "
+            "If using a managed DB with valid CA, keep DB_SSL_VERIFY=true. "
             "If you accept insecure fallback for non-prod, set DB_SSL_ALLOW_INSECURE_FALLBACK=true or DB_SSL_VERIFY=false."
         )
         log_event(
@@ -95,6 +99,7 @@ async def create_pool() -> asyncpg.Pool:
             ssl_mode=ssl_mode_name,
             verify_enabled=verify_enabled,
             ca_file_present=ca_file_present,
+            host=db_host,
             hint=hint,
             exc_info=True,
         )
