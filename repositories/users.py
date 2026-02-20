@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 import asyncpg
 
 from .base import RepositoryBase
+
+log = logging.getLogger("happy_jumper.repositories.users")
 
 
 class UsersRepository(RepositoryBase):
@@ -14,7 +18,6 @@ class UsersRepository(RepositoryBase):
             )
             return dict(row) if row else None
 
-
     async def list_all_user_api_keys(self) -> list[dict]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
@@ -25,7 +28,6 @@ class UsersRepository(RepositoryBase):
                 """
             )
             return [dict(row) for row in rows]
-
 
     async def upsert_user_api_key(
         self,
@@ -57,22 +59,70 @@ class UsersRepository(RepositoryBase):
                     timezone_name,
                 )
             except asyncpg.UndefinedColumnError as exc:
-                if "torn_name" not in str(exc) and "timezone_name" not in str(exc):
+                error_text = str(exc)
+                missing_torn_name = "torn_name" in error_text
+                missing_timezone = "timezone_name" in error_text
+
+                if missing_torn_name and not missing_timezone:
+                    log.warning(
+                        "user_api_keys.torn_name missing; falling back to upsert without torn_name"
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO user_api_keys (discord_id, torn_user_id, encrypted_key, timezone_name, created_at, updated_at)
+                        VALUES ($1, $2, $3, $4, NOW(), NOW())
+                        ON CONFLICT (discord_id)
+                        DO UPDATE SET
+                            torn_user_id = EXCLUDED.torn_user_id,
+                            encrypted_key = EXCLUDED.encrypted_key,
+                            timezone_name = COALESCE(NULLIF(BTRIM(EXCLUDED.timezone_name), ''), user_api_keys.timezone_name),
+                            updated_at = NOW()
+                        """,
+                        discord_id,
+                        torn_user_id,
+                        encrypted_key,
+                        timezone_name,
+                    )
+                elif missing_timezone and not missing_torn_name:
+                    log.warning(
+                        "user_api_keys.timezone_name missing; falling back to upsert without timezone_name"
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO user_api_keys (discord_id, torn_user_id, torn_name, encrypted_key, created_at, updated_at)
+                        VALUES ($1, $2, $3, $4, NOW(), NOW())
+                        ON CONFLICT (discord_id)
+                        DO UPDATE SET
+                            torn_user_id = EXCLUDED.torn_user_id,
+                            torn_name = EXCLUDED.torn_name,
+                            encrypted_key = EXCLUDED.encrypted_key,
+                            updated_at = NOW()
+                        """,
+                        discord_id,
+                        torn_user_id,
+                        torn_name,
+                        encrypted_key,
+                    )
+                elif missing_torn_name and missing_timezone:
+                    log.warning(
+                        "user_api_keys.torn_name and user_api_keys.timezone_name missing; falling back to minimal upsert"
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO user_api_keys (discord_id, torn_user_id, encrypted_key, created_at, updated_at)
+                        VALUES ($1, $2, $3, NOW(), NOW())
+                        ON CONFLICT (discord_id)
+                        DO UPDATE SET
+                            torn_user_id = EXCLUDED.torn_user_id,
+                            encrypted_key = EXCLUDED.encrypted_key,
+                            updated_at = NOW()
+                        """,
+                        discord_id,
+                        torn_user_id,
+                        encrypted_key,
+                    )
+                else:
                     raise
-                await conn.execute(
-                    """
-                    INSERT INTO user_api_keys (discord_id, torn_user_id, encrypted_key, created_at, updated_at)
-                    VALUES ($1, $2, $3, NOW(), NOW())
-                    ON CONFLICT (discord_id)
-                    DO UPDATE SET
-                        torn_user_id = EXCLUDED.torn_user_id,
-                        encrypted_key = EXCLUDED.encrypted_key,
-                        updated_at = NOW()
-                    """,
-                    discord_id,
-                    torn_user_id,
-                    encrypted_key,
-                )
 
     async def update_timezone(self, discord_id: int, timezone_name: str) -> None:
         async with self.pool.acquire() as conn:
