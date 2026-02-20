@@ -29,17 +29,30 @@ def pool_is_open(pool: Optional[asyncpg.Pool]) -> bool:
 
 async def create_pool() -> asyncpg.Pool:
     ssl_mode = config.get_db_ssl_config()
-    log.info("Initializing DB pool (ssl_mode=%s)", (config.DB_SSL or "disable").strip().lower())
-    pool = await asyncpg.create_pool(
-        host=config.DB_HOST,
-        port=config.DB_PORT,
-        database=config.DB_NAME,
-        user=config.DB_USER,
-        password=config.DB_PASSWORD,
-        ssl=ssl_mode,
-        min_size=2,
-        max_size=10,
-        command_timeout=60,
-        # Keep asyncpg statement cache enabled (default) for parameterized query performance.
+    db_url = (config.DATABASE_URL or "").strip() or None
+    log.info(
+        "Initializing DB pool (ssl_mode=%s, using_dsn=%s)",
+        (config.DB_SSL or "disable").strip().lower(),
+        bool(db_url),
     )
+    pool_kwargs = {
+        "ssl": ssl_mode,
+        "min_size": 2,
+        "max_size": 10,
+        "command_timeout": 60,
+    }
+    if db_url:
+        pool = await asyncpg.create_pool(
+            dsn=db_url,
+            **pool_kwargs,
+        )
+    else:
+        pool = await asyncpg.create_pool(
+            host=config.DB_HOST,
+            port=config.DB_PORT,
+            database=config.DB_NAME,
+            user=config.DB_USER,
+            password=config.DB_PASSWORD,
+            **pool_kwargs,
+        )
     return pool
