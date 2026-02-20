@@ -5,6 +5,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from utils.tasks import TaskSupervisor, supervise
+
 from utils import get_database, get_security_manager, get_torn_api
 from repositories.users import UsersRepository
 from repositories.jumps import JumpsRepository
@@ -20,7 +22,7 @@ class JumpMonitor:
     def __init__(self, poll_interval_seconds: int = 10):
         self.poll_interval_seconds = poll_interval_seconds
         self.overdose_poll_interval_seconds = 45
-        self._tasks: dict[int, asyncio.Task] = {}
+        self._tasks: dict[int, TaskSupervisor] = {}
         self._statuses: dict[int, dict[int, dict[str, Any]]] = {}
         self._needs_refresh: set[int] = set()
         self._last_overdose_poll_at: dict[int, datetime] = {}
@@ -28,23 +30,32 @@ class JumpMonitor:
         self._start_countdown: dict[int, datetime] = {}
 
     async def start(self, jump_id: int) -> None:
-        if jump_id in self._tasks and not self._tasks[jump_id].done():
+        existing = self._tasks.get(jump_id)
+        if existing is not None:
             return
 
-        self._tasks[jump_id] = asyncio.create_task(self._poll_loop(jump_id))
+        self._tasks[jump_id] = supervise(
+            name=f"jump_monitor:{jump_id}",
+            coro_factory=lambda: self._poll_loop(jump_id),
+            restart=True,
+            backoff=(1, 2, 5, 10),
+            logger=log,
+        )
 
     async def stop(self, jump_id: int) -> None:
         task = self._tasks.pop(jump_id, None)
         if task:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await task.stop()
         self._statuses.pop(jump_id, None)
         self._needs_refresh.discard(jump_id)
         self._last_overdose_poll_at.pop(jump_id, None)
         self._start_countdown.pop(jump_id, None)
+
+
+    async def stop_all(self) -> None:
+        jump_ids = list(self._tasks.keys())
+        for jump_id in jump_ids:
+            await self.stop(jump_id)
 
     def get_status(self, jump_id: int) -> dict[int, dict[str, Any]]:
         return self._statuses.get(jump_id, {})
@@ -61,16 +72,10 @@ class JumpMonitor:
 
     async def _poll_loop(self, jump_id: int) -> None:
         while True:
-            try:
-                keep_running = await self._poll_once(jump_id)
-                if not keep_running:
-                    self._tasks.pop(jump_id, None)
-                    return
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("Jump monitor poll failed for jump_id=%s", jump_id)
-
+            keep_running = await self._poll_once(jump_id)
+            if not keep_running:
+                self._tasks.pop(jump_id, None)
+                return
             await asyncio.sleep(self.poll_interval_seconds)
 
     async def _poll_once(self, jump_id: int) -> bool:
@@ -225,3 +230,11 @@ def get_jump_monitor() -> JumpMonitor:
     if _jump_monitor is None:
         _jump_monitor = JumpMonitor()
     return _jump_monitor
+
+
+async def shutdown_jump_monitor() -> None:
+    global _jump_monitor
+    if _jump_monitor is not None:
+        await _jump_monitor.stop_all()
+        _jump_monitor = None
+

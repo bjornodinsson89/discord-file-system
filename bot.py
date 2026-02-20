@@ -10,7 +10,10 @@ import sys
 import config
 from aiohttp import web
 from cogs.events import bot
+from services.jump_monitor import shutdown_jump_monitor
 from utils.database import get_pool, is_initialized as db_is_initialized
+from utils.tasks import supervise
+from views.components import shutdown_status_panel_tasks
 
 
 logging.basicConfig(
@@ -64,16 +67,32 @@ async def health_server():
     await site.start()
     log.info(f"Health check server started on port {port}")
 
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
+
 
 async def main() -> None:
     config.validate_config()
     log.info("Starting Discord bot service")
 
     # Start health server FIRST (opens port for Railway health checks)
-    asyncio.create_task(health_server())
+    health_supervisor = supervise(
+        name="health_server",
+        coro_factory=health_server,
+        restart=True,
+        backoff=(1, 2, 5, 10),
+        logger=log,
+    )
 
-    async with bot:
-        await bot.start(config.DISCORD_TOKEN)
+    try:
+        async with bot:
+            await bot.start(config.DISCORD_TOKEN)
+    finally:
+        await health_supervisor.stop()
+        await shutdown_status_panel_tasks()
+        await shutdown_jump_monitor()
 
 
 if __name__ == "__main__":
