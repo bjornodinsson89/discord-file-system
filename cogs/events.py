@@ -1439,15 +1439,31 @@ def build_99k_announcement_content(session: dict, signed_up: int, paid: int, hos
     )
 
 
+def _resolve_99k_signup_channel_id(settings: dict | None, fallback_channel_id: int | None = None) -> int | None:
+    settings = settings or {}
+    for key in ("jump_99k_channel_id", "announce_channel_id"):
+        raw = settings.get(key)
+        try:
+            channel_id = int(raw or 0)
+        except (TypeError, ValueError):
+            channel_id = 0
+        if channel_id > 0:
+            return channel_id
+    try:
+        fallback = int(fallback_channel_id or 0)
+    except (TypeError, ValueError):
+        fallback = 0
+    return fallback if fallback > 0 else None
+
+
 def build_99k_jump_created_announcement_content(session: dict, settings: dict | None = None) -> str:
     start_text = _format_session_start_display(session)
     max_slots = int(session.get("max_slots") or 0)
     price_amount = int(session.get("price_amount") or 0)
     price_item_label = _format_99k_price_item_label(session.get("price_item"))
     priority_text = _priority_status_text(session)
-    settings = settings or {}
-    jump_channel_id = int(settings.get("jump_99k_channel_id") or 0)
-    if jump_channel_id > 0:
+    jump_channel_id = _resolve_99k_signup_channel_id(settings)
+    if jump_channel_id:
         purchase_line = f"To purchase a spot, go to <#{jump_channel_id}> and use the signup message/buttons."
     else:
         purchase_line = "To purchase a spot, use the jump signup channel configured in /setup."
@@ -1526,10 +1542,11 @@ async def upsert_99k_announcement(
     guild_settings = settings
     if guild_settings is None:
         guild_settings = await GuildSettingsRepository(get_database()).get_or_create(int(guild_id))
-    if bool(guild_settings.get("disable_99k_announcements", False)):
-        return
 
-    target_channel_id = int(channel_id or session.get("announce_channel_id") or 0)
+    target_channel_id = _resolve_99k_signup_channel_id(
+        guild_settings,
+        channel_id or session.get("announce_channel_id"),
+    ) or 0
     if target_channel_id <= 0:
         return
 
@@ -1539,6 +1556,7 @@ async def upsert_99k_announcement(
         try:
             channel = await (guild.fetch_channel(target_channel_id) if guild else bot.fetch_channel(target_channel_id))
         except Exception:
+            log.exception("Failed to resolve 99k signup panel channel guild_id=%s channel_id=%s session_id=%s", guild_id, target_channel_id, session_id)
             return
 
     host_discord_id = int(session.get("host_discord_id") or 0)
@@ -1558,6 +1576,7 @@ async def upsert_99k_announcement(
         except discord.NotFound:
             pass
         except Exception:
+            log.exception("Failed to edit existing 99k signup panel session_id=%s channel_id=%s message_id=%s", session_id, getattr(channel, "id", None), announce_message_id)
             return
 
     try:
@@ -1584,7 +1603,7 @@ async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:
             settings=settings,
         )
     except Exception:
-        pass
+        log.exception("Failed to refresh 99k signup panel session_id=%s", session_id)
 
 
 def _format_cd_hhmm(seconds: int | None) -> str:
@@ -2947,7 +2966,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 return
 
             notes = str(self.notes.value).strip() or None
-            announce_channel_id = self.settings.get("announce_channel_id")
+            announce_channel_id = _resolve_99k_signup_channel_id(self.settings, interaction.channel.id if interaction.channel else None)
             if self.session:
                 await repo.update_session(int(self.session["id"]), title=title, scheduled_start_text=scheduled, start_time=start_time, max_slots=slots, notes=notes, price_item=raw_payment_type, price_amount=price_amount)
                 session_id = int(self.session["id"])
@@ -3109,7 +3128,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                             "I couldn't finish setting up the private jump channel. Please fix my channel permissions in this category (view/send/embed/manage) and retry."
                         ) from channel_setup_error
 
-            target_channel_id = int(announce_channel_id) if announce_channel_id else (interaction.channel.id if interaction.channel else None)
+            target_channel_id = _resolve_99k_signup_channel_id(self.settings, interaction.channel.id if interaction.channel else None)
             await upsert_99k_announcement(
                 bot=interaction.client,
                 repo=repo,
@@ -3310,6 +3329,10 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
             return f"{label}: ✅"
         return f"{label}: ❌ ({reason})"
 
+    def _missing_perms_reason(*perm_names: str) -> str:
+        filtered = [name for name in perm_names if name]
+        return f"missing_perms:{'/'.join(filtered)}" if filtered else "missing_perms"
+
     async def _resolve_channel(guild_obj: discord.Guild, channel_id: int) -> tuple[Optional[discord.abc.GuildChannel], Optional[str]]:
         channel_obj = guild_obj.get_channel(channel_id)
         if channel_obj is not None:
@@ -3333,23 +3356,44 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
             return False, "exception:GuildUnavailable"
         channel_obj, channel_reason = await _resolve_channel(guild_obj, int(channel_id))
         if channel_reason:
+            if channel_reason == "forbidden":
+                return False, _missing_perms_reason("ViewChannel", "ReadMessageHistory")
             return (channel_reason == "not_found"), channel_reason
         if channel_obj is None:
             return False, "exception:ChannelResolution"
 
+        fetch_message = getattr(channel_obj, "fetch_message", None)
+        if not callable(fetch_message):
+            return True, "not_messageable_channel"
+
         me = guild_obj.me
-        perms = channel_obj.permissions_for(me) if me else None
-        if not perms or not perms.view_channel or not perms.read_message_history:
-            return False, "missing_read_history"
+        if me is None:
+            try:
+                me = await _resolve_bot_member(guild_obj)
+            except Exception:
+                me = None
+
+        if me is not None:
+            try:
+                perms = channel_obj.permissions_for(me)
+            except Exception:
+                perms = None
+            if perms is not None:
+                if not perms.view_channel:
+                    return False, _missing_perms_reason("ViewChannel")
+                if not perms.read_message_history:
+                    return False, _missing_perms_reason("ReadMessageHistory")
+                if not perms.manage_messages:
+                    return False, _missing_perms_reason("ManageMessages")
 
         try:
-            message = await channel_obj.fetch_message(int(message_id))
+            message = await fetch_message(int(message_id))
             await message.delete(reason=f"99k session {session['id']} ended: remove {label}")
             return True, "ok"
         except discord.NotFound:
             return True, "not_found"
         except discord.Forbidden:
-            return False, "forbidden"
+            return False, _missing_perms_reason("ManageMessages")
         except Exception as exc:
             log.exception("Failed to remove %s for 99k session %s", label, session.get("id"))
             return False, f"exception:{type(exc).__name__}"
@@ -3362,14 +3406,24 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
             return False, "exception:GuildUnavailable"
         channel_obj, channel_reason = await _resolve_channel(guild_obj, int(channel_id))
         if channel_reason:
+            if channel_reason == "forbidden":
+                return False, _missing_perms_reason("ViewChannel")
             return (channel_reason == "not_found"), channel_reason
         if channel_obj is None:
             return False, "exception:ChannelResolution"
 
         me = guild_obj.me
-        perms = channel_obj.permissions_for(me) if me else None
-        if not perms or not perms.manage_channels:
-            return False, "missing_manage_channels"
+        if me is None:
+            try:
+                me = await _resolve_bot_member(guild_obj)
+            except Exception:
+                me = None
+        if me is not None:
+            perms = channel_obj.permissions_for(me)
+            if not perms.view_channel:
+                return False, _missing_perms_reason("ViewChannel")
+            if not perms.manage_channels:
+                return False, _missing_perms_reason("ManageChannels")
 
         try:
             await channel_obj.delete(reason=f"99k session {session['id']} ended")
@@ -3377,41 +3431,46 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
         except discord.NotFound:
             return True, "not_found"
         except discord.Forbidden:
-            return False, "forbidden"
+            return False, _missing_perms_reason("ManageChannels")
         except Exception as exc:
             log.exception("Failed to delete private 99k channel for session %s", session.get("id"))
             return False, f"exception:{type(exc).__name__}"
 
     session_id = int(session["id"])
+    announce_channel_id = int(session["announce_channel_id"]) if session.get("announce_channel_id") else None
+    announce_message_id = int(session["announce_message_id"]) if session.get("announce_message_id") else None
     private_channel_id = int(session["private_channel_id"]) if session.get("private_channel_id") else None
     roster_channel_id = int(session["roster_channel_id"]) if session.get("roster_channel_id") else None
     roster_message_id = int(session["roster_message_id"]) if session.get("roster_message_id") else None
     host_controls_channel_id = int(session["host_controls_channel_id"]) if session.get("host_controls_channel_id") else None
     host_controls_message_id = int(session["host_controls_message_id"]) if session.get("host_controls_message_id") else None
 
-    panel_channel_id = roster_channel_id or private_channel_id
-    purchase_result = await _delete_message(panel_channel_id, roster_message_id, label="purchase panel")
+    signup_panel_result = await _delete_message(announce_channel_id, announce_message_id, label="signup panel")
+    roster_panel_channel_id = roster_channel_id or private_channel_id
+    roster_result = await _delete_message(roster_panel_channel_id, roster_message_id, label="roster panel")
     host_controls_result = await _delete_message(host_controls_channel_id, host_controls_message_id, label="host controls")
     channel_result = await _delete_channel(private_channel_id)
 
-    if purchase_result[0]:
-        await repo.clear_roster_message(session_id)
+    if signup_panel_result[0]:
+        await repo.clear_announcement_message(session_id)
+    if roster_result[0]:
+        await repo.clear_roster_panel_message(session_id)
     if host_controls_result[0]:
         await repo.clear_host_controls_message(session_id)
     if channel_result[0]:
         await repo.clear_private_channel_only(session_id)
 
-    cleanup_complete = channel_result[0] and purchase_result[0]
+    cleanup_complete = signup_panel_result[0] and roster_result[0] and host_controls_result[0] and channel_result[0]
     if cleanup_complete:
         await repo.mark_cleaned(session_id)
 
     summary_lines = [
         f"Ended session #{session['id']}.",
+        _result_line("Signup panel removed", signup_panel_result),
+        _result_line("Roster panel removed", roster_result),
+        _result_line("Host controls removed", host_controls_result),
         _result_line("Private channel deleted", channel_result),
-        _result_line("Purchase panel removed", purchase_result),
     ]
-    if host_controls_channel_id or host_controls_message_id:
-        summary_lines.append(_result_line("Host controls removed", host_controls_result))
     if not cleanup_complete:
         summary_lines.append("Cleanup incomplete; fix permissions and run /99k end again to retry.")
 
