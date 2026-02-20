@@ -678,9 +678,9 @@ async def register_persistent_roster_views() -> None:
 
 
 async def register_persistent_signup_views() -> None:
-    """Register persistent signup views for open session announcement panels."""
+    """Register persistent signup views for all open sessions."""
     db = get_database()
-    sessions = await JumpsRepository(db.pool).list_open_sessions_with_announcement_panels()
+    sessions = await JumpsRepository(db.pool).list_open_sessions()
     for session in sessions:
         session_id = int(session["id"])
         max_slots = int(session.get("max_slots") or 0)
@@ -2971,40 +2971,63 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     channel_name = _build_99k_private_channel_name(host_torn_name, int(session_id), existing_names)
 
                     category = interaction.channel.category if isinstance(interaction.channel, discord.TextChannel) else None
-                    private_channel = await interaction.guild.create_text_channel(
-                        name=channel_name,
-                        category=category,
-                        overwrites=overwrites,
-                        reason="99k jump session channel",
-                    )
-
-                    panel_embed, panel_view = await build_roster_panel(int(session_id), private_channel)
-                    roster_msg = await private_channel.send(embed=panel_embed, view=panel_view)
-                    await repo.set_private_channel(session_id, channel_id=private_channel.id, roster_message_id=roster_msg.id)
-                    await repo.set_roster_panel_message(
-                        int(session_id),
-                        channel_id=int(private_channel.id),
-                        message_id=int(roster_msg.id),
-                    )
-                    await repo.touch_roster_refreshed(int(session_id))
-
-                    host_controls_embed = discord.Embed(
-                        title="Host Controls",
-                        description="Manual add bypasses payment verification.",
-                        color=discord.Color.dark_teal(),
-                    )
-                    host_controls_msg = await private_channel.send(
-                        embed=host_controls_embed,
-                        view=Jump99kHostControlsView(int(session_id)),
-                    )
+                    private_channel: discord.TextChannel | None = None
                     try:
-                        await repo.set_host_controls_message(
+                        private_channel = await interaction.guild.create_text_channel(
+                            name=channel_name,
+                            category=category,
+                            overwrites=overwrites,
+                            reason="99k jump session channel",
+                        )
+                        await repo.set_private_channel_id_only(int(session_id), channel_id=int(private_channel.id))
+
+                        panel_embed, panel_view = await build_roster_panel(int(session_id), private_channel)
+                        roster_msg = await private_channel.send(embed=panel_embed, view=panel_view)
+                        await repo.set_roster_panel_message(
                             int(session_id),
                             channel_id=int(private_channel.id),
-                            message_id=int(host_controls_msg.id),
+                            message_id=int(roster_msg.id),
                         )
-                    except asyncpg.UndefinedColumnError:
-                        pass
+                        await repo.touch_roster_refreshed(int(session_id))
+
+                        host_controls_embed = discord.Embed(
+                            title="Host Controls",
+                            description="Manual add bypasses payment verification.",
+                            color=discord.Color.dark_teal(),
+                        )
+                        host_controls_msg = await private_channel.send(
+                            embed=host_controls_embed,
+                            view=Jump99kHostControlsView(int(session_id)),
+                        )
+                        try:
+                            await repo.set_host_controls_message(
+                                int(session_id),
+                                channel_id=int(private_channel.id),
+                                message_id=int(host_controls_msg.id),
+                            )
+                        except asyncpg.UndefinedColumnError:
+                            pass
+                    except Exception as channel_setup_error:
+                        channel_id = int(private_channel.id) if private_channel else None
+                        log.exception(
+                            "99k private channel setup failed for session_id=%s channel_id=%s",
+                            session_id,
+                            channel_id,
+                        )
+                        if private_channel and interaction.guild and interaction.guild.me:
+                            try:
+                                perms = private_channel.permissions_for(interaction.guild.me)
+                                if perms.manage_channels:
+                                    await private_channel.delete(reason=f"99k setup rollback failed: {type(channel_setup_error).__name__}")
+                            except Exception:
+                                log.exception(
+                                    "Failed to delete private channel after setup error session_id=%s channel_id=%s",
+                                    session_id,
+                                    channel_id,
+                                )
+                        raise RuntimeError(
+                            "I couldn't finish setting up the private jump channel. Please fix my channel permissions in this category (view/send/embed/manage) and retry."
+                        ) from channel_setup_error
 
             target_channel_id = int(announce_channel_id) if announce_channel_id else (interaction.channel.id if interaction.channel else None)
             await upsert_99k_announcement(
@@ -3051,7 +3074,10 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     )
         except Exception as e:
             log.exception("99k session modal submit failed: %s", e)
-            err = create_error_embed("99k start failed", f"{type(e).__name__}: {e}")
+            if isinstance(e, RuntimeError):
+                err = create_error_embed("99k start failed", str(e))
+            else:
+                err = create_error_embed("99k start failed", f"{type(e).__name__}: {e}")
             if interaction.response.is_done():
                 await interaction.followup.send(embed=err, ephemeral=True)
             else:
@@ -3954,7 +3980,7 @@ async def overdose_monitor():
             jumps_repo=jumps_repo,
         )
 
-        sessions = await jumps_repo.list_open_sessions()
+        sessions = await jumps_repo.list_open_sessions_for_monitoring()
         now = datetime.now(timezone.utc)
         for session in sessions:
             session_id = int(session["id"])

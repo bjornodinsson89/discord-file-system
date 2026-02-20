@@ -178,6 +178,20 @@ class JumpsRepository(RepositoryBase):
                 roster_message_id,
             )
 
+    async def set_private_channel_id_only(self, session_id: int, *, channel_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET private_channel_id = $2,
+                    roster_channel_id = $2,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+                channel_id,
+            )
+
     async def set_roster_panel_message(self, session_id: int, *, channel_id: int, message_id: int) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -278,7 +292,34 @@ class JumpsRepository(RepositoryBase):
     async def list_open_sessions(self) -> list[dict]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM jump_99k_sessions WHERE status='open' ORDER BY created_at DESC"
+                """
+                SELECT id,
+                       guild_id,
+                       max_slots,
+                       status,
+                       signups_locked
+                FROM jump_99k_sessions
+                WHERE status = 'open'
+                ORDER BY created_at DESC
+                """
+            )
+            return [dict(row) for row in rows]
+
+    async def list_open_sessions_for_monitoring(self) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id,
+                       guild_id,
+                       host_discord_id,
+                       private_channel_id,
+                       max_slots,
+                       status,
+                       signups_locked
+                FROM jump_99k_sessions
+                WHERE status = 'open'
+                ORDER BY created_at DESC
+                """
             )
             return [dict(row) for row in rows]
 
