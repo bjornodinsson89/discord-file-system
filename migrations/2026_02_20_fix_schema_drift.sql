@@ -1,4 +1,7 @@
 DO $$
+DECLARE
+    signups_has_participant_discord_id BOOLEAN;
+    signups_has_discord_id BOOLEAN;
 BEGIN
     IF to_regclass('public.jump_99k_insurance_requests') IS NOT NULL THEN
         IF EXISTS (
@@ -28,13 +31,39 @@ BEGIN
         END IF;
 
         IF to_regclass('public.jump_99k_signups') IS NOT NULL THEN
-            EXECUTE '
-                UPDATE public.jump_99k_insurance_requests AS req
-                SET participant_discord_id = COALESCE(req.participant_discord_id, signup.discord_id)
-                FROM public.jump_99k_signups AS signup
-                WHERE req.session_id = signup.session_id
-                  AND req.participant_discord_id IS NULL
-            ';
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'jump_99k_signups'
+                  AND column_name = 'participant_discord_id'
+            ) INTO signups_has_participant_discord_id;
+
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'jump_99k_signups'
+                  AND column_name = 'discord_id'
+            ) INTO signups_has_discord_id;
+
+            IF signups_has_participant_discord_id THEN
+                EXECUTE '
+                    UPDATE public.jump_99k_insurance_requests AS req
+                    SET participant_discord_id = COALESCE(req.participant_discord_id, signup.participant_discord_id)
+                    FROM public.jump_99k_signups AS signup
+                    WHERE req.session_id = signup.session_id
+                      AND req.participant_discord_id IS NULL
+                ';
+            ELSIF signups_has_discord_id THEN
+                EXECUTE '
+                    UPDATE public.jump_99k_insurance_requests AS req
+                    SET participant_discord_id = COALESCE(req.participant_discord_id, signup.discord_id)
+                    FROM public.jump_99k_signups AS signup
+                    WHERE req.session_id = signup.session_id
+                      AND req.participant_discord_id IS NULL
+                ';
+            END IF;
         END IF;
 
         IF EXISTS (
