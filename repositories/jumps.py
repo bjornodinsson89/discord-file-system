@@ -28,6 +28,13 @@ _READINESS_MIGRATION_HINT = (
     "Missing jump_99k_readiness.booster_cooldown column. Run manual SQL migration before readiness polling."
 )
 
+_JUMP_PROGRESS_MIGRATION_HINT = (
+    "Missing 99k jump progress schema columns (host_jump_state/jump_state). "
+    "Run migration 2026_02_18_add_99k_jump_progress.sql."
+)
+
+_ALLOWED_SIGNUP_STATUSES = {"reserved", "signed_up"}
+
 
 def _raise_reserved_until_migration_error(exc: Exception) -> None:
     if isinstance(exc, asyncpg.UndefinedColumnError) and "reserved_until" in str(exc):
@@ -276,20 +283,25 @@ class JumpsRepository(RepositoryBase):
         guild_id: int,
         discord_id: int,
         torn_user_id: Optional[int],
+        status: str,
         reserved_until: Optional[datetime] = None,
     ) -> None:
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in _ALLOWED_SIGNUP_STATUSES:
+            raise ValueError(f"status must be one of {_ALLOWED_SIGNUP_STATUSES}.")
         try:
             await conn.execute(
                 """
                 INSERT INTO jump_99k_signups (session_id, guild_id, participant_discord_id, participant_torn_user_id, status, reserved_until)
-                VALUES ($1,$2,$3,$4,'signed_up',$5)
+                VALUES ($1,$2,$3,$4,$5,$6)
                 ON CONFLICT (session_id, participant_discord_id)
-                DO UPDATE SET status = 'signed_up', participant_torn_user_id = EXCLUDED.participant_torn_user_id, reserved_until = EXCLUDED.reserved_until
+                DO UPDATE SET status = EXCLUDED.status, participant_torn_user_id = EXCLUDED.participant_torn_user_id, reserved_until = EXCLUDED.reserved_until
                 """,
                 session_id,
                 guild_id,
                 discord_id,
                 torn_user_id,
+                normalized_status,
                 reserved_until,
             )
         except Exception as exc:
@@ -303,6 +315,7 @@ class JumpsRepository(RepositoryBase):
                 guild_id=guild_id,
                 discord_id=discord_id,
                 torn_user_id=torn_user_id,
+                status="reserved",
                 reserved_until=reserved_until,
             )
 
@@ -378,33 +391,37 @@ class JumpsRepository(RepositoryBase):
 
     async def get_jump_progress(self, session_id: int) -> dict:
         async with self.pool.acquire() as conn:
-            session_row = await conn.fetchrow(
-                """
-                SELECT host_jump_state, host_jump_started_at, host_jump_ended_at
-                FROM jump_99k_sessions
-                WHERE id = $1
-                """,
-                session_id,
-            )
-            if not session_row:
-                return {"host": {"state": "waiting", "started_at": None, "ended_at": None}, "signups": []}
+            try:
+                session_row = await conn.fetchrow(
+                    """
+                    SELECT host_jump_state, host_jump_started_at, host_jump_ended_at
+                    FROM jump_99k_sessions
+                    WHERE id = $1
+                    """,
+                    session_id,
+                )
+                if not session_row:
+                    return {"host": {"state": "waiting", "started_at": None, "ended_at": None}, "signups": []}
 
-            signup_rows = await conn.fetch(
-                """
-                SELECT
-                    s.id,
-                    s.participant_discord_id AS discord_id,
-                    COALESCE(NULLIF(s.jump_state, ''), 'waiting') AS state,
-                    s.jump_started_at AS started_at,
-                    s.jump_ended_at AS ended_at
-                FROM jump_99k_signups s
-                WHERE s.session_id = $1
-                  AND s.payment_verified = TRUE
-                  AND s.status IN ('signed_up', 'completed', 'not_completed')
-                ORDER BY s.is_priority DESC, s.id ASC
-                """,
-                session_id,
-            )
+                signup_rows = await conn.fetch(
+                    """
+                    SELECT
+                        s.id,
+                        s.participant_discord_id AS discord_id,
+                        COALESCE(NULLIF(s.jump_state, ''), 'waiting') AS state,
+                        s.jump_started_at AS started_at,
+                        s.jump_ended_at AS ended_at
+                    FROM jump_99k_signups s
+                    WHERE s.session_id = $1
+                      AND s.payment_verified = TRUE
+                      AND s.status IN ('signed_up', 'completed', 'not_completed')
+                    ORDER BY s.is_priority DESC, s.id ASC
+                    """,
+                    session_id,
+                )
+            except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+                log.error(_JUMP_PROGRESS_MIGRATION_HINT)
+                return {"host": {"state": "waiting", "started_at": None, "ended_at": None}, "signups": []}
 
         return {
             "host": {
@@ -423,60 +440,61 @@ class JumpsRepository(RepositoryBase):
             return False, "Invalid roster position."
 
         async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                session = await conn.fetchrow(
-                    """
-                    SELECT id,
-                           COALESCE(NULLIF(host_jump_state, ''), 'waiting') AS host_jump_state,
-                           host_jump_started_at,
-                           host_jump_ended_at
-                    FROM jump_99k_sessions
-                    WHERE id = $1
-                      AND status = 'open'
-                    FOR UPDATE
-                    """,
-                    session_id,
-                )
-                if not session:
-                    return False, "Session not found."
+            try:
+                async with conn.transaction():
+                    session = await conn.fetchrow(
+                        """
+                        SELECT id,
+                               COALESCE(NULLIF(host_jump_state, ''), 'waiting') AS host_jump_state,
+                               host_jump_started_at,
+                               host_jump_ended_at
+                        FROM jump_99k_sessions
+                        WHERE id = $1
+                          AND status = 'open'
+                        FOR UPDATE
+                        """,
+                        session_id,
+                    )
+                    if not session:
+                        return False, "Session not found."
 
-                signup_rows = await conn.fetch(
-                    """
-                    SELECT id,
-                           participant_discord_id AS discord_id,
-                           COALESCE(NULLIF(jump_state, ''), 'waiting') AS jump_state,
-                           jump_started_at,
-                           jump_ended_at
-                    FROM jump_99k_signups
-                    WHERE session_id = $1
-                      AND payment_verified = TRUE
-                      AND status IN ('signed_up', 'completed', 'not_completed')
-                    ORDER BY is_priority DESC, id ASC
-                    FOR UPDATE
-                    """,
-                    session_id,
-                )
+                    signup_rows = await conn.fetch(
+                        """
+                        SELECT id,
+                               participant_discord_id AS discord_id,
+                               COALESCE(NULLIF(jump_state, ''), 'waiting') AS jump_state,
+                               jump_started_at,
+                               jump_ended_at
+                        FROM jump_99k_signups
+                        WHERE session_id = $1
+                          AND payment_verified = TRUE
+                          AND status IN ('signed_up', 'completed', 'not_completed')
+                        ORDER BY is_priority DESC, id ASC
+                        FOR UPDATE
+                        """,
+                        session_id,
+                    )
 
-                roster_size = 1 + len(signup_rows)
-                if int(position) > roster_size:
-                    return False, f"Position {int(position)} is outside the active roster."
+                    roster_size = 1 + len(signup_rows)
+                    if int(position) > roster_size:
+                        return False, f"Position {int(position)} is outside the active roster."
 
-                states = [str(session.get("host_jump_state") or "waiting")]
-                states.extend(str(r.get("jump_state") or "waiting") for r in signup_rows)
+                    states = [str(session.get("host_jump_state") or "waiting")]
+                    states.extend(str(r.get("jump_state") or "waiting") for r in signup_rows)
 
-                in_progress_pos = next((idx for idx, state in enumerate(states, start=1) if state == "in_progress"), None)
+                    in_progress_pos = next((idx for idx, state in enumerate(states, start=1) if state == "in_progress"), None)
 
-                if normalized_action == "start":
-                    if in_progress_pos is not None:
-                        return False, "A jump is already in progress. End it first."
-                    next_waiting_pos = next((idx for idx, state in enumerate(states, start=1) if state == "waiting"), None)
-                    if next_waiting_pos is None:
-                        return False, "All roster positions are already done."
-                    if int(position) != int(next_waiting_pos):
-                        return False, f"Only Start {int(next_waiting_pos)} is allowed right now."
+                    if normalized_action == "start":
+                        if in_progress_pos is not None:
+                            return False, "A jump is already in progress. End it first."
+                        next_waiting_pos = next((idx for idx, state in enumerate(states, start=1) if state == "waiting"), None)
+                        if next_waiting_pos is None:
+                            return False, "All roster positions are already done."
+                        if int(position) != int(next_waiting_pos):
+                            return False, f"Only Start {int(next_waiting_pos)} is allowed right now."
 
-                    if int(position) == 1:
-                        await conn.execute(
+                        if int(position) == 1:
+                            await conn.execute(
                             """
                             UPDATE jump_99k_sessions
                             SET host_jump_state = 'in_progress',
@@ -491,9 +509,9 @@ class JumpsRepository(RepositoryBase):
                             session_id,
                             actor_discord_id,
                         )
-                    else:
-                        target_signup = signup_rows[int(position) - 2]
-                        await conn.execute(
+                        else:
+                            target_signup = signup_rows[int(position) - 2]
+                            await conn.execute(
                             """
                             UPDATE jump_99k_signups
                             SET jump_state = 'in_progress',
@@ -504,15 +522,15 @@ class JumpsRepository(RepositoryBase):
                             int(target_signup["id"]),
                         )
 
-                    return True, f"Started position {int(position)}."
+                        return True, f"Started position {int(position)}."
 
-                if in_progress_pos is None:
-                    return False, "No jump is currently in progress."
-                if int(position) != int(in_progress_pos):
-                    return False, f"Only End {int(in_progress_pos)} is allowed right now."
+                    if in_progress_pos is None:
+                        return False, "No jump is currently in progress."
+                    if int(position) != int(in_progress_pos):
+                        return False, f"Only End {int(in_progress_pos)} is allowed right now."
 
-                if int(position) == 1:
-                    await conn.execute(
+                    if int(position) == 1:
+                        await conn.execute(
                         """
                         UPDATE jump_99k_sessions
                         SET host_jump_state = 'done',
@@ -523,20 +541,23 @@ class JumpsRepository(RepositoryBase):
                         """,
                         session_id,
                     )
-                else:
-                    target_signup = signup_rows[int(position) - 2]
-                    await conn.execute(
-                        """
-                        UPDATE jump_99k_signups
-                        SET jump_state = 'done',
-                            jump_started_at = COALESCE(jump_started_at, NOW()),
-                            jump_ended_at = NOW()
-                        WHERE id = $1
-                        """,
-                        int(target_signup["id"]),
-                    )
+                    else:
+                        target_signup = signup_rows[int(position) - 2]
+                        await conn.execute(
+                            """
+                            UPDATE jump_99k_signups
+                            SET jump_state = 'done',
+                                jump_started_at = COALESCE(jump_started_at, NOW()),
+                                jump_ended_at = NOW()
+                            WHERE id = $1
+                            """,
+                            int(target_signup["id"]),
+                        )
 
-                return True, f"Ended position {int(position)}."
+                    return True, f"Ended position {int(position)}."
+            except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+                log.error(_JUMP_PROGRESS_MIGRATION_HINT)
+                return False, "Jump progress columns are missing. Ask an admin to run migration 2026_02_18_add_99k_jump_progress.sql."
 
     async def cancel_expired_unpaid(self) -> int:
         async with self.pool.acquire() as conn:
@@ -545,7 +566,7 @@ class JumpsRepository(RepositoryBase):
                     """
                     UPDATE jump_99k_signups
                     SET status='cancelled'
-                    WHERE status='signed_up'
+                    WHERE status='reserved'
                       AND payment_verified=FALSE
                       AND reserved_until IS NOT NULL
                       AND reserved_until <= NOW()
@@ -565,7 +586,7 @@ class JumpsRepository(RepositoryBase):
                     FROM jump_99k_signups s
                     JOIN jump_99k_sessions ses ON ses.id = s.session_id
                     WHERE ses.status='open'
-                      AND s.status='signed_up'
+                      AND s.status='reserved'
                       AND s.payment_verified=FALSE
                       AND s.reserved_until IS NOT NULL
                       AND s.reserved_until > NOW()
@@ -690,6 +711,7 @@ class JumpsRepository(RepositoryBase):
                     guild_id=guild_id,
                     discord_id=user_discord_id,
                     torn_user_id=torn_user_id,
+                    status="signed_up",
                     reserved_until=None,
                 )
 
@@ -782,8 +804,29 @@ class JumpsRepository(RepositoryBase):
 
     async def mark_signup_payment_verified(self, *, session_id: int, discord_id: int) -> bool:
         async with self.pool.acquire() as conn:
+            column_rows = await conn.fetch(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'jump_99k_signups'
+                  AND column_name = ANY($1::text[])
+                """,
+                ["payment_source"],
+            )
+            existing_columns = {str(row["column_name"]) for row in column_rows}
+
+            set_parts = [
+                "payment_verified=true",
+                "payment_verified_at=NOW()",
+                "status='signed_up'",
+                "reserved_until=NULL",
+            ]
+            if "payment_source" in existing_columns:
+                set_parts.append("payment_source='auto'")
+
             row = await conn.fetchrow(
-                "UPDATE jump_99k_signups SET payment_verified=true, payment_verified_at=NOW() WHERE session_id=$1 AND participant_discord_id=$2 RETURNING id",
+                f"UPDATE jump_99k_signups SET {', '.join(set_parts)} WHERE session_id=$1 AND participant_discord_id=$2 RETURNING id",
                 session_id,
                 discord_id,
             )
