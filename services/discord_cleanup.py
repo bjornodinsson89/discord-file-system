@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 import discord
+
+from services.logging_utils import log_event
+
+log = logging.getLogger("happy_jumper.cleanup")
 
 
 def _missing_perms(perms: list[str]) -> str:
@@ -23,17 +29,25 @@ async def _resolve_channel(guild: discord.Guild, channel_id: int):
 
 
 async def delete_message_safe(guild: discord.Guild, channel_id: int | None, message_id: int | None, reason: str, ctx_fields: dict | None = None) -> tuple[bool, str]:
-    del ctx_fields
+    fields = dict(ctx_fields or {})
+    fields.setdefault("guild_id", getattr(guild, "id", None))
+    fields.setdefault("action", "delete_message")
+
     if not channel_id or not message_id:
+        log_event(log, logging.INFO, "cleanup.delete_message", result="missing_ids", channel_id=channel_id, message_id=message_id, **fields)
         return True, "missing_ids"
 
     try:
         channel, status = await _resolve_channel(guild, int(channel_id))
         if status:
-            return (status == "missing_channel"), status
+            ok = status in {"missing_channel"}
+            log_event(log, logging.INFO if ok else logging.WARNING, "cleanup.delete_message", result=status, channel_id=channel_id, message_id=message_id, **fields)
+            return ok, status
+
         fetch_message = getattr(channel, "fetch_message", None)
         if not callable(fetch_message):
-            return True, "not_messageable_channel"
+            log_event(log, logging.WARNING, "cleanup.delete_message", result="not_messageable_channel", channel_id=channel_id, message_id=message_id, **fields)
+            return False, "not_messageable_channel"
 
         me = guild.me
         if me:
@@ -46,29 +60,41 @@ async def delete_message_safe(guild: discord.Guild, channel_id: int | None, mess
             if not perms.manage_messages:
                 missing.append("ManageMessages")
             if missing:
-                return False, _missing_perms(missing)
+                status = _missing_perms(missing)
+                log_event(log, logging.WARNING, "cleanup.delete_message", result=status, channel_id=channel_id, message_id=message_id, **fields)
+                return False, status
 
         msg = await fetch_message(int(message_id))
         await msg.delete(reason=reason)
+        log_event(log, logging.INFO, "cleanup.delete_message", result="ok", channel_id=channel_id, message_id=message_id, **fields)
         return True, "ok"
     except discord.NotFound:
+        log_event(log, logging.INFO, "cleanup.delete_message", result="already_deleted", channel_id=channel_id, message_id=message_id, **fields)
         return True, "already_deleted"
     except discord.Forbidden:
-        return False, _missing_perms(["ManageMessages"])
-    except (TypeError, AttributeError) as exc:
-        return False, f"exception:{type(exc).__name__}"
+        status = _missing_perms(["ManageMessages"])
+        log_event(log, logging.WARNING, "cleanup.delete_message", result=status, channel_id=channel_id, message_id=message_id, **fields)
+        return False, status
     except Exception as exc:
-        return False, f"exception:{type(exc).__name__}"
+        status = f"exception:{type(exc).__name__}"
+        log_event(log, logging.ERROR, "cleanup.delete_message", result=status, error_type=type(exc).__name__, channel_id=channel_id, message_id=message_id, exc_info=True, **fields)
+        return False, status
 
 
 async def delete_channel_safe(guild: discord.Guild, channel_id: int | None, reason: str, ctx_fields: dict | None = None) -> tuple[bool, str]:
-    del ctx_fields
+    fields = dict(ctx_fields or {})
+    fields.setdefault("guild_id", getattr(guild, "id", None))
+    fields.setdefault("action", "delete_channel")
+
     if not channel_id:
+        log_event(log, logging.INFO, "cleanup.delete_channel", result="missing_ids", channel_id=channel_id, **fields)
         return True, "missing_ids"
     try:
         channel, status = await _resolve_channel(guild, int(channel_id))
         if status:
-            return (status == "missing_channel"), status
+            ok = status in {"missing_channel"}
+            log_event(log, logging.INFO if ok else logging.WARNING, "cleanup.delete_channel", result=status, channel_id=channel_id, **fields)
+            return ok, status
         me = guild.me
         if me:
             perms = channel.permissions_for(me)
@@ -78,14 +104,20 @@ async def delete_channel_safe(guild: discord.Guild, channel_id: int | None, reas
             if not perms.manage_channels:
                 missing.append("ManageChannels")
             if missing:
-                return False, _missing_perms(missing)
+                status = _missing_perms(missing)
+                log_event(log, logging.WARNING, "cleanup.delete_channel", result=status, channel_id=channel_id, **fields)
+                return False, status
         await channel.delete(reason=reason)
+        log_event(log, logging.INFO, "cleanup.delete_channel", result="ok", channel_id=channel_id, **fields)
         return True, "ok"
     except discord.NotFound:
+        log_event(log, logging.INFO, "cleanup.delete_channel", result="already_deleted", channel_id=channel_id, **fields)
         return True, "already_deleted"
     except discord.Forbidden:
-        return False, _missing_perms(["ManageChannels"])
-    except (TypeError, AttributeError) as exc:
-        return False, f"exception:{type(exc).__name__}"
+        status = _missing_perms(["ManageChannels"])
+        log_event(log, logging.WARNING, "cleanup.delete_channel", result=status, channel_id=channel_id, **fields)
+        return False, status
     except Exception as exc:
-        return False, f"exception:{type(exc).__name__}"
+        status = f"exception:{type(exc).__name__}"
+        log_event(log, logging.ERROR, "cleanup.delete_channel", result=status, error_type=type(exc).__name__, channel_id=channel_id, exc_info=True, **fields)
+        return False, status
