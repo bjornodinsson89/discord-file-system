@@ -361,6 +361,7 @@ class SetupPanelView(OwnerView):
         embed.add_field(name="Feature Toggles", value=(
             f"Welcome enabled: `{bool(s.get('welcome_enabled'))}`\n"
             f"Raffle announcement enabled: `{bool(s.get('raffle_announce_enabled', True))}`\n"
+            f"99k announcements: `{'Disabled' if bool(s.get('disable_99k_announcements', False)) else 'Enabled'}`\n"
             f"Auto complete: `{bool(s.get('auto_complete_enabled', True))}`\n"
             f"Reservation timeout: `{s.get('reservation_timeout_minutes', 5)}` minutes\n"
             f"Default 99k max slots: `{s.get('default_max_slots', 5)}`\n"
@@ -1002,6 +1003,18 @@ class DefaultMaxSlotsModal(discord.ui.Modal):
             return
         await self.panel.save_changes(interaction, {"default_max_slots": int(raw)})
 class FeatureTogglesView(BackView):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._sync_99k_button_label()
+
+    def _sync_99k_button_label(self) -> None:
+        is_disabled = bool(self.settings.get("disable_99k_announcements", False))
+        label = "99k announcements: OFF (click to enable)" if is_disabled else "99k announcements: ON (click to disable)"
+        for child in self.children:
+            if isinstance(child, discord.ui.Button) and getattr(child.callback, "__name__", "") == "toggle_99k_announcements":
+                child.label = label
+                break
+
     @discord.ui.button(label="Toggle Auto Complete", style=discord.ButtonStyle.primary)
     async def toggle_auto_complete(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
@@ -1014,6 +1027,14 @@ class FeatureTogglesView(BackView):
     async def toggle_raffle_announce(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             await self.panel.save_changes(interaction, {"raffle_announce_enabled": not bool(self.settings.get("raffle_announce_enabled", True))})
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="99k announcements: OFF (click to enable)", style=discord.ButtonStyle.primary, row=1)
+    async def toggle_99k_announcements(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            disable_announcements = bool(self.settings.get("disable_99k_announcements", False))
+            await self.panel.save_changes(interaction, {"disable_99k_announcements": not disable_announcements})
         except Exception as error:
             await _respond_callback_error(interaction, error)
 

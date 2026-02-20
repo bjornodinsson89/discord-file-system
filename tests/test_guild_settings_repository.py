@@ -180,3 +180,16 @@ def test_repo_merge_defaults_includes_raffle_giveaway_purchase_channel_id():
     merged = repo._merge_defaults({}, guild_id=103)
     assert "raffle_giveaway_purchase_channel_id" in merged
     assert merged["raffle_giveaway_purchase_channel_id"] is None
+
+
+def test_repo_merge_defaults_includes_disable_99k_announcements_default_false():
+    repo = GuildSettingsRepository(_DB())
+    merged = repo._merge_defaults({}, guild_id=104)
+    assert "disable_99k_announcements" in merged
+    assert merged["disable_99k_announcements"] is False
+
+
+def test_repo_normalizes_disable_99k_announcements_bool_values():
+    repo = GuildSettingsRepository(_DB())
+    normalized = repo._normalize_updates({"disable_99k_announcements": "true"})
+    assert normalized["disable_99k_announcements"] is True
