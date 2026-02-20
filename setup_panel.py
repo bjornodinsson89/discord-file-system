@@ -361,7 +361,7 @@ class SetupPanelView(OwnerView):
         embed.add_field(name="Feature Toggles", value=(
             f"Welcome enabled: `{bool(s.get('welcome_enabled'))}`\n"
             f"Raffle announcement enabled: `{bool(s.get('raffle_announce_enabled', True))}`\n"
-            f"99k announcements: `{'Disabled' if bool(s.get('disable_99k_announcements', False)) else 'Enabled'}`\n"
+            f"99k ping announcements: `{'Disabled' if bool(s.get('disable_99k_announcements', False)) else 'Enabled'}`\n"
             f"Auto complete: `{bool(s.get('auto_complete_enabled', True))}`\n"
             f"Reservation timeout: `{s.get('reservation_timeout_minutes', 5)}` minutes\n"
             f"Default 99k max slots: `{s.get('default_max_slots', 5)}`\n"
@@ -1009,7 +1009,7 @@ class FeatureTogglesView(BackView):
 
     def _sync_99k_button_label(self) -> None:
         is_disabled = bool(self.settings.get("disable_99k_announcements", False))
-        label = "99k announcements: OFF (click to enable)" if is_disabled else "99k announcements: ON (click to disable)"
+        label = "99k ping announcements: OFF (click to enable)" if is_disabled else "99k ping announcements: ON (click to disable)"
         for child in self.children:
             if isinstance(child, discord.ui.Button) and getattr(child.callback, "__name__", "") == "toggle_99k_announcements":
                 child.label = label
@@ -1030,7 +1030,7 @@ class FeatureTogglesView(BackView):
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
-    @discord.ui.button(label="99k announcements: OFF (click to enable)", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="99k ping announcements: OFF (click to enable)", style=discord.ButtonStyle.primary, row=1)
     async def toggle_99k_announcements(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             disable_announcements = bool(self.settings.get("disable_99k_announcements", False))

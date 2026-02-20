@@ -401,14 +401,14 @@ class PaymentView(ui.View):
             # Try to update embed
             settings = await GuildSettingsRepository(db).get_or_create(interaction.guild.id)
             channel_id = settings.get('jump_99k_channel_id')
-            if (not bool(settings.get('disable_99k_announcements', False))) and channel_id and session.get('announcement_message_id'):
+            if channel_id and session.get('announce_message_id'):
                 try:
                     channel = interaction.guild.get_channel(channel_id)
                     if channel:
-                        message = await channel.fetch_message(session['announcement_message_id'])
+                        message = await channel.fetch_message(session['announce_message_id'])
                         await update_jump_embed(self.session_id, message)
                 except Exception:
-                    pass
+                    log.exception("Failed to refresh jump embed after payment verification session_id=%s", self.session_id)
             
             await interaction.followup.send(
                 embed=create_success_embed("Payment Verified!", "You're all set for the jump!"),
@@ -497,7 +497,7 @@ class InsuranceOfferView(ui.View):
         try:
             await interaction.edit_original_response(view=self)
         except Exception:
-            pass
+            log.exception("Failed to update 99k panel with jump countdown session_id=%s", session_id)
         await interaction.followup.send(embed=create_info_embed("No Problem", "You can request insurance later if needed."), ephemeral=True)
 
 
@@ -1844,6 +1844,21 @@ def _parse_start_delay_seconds(raw_value: str) -> Optional[int]:
     return minutes * 60
 
 
+def get_session_announce_ids(session: dict) -> tuple[int | None, int | None]:
+    channel_id = session.get("announce_channel_id")
+    message_id = session.get("announce_message_id")
+    try:
+        channel_int = int(channel_id) if channel_id else None
+    except (TypeError, ValueError):
+        channel_int = None
+    try:
+        message_int = int(message_id) if message_id else None
+    except (TypeError, ValueError):
+        message_int = None
+    return channel_int, message_int
+
+
+
 async def _start_jump_countdown(interaction: discord.Interaction, session_id: int, delay_seconds: int) -> None:
     db = get_database()
     session = await JumpsRepository(db.pool).get_session(session_id)
@@ -1859,12 +1874,9 @@ async def _start_jump_countdown(interaction: discord.Interaction, session_id: in
     participant_ids = {int(s["discord_id"]) for s in signups}
     participant_ids.add(int(session["host_discord_id"]))
 
-    guild_settings = await GuildSettingsRepository(db).get_or_create(int(interaction.guild_id)) if interaction.guild_id else {}
-    disable_99k_announcements = bool(guild_settings.get("disable_99k_announcements", False))
-
     announcement_url = ""
-    if (not disable_99k_announcements) and interaction.guild and session.get("announcement_channel_id") and session.get("announcement_message_id"):
-        announcement_url = f"https://discord.com/channels/{interaction.guild.id}/{session['announcement_channel_id']}/{session['announcement_message_id']}"
+    if interaction.guild and session.get("announce_channel_id") and session.get("announce_message_id"):
+        announcement_url = f"https://discord.com/channels/{interaction.guild.id}/{session['announce_channel_id']}/{session['announce_message_id']}"
 
     dm_text = (
         f"99k Happy Jump starting in {countdown_text}\n"
@@ -1891,11 +1903,11 @@ async def _start_jump_countdown(interaction: discord.Interaction, session_id: in
     monitor = get_jump_monitor()
     monitor.set_start_countdown(session_id, starts_at)
 
-    if (not disable_99k_announcements) and interaction.guild and session.get("announcement_channel_id") and session.get("announcement_message_id"):
+    if interaction.guild and session.get("announce_channel_id") and session.get("announce_message_id"):
         try:
-            channel = interaction.guild.get_channel(int(session["announcement_channel_id"]))
+            channel = interaction.guild.get_channel(int(session["announce_channel_id"]))
             if channel:
-                announcement_message = await channel.fetch_message(session["announcement_message_id"])
+                announcement_message = await channel.fetch_message(session["announce_message_id"])
                 base_embed = announcement_message.embeds[0] if announcement_message.embeds else None
                 if base_embed:
                     embed = base_embed.copy()
@@ -1917,10 +1929,6 @@ async def update_jump_embed(session_id: int, message: discord.Message) -> str:
         return "error"
 
     guild = getattr(message, "guild", None)
-    if guild is not None:
-        settings = await GuildSettingsRepository(db).get_or_create(int(guild.id))
-        if bool(settings.get("disable_99k_announcements", False)):
-            return "ok"
 
     signups = await JumpsRepository(db.pool).list_signups(session_id)
     readiness = await JumpsRepository(db.pool).list_readiness(session_id)
@@ -1930,7 +1938,7 @@ async def update_jump_embed(session_id: int, message: discord.Message) -> str:
         try:
             await message.edit(embed=embed, view=JumpSessionView(session_id))
         except (discord.Forbidden, discord.HTTPException):
-            log.warning("Jump message edit failed guild=%s channel=%s message=%s", getattr(guild, "id", None), getattr(channel, "id", None), session.get("announcement_message_id"))
+            log.warning("Jump message edit failed guild=%s channel=%s message=%s", getattr(guild, "id", None), getattr(getattr(message, "channel", None), "id", None), session.get("announce_message_id"))
         return "ok"
     except discord.Forbidden:
         log.warning(
@@ -1953,8 +1961,7 @@ async def update_jump_embed(session_id: int, message: discord.Message) -> str:
         return "error"
 
     try:
-        channel_id = session.get('announcement_channel_id')
-        announcement_message_id = session.get('announcement_message_id')
+        channel_id, announcement_message_id = get_session_announce_ids(session)
         guild = getattr(message, 'guild', None)
         if not (guild and channel_id and announcement_message_id):
             return "missing_access"
@@ -1967,22 +1974,22 @@ async def update_jump_embed(session_id: int, message: discord.Message) -> str:
         try:
             await announcement_message.edit(embed=embed, view=JumpSessionView(session_id))
         except (discord.Forbidden, discord.HTTPException):
-            log.warning("Jump announcement edit failed guild=%s channel=%s message=%s", getattr(guild, "id", None), settings.get("jump_99k_channel_id"), session.get("announcement_message_id"))
+            log.warning("Jump announcement edit failed guild=%s channel=%s message=%s", getattr(guild, "id", None), channel_id, session.get("announce_message_id"))
         return "ok"
     except discord.Forbidden:
         log.warning(
             "Update embed missing access guild_id=%s channel_id=%s message_id=%s session_id=%s",
             getattr(getattr(message, "guild", None), "id", None),
-            session.get('announcement_channel_id'),
-            session.get('announcement_message_id'),
+            session.get('announce_channel_id'),
+            session.get('announce_message_id'),
             session_id,
         )
         return "missing_access"
     except discord.HTTPException:
         log.warning(
             "Update embed fallback http error channel_id=%s message_id=%s session_id=%s",
-            session.get('announcement_channel_id'),
-            session.get('announcement_message_id'),
+            session.get('announce_channel_id'),
+            session.get('announce_message_id'),
             session_id,
             exc_info=True,
         )

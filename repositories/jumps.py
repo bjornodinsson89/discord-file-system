@@ -270,6 +270,19 @@ class JumpsRepository(RepositoryBase):
                 session_id,
             )
 
+    async def clear_announcement_message(self, session_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET announce_channel_id = NULL,
+                    announce_message_id = NULL,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+            )
+
     async def clear_host_controls_message(self, session_id: int) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
