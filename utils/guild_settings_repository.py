@@ -34,6 +34,7 @@ class GuildSettingsRepository:
         "pool_channel_id",
         "pools_post_channel_id",
         "raffle_announce_enabled",
+        "disable_99k_announcements",
         "insurance_channel_id",
         "applications_category_id",
         "applications_admin_inbox_channel_id",
@@ -77,6 +78,13 @@ class GuildSettingsRepository:
         "default_max_slots",
         "host_tax_cash_amount",
     }
+    BOOLEAN_FIELDS = {
+        "welcome_enabled",
+        "raffle_announce_enabled",
+        "auto_complete_enabled",
+        "host_tax_enabled",
+        "disable_99k_announcements",
+    }
     DEFAULT_KEYS = {
         "guild_id": None,
         "announce_channel_id": None,
@@ -100,6 +108,7 @@ class GuildSettingsRepository:
         "insurer_role_id": None,
         "welcome_enabled": False,
         "raffle_announce_enabled": True,
+        "disable_99k_announcements": False,
         "welcome_message_template": None,
         "auto_complete_enabled": True,
         "reservation_timeout_minutes": 5,
@@ -179,6 +188,20 @@ class GuildSettingsRepository:
             return None
         return int(value)
 
+    @staticmethod
+    def _normalize_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off", ""}:
+                return False
+        return bool(value)
+
     @classmethod
     def _normalize_role_id_list(
         cls,
@@ -235,6 +258,9 @@ class GuildSettingsRepository:
             if key in self.BIGINT_FIELDS:
                 normalized[key] = self._normalize_bigint(value)
                 continue
+            if key in self.BOOLEAN_FIELDS:
+                normalized[key] = self._normalize_bool(value)
+                continue
             if key == "admin_role_ids":
                 normalized_ids = self._normalize_admin_role_ids(value, guild_id=guild_id, field_name=key)
                 if normalized_ids is None:
@@ -262,6 +288,8 @@ class GuildSettingsRepository:
             data.update(row)
         for field in self.BIGINT_FIELDS:
             data[field] = self._normalize_bigint(data.get(field))
+        for field in self.BOOLEAN_FIELDS:
+            data[field] = self._normalize_bool(data.get(field))
         data["admin_role_ids"] = self._normalize_admin_role_ids(
             data.get("admin_role_ids"), guild_id=guild_id, field_name="admin_role_ids"
         )
@@ -389,6 +417,7 @@ class GuildSettingsRepository:
             "insurer_role_id": None,
             "welcome_enabled": False,
             "raffle_announce_enabled": True,
+            "disable_99k_announcements": False,
             "welcome_message_template": None,
             "auto_complete_enabled": True,
             "reservation_timeout_minutes": 5,

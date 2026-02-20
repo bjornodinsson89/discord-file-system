@@ -394,7 +394,7 @@ class PaymentView(ui.View):
             # Try to update embed
             settings = await GuildSettingsRepository(db).get_or_create(interaction.guild.id)
             channel_id = settings.get('jump_99k_channel_id')
-            if channel_id and session.get('announcement_message_id'):
+            if (not bool(settings.get('disable_99k_announcements', False))) and channel_id and session.get('announcement_message_id'):
                 try:
                     channel = interaction.guild.get_channel(channel_id)
                     if channel:
@@ -1838,8 +1838,11 @@ async def _start_jump_countdown(interaction: discord.Interaction, session_id: in
     participant_ids = {int(s["discord_id"]) for s in signups}
     participant_ids.add(int(session["host_discord_id"]))
 
+    guild_settings = await GuildSettingsRepository(db).get_or_create(int(interaction.guild_id)) if interaction.guild_id else {}
+    disable_99k_announcements = bool(guild_settings.get("disable_99k_announcements", False))
+
     announcement_url = ""
-    if interaction.guild and session.get("announcement_channel_id") and session.get("announcement_message_id"):
+    if (not disable_99k_announcements) and interaction.guild and session.get("announcement_channel_id") and session.get("announcement_message_id"):
         announcement_url = f"https://discord.com/channels/{interaction.guild.id}/{session['announcement_channel_id']}/{session['announcement_message_id']}"
 
     dm_text = (
@@ -1867,7 +1870,7 @@ async def _start_jump_countdown(interaction: discord.Interaction, session_id: in
     monitor = get_jump_monitor()
     monitor.set_start_countdown(session_id, starts_at)
 
-    if interaction.guild and session.get("announcement_channel_id") and session.get("announcement_message_id"):
+    if (not disable_99k_announcements) and interaction.guild and session.get("announcement_channel_id") and session.get("announcement_message_id"):
         try:
             channel = interaction.guild.get_channel(int(session["announcement_channel_id"]))
             if channel:
@@ -1891,6 +1894,12 @@ async def update_jump_embed(session_id: int, message: discord.Message) -> str:
     session = await JumpsRepository(db.pool).get_session(session_id)
     if not session:
         return "error"
+
+    guild = getattr(message, "guild", None)
+    if guild is not None:
+        settings = await GuildSettingsRepository(db).get_or_create(int(guild.id))
+        if bool(settings.get("disable_99k_announcements", False)):
+            return "ok"
 
     signups = await JumpsRepository(db.pool).list_signups(session_id)
     readiness = await JumpsRepository(db.pool).list_readiness(session_id)

@@ -1281,12 +1281,14 @@ async def refresh_item_icons(interaction: discord.Interaction):
 
 async def _disable_99k_session_messages(bot_client: commands.Bot, session: dict, *, status_text: str) -> None:
     repo = JumpsRepository(get_pool())
+    settings = await GuildSettingsRepository(get_database()).get_or_create(int(session["guild_id"]))
     await upsert_99k_announcement(
         bot=bot_client,
         repo=repo,
         guild_id=int(session["guild_id"]),
         session_id=int(session["id"]),
         channel_id=int(session["announce_channel_id"]) if session.get("announce_channel_id") else None,
+        settings=settings,
     )
 
     private_channel_id = session.get("private_channel_id")
@@ -1431,6 +1433,9 @@ async def post_99k_jump_created_announcement(
     session: dict,
     settings: dict,
 ) -> None:
+    if bool(settings.get("disable_99k_announcements", False)):
+        return
+
     channel_id = int(settings.get("jump_announce_channel_id") or 0)
     if channel_id <= 0:
         return
@@ -1470,6 +1475,7 @@ async def upsert_99k_announcement(
     guild_id: int,
     session_id: int,
     channel_id: int | None,
+    settings: dict | None = None,
 ) -> None:
     session = await repo.get_session(session_id)
     if not session or int(session.get("guild_id", 0)) != int(guild_id):
@@ -1483,6 +1489,12 @@ async def upsert_99k_announcement(
     is_closed = _is_99k_closed(session.get("status"))
     is_locked = bool(session.get("signups_locked"))
     is_full = not is_closed and max_slots > 0 and signed_up >= max_slots
+
+    guild_settings = settings
+    if guild_settings is None:
+        guild_settings = await GuildSettingsRepository(get_database()).get_or_create(int(guild_id))
+    if bool(guild_settings.get("disable_99k_announcements", False)):
+        return
 
     target_channel_id = int(channel_id or session.get("announce_channel_id") or 0)
     if target_channel_id <= 0:
@@ -1525,12 +1537,14 @@ async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:
         session = await repo.get_session(session_id)
         if not session:
             return
+        settings = await GuildSettingsRepository(get_database()).get_or_create(int(session["guild_id"]))
         await upsert_99k_announcement(
             bot=bot_client,
             repo=repo,
             guild_id=int(session["guild_id"]),
             session_id=int(session_id),
             channel_id=int(session["announce_channel_id"]) if session.get("announce_channel_id") else None,
+            settings=settings,
         )
     except Exception:
         pass
@@ -2875,6 +2889,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                 guild_id=int(interaction.guild_id),
                 session_id=int(session_id),
                 channel_id=target_channel_id,
+                settings=self.settings,
             )
             if not self.session:
                 created_session = await repo.get_session(int(session_id))
