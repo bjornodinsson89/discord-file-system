@@ -449,15 +449,29 @@ class InsuranceOfferView(ui.View):
         settings = await GuildSettingsRepository(db).get_or_create(interaction.guild.id)
         insurance_channel_id = settings.get("insurance_channel_id")
         channel = interaction.guild.get_channel(int(insurance_channel_id)) if insurance_channel_id else None
+        if channel is None and insurance_channel_id:
+            try:
+                fetched = await interaction.guild.fetch_channel(int(insurance_channel_id))
+                if hasattr(fetched, "send"):
+                    channel = fetched
+            except Exception:
+                channel = None
         if channel is None:
             await interaction.followup.send(
-                embed=create_error_embed("Insurance Channel Missing", "Ask an admin to configure `insurance_channel_id` in setup."),
+                embed=create_info_embed("Insurance Request Saved", "Insurance announcements are disabled or not configured. Your jump purchase remains valid."),
                 ephemeral=True,
             )
             return
 
         content = f"{interaction.user.display_name} has requested insurance for their 99k Happy jump (Session #{self.session_id})."
-        message = await channel.send(content=content, view=InsuranceClaimView(self.session_id, interaction.user.id))
+        try:
+            message = await channel.send(content=content, view=InsuranceClaimView(self.session_id, interaction.user.id))
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            await interaction.followup.send(
+                embed=create_info_embed("Insurance Request Saved", "Insurance announcement channel is unavailable right now. Your jump purchase remains valid."),
+                ephemeral=True,
+            )
+            return
         request_id = await repo.create_insurance_request(
             session_id=self.session_id,
             participant_discord_id=interaction.user.id,
