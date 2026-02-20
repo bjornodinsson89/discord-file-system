@@ -6,7 +6,7 @@ from typing import Any
 
 import config
 from repositories.audit import AuditRepository
-from repositories.jumps import JumpsRepository
+from repositories.jumps import JumpsRepository, SignupStatusSchemaMismatchError
 from repositories.users import UsersRepository
 from utils.guild_settings_repository import GuildSettingsRepository
 from .errors import AlreadyExists, BusinessRuleViolation, InvalidInput, NotFound
@@ -64,7 +64,7 @@ class JumpService:
                 raise AlreadyExists(f"Status: {existing.get('status', 'unknown')}")
 
             signups = await self.jumps_repo.list_signups(session_id)
-            active_count = len([s for s in signups if s.get("status") in {"signed_up", "completed", "not_completed"}])
+            active_count = len([s for s in signups if s.get("status") in {"paid", "completed", "not_completed"}])
             if active_count >= int(session["max_slots"]):
                 raise BusinessRuleViolation("Session is full; waitlist is not enabled in this schema")
 
@@ -88,6 +88,7 @@ class JumpService:
                 guild_id=guild_id,
                 discord_id=user_id,
                 torn_user_id=key_data["torn_user_id"],
+                reserved_until=reserved_until,
             )
             await self.jumps_repo.upsert_readiness_snapshot(
                 session_id=session_id,
@@ -110,6 +111,9 @@ class JumpService:
             )
             self.monitor.mark_needs_refresh(session_id)
             return {"result": "reserved", "reserved_until": reserved_until}
+        except SignupStatusSchemaMismatchError as exc:
+            log.error("join failed due to DB schema mismatch session_id=%s guild_id=%s user_id=%s", session_id, guild_id, user_id, exc_info=True)
+            raise RuntimeError("Join failed due to database schema mismatch. Ask an admin to run migrations.") from exc
         except (AlreadyExists, BusinessRuleViolation, InvalidInput, NotFound):
             raise
         except Exception:
