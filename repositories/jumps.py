@@ -33,10 +33,21 @@ _JUMP_PROGRESS_MIGRATION_HINT = (
     "Run migration 2026_02_18_add_99k_jump_progress.sql."
 )
 
+_SIGNUPS_DISCORD_COLUMN_MIGRATION_HINT = (
+    "Missing DB column jump_99k_signups.participant_discord_id. "
+    "Run manual SQL: "
+    "ALTER TABLE public.jump_99k_signups "
+    "ADD COLUMN IF NOT EXISTS participant_discord_id BIGINT; "
+    "UPDATE public.jump_99k_signups SET participant_discord_id = discord_id "
+    "WHERE participant_discord_id IS NULL AND discord_id IS NOT NULL;"
+)
+
 _ALLOWED_SIGNUP_STATUSES = {"reserved", "signed_up"}
 
 
 def _raise_reserved_until_migration_error(exc: Exception) -> None:
+    if isinstance(exc, asyncpg.UndefinedColumnError) and "participant_discord_id" in str(exc):
+        log.error(_SIGNUPS_DISCORD_COLUMN_MIGRATION_HINT)
     if isinstance(exc, asyncpg.UndefinedColumnError) and "reserved_until" in str(exc):
         log.error(_RESERVED_UNTIL_MIGRATION_HINT)
     raise exc
