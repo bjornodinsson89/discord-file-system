@@ -4592,12 +4592,14 @@ async def _draw_raffle_winner(raffle: dict):
     
     raffle_id = raffle['raffle_id']
     
-    # Mark as drawing to prevent duplicate draws
-    await raffles_repo.update_raffle(raffle_id, status='drawing')
-    
     try:
-        # Draw winner
-        winner = await raffles_repo.draw_raffle_winner(raffle_id)
+        draw_result = await raffles_repo.draw_raffle_winner_atomic(raffle_id)
+        draw_state = draw_result.get("state")
+        winner = draw_result.get("winner")
+
+        if draw_state in {"already_drawn", "not_drawable", "not_ready", "not_found"}:
+            log.info("Skipping raffle draw raffle_id=%s state=%s", raffle_id, draw_state)
+            return
         
         # Log the draw
         await audit_repo.log_audit(
@@ -4605,7 +4607,7 @@ async def _draw_raffle_winner(raffle: dict):
             "raffle_auto_drawn",
             "raffle",
             raffle_id,
-            {"winner_discord_id": winner['discord_id'] if winner else None},
+            {"winner_discord_id": winner['discord_id'] if winner else None, "draw_state": draw_state},
             guild_id=raffle['guild_id'],
             source='system'
         )
@@ -4703,8 +4705,6 @@ async def _draw_raffle_winner(raffle: dict):
         
     except Exception as e:
         log.error(f"Error drawing raffle {raffle_id}: {e}")
-        # Reset status if draw failed
-        await raffles_repo.update_raffle(raffle_id, status='active')
         raise
 
 

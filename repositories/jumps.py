@@ -837,6 +837,106 @@ class JumpsRepository(RepositoryBase):
                 _raise_reserved_until_migration_error(exc)
             return int(str(result).split()[-1])
 
+
+    async def expire_and_promote_waitlist(self, *, session_id: int, reservation_minutes: int = 5) -> dict[str, int | None]:
+        """Atomically expire unpaid reservations and promote one waitlisted user for a legacy jump session."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", int(session_id))
+
+                try:
+                    session = await conn.fetchrow(
+                        """
+                        SELECT id, max_spots, status
+                        FROM happy_jump_sessions
+                        WHERE id = $1
+                        FOR UPDATE
+                        """,
+                        session_id,
+                    )
+                except asyncpg.UndefinedTableError:
+                    return {"expired_count": 0, "promoted_discord_id": None}
+
+                if not session or str(session.get("status") or "").lower() not in {"open", "locked"}:
+                    return {"expired_count": 0, "promoted_discord_id": None}
+
+                expired_rows = await conn.fetch(
+                    """
+                    DELETE FROM happy_jump_signups
+                    WHERE session_id = $1
+                      AND status = 'reserved'
+                      AND payment_verified = FALSE
+                      AND reserved_until IS NOT NULL
+                      AND reserved_until <= NOW()
+                    RETURNING discord_id
+                    """,
+                    session_id,
+                )
+
+                active_count = int(
+                    await conn.fetchval(
+                        """
+                        SELECT COUNT(*)
+                        FROM happy_jump_signups
+                        WHERE session_id = $1
+                          AND status IN ('reserved', 'paid', 'completed', 'not_completed')
+                        """,
+                        session_id,
+                    )
+                    or 0
+                )
+                max_spots = int(session.get("max_spots") or 0)
+                if max_spots <= 0 or active_count >= max_spots:
+                    return {"expired_count": len(expired_rows), "promoted_discord_id": None}
+
+                waitlist_row = await conn.fetchrow(
+                    """
+                    SELECT session_id, discord_id, torn_user_id, position
+                    FROM happy_jump_waitlist
+                    WHERE session_id = $1
+                    ORDER BY position ASC
+                    LIMIT 1
+                    FOR UPDATE
+                    """,
+                    session_id,
+                )
+                if not waitlist_row:
+                    return {"expired_count": len(expired_rows), "promoted_discord_id": None}
+
+                promoted_discord_id = int(waitlist_row["discord_id"])
+                await conn.execute(
+                    """
+                    INSERT INTO happy_jump_signups (session_id, discord_id, torn_user_id, status, payment_verified, reserved_until, created_at, updated_at)
+                    VALUES ($1, $2, $3, 'reserved', FALSE, NOW() + make_interval(mins => $4), NOW(), NOW())
+                    ON CONFLICT (session_id, discord_id)
+                    DO UPDATE SET
+                        status = 'reserved',
+                        payment_verified = FALSE,
+                        reserved_until = NOW() + make_interval(mins => $4),
+                        updated_at = NOW()
+                    """,
+                    session_id,
+                    promoted_discord_id,
+                    waitlist_row.get("torn_user_id"),
+                    max(int(reservation_minutes), 1),
+                )
+                await conn.execute(
+                    "DELETE FROM happy_jump_waitlist WHERE session_id = $1 AND discord_id = $2",
+                    session_id,
+                    promoted_discord_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE happy_jump_waitlist
+                    SET position = position - 1
+                    WHERE session_id = $1 AND position > $2
+                    """,
+                    session_id,
+                    int(waitlist_row.get("position") or 0),
+                )
+
+                return {"expired_count": len(expired_rows), "promoted_discord_id": promoted_discord_id}
+
     async def list_pending_payment_signups(self, *, limit: int = 50) -> list[dict]:
         async with self.pool.acquire() as conn:
             try:
