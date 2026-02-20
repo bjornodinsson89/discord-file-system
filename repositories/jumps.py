@@ -232,6 +232,44 @@ class JumpsRepository(RepositoryBase):
                 session_id,
             )
 
+    async def clear_roster_message(self, session_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET roster_channel_id = NULL,
+                    roster_message_id = NULL,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+            )
+
+    async def clear_host_controls_message(self, session_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET host_controls_channel_id = NULL,
+                    host_controls_message_id = NULL,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+            )
+
+    async def clear_private_channel_only(self, session_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_sessions
+                SET private_channel_id = NULL,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                session_id,
+            )
+
     async def get_active_session(self, guild_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open' ORDER BY created_at DESC LIMIT 1", guild_id)

@@ -707,26 +707,37 @@ async def on_ready():
     log.info(f"Discord.py version: {discord.__version__}")
     log.info(f"Guilds: {len(bot.guilds)}")
     
-    await sync_application_commands()
-    await register_persistent_application_review_views()
-    await register_persistent_roster_views()
-    await register_persistent_signup_views()
-    await register_persistent_pool_views(bot)
-    bot.add_view(TimezonePromptView())
+    async def _add_timezone_prompt_view() -> None:
+        bot.add_view(TimezonePromptView())
 
-    # Start background workers
-    if not cleanup_worker.is_running():
-        cleanup_worker.start()
-    if not readiness_worker.is_running():
-        readiness_worker.start()
-    if not overdose_monitor.is_running():
-        overdose_monitor.start()
-    if not raffle_completion_worker.is_running():
-        raffle_completion_worker.start()
-    if not auto_verify_99k_payments.is_running():
-        auto_verify_99k_payments.start()
-    if not roster_panel_refresh_worker.is_running():
-        roster_panel_refresh_worker.start()
+    ready_steps = [
+        ("sync_application_commands", sync_application_commands),
+        ("register_persistent_application_review_views", register_persistent_application_review_views),
+        ("register_persistent_roster_views", register_persistent_roster_views),
+        ("register_persistent_signup_views", register_persistent_signup_views),
+        ("register_persistent_pool_views", lambda: register_persistent_pool_views(bot)),
+        ("add_timezone_prompt_view", _add_timezone_prompt_view),
+    ]
+    for step_name, step in ready_steps:
+        try:
+            await step()
+        except Exception:
+            log.exception("on_ready step failed: %s", step_name)
+
+    worker_steps = [
+        ("start_cleanup_worker", cleanup_worker),
+        ("start_readiness_worker", readiness_worker),
+        ("start_overdose_monitor", overdose_monitor),
+        ("start_raffle_completion_worker", raffle_completion_worker),
+        ("start_auto_verify_99k_payments", auto_verify_99k_payments),
+        ("start_roster_panel_refresh_worker", roster_panel_refresh_worker),
+    ]
+    for step_name, worker in worker_steps:
+        try:
+            if not worker.is_running():
+                worker.start()
+        except Exception:
+            log.exception("on_ready step failed: %s", step_name)
     
     log.info("✓ Bot is ready!")
 
@@ -3187,54 +3198,119 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
     await _refresh_roster_if_exists(interaction.client, int(session["id"]))
     await _disable_99k_session_messages(interaction.client, session, status_text="Session closed")
 
-    purchase_deleted = False
-    channel_deleted = False
-    private_channel_id = session.get("private_channel_id")
+    def _result_line(label: str, result: tuple[bool, str]) -> str:
+        success, reason = result
+        if success:
+            return f"{label}: ✅"
+        return f"{label}: ❌ ({reason})"
 
-    roster_message_id = session.get("roster_message_id")
-    guild = interaction.guild
-    if guild is None:
-        log.warning("Guild missing during 99k cleanup for session %s", session.get("id"))
-    elif private_channel_id and roster_message_id:
+    async def _resolve_channel(guild_obj: discord.Guild, channel_id: int) -> tuple[Optional[discord.abc.GuildChannel], Optional[str]]:
+        channel_obj = guild_obj.get_channel(channel_id)
+        if channel_obj is not None:
+            return channel_obj, None
         try:
-            private_channel = guild.get_channel(int(private_channel_id))
-            if private_channel is None:
-                private_channel = await guild.fetch_channel(int(private_channel_id))
-            message = await private_channel.fetch_message(int(roster_message_id))
-            await message.delete(reason=f"99k session {session['id']} ended: remove purchase panel")
-            purchase_deleted = True
+            channel_obj = await guild_obj.fetch_channel(channel_id)
+            return channel_obj, None
         except discord.NotFound:
-            purchase_deleted = True
+            return None, "not_found"
         except discord.Forbidden:
-            purchase_deleted = False
-        except Exception:
-            purchase_deleted = False
-            log.exception("Failed to remove purchase panel for 99k session %s", session.get("id"))
+            return None, "forbidden"
+        except Exception as exc:
+            log.exception("Failed to resolve channel %s for 99k session %s", channel_id, session.get("id"))
+            return None, f"exception:{type(exc).__name__}"
 
-    if guild and private_channel_id:
+    async def _delete_message(channel_id: Optional[int], message_id: Optional[int], *, label: str) -> tuple[bool, str]:
+        if not channel_id or not message_id:
+            return True, "not_found"
+        guild_obj = interaction.guild
+        if guild_obj is None:
+            return False, "exception:GuildUnavailable"
+        channel_obj, channel_reason = await _resolve_channel(guild_obj, int(channel_id))
+        if channel_reason:
+            return (channel_reason == "not_found"), channel_reason
+        if channel_obj is None:
+            return False, "exception:ChannelResolution"
+
+        me = guild_obj.me
+        perms = channel_obj.permissions_for(me) if me else None
+        if not perms or not perms.view_channel or not perms.read_message_history:
+            return False, "missing_read_history"
+
         try:
-            private_channel = guild.get_channel(int(private_channel_id))
-            if private_channel is None:
-                private_channel = await guild.fetch_channel(int(private_channel_id))
-            await private_channel.delete(reason=f"99k session {session['id']} ended")
-            channel_deleted = True
+            message = await channel_obj.fetch_message(int(message_id))
+            await message.delete(reason=f"99k session {session['id']} ended: remove {label}")
+            return True, "ok"
         except discord.NotFound:
-            channel_deleted = True
+            return True, "not_found"
         except discord.Forbidden:
-            channel_deleted = False
-        except Exception:
-            channel_deleted = False
+            return False, "forbidden"
+        except Exception as exc:
+            log.exception("Failed to remove %s for 99k session %s", label, session.get("id"))
+            return False, f"exception:{type(exc).__name__}"
+
+    async def _delete_channel(channel_id: Optional[int]) -> tuple[bool, str]:
+        if not channel_id:
+            return True, "not_found"
+        guild_obj = interaction.guild
+        if guild_obj is None:
+            return False, "exception:GuildUnavailable"
+        channel_obj, channel_reason = await _resolve_channel(guild_obj, int(channel_id))
+        if channel_reason:
+            return (channel_reason == "not_found"), channel_reason
+        if channel_obj is None:
+            return False, "exception:ChannelResolution"
+
+        me = guild_obj.me
+        perms = channel_obj.permissions_for(me) if me else None
+        if not perms or not perms.manage_channels:
+            return False, "missing_manage_channels"
+
+        try:
+            await channel_obj.delete(reason=f"99k session {session['id']} ended")
+            return True, "ok"
+        except discord.NotFound:
+            return True, "not_found"
+        except discord.Forbidden:
+            return False, "forbidden"
+        except Exception as exc:
             log.exception("Failed to delete private 99k channel for session %s", session.get("id"))
+            return False, f"exception:{type(exc).__name__}"
 
-    await repo.clear_private_channel(int(session["id"]))
+    session_id = int(session["id"])
+    private_channel_id = int(session["private_channel_id"]) if session.get("private_channel_id") else None
+    roster_channel_id = int(session["roster_channel_id"]) if session.get("roster_channel_id") else None
+    roster_message_id = int(session["roster_message_id"]) if session.get("roster_message_id") else None
+    host_controls_channel_id = int(session["host_controls_channel_id"]) if session.get("host_controls_channel_id") else None
+    host_controls_message_id = int(session["host_controls_message_id"]) if session.get("host_controls_message_id") else None
 
-    await repo.mark_cleaned(int(session["id"]))
+    panel_channel_id = roster_channel_id or private_channel_id
+    purchase_result = await _delete_message(panel_channel_id, roster_message_id, label="purchase panel")
+    host_controls_result = await _delete_message(host_controls_channel_id, host_controls_message_id, label="host controls")
+    channel_result = await _delete_channel(private_channel_id)
+
+    if purchase_result[0]:
+        await repo.clear_roster_message(session_id)
+    if host_controls_result[0]:
+        await repo.clear_host_controls_message(session_id)
+    if channel_result[0]:
+        await repo.clear_private_channel_only(session_id)
+
+    cleanup_complete = channel_result[0] and purchase_result[0]
+    if cleanup_complete:
+        await repo.mark_cleaned(session_id)
+
+    summary_lines = [
+        f"Ended session #{session['id']}.",
+        _result_line("Private channel deleted", channel_result),
+        _result_line("Purchase panel removed", purchase_result),
+    ]
+    if host_controls_channel_id or host_controls_message_id:
+        summary_lines.append(_result_line("Host controls removed", host_controls_result))
+    if not cleanup_complete:
+        summary_lines.append("Cleanup incomplete; fix permissions and run /99k end again to retry.")
+
     await interaction.followup.send(
-        embed=create_success_embed(
-            "99k session ended",
-            f"Ended session #{session['id']}. Private channel deleted: {'✅' if channel_deleted else '❌'}. "
-            f"Purchase panel removed: {'✅' if purchase_deleted else '❌'}.",
-        ),
+        embed=create_success_embed("99k session ended", "\n".join(summary_lines)),
         ephemeral=True,
     )
 
@@ -3577,16 +3653,64 @@ async def cleanup_worker():
         sessions = await repo.list_non_open_sessions_for_cleanup()
         for session in sessions:
             await _disable_99k_session_messages(bot, session, status_text=f"Session {session.get('status')}")
+            session_id = int(session["id"])
             guild = bot.get_guild(int(session["guild_id"]))
-            private_channel_id = session.get("private_channel_id")
-            if private_channel_id and guild:
-                try:
-                    private_channel = await guild.fetch_channel(int(private_channel_id))
-                    await private_channel.delete(reason="99k session finished")
-                except Exception:
-                    log.exception("Failed cleanup delete for 99k private channel session=%s", session.get("id"))
-                await repo.clear_private_channel(int(session["id"]))
-            await repo.mark_cleaned(int(session["id"]))
+            private_channel_id = int(session["private_channel_id"]) if session.get("private_channel_id") else None
+            roster_channel_id = int(session["roster_channel_id"]) if session.get("roster_channel_id") else None
+            roster_message_id = int(session["roster_message_id"]) if session.get("roster_message_id") else None
+
+            panel_deleted = True
+            if roster_message_id:
+                panel_channel_id = roster_channel_id or private_channel_id
+                if not guild or not panel_channel_id:
+                    panel_deleted = False
+                else:
+                    try:
+                        panel_channel = guild.get_channel(panel_channel_id) or await guild.fetch_channel(panel_channel_id)
+                        perms = panel_channel.permissions_for(guild.me) if guild.me else None
+                        if not perms or not perms.view_channel or not perms.read_message_history:
+                            panel_deleted = False
+                            log.warning("cleanup_worker missing_read_history session=%s", session_id)
+                        else:
+                            panel_message = await panel_channel.fetch_message(roster_message_id)
+                            await panel_message.delete(reason="99k session finished")
+                    except discord.NotFound:
+                        panel_deleted = True
+                    except discord.Forbidden:
+                        panel_deleted = False
+                        log.warning("cleanup_worker forbidden deleting panel session=%s", session_id)
+                    except Exception:
+                        panel_deleted = False
+                        log.exception("Failed cleanup delete for 99k panel session=%s", session_id)
+
+            channel_deleted = True
+            if private_channel_id:
+                if not guild:
+                    channel_deleted = False
+                else:
+                    try:
+                        private_channel = guild.get_channel(private_channel_id) or await guild.fetch_channel(private_channel_id)
+                        perms = private_channel.permissions_for(guild.me) if guild.me else None
+                        if not perms or not perms.manage_channels:
+                            channel_deleted = False
+                            log.warning("cleanup_worker missing_manage_channels session=%s", session_id)
+                        else:
+                            await private_channel.delete(reason="99k session finished")
+                    except discord.NotFound:
+                        channel_deleted = True
+                    except discord.Forbidden:
+                        channel_deleted = False
+                        log.warning("cleanup_worker forbidden deleting private channel session=%s", session_id)
+                    except Exception:
+                        channel_deleted = False
+                        log.exception("Failed cleanup delete for 99k private channel session=%s", session_id)
+
+            if panel_deleted:
+                await repo.clear_roster_message(session_id)
+            if channel_deleted:
+                await repo.clear_private_channel_only(session_id)
+            if panel_deleted and channel_deleted:
+                await repo.mark_cleaned(session_id)
     except Exception:
         log.exception("cleanup_worker failed")
 
