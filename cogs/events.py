@@ -1869,6 +1869,46 @@ async def _refresh_roster_if_exists(bot_client: commands.Bot, session_id: int) -
         log.exception("Failed to refresh roster panel for session=%s", session_id)
 
 
+async def _refresh_or_repost_roster_panel(bot_client: commands.Bot, session_id: int) -> bool:
+    repo = JumpsRepository(get_pool())
+    session = await repo.get_session(int(session_id))
+    if not session:
+        return False
+
+    roster_channel_id = session.get("roster_channel_id") or session.get("private_channel_id")
+    roster_message_id = session.get("roster_message_id")
+
+    if roster_channel_id and roster_message_id:
+        try:
+            channel = bot_client.get_channel(int(roster_channel_id)) or await bot_client.fetch_channel(int(roster_channel_id))
+            roster_message = await channel.fetch_message(int(roster_message_id))
+            await _refresh_roster_panel(int(session_id), channel, roster_message)
+            return True
+        except (discord.NotFound, discord.Forbidden):
+            await repo.clear_roster_panel_message(int(session_id))
+        except Exception:
+            log.exception("Failed to refresh existing roster panel for session=%s", session_id)
+
+    private_channel_id = session.get("private_channel_id")
+    if not private_channel_id:
+        return False
+
+    try:
+        channel = bot_client.get_channel(int(private_channel_id)) or await bot_client.fetch_channel(int(private_channel_id))
+        panel_embed, panel_view = await build_roster_panel(int(session_id), channel)
+        roster_msg = await channel.send(embed=panel_embed, view=panel_view)
+        await repo.set_roster_panel_message(
+            int(session_id),
+            channel_id=int(channel.id),
+            message_id=int(roster_msg.id),
+        )
+        await repo.touch_roster_refreshed(int(session_id))
+        return True
+    except Exception:
+        log.exception("Failed to re-post roster panel for session=%s", session_id)
+        return False
+
+
 class Jump99kRosterPanelView(discord.ui.View):
     MAX_POSITIONS = 8
 
@@ -2325,9 +2365,19 @@ class Jump99kHostControlsView(discord.ui.View):
             label="Manual Add Jumper",
             style=discord.ButtonStyle.primary,
             custom_id=f"99k_host_manual_add:{self.session_id}",
+            row=0,
         )
         add_button.callback = self._on_manual_add
         self.add_item(add_button)
+
+        reset_button = discord.ui.Button(
+            label="Reset Progress",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"99k_host_reset_progress:{self.session_id}",
+            row=0,
+        )
+        reset_button.callback = self._on_reset_progress
+        self.add_item(reset_button)
 
     async def _on_manual_add(self, interaction: discord.Interaction) -> None:
         await _safe_defer_ephemeral(interaction)
@@ -3185,6 +3235,52 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
             f"Ended session #{session['id']}. Private channel deleted: {'✅' if channel_deleted else '❌'}. "
             f"Purchase panel removed: {'✅' if purchase_deleted else '❌'}.",
         ),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="99k_reset_progress", description="Reset Start/End progress for a 99k session")
+@app_commands.describe(session_id="Optional 99k session ID (defaults to session mapped to this channel)")
+async def jump99k_reset_progress(interaction: discord.Interaction, session_id: int | None = None):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    repo = JumpsRepository(get_pool())
+
+    target_session_id: int | None = int(session_id) if session_id is not None else None
+    if target_session_id is not None and target_session_id <= 0:
+        await interaction.followup.send("Session ID must be a positive number.", ephemeral=True)
+        return
+
+    if target_session_id is None:
+        if not interaction.channel_id:
+            await interaction.followup.send("Could not resolve the current channel.", ephemeral=True)
+            return
+        target_session_id = await repo.get_session_id_by_channel(int(interaction.channel_id))
+        if not target_session_id:
+            await interaction.followup.send("No 99k session is mapped to this channel. Provide /99k_reset_progress session_id:<id>.", ephemeral=True)
+            return
+
+    session = await repo.get_session(int(target_session_id))
+    if not session or int(session.get("guild_id") or 0) != int(interaction.guild_id):
+        await interaction.followup.send("Session not found for this server.", ephemeral=True)
+        return
+
+    if not await can_manage_99k_session(interaction, session):
+        await interaction.followup.send("Not allowed.", ephemeral=True)
+        return
+
+    await repo.reset_jump_progress(int(target_session_id))
+
+    refreshed = bool(interaction.client) and await _refresh_or_repost_roster_panel(interaction.client, int(target_session_id))
+    if refreshed:
+        await interaction.followup.send("✅ Progress reset. Start 1 is available again.", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        "Progress reset, but I could not refresh the roster panel automatically.",
         ephemeral=True,
     )
 

@@ -559,6 +559,54 @@ class JumpsRepository(RepositoryBase):
                 log.error(_JUMP_PROGRESS_MIGRATION_HINT)
                 return False, "Jump progress columns are missing. Ask an admin to run migration 2026_02_18_add_99k_jump_progress.sql."
 
+    async def reset_jump_progress(self, session_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    UPDATE jump_99k_sessions
+                    SET host_jump_state = 'waiting',
+                        host_jump_started_at = NULL,
+                        host_jump_ended_at = NULL,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    session_id,
+                )
+            except asyncpg.UndefinedColumnError:
+                log.warning("Missing jump progress columns; run migration 2026_02_18_add_99k_jump_progress.sql.")
+                return
+
+            try:
+                await conn.execute(
+                    """
+                    UPDATE jump_99k_signups
+                    SET jump_state = 'waiting',
+                        jump_started_at = NULL,
+                        jump_ended_at = NULL
+                    WHERE session_id = $1
+                    """,
+                    session_id,
+                )
+            except asyncpg.UndefinedColumnError:
+                log.warning("Missing jump progress columns; run migration 2026_02_18_add_99k_jump_progress.sql.")
+                return
+
+    async def get_session_id_by_channel(self, channel_id: int) -> int | None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id
+                FROM jump_99k_sessions
+                WHERE private_channel_id = $1
+                   OR roster_channel_id = $1
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                channel_id,
+            )
+        return int(row["id"]) if row else None
+
     async def cancel_expired_unpaid(self) -> int:
         async with self.pool.acquire() as conn:
             try:
