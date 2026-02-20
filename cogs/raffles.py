@@ -1236,48 +1236,52 @@ class RafflesCog(commands.Cog):
 
     async def _post_ready_init(self):
         """Register persistent raffle purchase views for existing panel messages."""
-        await self.bot.wait_until_ready()
-        db = get_database()
-        if not db.pool:
-            log.error("Failed registering persistent raffle views: database pool is not initialized")
-            return
         try:
-            repo = RafflesRepository(db.pool)
-            panel_raffles = await repo.get_active_raffles_with_panels()
-            for raffle in panel_raffles:
-                self.bot.add_view(
-                    RafflePurchasePanelView(raffle_id=int(raffle["raffle_id"])),
-                    message_id=int(raffle["purchase_panel_message_id"]),
-                )
-            active_raffles = await repo.get_all_active_raffle_ids()
-            pending_dm = await repo.get_pending_prize_confirm_dm_rows()
-            panel_raffle_ids = {int(r["raffle_id"]) for r in panel_raffles}
-            for raffle_id in active_raffles:
-                if raffle_id in panel_raffle_ids:
-                    continue
-                self.bot.add_view(RafflePurchasePanelView(raffle_id=raffle_id))
-            for dm_row in pending_dm:
-                self.bot.add_view(
-                    RafflePrizeConfirmDMView(
-                        raffle_id=int(dm_row["raffle_id"]),
-                        creator_discord_id=int(dm_row["creator_discord_id"]),
-                    ),
-                    message_id=int(dm_row["prize_confirm_dm_message_id"]),
-                )
-            pending_verify = await repo.get_pending_prize_verification_rows()
-            for verify_row in pending_verify:
-                self.bot.add_view(
-                    AdminPrizeVerificationView(raffle_id=int(verify_row["raffle_id"])),
-                    message_id=int(verify_row["announcement_message_id"]),
-                )
-            if panel_raffles or active_raffles or pending_dm or pending_verify:
-                log.info(
-                    "Registered %s message-bound and %s fallback raffle purchase views",
-                    len(panel_raffles),
-                    max(len(active_raffles) - len(panel_raffle_ids), 0),
-                )
+            await self.bot.wait_until_ready()
+            db = get_database()
+            if not db.pool:
+                log.error("Failed registering persistent raffle views: database pool is not initialized")
+                return
+            try:
+                repo = RafflesRepository(db.pool)
+                panel_raffles = await repo.get_active_raffles_with_panels()
+                for raffle in panel_raffles:
+                    self.bot.add_view(
+                        RafflePurchasePanelView(raffle_id=int(raffle["raffle_id"])),
+                        message_id=int(raffle["purchase_panel_message_id"]),
+                    )
+                active_raffles = await repo.get_all_active_raffle_ids()
+                pending_dm = await repo.get_pending_prize_confirm_dm_rows()
+                panel_raffle_ids = {int(r["raffle_id"]) for r in panel_raffles}
+                for raffle_id in active_raffles:
+                    if raffle_id in panel_raffle_ids:
+                        continue
+                    self.bot.add_view(RafflePurchasePanelView(raffle_id=raffle_id))
+                for dm_row in pending_dm:
+                    self.bot.add_view(
+                        RafflePrizeConfirmDMView(
+                            raffle_id=int(dm_row["raffle_id"]),
+                            creator_discord_id=int(dm_row["creator_discord_id"]),
+                        ),
+                        message_id=int(dm_row["prize_confirm_dm_message_id"]),
+                    )
+                pending_verify = await repo.get_pending_prize_verification_rows()
+                for verify_row in pending_verify:
+                    self.bot.add_view(
+                        AdminPrizeVerificationView(raffle_id=int(verify_row["raffle_id"])),
+                        message_id=int(verify_row["announcement_message_id"]),
+                    )
+                if panel_raffles or active_raffles or pending_dm or pending_verify:
+                    log.info(
+                        "Registered %s message-bound and %s fallback raffle purchase views",
+                        len(panel_raffles),
+                        max(len(active_raffles) - len(panel_raffle_ids), 0),
+                    )
+            except Exception:
+                log.exception("Failed registering persistent raffle views")
         except Exception:
             log.exception("Failed registering persistent raffle views")
+            return
     def store_pack_draft(self, creator_discord_id: int, draft: dict) -> None:
         self._pack_drafts[creator_discord_id] = (draft, datetime.utcnow() + timedelta(minutes=10))
     def get_pack_draft(self, creator_discord_id: int) -> dict | None:
