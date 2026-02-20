@@ -35,7 +35,9 @@ async def build_icon_strip_file(
     icon_size: int = 36,
     max_width: int = 700,
 ) -> io.BytesIO | None:
-    rows = [entry for entry in entries if entry.get("image_url") and int(entry.get("quantity", 0)) > 0]
+    rows = [
+        entry for entry in entries if entry.get("image_url") and int(entry.get("quantity", 0)) > 0
+    ]
     if not rows:
         return None
 
@@ -58,7 +60,9 @@ async def build_icon_strip_file(
             if not content:
                 continue
             try:
-                icon = Image.open(io.BytesIO(content)).convert("RGBA").resize((icon_size, icon_size))
+                icon = (
+                    Image.open(io.BytesIO(content)).convert("RGBA").resize((icon_size, icon_size))
+                )
             except Exception:
                 continue
 
@@ -82,7 +86,12 @@ async def build_icon_strip_file(
 
         for icon, qty_text, px, py in prepared:
             image.paste(icon, (px, py), icon)
-            draw.text((px + icon_size + 6, py + (icon_size // 4)), qty_text, fill=(245, 246, 248, 255), font=font)
+            draw.text(
+                (px + icon_size + 6, py + (icon_size // 4)),
+                qty_text,
+                fill=(245, 246, 248, 255),
+                font=font,
+            )
 
         output = io.BytesIO()
         image.save(output, format="PNG")

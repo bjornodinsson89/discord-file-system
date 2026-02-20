@@ -1,28 +1,59 @@
 # Railway deployment (Discord-only)
 
-1. Set environment variables:
-   - `DISCORD_TOKEN`
-   - Database credentials (`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`) or `DATABASE_URL`
-   - `FERNET_KEY`
+## 1) Required environment variables
 
-2. Configure database SSL mode:
-   - Recommended on Railway: `DB_SSL=require` (TLS encryption on, certificate verification off by default)
-   - You can omit `DB_SSL` if your `DATABASE_URL` already includes `sslmode=...`; the bot derives `DB_SSL` from that value.
-   - Use `DB_SSL=verify-full` (or `verify-ca`) only when you know the provider cert chain is verifiable.
-   - Optional override: `DB_SSL_VERIFY=true|false`.
+- `DISCORD_TOKEN`
+- `FERNET_KEY`
+- One DB configuration mode:
+  - `DATABASE_URL`, or
+  - `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
 
-3. Initialize or migrate schema via migration runner:
+Recommended hardening flags:
+
+- `DB_SSL=require`
+- `DB_SSL_VERIFY=true`
+- `DB_CONNECT_MAX_ATTEMPTS=20`
+
+## 2) Database schema bootstrap / migrations
+
+Fresh database install:
 
 ```bash
-# Fresh database install (uses migrations/000_full_schema.sql)
-
-# Existing database migration
+psql "$DATABASE_URL" -f migrations/000_full_schema.sql
 ```
 
-4. Railway start command:
+Apply incremental migrations:
+
+```bash
+for f in migrations/*.sql; do
+  [ "$(basename "$f")" = "000_full_schema.sql" ] && continue
+  psql "$DATABASE_URL" -f "$f"
+done
+```
+
+## 3) Startup command
+
+Railway service start command:
 
 ```bash
 python bot.py
 ```
 
-5. Deploy single service only (no web service / no frontend).
+`bot.py` runs both:
+- Discord bot process
+- Health endpoint server on `0.0.0.0:$PORT` (`/health`)
+
+## 4) Post-deploy verification
+
+- Confirm Railway health checks are green (`/health` returns `ok`).
+- Confirm bot presence in Discord and command responsiveness.
+- Check logs for:
+  - `Database pool initialized`
+  - `Starting Discord bot service`
+  - No repeating supervisor crash loops.
+
+## 5) Rollback guidance
+
+- Re-deploy the previous successful Railway deployment.
+- If rollback includes schema-affecting release, ensure the previous app version is compatible with current schema before rollout.
+- Validate `/health` and a smoke command after rollback.

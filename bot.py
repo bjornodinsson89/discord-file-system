@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 import sys
 
 import config
 from aiohttp import web
 from cogs.events import bot
 from services.jump_monitor import shutdown_jump_monitor
-from utils.database import get_pool, is_initialized as db_is_initialized
+from utils.database import get_database, is_initialized as db_is_initialized
 from utils.tasks import supervise
 from views.components import shutdown_status_panel_tasks
 
@@ -46,8 +47,8 @@ async def health_server():
         if not db_is_initialized():
             return web.Response(status=503, text='db_not_initialized')
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            db = get_database()
+            async with db.acquire(timeout=5, operation="health_check") as conn:
                 await conn.execute('SELECT 1')
         except Exception as exc:
             log.warning("Health check DB probe failed: %s", exc)
@@ -86,9 +87,33 @@ async def main() -> None:
         logger=log,
     )
 
+    stop_event = asyncio.Event()
+
+    def _handle_shutdown_signal(sig: signal.Signals) -> None:
+        log.info("Received %s, initiating graceful shutdown", sig.name)
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _handle_shutdown_signal, sig)
+        except NotImplementedError:
+            pass
+
     try:
         async with bot:
-            await bot.start(config.DISCORD_TOKEN)
+            bot_task = asyncio.create_task(bot.start(config.DISCORD_TOKEN), name="discord_bot")
+            stop_task = asyncio.create_task(stop_event.wait(), name="shutdown_wait")
+            done, pending = await asyncio.wait(
+                {bot_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            if stop_task in done and not bot_task.done():
+                await bot.close()
+                await bot_task
+            elif bot_task in done:
+                await bot_task
     finally:
         await health_supervisor.stop()
         await shutdown_status_panel_tasks()

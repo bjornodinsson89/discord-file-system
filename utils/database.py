@@ -29,7 +29,9 @@ class Database:
     pool: asyncpg.Pool
 
     @asynccontextmanager
-    async def acquire(self, *, timeout: float = 10.0, operation: str = "db_operation") -> AsyncIterator[asyncpg.Connection]:
+    async def acquire(
+        self, *, timeout: float = 10.0, operation: str = "db_operation"
+    ) -> AsyncIterator[asyncpg.Connection]:
         conn: asyncpg.Connection | None = None
         try:
             conn = await asyncio.wait_for(self.pool.acquire(), timeout=timeout)
@@ -43,7 +45,9 @@ class Database:
                 timeout_seconds=timeout,
                 operation=operation,
             )
-            raise DatabaseAcquireTimeoutError("Database is busy, please try again shortly.") from exc
+            raise DatabaseAcquireTimeoutError(
+                "Database is busy, please try again shortly."
+            ) from exc
 
         try:
             yield conn
@@ -130,7 +134,10 @@ async def wait_until_initialized(timeout: float = 30.0, poll_interval: float = 0
     deadline = loop.time() + max(timeout, 0.0)
     while loop.time() < deadline:
         try:
-            await asyncio.wait_for(_initialized_event.wait(), timeout=min(poll_interval, max(deadline - loop.time(), 0.01)))
+            await asyncio.wait_for(
+                _initialized_event.wait(),
+                timeout=min(poll_interval, max(deadline - loop.time(), 0.01)),
+            )
         except asyncio.TimeoutError:
             pass
         if is_initialized():

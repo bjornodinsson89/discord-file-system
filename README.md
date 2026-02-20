@@ -65,7 +65,7 @@ Notes:
 
 ## CI status
 
-GitHub Actions workflow `.github/workflows/tests.yml` runs on every push and pull request. It installs runtime + dev dependencies, runs `ruff check .`, runs `mypy` in warn-only mode, and executes `pytest -q`.
+GitHub Actions workflow `.github/workflows/ci.yml` runs on every push and pull request with Ruff format checks, lint, tests, and mypy (warn-only). Dependency auditing runs in `.github/workflows/pip-audit.yml`.
 
 ## Dependency bump plan
 
@@ -76,3 +76,13 @@ Suggested safe bump process:
 2. Run `ruff check .`, `mypy`, and `pytest -q` locally.
 3. Open a PR and confirm CI passes before merging.
 4. For runtime dependency changes in `requirements.txt`, include a short rollback note and confirm no behavior changes via tests.
+
+
+## Production Readiness Checklist
+
+- [x] CI on push/PR (`ruff format --check`, `ruff check`, `pytest -q`, mypy warn-only).
+- [x] Dependency vulnerability scanning with `pip-audit` workflow.
+- [x] Structured log redaction for sensitive values (token/API key/DSN/password patterns).
+- [x] DB acquire timeout handling for monitored worker paths and health probe.
+- [x] Supervised background workers with graceful shutdown handling (`SIGTERM`/`SIGINT`).
+- [x] Deployment and operational docs updated (`DEPLOYMENT.md`, `RUNBOOK.md`).

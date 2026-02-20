@@ -44,7 +44,9 @@ async def safe_send_channel(
         return False
 
     try:
-        await channel.send(content=content, embed=embed, view=view, allowed_mentions=allowed_mentions)
+        await channel.send(
+            content=content, embed=embed, view=view, allowed_mentions=allowed_mentions
+        )
     except (discord.Forbidden, discord.NotFound, discord.HTTPException):
         log.warning("safe_send_channel failed channel_id=%s", resolved_channel_id, exc_info=True)
         return False

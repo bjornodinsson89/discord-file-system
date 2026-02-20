@@ -21,7 +21,6 @@ def _env_flag(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-
 def safe_int_env(name: str, default: int | None = None, *, allow_blank: bool = True) -> int | None:
     value = os.getenv(name)
     if value is None:
@@ -74,7 +73,11 @@ def _derive_sslmode_from_database_url(database_url: str | None) -> str | None:
 
 
 _DB_SSL_ENV = os.getenv("DB_SSL")
-DB_SSL = (_DB_SSL_ENV.strip().lower() if _DB_SSL_ENV is not None else "") or _derive_sslmode_from_database_url(DATABASE_URL) or "disable"
+DB_SSL = (
+    (_DB_SSL_ENV.strip().lower() if _DB_SSL_ENV is not None else "")
+    or _derive_sslmode_from_database_url(DATABASE_URL)
+    or "disable"
+)
 DB_SSL_CA_FILE = os.getenv("DB_SSL_CA_FILE")
 _ssl_verify_default = DB_SSL in {"verify-ca", "verify-full"}
 if DB_SSL in {"allow", "prefer", "require", "true", "1", "yes", "on"}:
@@ -95,7 +98,17 @@ def get_db_ssl_config() -> ssl.SSLContext | None:
         with open(ca_file, "rb"):
             pass
 
-    if value in {"allow", "prefer", "require", "true", "1", "on", "yes", "verify-ca", "verify-full"}:
+    if value in {
+        "allow",
+        "prefer",
+        "require",
+        "true",
+        "1",
+        "on",
+        "yes",
+        "verify-ca",
+        "verify-full",
+    }:
         if DB_SSL_VERIFY:
             cafile = ca_file or (certifi.where() if certifi is not None else None)
             context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=cafile)
@@ -162,7 +175,7 @@ INSURANCE_RESERVATION_TIMEOUT = 10
 COVERAGE_TYPES = {
     "xanax": "Xanax",
     "ecstasy_after_stack": "Ecstasy After Stack",
-    "all_drugs": "All Drug-Related Losses"
+    "all_drugs": "All Drug-Related Losses",
 }
 RAFFLE_RESERVATION_TIMEOUT = 10
 MAX_RAFFLE_TICKETS = 10000
@@ -213,7 +226,7 @@ REPUTATION_THRESHOLD_BAD = 2.5
 
 PAYMENT_TYPES = {
     "xanax": {"id": XANAX_ITEM_ID, "name": "Xanax", "emoji": EMOJI_PILL},
-    "erotic_dvd": {"id": DVD_ITEM_ID, "name": "Erotic DVD", "emoji": "📀"}
+    "erotic_dvd": {"id": DVD_ITEM_ID, "name": "Erotic DVD", "emoji": "📀"},
 }
 
 

@@ -33,8 +33,9 @@ _ALIAS_TO_CANONICAL = {
 }
 
 
-
 _TOKEN_SPLIT_RE = re.compile(r"[,;\n|]+")
+
+
 class PayoutParseError(ValueError):
     """Raised when a payout string cannot be parsed."""
 
@@ -114,9 +115,7 @@ def parse_payout_string(text: str) -> List[Dict[str, int | str]]:
         canonical = _ALIAS_TO_CANONICAL.get(item_name)
         if not canonical:
             valid = "xanax, edvd (erotic dvd), ecstasy"
-            raise PayoutParseError(
-                f"Unknown payout item '{left.strip()}'. Valid items: {valid}."
-            )
+            raise PayoutParseError(f"Unknown payout item '{left.strip()}'. Valid items: {valid}.")
 
         try:
             qty = int(qty_text)

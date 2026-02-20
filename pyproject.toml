@@ -15,3 +15,9 @@ warn_unused_configs = true
 files = ["config.py", "utils"]
 ignore_missing_imports = true
 follow_imports = "skip"
+
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

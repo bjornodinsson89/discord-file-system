@@ -35,7 +35,10 @@ def parse_payment_type(raw: str, *, allow_free: bool) -> str:
     if token in {"xanax", "xan", "xans"} or token_compact in {"xanax", "xan", "xans"}:
         return "xanax"
 
-    if token in {"erotic dvd", "edvd", "e dvd", "eroticdvd"} or token_compact in {"eroticdvd", "edvd"}:
+    if token in {"erotic dvd", "edvd", "e dvd", "eroticdvd"} or token_compact in {
+        "eroticdvd",
+        "edvd",
+    }:
         return "erotic_dvd"
 
     if allow_free and token in {"giveaway", "free", "0", "none"}:
@@ -129,6 +132,5 @@ def format_item_quantities(qty: dict[str, int]) -> str:
 
     entries.sort(key=lambda item_qty: (_DISPLAY_ORDER.get(item_qty[0], 99), item_qty[0]))
     return " + ".join(
-        f"{_DISPLAY_EMOJIS[item]} {amount} {_DISPLAY_NAMES[item]}"
-        for item, amount in entries
+        f"{_DISPLAY_EMOJIS[item]} {amount} {_DISPLAY_NAMES[item]}" for item, amount in entries
     )
