@@ -1495,6 +1495,25 @@ class JumpsRepository(RepositoryBase):
             rows = await conn.fetch("SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open' ORDER BY created_at DESC", guild_id)
             return [dict(r) for r in rows]
 
+    async def list_open_sessions_with_user_signup(self, *, guild_id: int, user_id: int) -> list[dict]:
+        """List open sessions for guild with optional signup status for one user in one query."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT s.*, su.status AS user_signup_status
+                FROM jump_99k_sessions s
+                LEFT JOIN jump_99k_signups su
+                  ON su.session_id = s.id
+                 AND su.participant_discord_id = $2
+                WHERE s.guild_id = $1
+                  AND s.status = 'open'
+                ORDER BY s.created_at DESC
+                """,
+                guild_id,
+                user_id,
+            )
+            return [dict(r) for r in rows]
+
     async def set_host_controls_message(self, session_id: int, *, channel_id: int, message_id: int) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(

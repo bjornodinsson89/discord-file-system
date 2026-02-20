@@ -941,20 +941,24 @@ async def my_sessions(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     db = get_database()
     
-    sessions = await JumpsRepository(db.pool).list_open_sessions_by_guild(interaction.guild_id)
-    
+    repo = JumpsRepository(db.pool)
+    sessions = await repo.list_open_sessions_with_user_signup(
+        guild_id=interaction.guild_id,
+        user_id=interaction.user.id,
+    )
+
     user_signups = []
     user_waitlist = []
     hosted_sessions = []
-    
+
     for session in sessions:
         if session['host_discord_id'] == interaction.user.id:
             hosted_sessions.append(session)
-        
-        signup = await JumpsRepository(db.pool).get_signup(session['id'], interaction.user.id)
-        if signup:
-            user_signups.append({'session': session, 'signup': signup})
-        
+
+        signup_status = session.get('user_signup_status')
+        if signup_status:
+            user_signups.append({'session': session, 'signup': {'status': signup_status}})
+
         waitlist_pos = None
         if waitlist_pos:
             user_waitlist.append({'session': session, 'position': waitlist_pos})
