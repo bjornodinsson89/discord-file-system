@@ -16,6 +16,7 @@ from utils.embeds import *
 from utils.payouts import parse_payout_string, payout_items_to_human, payout_items_to_string, PayoutParseError
 from services import JumpService, RaffleService, DomainError, AlreadyExists, NotFound, InvalidInput, BusinessRuleViolation, PaymentReceiptService
 from services.jump_monitor import get_jump_monitor
+from utils.tasks import TaskSupervisor, supervise
 from repositories.jumps import JumpsRepository
 from repositories.users import UsersRepository
 from repositories.audit import AuditRepository
@@ -146,7 +147,7 @@ class ConfirmRemoveKeyView(ui.View):
 # ============================================================================
 
 class JumpSessionView(ui.View):
-    _status_panel_tasks: dict[tuple[int, int], asyncio.Task] = {}
+    _status_panel_tasks: dict[tuple[int, int], TaskSupervisor] = {}
 
     def __init__(self, session_id: int):
         super().__init__(timeout=None)
@@ -245,12 +246,16 @@ class JumpSessionView(ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
         key = (interaction.user.id, self.session_id)
-        existing_task = self._status_panel_tasks.get(key)
-        if existing_task and not existing_task.done():
-            existing_task.cancel()
+        existing_task = self._status_panel_tasks.pop(key, None)
+        if existing_task is not None:
+            await existing_task.stop()
 
-        self._status_panel_tasks[key] = asyncio.create_task(
-            self._run_status_panel_refresh(interaction)
+        self._status_panel_tasks[key] = supervise(
+            name=f"status_panel:{interaction.user.id}:{self.session_id}",
+            coro_factory=lambda: self._run_status_panel_refresh(interaction),
+            restart=True,
+            backoff=(1, 2, 5, 10),
+            logger=log,
         )
 
     @ui.button(label="Start Jump", style=discord.ButtonStyle.primary, emoji="🚀", custom_id="jump_start")
@@ -292,7 +297,7 @@ class JumpSessionView(ui.View):
                 return
             except Exception:
                 log.exception("Status panel refresh failed session_id=%s", self.session_id)
-                return
+                raise
 
     @ui.button(label="Session Info", style=discord.ButtonStyle.secondary, emoji=config.EMOJI_INFO, custom_id="jump_info")
     async def info(self, interaction: discord.Interaction, button: ui.Button):
@@ -2059,3 +2064,10 @@ async def refresh_session_readiness(session_id: int):
                 log.warning(f"Failed to refresh readiness for {signup['discord_id']}: {e}")
     except Exception as e:
         log.exception(f"Readiness refresh error: {e}")
+
+
+async def shutdown_status_panel_tasks() -> None:
+    tasks = list(JumpSessionView._status_panel_tasks.items())
+    JumpSessionView._status_panel_tasks.clear()
+    for _key, task in tasks:
+        await task.stop()

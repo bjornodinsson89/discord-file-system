@@ -11,6 +11,7 @@ import logging
 import asyncio
 import json
 import re
+import uuid
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -19,7 +20,12 @@ from typing import Optional
 import config
 from constants.jump99k import SIGNUP_ACTIVE_STATUSES
 from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager, GuildSettingsRepository, require_api_key
-from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
+from utils.database import (
+    DatabaseAcquireTimeoutError,
+    get_pool,
+    is_initialized as db_is_initialized,
+    wait_until_initialized,
+)
 from utils.migrations import run_migrations
 from utils.embeds import (
     create_success_embed, create_error_embed, create_warning_embed, create_info_embed,
@@ -35,6 +41,8 @@ from utils.payouts import parse_payout_string, payout_items_to_human, PayoutPars
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 from utils.payment_normalization import parse_payment_type
 from utils.discord_safe_send import safe_send_channel
+from utils.command_checks import CommandAccessError, has_role_hierarchy_access, require_command_access
+from utils.redaction import redact_text
 from setup_panel import (
     DEFAULT_WELCOME_TEMPLATE,
     detect_rules_channel,
@@ -482,6 +490,17 @@ class Jump99kSetupModal(discord.ui.Modal, title="99k Setup"):
             await interaction.response.send_message(embed=create_error_embed("Invalid input", "Default max slots must be between 1 and 7."), ephemeral=True)
             return
 
+        target_role = interaction.guild.get_role(role_id) if interaction.guild else None
+        if not target_role:
+            await interaction.response.send_message(embed=create_error_embed("Invalid input", "Host role not found in this server."), ephemeral=True)
+            return
+        if not has_role_hierarchy_access(guild=interaction.guild, actor=interaction.user, target_role=target_role):
+            await interaction.response.send_message(
+                embed=create_error_embed("Role hierarchy blocked", "You cannot configure a role that is equal to or above your highest role."),
+                ephemeral=True,
+            )
+            return
+
         db = get_database()
         repo = JumpsRepository(db.pool)
         await repo.upsert_settings(
@@ -498,11 +517,15 @@ class Jump99kSetupModal(discord.ui.Modal, title="99k Setup"):
 
 def _is_valid_torn_url(raw_url: str) -> bool:
     url = (raw_url or "").strip()
-    if not url.lower().startswith("http"):
+    if not url:
         return False
     parsed = urlparse(url)
-    host = (parsed.netloc or "").lower()
-    return bool(host) and "torn.com" in host
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    return host == "torn.com" or host.endswith(".torn.com")
 
 
 def _excerpt(text: str, limit: int = 180) -> str:
@@ -637,20 +660,50 @@ async def _send_interaction_error(interaction: discord.Interaction, message: str
         log.exception("Failed to send interaction error response")
 
 
+def _next_error_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+async def _send_unexpected_error(interaction: discord.Interaction, *, error_id: str):
+    await _send_interaction_error(
+        interaction,
+        f"An unexpected error occurred. Please try again. Error ID: `{error_id}`",
+    )
+
+
 async def _global_view_error(self, interaction: discord.Interaction, error: Exception, item):
-    log.exception("Unhandled UI interaction error (item=%s): %s", getattr(item, "custom_id", None), error)
-    await _send_interaction_error(interaction, "An unexpected error occurred. Please try again.")
+    error_id = _next_error_id()
+    log_event(
+        log,
+        logging.ERROR,
+        "ui_interaction_unhandled_error",
+        error_id=error_id,
+        item_custom_id=getattr(item, "custom_id", None),
+        error_type=type(error).__name__,
+        error_message=redact_text(str(error)),
+        exc_info=error,
+    )
+    await _send_unexpected_error(interaction, error_id=error_id)
 
 
 async def _global_modal_error(self, interaction: discord.Interaction, error: Exception):
-    log.exception("Unhandled modal interaction error: %s", error)
+    error_id = _next_error_id()
+    log_event(
+        log,
+        logging.ERROR,
+        "modal_interaction_unhandled_error",
+        error_id=error_id,
+        error_type=type(error).__name__,
+        error_message=redact_text(str(error)),
+        exc_info=error,
+    )
     if isinstance(error, discord.HTTPException) and getattr(error, "code", None) == 50035 and "Invalid Form Body" in str(error):
         await _send_interaction_error(
             interaction,
             "This interaction is outdated. Please re-run: /99k edit jump_id:<id> (example: /99k edit jump_id:22).",
         )
         return
-    await _send_interaction_error(interaction, "An unexpected error occurred. Please try again.")
+    await _send_unexpected_error(interaction, error_id=error_id)
 
 
 discord.ui.View.on_error = _global_view_error
@@ -868,8 +921,34 @@ async def on_member_join(member: discord.Member):
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     """Global slash command error handler."""
-    log.exception("Unhandled slash command error: %s", error)
-    await _send_interaction_error(interaction, "An unexpected error occurred. Please try again.")
+    root_error = getattr(error, "original", error)
+    if isinstance(root_error, CommandAccessError):
+        await _send_interaction_error(interaction, root_error.user_message)
+        return
+    if isinstance(root_error, DatabaseAcquireTimeoutError):
+        log_event(
+            log,
+            logging.WARNING,
+            "slash_command_db_acquire_timeout",
+            timeout_error_type=type(root_error).__name__,
+            command_name=getattr(getattr(interaction, "command", None), "name", None),
+        )
+        await _send_interaction_error(interaction, "Database is busy right now. Please try again in a moment.")
+        return
+    error_id = _next_error_id()
+    log_event(
+        log,
+        logging.ERROR,
+        "slash_command_unhandled_error",
+        error_id=error_id,
+        command_name=getattr(getattr(interaction, "command", None), "name", None),
+        guild_id=interaction.guild_id,
+        user_id=getattr(getattr(interaction, "user", None), "id", None),
+        error_type=type(root_error).__name__,
+        error_message=redact_text(str(root_error)),
+        exc_info=root_error,
+    )
+    await _send_unexpected_error(interaction, error_id=error_id)
 
 
 # ============================================================================
@@ -926,20 +1005,24 @@ async def my_sessions(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     db = get_database()
     
-    sessions = await JumpsRepository(db.pool).list_open_sessions_by_guild(interaction.guild_id)
-    
+    repo = JumpsRepository(db.pool)
+    sessions = await repo.list_open_sessions_with_user_signup(
+        guild_id=interaction.guild_id,
+        user_id=interaction.user.id,
+    )
+
     user_signups = []
     user_waitlist = []
     hosted_sessions = []
-    
+
     for session in sessions:
         if session['host_discord_id'] == interaction.user.id:
             hosted_sessions.append(session)
-        
-        signup = await JumpsRepository(db.pool).get_signup(session['id'], interaction.user.id)
-        if signup:
-            user_signups.append({'session': session, 'signup': signup})
-        
+
+        signup_status = session.get('user_signup_status')
+        if signup_status:
+            user_signups.append({'session': session, 'signup': {'status': signup_status}})
+
         waitlist_pos = None
         if waitlist_pos:
             user_waitlist.append({'session': session, 'position': waitlist_pos})
@@ -978,6 +1061,11 @@ async def my_sessions(interaction: discord.Interaction):
 # ============================================================================
 
 @bot.tree.command(name="setup", description="Open the interactive server setup panel")
+@require_command_access(
+    include_configured_admin_roles=True,
+    allow_manage_guild=True,
+    failure_message="You must be the guild owner, Administrator, Manage Guild, or have a configured setup admin role.",
+)
 async def setup(interaction: discord.Interaction):
     db = get_database()
     repo = GuildSettingsRepository(db)
@@ -3320,6 +3408,7 @@ jump99k_group = app_commands.Group(name="99k", description="99k happy jump comma
 
 
 @jump99k_group.command(name="start", description="Create a 99k jump session")
+@require_command_access(required_role_setting_keys=("host99k_role_id", "host_role_id"), failure_message="Administrator or the configured 99k Host role is required.")
 async def jump99k_start(interaction: discord.Interaction):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
     if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
@@ -3362,6 +3451,7 @@ async def jump99k_start(interaction: discord.Interaction):
 
 
 @jump99k_group.command(name="edit", description="Edit an open 99k jump session")
+@require_command_access(required_role_setting_keys=("host99k_role_id", "host_role_id"), failure_message="Administrator or the configured 99k Host role is required.")
 @app_commands.describe(jump_id="Existing jump session ID")
 async def jump99k_edit(interaction: discord.Interaction, jump_id: int):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
@@ -3452,7 +3542,7 @@ async def jump99k_doctor(interaction: discord.Interaction, session_id: int | Non
 
     schema_ok = True
     schema_lines: list[str] = []
-    async with db.pool.acquire() as conn:
+    async with db.acquire(timeout=10, operation="jump99k_doctor_schema_check") as conn:
         status_constraint = await conn.fetchval(
             """
             SELECT pg_get_constraintdef(c.oid)
@@ -3489,7 +3579,7 @@ async def jump99k_doctor(interaction: discord.Interaction, session_id: int | Non
     db_ready = False
     if db_is_initialized():
         try:
-            async with db.pool.acquire() as conn:
+            async with db.acquire(timeout=5, operation="jump99k_doctor_db_probe") as conn:
                 await conn.execute("SELECT 1")
             db_ready = True
         except Exception:
@@ -3552,6 +3642,7 @@ async def jump99k_doctor(interaction: discord.Interaction, session_id: int | Non
 
 
 @jump99k_group.command(name="end", description="End a specific 99k session by ID")
+@require_command_access(required_role_setting_keys=("host99k_role_id", "host_role_id"), failure_message="Administrator or the configured 99k Host role is required.")
 @app_commands.describe(jump_id="99k session ID to end")
 async def jump99k_end(interaction: discord.Interaction, jump_id: int):
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
@@ -3668,6 +3759,7 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
 
 
 @bot.tree.command(name="99k_reset_progress", description="Reset Start/End progress for a 99k session")
+@require_command_access(required_role_setting_keys=("host99k_role_id", "host_role_id"), failure_message="Administrator or the configured 99k Host role is required.")
 @app_commands.describe(session_id="Optional 99k session ID (defaults to session mapped to this channel)")
 async def jump99k_reset_progress(interaction: discord.Interaction, session_id: int | None = None):
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -3717,6 +3809,7 @@ bot.tree.add_command(jump99k_group)
 
 @bot.tree.command(name="policy_create", description="Create an insurance policy (Admin only)")
 @app_commands.default_permissions(administrator=True)
+@require_command_access(include_configured_admin_roles=True, allow_manage_guild=True)
 @app_commands.describe(
     provider="Provider Discord user",
     policy_name="Policy name",
@@ -3780,6 +3873,7 @@ async def policy_create(
 
 @bot.tree.command(name="provider_approve", description="Approve or reject an insurance provider (Admin only)")
 @app_commands.default_permissions(administrator=True)
+@require_command_access(include_configured_admin_roles=True, allow_manage_guild=True)
 @app_commands.describe(provider_id="Provider ID", status="Approval status")
 @app_commands.choices(
     status=[
@@ -3811,6 +3905,7 @@ async def provider_approve(
 
 @bot.tree.command(name="claim_approve", description="Approve an insurance claim (Admin only)")
 @app_commands.default_permissions(administrator=True)
+@require_command_access(include_configured_admin_roles=True, allow_manage_guild=True)
 @app_commands.describe(claim_id="Claim ID to approve")
 async def claim_approve(interaction: discord.Interaction, claim_id: int):
     await interaction.response.defer(ephemeral=True)
@@ -3826,6 +3921,7 @@ async def claim_approve(interaction: discord.Interaction, claim_id: int):
 
 @bot.tree.command(name="claim_reject", description="Reject an insurance claim (Admin only)")
 @app_commands.default_permissions(administrator=True)
+@require_command_access(include_configured_admin_roles=True, allow_manage_guild=True)
 @app_commands.describe(claim_id="Claim ID to reject", notes="Optional rejection notes")
 async def claim_reject(interaction: discord.Interaction, claim_id: int, notes: str = None):
     await interaction.response.defer(ephemeral=True)
@@ -3885,6 +3981,7 @@ async def insurers(
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 @bot.tree.command(name="application_review", description="Review insurer/host99k applications (Admin only)")
+@require_command_access(include_configured_admin_roles=True, allow_manage_guild=True)
 @app_commands.describe(
     category="Application category",
     application_id="Application ID",
@@ -3970,6 +4067,7 @@ async def application_review(
 
 @bot.tree.command(name="audit_log", description="View recent audit log entries (Admin only)")
 @app_commands.default_permissions(administrator=True)
+@require_command_access(include_configured_admin_roles=True, allow_manage_guild=True)
 @app_commands.describe(limit="Number of entries to show (max 20)")
 async def audit_log(interaction: discord.Interaction, limit: int = 10):
     await interaction.response.defer(ephemeral=True)
@@ -4577,12 +4675,14 @@ async def _draw_raffle_winner(raffle: dict):
     
     raffle_id = raffle['raffle_id']
     
-    # Mark as drawing to prevent duplicate draws
-    await raffles_repo.update_raffle(raffle_id, status='drawing')
-    
     try:
-        # Draw winner
-        winner = await raffles_repo.draw_raffle_winner(raffle_id)
+        draw_result = await raffles_repo.draw_raffle_winner_atomic(raffle_id)
+        draw_state = draw_result.get("state")
+        winner = draw_result.get("winner")
+
+        if draw_state in {"already_drawn", "not_drawable", "not_ready", "not_found"}:
+            log.info("Skipping raffle draw raffle_id=%s state=%s", raffle_id, draw_state)
+            return
         
         # Log the draw
         await audit_repo.log_audit(
@@ -4590,7 +4690,7 @@ async def _draw_raffle_winner(raffle: dict):
             "raffle_auto_drawn",
             "raffle",
             raffle_id,
-            {"winner_discord_id": winner['discord_id'] if winner else None},
+            {"winner_discord_id": winner['discord_id'] if winner else None, "draw_state": draw_state},
             guild_id=raffle['guild_id'],
             source='system'
         )
@@ -4688,8 +4788,6 @@ async def _draw_raffle_winner(raffle: dict):
         
     except Exception as e:
         log.error(f"Error drawing raffle {raffle_id}: {e}")
-        # Reset status if draw failed
-        await raffles_repo.update_raffle(raffle_id, status='active')
         raise
 
 

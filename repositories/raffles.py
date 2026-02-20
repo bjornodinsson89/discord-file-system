@@ -564,13 +564,13 @@ class RafflesRepository(RepositoryBase):
             )
             return int(result.split()[-1]) if result.split()[-1].isdigit() else 0
 
-    async def draw_raffle_winner(self, raffle_id: int) -> Optional[dict]:
-        """Draw a winner for the raffle."""
+    async def draw_raffle_winner_atomic(self, raffle_id: int) -> dict:
+        """Atomically draw raffle winner while guarding against concurrent draws."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 raffle = await conn.fetchrow(
                     """
-                    SELECT raffle_id, status, tickets_available,
+                    SELECT raffle_id, status, tickets_available, winner_discord_id, winner_torn_id,
                            COALESCE((
                                SELECT SUM(num_tickets)
                                FROM raffle_entries
@@ -578,17 +578,33 @@ class RafflesRepository(RepositoryBase):
                            ), 0) AS verified_total
                     FROM raffles
                     WHERE raffle_id = $1
+                    FOR UPDATE
                     """,
                     raffle_id,
                 )
                 if not raffle:
-                    return None
+                    return {"state": "not_found", "winner": None}
 
-                if raffle["status"] != "active":
-                    return None
+                status = str(raffle["status"] or "").lower()
+                if status in {"drawing", "drawn", "completed"}:
+                    winner = None
+                    if raffle.get("winner_discord_id") is not None:
+                        winner = {
+                            "discord_id": int(raffle["winner_discord_id"]),
+                            "torn_user_id": int(raffle["winner_torn_id"]) if raffle.get("winner_torn_id") is not None else None,
+                        }
+                    return {"state": "already_drawn", "winner": winner}
+
+                if status != "active":
+                    return {"state": "not_drawable", "winner": None}
 
                 if int(raffle["tickets_available"] or 0) > 0 and int(raffle["verified_total"] or 0) < int(raffle["tickets_available"] or 0):
-                    return None
+                    return {"state": "not_ready", "winner": None}
+
+                await conn.execute(
+                    "UPDATE raffles SET status = 'drawing' WHERE raffle_id = $1 AND status = 'active'",
+                    raffle_id,
+                )
 
                 entries = await conn.fetch(
                     """
@@ -596,27 +612,28 @@ class RafflesRepository(RepositoryBase):
                     FROM raffle_entries
                     WHERE raffle_id = $1 AND payment_verified = TRUE
                     """,
-                    raffle_id
+                    raffle_id,
                 )
-                
+
                 if not entries:
                     await conn.execute(
                         "UPDATE raffles SET status = 'cancelled' WHERE raffle_id = $1",
-                        raffle_id
+                        raffle_id,
                     )
-                    return None
-                
+                    return {"state": "cancelled", "winner": None}
+
                 import random
+
                 pool = []
                 for entry in entries:
-                    pool.extend([entry] * entry["num_tickets"])
-                
+                    pool.extend([entry] * int(entry["num_tickets"] or 0))
+
                 winner = random.choice(pool)
-                
+
                 await conn.execute(
                     """
-                    UPDATE raffles 
-                    SET status = 'completed', 
+                    UPDATE raffles
+                    SET status = 'completed',
                         winner_discord_id = $1,
                         winner_torn_id = $2,
                         drawn_at = NOW()
@@ -624,15 +641,24 @@ class RafflesRepository(RepositoryBase):
                     """,
                     winner["discord_id"],
                     winner["torn_user_id"],
-                    raffle_id
+                    raffle_id,
                 )
-                
+
                 return {
-                    "discord_id": winner["discord_id"],
-                    "torn_user_id": winner["torn_user_id"],
-                    "total_entries": len(entries),
-                    "total_tickets": sum(e["num_tickets"] for e in entries)
+                    "state": "drawn",
+                    "winner": {
+                        "discord_id": winner["discord_id"],
+                        "torn_user_id": winner["torn_user_id"],
+                        "total_entries": len(entries),
+                        "total_tickets": sum(int(e["num_tickets"] or 0) for e in entries),
+                    },
                 }
+
+    async def draw_raffle_winner(self, raffle_id: int) -> Optional[dict]:
+        result = await self.draw_raffle_winner_atomic(raffle_id)
+        if result.get("state") == "drawn":
+            return result.get("winner")
+        return None
 
     async def get_raffles_to_draw(self) -> list:
         """Get raffles that are ready to be drawn."""

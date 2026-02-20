@@ -4,8 +4,9 @@ import logging
 import asyncio
 import os
 import random
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 import asyncpg
 
@@ -19,9 +20,36 @@ class MissingDatabaseColumnError(Exception):
     pass
 
 
+class DatabaseAcquireTimeoutError(RuntimeError):
+    """Raised when a database connection cannot be acquired within timeout."""
+
+
 @dataclass(frozen=True)
 class Database:
     pool: asyncpg.Pool
+
+    @asynccontextmanager
+    async def acquire(self, *, timeout: float = 10.0, operation: str = "db_operation") -> AsyncIterator[asyncpg.Connection]:
+        conn: asyncpg.Connection | None = None
+        try:
+            conn = await asyncio.wait_for(self.pool.acquire(), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            log_event(
+                log,
+                logging.WARNING,
+                "db_acquire_timeout",
+                action="db_acquire",
+                result="timeout",
+                timeout_seconds=timeout,
+                operation=operation,
+            )
+            raise DatabaseAcquireTimeoutError("Database is busy, please try again shortly.") from exc
+
+        try:
+            yield conn
+        finally:
+            if conn is not None:
+                await self.pool.release(conn)
 
 
 _pool: Optional[asyncpg.Pool] = None

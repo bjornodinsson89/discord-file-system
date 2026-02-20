@@ -118,6 +118,22 @@ class RejectClaimResponse:
         self.message = f"Claim #{claim_id} has been rejected."
 
 
+def _normalize_page(page: int) -> int:
+    try:
+        return max(int(page), 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _safe_offset(page: int, per_page: int) -> int:
+    normalized_page = _normalize_page(page)
+    try:
+        size = max(int(per_page), 1)
+    except (TypeError, ValueError):
+        size = 1
+    return max((normalized_page - 1) * size, 0)
+
+
 # ============================================================================
 # SESSION HANDLERS
 # ============================================================================
@@ -152,7 +168,7 @@ async def list_sessions_handler(guild_id: int, status: Optional[str], page: int,
     db = get_database()
     jumps_repo = JumpsRepository(db.pool)
     
-    offset = (page - 1) * per_page
+    offset = _safe_offset(page, per_page)
     sessions = await jumps_repo.list_sessions(
         guild_id=guild_id,
         status=status,
@@ -256,7 +272,7 @@ async def list_raffles_handler(guild_id: Optional[int], status: Optional[str], p
     db = get_database()
     raffles_repo = RafflesRepository(db.pool)
     
-    offset = (page - 1) * per_page
+    offset = _safe_offset(page, per_page)
     raffles = await raffles_repo.list_raffles(
         guild_id=guild_id,
         status=status,
@@ -351,7 +367,7 @@ async def approve_claim_handler(claim_id: int, admin_discord_id: int, source: st
     insurance_repo = InsuranceRepository(db.pool)
     
     # Update claim status to approved
-    async with db.pool.acquire() as conn:
+    async with db.acquire(timeout=10, operation="approve_claim_handler") as conn:
         result = await conn.execute(
             """
             UPDATE insurance_claims 
@@ -375,7 +391,7 @@ async def reject_claim_handler(claim_id: int, admin_discord_id: int, notes: Opti
     from utils import get_database
     db = get_database()
     
-    async with db.pool.acquire() as conn:
+    async with db.acquire(timeout=10, operation="reject_claim_handler") as conn:
         result = await conn.execute(
             """
             UPDATE insurance_claims 
