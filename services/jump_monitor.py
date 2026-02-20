@@ -74,7 +74,13 @@ class JumpMonitor:
             await asyncio.sleep(self.poll_interval_seconds)
 
     async def _poll_once(self, jump_id: int) -> bool:
-        db = get_database()
+        try:
+            db = get_database()
+        except RuntimeError as exc:
+            if "not initialized" in str(exc):
+                log.warning("jump_monitor waiting for database init")
+                return True
+            raise
         users_repo = UsersRepository(db.pool)
         jumps_repo = JumpsRepository(db.pool)
         od_tracker = OverdoseTracker(users_repo=users_repo, overdose_repo=OverdoseRepository(db.pool), jumps_repo=jumps_repo)

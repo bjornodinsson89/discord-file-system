@@ -6,6 +6,15 @@ from datetime import datetime
 from typing import Any, Optional
 
 import asyncpg
+from constants.jump99k import (
+    SIGNUP_ACTIVE_STATUSES,
+    SIGNUP_ALLOWED_STATUSES,
+    SIGNUP_STATUS_CANCELLED,
+    SIGNUP_STATUS_EXPIRED,
+    SIGNUP_STATUS_NOT_COMPLETED,
+    SIGNUP_STATUS_PAID,
+    SIGNUP_STATUS_RESERVED,
+)
 
 from .base import RepositoryBase
 
@@ -42,7 +51,11 @@ _SIGNUPS_DISCORD_COLUMN_MIGRATION_HINT = (
     "WHERE participant_discord_id IS NULL AND discord_id IS NOT NULL;"
 )
 
-_ALLOWED_SIGNUP_STATUSES = {"reserved", "signed_up"}
+class SignupStatusSchemaMismatchError(RuntimeError):
+    """Raised when DB schema constraints reject signup status values."""
+
+
+_ALLOWED_SIGNUP_STATUSES = set(SIGNUP_ALLOWED_STATUSES)
 
 
 def _raise_reserved_until_migration_error(exc: Exception) -> None:
@@ -54,6 +67,74 @@ def _raise_reserved_until_migration_error(exc: Exception) -> None:
 
 
 class JumpsRepository(RepositoryBase):
+    async def enqueue_cleanup_task(
+        self,
+        *,
+        guild_id: int,
+        session_id: int,
+        task_type: str,
+        channel_id: int | None,
+        message_id: int | None,
+        error: str,
+        attempts: int = 0,
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO jump_99k_cleanup_tasks (guild_id, session_id, task_type, channel_id, message_id, attempts, next_retry_at, last_error, updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,NOW() + make_interval(mins => LEAST((2 ^ GREATEST($6, 0))::int, 60)),$7,NOW())
+                ON CONFLICT (session_id, task_type, channel_id, message_id)
+                DO UPDATE SET attempts = LEAST(jump_99k_cleanup_tasks.attempts, EXCLUDED.attempts),
+                              next_retry_at = EXCLUDED.next_retry_at,
+                              last_error = EXCLUDED.last_error,
+                              updated_at = NOW()
+                """,
+                guild_id,
+                session_id,
+                task_type,
+                channel_id,
+                message_id,
+                attempts,
+                error,
+            )
+
+    async def list_due_cleanup_tasks(self, *, limit: int = 50) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM jump_99k_cleanup_tasks
+                WHERE next_retry_at <= NOW()
+                ORDER BY next_retry_at ASC, id ASC
+                LIMIT $1
+                """,
+                limit,
+            )
+            return [dict(r) for r in rows]
+
+    async def update_cleanup_task_failure(self, *, task_id: int, attempts: int, error: str) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE jump_99k_cleanup_tasks
+                SET attempts = $2,
+                    next_retry_at = NOW() + make_interval(mins => LEAST((2 ^ GREATEST($2, 0))::int, 60)),
+                    last_error = $3,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                task_id,
+                attempts,
+                error,
+            )
+
+    async def delete_cleanup_task(self, task_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM jump_99k_cleanup_tasks WHERE id = $1", task_id)
+
+    async def count_cleanup_tasks_for_session(self, *, session_id: int) -> int:
+        async with self.pool.acquire() as conn:
+            return int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_cleanup_tasks WHERE session_id = $1", session_id) or 0)
     async def get_settings(self, guild_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_settings WHERE guild_id = $1", guild_id)
@@ -376,7 +457,7 @@ class JumpsRepository(RepositoryBase):
             return [dict(row) for row in rows]
     async def signup_count(self, session_id: int) -> int:
         async with self.pool.acquire() as conn:
-            return int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_signups WHERE session_id = $1 AND status IN ('signed_up','completed','not_completed')", session_id))
+            return int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_signups WHERE session_id = $1 AND status = ANY($2::text[])", session_id, list(SIGNUP_ACTIVE_STATUSES)))
 
     async def _create_or_restore_signup_on_conn(
         self,
@@ -407,6 +488,10 @@ class JumpsRepository(RepositoryBase):
                 normalized_status,
                 reserved_until,
             )
+        except asyncpg.CheckViolationError as exc:
+            if "jump_99k_signups_status_check" in str(exc):
+                raise SignupStatusSchemaMismatchError("jump_99k_signups.status constraint mismatch") from exc
+            _raise_reserved_until_migration_error(exc)
         except Exception as exc:
             _raise_reserved_until_migration_error(exc)
 
@@ -418,13 +503,13 @@ class JumpsRepository(RepositoryBase):
                 guild_id=guild_id,
                 discord_id=discord_id,
                 torn_user_id=torn_user_id,
-                status="reserved",
+                status=SIGNUP_STATUS_RESERVED,
                 reserved_until=reserved_until,
             )
 
     async def cancel_signup(self, *, session_id: int, discord_id: int) -> bool:
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("UPDATE jump_99k_signups SET status = 'cancelled' WHERE session_id = $1 AND participant_discord_id = $2 RETURNING id", session_id, discord_id)
+            row = await conn.fetchrow("UPDATE jump_99k_signups SET status = $3 WHERE session_id = $1 AND participant_discord_id = $2 RETURNING id", session_id, discord_id, SIGNUP_STATUS_CANCELLED)
             return row is not None
 
     async def list_signups(self, session_id: int) -> list[dict]:
@@ -484,7 +569,7 @@ class JumpsRepository(RepositoryBase):
                    AND r.discord_id=s.participant_discord_id
                 WHERE s.session_id=$1
                   AND s.payment_verified=TRUE
-                  AND s.status IN ('signed_up', 'completed', 'not_completed')
+                  AND s.status IN ('paid', 'completed', 'not_completed')
                 ORDER BY s.is_priority DESC, s.id ASC
                 """,
                 session_id,
@@ -517,7 +602,7 @@ class JumpsRepository(RepositoryBase):
                     FROM jump_99k_signups s
                     WHERE s.session_id = $1
                       AND s.payment_verified = TRUE
-                      AND s.status IN ('signed_up', 'completed', 'not_completed')
+                      AND s.status IN ('paid', 'completed', 'not_completed')
                     ORDER BY s.is_priority DESC, s.id ASC
                     """,
                     session_id,
@@ -571,7 +656,7 @@ class JumpsRepository(RepositoryBase):
                         FROM jump_99k_signups
                         WHERE session_id = $1
                           AND payment_verified = TRUE
-                          AND status IN ('signed_up', 'completed', 'not_completed')
+                          AND status IN ('paid', 'completed', 'not_completed')
                         ORDER BY is_priority DESC, id ASC
                         FOR UPDATE
                         """,
@@ -716,12 +801,14 @@ class JumpsRepository(RepositoryBase):
                 result = await conn.execute(
                     """
                     UPDATE jump_99k_signups
-                    SET status='cancelled'
-                    WHERE status='reserved'
+                    SET status=$1
+                    WHERE status=$2
                       AND payment_verified=FALSE
                       AND reserved_until IS NOT NULL
                       AND reserved_until <= NOW()
-                    """
+                    """,
+                    SIGNUP_STATUS_EXPIRED,
+                    SIGNUP_STATUS_RESERVED,
                 )
             except Exception as exc:
                 _raise_reserved_until_migration_error(exc)
@@ -737,7 +824,7 @@ class JumpsRepository(RepositoryBase):
                     FROM jump_99k_signups s
                     JOIN jump_99k_sessions ses ON ses.id = s.session_id
                     WHERE ses.status='open'
-                      AND s.status='reserved'
+                      AND s.status=$2
                       AND s.payment_verified=FALSE
                       AND s.reserved_until IS NOT NULL
                       AND s.reserved_until > NOW()
@@ -745,6 +832,7 @@ class JumpsRepository(RepositoryBase):
                     LIMIT $1
                     """,
                     limit,
+                    SIGNUP_STATUS_RESERVED,
                 )
             except Exception as exc:
                 _raise_reserved_until_migration_error(exc)
@@ -830,7 +918,7 @@ class JumpsRepository(RepositoryBase):
                     FROM jump_99k_signups
                     WHERE session_id = $1
                       AND participant_discord_id = $2
-                      AND status IN ('signed_up', 'completed', 'not_completed')
+                      AND status IN ('paid', 'completed', 'not_completed')
                     LIMIT 1
                     """,
                     session_id,
@@ -847,7 +935,7 @@ class JumpsRepository(RepositoryBase):
                             SELECT COUNT(*)
                             FROM jump_99k_signups
                             WHERE session_id = $1
-                              AND status IN ('signed_up', 'completed', 'not_completed')
+                              AND status IN ('paid', 'completed', 'not_completed')
                             """,
                             session_id,
                         )
@@ -862,7 +950,7 @@ class JumpsRepository(RepositoryBase):
                     guild_id=guild_id,
                     discord_id=user_discord_id,
                     torn_user_id=torn_user_id,
-                    status="signed_up",
+                    status=SIGNUP_STATUS_PAID,
                     reserved_until=None,
                 )
 
@@ -970,16 +1058,17 @@ class JumpsRepository(RepositoryBase):
             set_parts = [
                 "payment_verified=true",
                 "payment_verified_at=NOW()",
-                "status='signed_up'",
+                f"status='{SIGNUP_STATUS_PAID}'",
                 "reserved_until=NULL",
             ]
             if "payment_source" in existing_columns:
                 set_parts.append("payment_source='auto'")
 
             row = await conn.fetchrow(
-                f"UPDATE jump_99k_signups SET {', '.join(set_parts)} WHERE session_id=$1 AND participant_discord_id=$2 RETURNING id",
+                f"UPDATE jump_99k_signups SET {', '.join(set_parts)} WHERE session_id=$1 AND participant_discord_id=$2 AND status = ANY($3::text[]) RETURNING id",
                 session_id,
                 discord_id,
+                [SIGNUP_STATUS_RESERVED, SIGNUP_STATUS_PAID],
             )
             return row is not None
 
@@ -1053,9 +1142,9 @@ class JumpsRepository(RepositoryBase):
                 if not row:
                     return False
                 if completed_discord_ids:
-                    await conn.execute("UPDATE jump_99k_signups SET status = 'completed' WHERE session_id = $1 AND participant_discord_id = ANY($2::bigint[])", session_id, completed_discord_ids)
+                    await conn.execute("UPDATE jump_99k_signups SET status = $3 WHERE session_id = $1 AND participant_discord_id = ANY($2::bigint[])", session_id, completed_discord_ids, "completed")
                 if not_completed_discord_ids:
-                    await conn.execute("UPDATE jump_99k_signups SET status = 'not_completed' WHERE session_id = $1 AND participant_discord_id = ANY($2::bigint[])", session_id, not_completed_discord_ids)
+                    await conn.execute("UPDATE jump_99k_signups SET status = $3 WHERE session_id = $1 AND participant_discord_id = ANY($2::bigint[])", session_id, not_completed_discord_ids, SIGNUP_STATUS_NOT_COMPLETED)
                 await conn.execute(
                     """
                     INSERT INTO jump_99k_totals (guild_id, completed_count, not_completed_count, updated_at)

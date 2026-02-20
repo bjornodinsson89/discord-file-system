@@ -64,6 +64,10 @@ from repositories.overdose import OverdoseRepository
 from repositories.torn_items import TornItemsRepository, norm_name
 from repositories.host_tax import HostTaxRepository
 from services.payment_receipts import PaymentReceiptService
+from services.permissions import validate_99k_permissions
+from services.discord_cleanup import delete_message_safe, delete_channel_safe
+from services.logging_utils import log_event
+from repositories.jumps import SignupStatusSchemaMismatchError
 
 log = logging.getLogger("happy_jumper")
 
@@ -705,7 +709,7 @@ async def register_persistent_signup_views() -> None:
         is_full = False
         if max_slots > 0:
             signups = await JumpsRepository(db.pool).list_signups(session_id)
-            signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
+            signed_up = sum(1 for row in signups if row.get("status") in {"paid", "completed", "not_completed"})
             is_full = signed_up >= max_slots
         bot.add_view(Jump99kSignupView(session_id=session_id, is_full=is_full, is_closed=False, is_locked=bool(session.get("signups_locked"))))
 
@@ -749,6 +753,7 @@ async def on_ready():
         ("start_raffle_completion_worker", raffle_completion_worker),
         ("start_auto_verify_99k_payments", auto_verify_99k_payments),
         ("start_roster_panel_refresh_worker", roster_panel_refresh_worker),
+        ("start_cleanup_retry_worker", cleanup_retry_worker),
     ]
     for step_name, worker in worker_steps:
         try:
@@ -1456,6 +1461,12 @@ def _resolve_99k_signup_channel_id(settings: dict | None, fallback_channel_id: i
     return fallback if fallback > 0 else None
 
 
+def get_announce_ids(session: dict) -> tuple[int | None, int | None]:
+    channel_id = session.get("announce_channel_id")
+    message_id = session.get("announce_message_id")
+    return (int(channel_id) if channel_id else None, int(message_id) if message_id else None)
+
+
 def build_99k_jump_created_announcement_content(session: dict, settings: dict | None = None) -> str:
     start_text = _format_session_start_display(session)
     max_slots = int(session.get("max_slots") or 0)
@@ -1532,7 +1543,7 @@ async def upsert_99k_announcement(
     users_repo = UsersRepository(get_pool())
 
     signups = await repo.list_signups(session_id)
-    signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
+    signed_up = sum(1 for row in signups if row.get("status") in {"paid", "completed", "not_completed"})
     paid = sum(1 for row in signups if row.get("payment_verified"))
     max_slots = int(session.get("max_slots") or 0)
     is_closed = _is_99k_closed(session.get("status"))
@@ -2566,7 +2577,24 @@ class Jump99kUserControlsView(discord.ui.View):
                 return
 
             if not payment:
-                await interaction.followup.send("Payment not found yet…", ephemeral=True)
+                await interaction.followup.send(
+                    f"No qualifying payment found in recent logs. Expected **{base_amount}x {item}** to recipient **{host_torn_id}**.",
+                    ephemeral=True,
+                )
+                log_event(
+                    log,
+                    logging.INFO,
+                    "jump99k.verify_payment.no_match",
+                    guild_id=interaction.guild_id,
+                    session_id=self.session_id,
+                    user_id=interaction.user.id,
+                    action="verify_payment",
+                    result="not_found",
+                    search_window_since_ts=since_ts,
+                    expected_item=item,
+                    expected_amount=base_amount,
+                    recipient_torn_id=host_torn_id,
+                )
                 return
 
             signup = await repo.get_signup(self.session_id, interaction.user.id)
@@ -2658,7 +2686,7 @@ class Jump99kSignupView(discord.ui.View):
                 return
 
             signups = await repo.list_signups(self.session_id)
-            signed_up = sum(1 for row in signups if row.get("status") in {"signed_up", "completed", "not_completed"})
+            signed_up = sum(1 for row in signups if row.get("status") in {"paid", "completed", "not_completed"})
             max_slots = int(session.get("max_slots") or 0)
             if max_slots > 0 and signed_up >= max_slots:
                 await _refresh_99k_panel(interaction.client, self.session_id)
@@ -2756,6 +2784,17 @@ class Jump99kSignupView(discord.ui.View):
                 )
                 return
             await interaction.followup.send("Sorry—could not process signup right now. Please try again.", ephemeral=True)
+        except SignupStatusSchemaMismatchError:
+            log.exception(
+                "99k join failed due to status schema mismatch session_id=%s guild_id=%s user_id=%s",
+                self.session_id,
+                interaction.guild_id,
+                interaction.user.id if interaction.user else None,
+            )
+            await interaction.followup.send(
+                "Join failed due to database schema mismatch. Ask an admin to run migrations.",
+                ephemeral=True,
+            )
         except Exception:
             log.exception(
                 "99k join failed session_id=%s guild_id=%s user_id=%s",
@@ -3194,6 +3233,27 @@ async def jump99k_start(interaction: discord.Interaction):
     if not await assert99kHost(interaction, {"host_role_id": settings.get("host99k_role_id")}):
         return
 
+    report = validate_99k_permissions(
+        interaction.guild,
+        bot.user,
+        signup_channel_id=_resolve_99k_signup_channel_id(settings, interaction.channel.id if interaction.channel else None),
+        announce_channel_id=int(settings.get("jump_announce_channel_id") or 0) or None,
+        private_category_id=int(settings.get("jump_99k_private_category_id") or 0) or None,
+    )
+    critical_missing = []
+    for name, row in report.get("channels", {}).items():
+        missing = [m for m in row.get("missing_permissions", []) if m not in {"channel_not_configured", "missing_channel"}]
+        if missing:
+            critical_missing.append(f"{name}: {', '.join(missing)}")
+    if critical_missing:
+        await interaction.response.send_message(
+            embed=create_error_embed("99k start blocked", "Missing required permissions:\n" + "\n".join(critical_missing)),
+            ephemeral=True,
+        )
+        return
+
+    log_event(log, logging.INFO, "jump99k.start", guild_id=interaction.guild_id, user_id=interaction.user.id, action="start", result="ok")
+
     if not bool(settings.get("host_tax_enabled")):
         await interaction.response.send_modal(Jump99kSessionModal(settings, session=None))
         return
@@ -3281,6 +3341,82 @@ async def jump99k_list(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+@jump99k_group.command(name="doctor", description="99k health checks and diagnostics")
+@app_commands.describe(session_id="Optional 99k session ID")
+async def jump99k_doctor(interaction: discord.Interaction, session_id: int | None = None):
+    await interaction.response.defer(ephemeral=True)
+    db = get_database()
+    repo = JumpsRepository(db.pool)
+    settings = await GuildSettingsRepository(db).get_or_create(interaction.guild_id)
+
+    report = validate_99k_permissions(
+        interaction.guild,
+        bot.user,
+        signup_channel_id=_resolve_99k_signup_channel_id(settings, interaction.channel.id if interaction.channel else None),
+        announce_channel_id=int(settings.get("jump_announce_channel_id") or 0) or None,
+        private_category_id=int(settings.get("jump_99k_private_category_id") or 0) or None,
+    )
+
+    schema_ok = True
+    schema_lines = []
+    async with db.pool.acquire() as conn:
+        status_constraint = await conn.fetchval(
+            """
+            SELECT pg_get_constraintdef(c.oid)
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname = 'public' AND t.relname = 'jump_99k_signups' AND c.conname = 'jump_99k_signups_status_check'
+            """
+        )
+        has_reserved_until = bool(await conn.fetchval(
+            """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='jump_99k_signups' AND column_name='reserved_until'
+            """
+        ))
+    expected = ["reserved", "paid", "cancelled", "expired"]
+    if not status_constraint or any(v not in str(status_constraint) for v in expected):
+        schema_ok = False
+        schema_lines.append("status constraint mismatch")
+    if not has_reserved_until:
+        schema_ok = False
+        schema_lines.append("reserved_until missing")
+
+    embed = create_info_embed("99k doctor", "Diagnostics complete")
+    embed.add_field(name="Config", value=(
+        f"jump_99k_channel_id={settings.get('jump_99k_channel_id')}\n"
+        f"announce_channel_id={settings.get('jump_announce_channel_id')}\n"
+        f"disable_99k_announcements={bool(settings.get('disable_99k_announcements'))}\n"
+        f"private_category_id={settings.get('jump_99k_private_category_id')}"
+    ), inline=False)
+    perm_lines = []
+    for cname, c in report.get("channels", {}).items():
+        perm_lines.append(f"{cname}: {'ok' if not c.get('missing_permissions') else ', '.join(c.get('missing_permissions'))}")
+    embed.add_field(name="Permissions", value="\n".join(perm_lines) or "n/a", inline=False)
+    embed.add_field(name="Schema", value=("ok" if schema_ok else "; ".join(schema_lines)), inline=False)
+
+    if session_id:
+        session = await repo.get_session(int(session_id))
+        if session:
+            announce_channel_id, announce_message_id = get_announce_ids(session)
+            cleanup_count = await repo.count_cleanup_tasks_for_session(session_id=int(session_id))
+            embed.add_field(
+                name=f"Session #{session_id}",
+                value=(
+                    f"status={session.get('status')}\n"
+                    f"announce={announce_channel_id}/{announce_message_id}\n"
+                    f"roster={session.get('roster_channel_id')}/{session.get('roster_message_id')}\n"
+                    f"host_controls={session.get('host_controls_channel_id')}/{session.get('host_controls_message_id')}\n"
+                    f"private_channel={session.get('private_channel_id')}\n"
+                    f"cleanup_tasks={cleanup_count}"
+                ),
+                inline=False,
+            )
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 @jump99k_group.command(name="end", description="End a specific 99k session by ID")
 @app_commands.describe(jump_id="99k session ID to end")
 async def jump99k_end(interaction: discord.Interaction, jump_id: int):
@@ -3306,7 +3442,7 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
 
     if session.get("status") == "open":
         rows = await repo.list_signups(int(session["id"]))
-        completed_ids = [int(r["discord_id"]) for r in rows if r.get("status") == "signed_up"]
+        completed_ids = [int(r["discord_id"]) for r in rows if r.get("status") == "paid"]
         ok = await repo.close_session_and_record(
             session_id=int(session["id"]),
             guild_id=int(interaction.guild_id),
@@ -3320,6 +3456,19 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
             )
             return
 
+    perm_report = validate_99k_permissions(
+        interaction.guild,
+        bot.user,
+        signup_channel_id=int(session.get("announce_channel_id") or 0) or None,
+        announce_channel_id=int(session.get("announce_channel_id") or 0) or None,
+        private_category_id=int(session.get("private_channel_id") or 0) or None,
+    )
+    missing_lines = []
+    for cname, ch in perm_report.get("channels", {}).items():
+        missing = ch.get("missing_permissions", [])
+        if missing:
+            missing_lines.append(f"{cname}: {', '.join(missing)}")
+
     await _refresh_roster_if_exists(interaction.client, int(session["id"]))
     await _disable_99k_session_messages(interaction.client, session, status_text="Session closed")
 
@@ -3329,127 +3478,19 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
             return f"{label}: ✅"
         return f"{label}: ❌ ({reason})"
 
-    def _missing_perms_reason(*perm_names: str) -> str:
-        filtered = [name for name in perm_names if name]
-        return f"missing_perms:{'/'.join(filtered)}" if filtered else "missing_perms"
-
-    async def _resolve_channel(guild_obj: discord.Guild, channel_id: int) -> tuple[Optional[discord.abc.GuildChannel], Optional[str]]:
-        channel_obj = guild_obj.get_channel(channel_id)
-        if channel_obj is not None:
-            return channel_obj, None
-        try:
-            channel_obj = await guild_obj.fetch_channel(channel_id)
-            return channel_obj, None
-        except discord.NotFound:
-            return None, "not_found"
-        except discord.Forbidden:
-            return None, "forbidden"
-        except Exception as exc:
-            log.exception("Failed to resolve channel %s for 99k session %s", channel_id, session.get("id"))
-            return None, f"exception:{type(exc).__name__}"
-
-    async def _delete_message(channel_id: Optional[int], message_id: Optional[int], *, label: str) -> tuple[bool, str]:
-        if not channel_id or not message_id:
-            return True, "not_found"
-        guild_obj = interaction.guild
-        if guild_obj is None:
-            return False, "exception:GuildUnavailable"
-        channel_obj, channel_reason = await _resolve_channel(guild_obj, int(channel_id))
-        if channel_reason:
-            if channel_reason == "forbidden":
-                return False, _missing_perms_reason("ViewChannel", "ReadMessageHistory")
-            return (channel_reason == "not_found"), channel_reason
-        if channel_obj is None:
-            return False, "exception:ChannelResolution"
-
-        fetch_message = getattr(channel_obj, "fetch_message", None)
-        if not callable(fetch_message):
-            return True, "not_messageable_channel"
-
-        me = guild_obj.me
-        if me is None:
-            try:
-                me = await _resolve_bot_member(guild_obj)
-            except Exception:
-                me = None
-
-        if me is not None:
-            try:
-                perms = channel_obj.permissions_for(me)
-            except Exception:
-                perms = None
-            if perms is not None:
-                if not perms.view_channel:
-                    return False, _missing_perms_reason("ViewChannel")
-                if not perms.read_message_history:
-                    return False, _missing_perms_reason("ReadMessageHistory")
-                if not perms.manage_messages:
-                    return False, _missing_perms_reason("ManageMessages")
-
-        try:
-            message = await fetch_message(int(message_id))
-            await message.delete(reason=f"99k session {session['id']} ended: remove {label}")
-            return True, "ok"
-        except discord.NotFound:
-            return True, "not_found"
-        except discord.Forbidden:
-            return False, _missing_perms_reason("ManageMessages")
-        except Exception as exc:
-            log.exception("Failed to remove %s for 99k session %s", label, session.get("id"))
-            return False, f"exception:{type(exc).__name__}"
-
-    async def _delete_channel(channel_id: Optional[int]) -> tuple[bool, str]:
-        if not channel_id:
-            return True, "not_found"
-        guild_obj = interaction.guild
-        if guild_obj is None:
-            return False, "exception:GuildUnavailable"
-        channel_obj, channel_reason = await _resolve_channel(guild_obj, int(channel_id))
-        if channel_reason:
-            if channel_reason == "forbidden":
-                return False, _missing_perms_reason("ViewChannel")
-            return (channel_reason == "not_found"), channel_reason
-        if channel_obj is None:
-            return False, "exception:ChannelResolution"
-
-        me = guild_obj.me
-        if me is None:
-            try:
-                me = await _resolve_bot_member(guild_obj)
-            except Exception:
-                me = None
-        if me is not None:
-            perms = channel_obj.permissions_for(me)
-            if not perms.view_channel:
-                return False, _missing_perms_reason("ViewChannel")
-            if not perms.manage_channels:
-                return False, _missing_perms_reason("ManageChannels")
-
-        try:
-            await channel_obj.delete(reason=f"99k session {session['id']} ended")
-            return True, "ok"
-        except discord.NotFound:
-            return True, "not_found"
-        except discord.Forbidden:
-            return False, _missing_perms_reason("ManageChannels")
-        except Exception as exc:
-            log.exception("Failed to delete private 99k channel for session %s", session.get("id"))
-            return False, f"exception:{type(exc).__name__}"
-
     session_id = int(session["id"])
-    announce_channel_id = int(session["announce_channel_id"]) if session.get("announce_channel_id") else None
-    announce_message_id = int(session["announce_message_id"]) if session.get("announce_message_id") else None
+    announce_channel_id, announce_message_id = get_announce_ids(session)
     private_channel_id = int(session["private_channel_id"]) if session.get("private_channel_id") else None
     roster_channel_id = int(session["roster_channel_id"]) if session.get("roster_channel_id") else None
     roster_message_id = int(session["roster_message_id"]) if session.get("roster_message_id") else None
     host_controls_channel_id = int(session["host_controls_channel_id"]) if session.get("host_controls_channel_id") else None
     host_controls_message_id = int(session["host_controls_message_id"]) if session.get("host_controls_message_id") else None
 
-    signup_panel_result = await _delete_message(announce_channel_id, announce_message_id, label="signup panel")
+    signup_panel_result = await delete_message_safe(interaction.guild, announce_channel_id, announce_message_id, f"99k session {session_id} ended", {"session_id": session_id})
     roster_panel_channel_id = roster_channel_id or private_channel_id
-    roster_result = await _delete_message(roster_panel_channel_id, roster_message_id, label="roster panel")
-    host_controls_result = await _delete_message(host_controls_channel_id, host_controls_message_id, label="host controls")
-    channel_result = await _delete_channel(private_channel_id)
+    roster_result = await delete_message_safe(interaction.guild, roster_panel_channel_id, roster_message_id, f"99k session {session_id} ended", {"session_id": session_id})
+    host_controls_result = await delete_message_safe(interaction.guild, host_controls_channel_id, host_controls_message_id, f"99k session {session_id} ended", {"session_id": session_id})
+    channel_result = await delete_channel_safe(interaction.guild, private_channel_id, f"99k session {session_id} ended", {"session_id": session_id})
 
     if signup_panel_result[0]:
         await repo.clear_announcement_message(session_id)
@@ -3461,6 +3502,14 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
         await repo.clear_private_channel_only(session_id)
 
     cleanup_complete = signup_panel_result[0] and roster_result[0] and host_controls_result[0] and channel_result[0]
+    if not signup_panel_result[0]:
+        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_message", channel_id=announce_channel_id, message_id=announce_message_id, error=signup_panel_result[1])
+    if not roster_result[0]:
+        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_message", channel_id=roster_panel_channel_id, message_id=roster_message_id, error=roster_result[1])
+    if not host_controls_result[0]:
+        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_message", channel_id=host_controls_channel_id, message_id=host_controls_message_id, error=host_controls_result[1])
+    if not channel_result[0]:
+        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_channel", channel_id=private_channel_id, message_id=None, error=channel_result[1])
     if cleanup_complete:
         await repo.mark_cleaned(session_id)
 
@@ -3473,6 +3522,10 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
     ]
     if not cleanup_complete:
         summary_lines.append("Cleanup incomplete; fix permissions and run /99k end again to retry.")
+    if missing_lines:
+        summary_lines.append("Permission warnings:\n" + "\n".join(missing_lines))
+
+    log_event(log, logging.INFO, "jump99k.end", guild_id=interaction.guild_id, session_id=session_id, user_id=interaction.user.id, action="end", result="ok" if cleanup_complete else "partial")
 
     await interaction.followup.send(
         embed=create_success_embed("99k session ended", "\n".join(summary_lines)),
@@ -3887,6 +3940,39 @@ async def before_cleanup_worker():
     await bot.wait_until_ready()
 
 
+@tasks.loop(seconds=45)
+async def cleanup_retry_worker():
+    try:
+        repo = JumpsRepository(get_pool())
+        tasks_due = await repo.list_due_cleanup_tasks(limit=50)
+        for task in tasks_due:
+            guild = bot.get_guild(int(task["guild_id"]))
+            if guild is None:
+                continue
+            if str(task.get("task_type")) == "delete_message":
+                ok, status = await delete_message_safe(guild, task.get("channel_id"), task.get("message_id"), "99k cleanup retry", {"session_id": task.get("session_id")})
+            else:
+                ok, status = await delete_channel_safe(guild, task.get("channel_id"), "99k cleanup retry", {"session_id": task.get("session_id")})
+            if ok:
+                await repo.delete_cleanup_task(int(task["id"]))
+                continue
+            attempts = int(task.get("attempts") or 0) + 1
+            if attempts >= 10:
+                log.error("cleanup_retry_worker max attempts reached task_id=%s session_id=%s status=%s", task.get("id"), task.get("session_id"), status)
+            await repo.update_cleanup_task_failure(task_id=int(task["id"]), attempts=attempts, error=status)
+    except RuntimeError as exc:
+        if "not initialized" in str(exc):
+            log.warning("cleanup_retry_worker waiting for database init")
+            await asyncio.sleep(5)
+    except Exception:
+        log.exception("cleanup_retry_worker failed")
+
+
+@cleanup_retry_worker.before_loop
+async def before_cleanup_retry_worker():
+    await bot.wait_until_ready()
+
+
 @tasks.loop(seconds=15)
 async def roster_panel_refresh_worker():
     """Refresh active 99k roster panels and button states."""
@@ -3947,7 +4033,7 @@ async def readiness_worker():
             # Include host in readiness checks as well.
             participant_ids = {int(session.get("host_discord_id"))}
             for s in signups:
-                if s.get("status") in {"signed_up", "completed", "not_completed"}:
+                if s.get("status") in {"paid", "completed", "not_completed"}:
                     participant_ids.add(int(s["discord_id"]))
 
             for discord_id in sorted(participant_ids):
@@ -4131,7 +4217,7 @@ async def overdose_monitor():
             for signup in signups:
                 if not bool(signup.get("payment_verified")):
                     continue
-                if signup.get("status") not in {"signed_up", "completed", "not_completed"}:
+                if signup.get("status") not in {"paid", "completed", "not_completed"}:
                     continue
                 verified_at = signup.get("payment_verified_at")
                 if not verified_at:
