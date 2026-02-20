@@ -351,7 +351,7 @@ async def approve_claim_handler(claim_id: int, admin_discord_id: int, source: st
     insurance_repo = InsuranceRepository(db.pool)
     
     # Update claim status to approved
-    async with db.pool.acquire() as conn:
+    async with db.acquire(timeout=10, operation="approve_claim_handler") as conn:
         result = await conn.execute(
             """
             UPDATE insurance_claims 
@@ -375,7 +375,7 @@ async def reject_claim_handler(claim_id: int, admin_discord_id: int, notes: Opti
     from utils import get_database
     db = get_database()
     
-    async with db.pool.acquire() as conn:
+    async with db.acquire(timeout=10, operation="reject_claim_handler") as conn:
         result = await conn.execute(
             """
             UPDATE insurance_claims 

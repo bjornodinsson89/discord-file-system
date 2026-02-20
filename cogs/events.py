@@ -19,7 +19,12 @@ from typing import Optional
 import config
 from constants.jump99k import SIGNUP_ACTIVE_STATUSES
 from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager, GuildSettingsRepository, require_api_key
-from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
+from utils.database import (
+    DatabaseAcquireTimeoutError,
+    get_pool,
+    is_initialized as db_is_initialized,
+    wait_until_initialized,
+)
 from utils.migrations import run_migrations
 from utils.embeds import (
     create_success_embed, create_error_embed, create_warning_embed, create_info_embed,
@@ -872,6 +877,12 @@ async def on_member_join(member: discord.Member):
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     """Global slash command error handler."""
+    root_error = getattr(error, "original", error)
+    if isinstance(root_error, DatabaseAcquireTimeoutError):
+        log.warning("Slash command hit DB acquire timeout: %s", error)
+        await _send_interaction_error(interaction, "Database is busy right now. Please try again in a moment.")
+        return
+
     log.exception("Unhandled slash command error: %s", error)
     await _send_interaction_error(interaction, "An unexpected error occurred. Please try again.")
 
@@ -3456,7 +3467,7 @@ async def jump99k_doctor(interaction: discord.Interaction, session_id: int | Non
 
     schema_ok = True
     schema_lines: list[str] = []
-    async with db.pool.acquire() as conn:
+    async with db.acquire(timeout=10, operation="jump99k_doctor_schema_check") as conn:
         status_constraint = await conn.fetchval(
             """
             SELECT pg_get_constraintdef(c.oid)
@@ -3493,7 +3504,7 @@ async def jump99k_doctor(interaction: discord.Interaction, session_id: int | Non
     db_ready = False
     if db_is_initialized():
         try:
-            async with db.pool.acquire() as conn:
+            async with db.acquire(timeout=5, operation="jump99k_doctor_db_probe") as conn:
                 await conn.execute("SELECT 1")
             db_ready = True
         except Exception:
