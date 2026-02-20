@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -111,13 +112,11 @@ class FreeRaffleCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._views_registered = False
+        self._ready_init_lock = asyncio.Lock()
 
     async def cog_load(self) -> None:
         self._views_registered = False
-        await self.bot.wait_until_ready()
-        await wait_until_initialized(timeout=30.0)
-        if not self.free_raffle_expiration_worker.is_running() and db_is_initialized():
-            self.free_raffle_expiration_worker.start()
+        self._ready_init_lock = asyncio.Lock()
 
     async def cog_unload(self) -> None:
         if self.free_raffle_expiration_worker.is_running():
@@ -126,19 +125,29 @@ class FreeRaffleCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         if self._views_registered:
+            if not self.free_raffle_expiration_worker.is_running():
+                self.free_raffle_expiration_worker.start()
             return
-        try:
-            repo = FreeRaffleRepository(get_pool())
-            backfilled = await repo.backfill_missing_ends_at()
-            if backfilled > 0:
-                log.warning("Backfilled ends_at for %s active free raffles using created_at + 1 day", backfilled)
-            for raffle in await repo.list_active_raffles():
-                raffle_id = int(raffle["id"])
-                self.bot.add_view(self.public_view(raffle_id))
-            self._views_registered = True
-            await self.process_expired_raffles()
-        except Exception:
-            log.exception("Failed registering free raffle views")
+        async with self._ready_init_lock:
+            if self._views_registered:
+                if not self.free_raffle_expiration_worker.is_running():
+                    self.free_raffle_expiration_worker.start()
+                return
+            try:
+                await wait_until_initialized(timeout=30.0)
+                repo = FreeRaffleRepository(get_pool())
+                backfilled = await repo.backfill_missing_ends_at()
+                if backfilled > 0:
+                    log.warning("Backfilled ends_at for %s active free raffles using created_at + 1 day", backfilled)
+                for raffle in await repo.list_active_raffles():
+                    raffle_id = int(raffle["id"])
+                    self.bot.add_view(self.public_view(raffle_id))
+                self._views_registered = True
+                if not self.free_raffle_expiration_worker.is_running():
+                    self.free_raffle_expiration_worker.start()
+                await self.process_expired_raffles()
+            except Exception:
+                log.exception("Failed registering free raffle views")
 
 
     @commands.Cog.listener()
@@ -414,11 +423,15 @@ class FreeRaffleCog(commands.Cog):
     async def free_raffle_expiration_worker(self) -> None:
         if not db_is_initialized():
             return
-        await self.bot.wait_until_ready()
         try:
             await self.process_expired_raffles()
         except Exception:
             log.exception("Free raffle expiration worker error")
+
+    @free_raffle_expiration_worker.before_loop
+    async def before_free_raffle_expiration_worker(self) -> None:
+        await wait_until_initialized(timeout=30.0)
+        await self.bot.wait_until_ready()
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -9,8 +9,8 @@ import sys
 
 import config
 from aiohttp import web
-from cogs import EXTENSIONS
 from cogs.events import bot
+from utils.database import get_pool, is_initialized as db_is_initialized
 
 
 logging.basicConfig(
@@ -24,9 +24,22 @@ log = logging.getLogger("happy_jumper")
 
 
 async def health_server():
-    """Dummy HTTP server to keep Railway from killing the container."""
+    """HTTP server with DB-aware health checks."""
+
+    async def _health(_request: web.Request) -> web.Response:
+        if not db_is_initialized():
+            return web.Response(status=503, text='db_not_initialized')
+        try:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute('SELECT 1')
+        except Exception as exc:
+            log.warning("Health check DB probe failed: %s", exc)
+            return web.Response(status=503, text='db_unhealthy')
+        return web.Response(text='ok')
+
     app = web.Application()
-    app.router.add_get('/health', lambda r: web.Response(text='ok'))
+    app.router.add_get('/health', _health)
     app.router.add_get('/', lambda r: web.Response(text='Happy Jumper Bot Running'))
     
     runner = web.AppRunner(app)
@@ -45,13 +58,6 @@ async def main() -> None:
 
     # Start health server FIRST (opens port for Railway health checks)
     asyncio.create_task(health_server())
-
-    for ext in EXTENSIONS:
-        try:
-            await bot.load_extension(ext)
-            log.info("Loaded extension: %s", ext)
-        except Exception:
-            log.exception("Failed loading extension: %s", ext)
 
     async with bot:
         await bot.start(config.DISCORD_TOKEN)

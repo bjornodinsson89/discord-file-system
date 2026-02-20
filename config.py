@@ -34,6 +34,7 @@ else:
 DB_SSL = os.getenv("DB_SSL", "disable")
 DB_SSL_CA_FILE = os.getenv("DB_SSL_CA_FILE")
 DB_SSL_VERIFY = _env_flag("DB_SSL_VERIFY", True)
+DB_SSL_ALLOW_INSECURE_FALLBACK = _env_flag("DB_SSL_ALLOW_INSECURE_FALLBACK", False)
 
 FERNET_KEY = os.getenv("FERNET_KEY")
 
@@ -61,6 +62,16 @@ def get_db_ssl_config() -> ssl.SSLContext | None:
         return context
 
     raise RuntimeError(f"Unsupported DB_SSL value {DB_SSL!r}.")
+
+
+def get_db_ssl_insecure_fallback_config() -> ssl.SSLContext | None:
+    value = (DB_SSL or "").strip().lower()
+    if value in {"", "disable", "false", "0", "off", "no"}:
+        return None
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
 
 
 TORN_BASE_URL = "https://api.torn.com/v2"
