@@ -20,6 +20,7 @@ from utils.icon_strips import build_icon_strip_file
 from utils.item_resolver import ItemResolver
 from utils.payment_normalization import parse_payment_type
 from utils.torn_api import TornAPIError
+from utils.discord_safe_send import safe_send_channel
 log = logging.getLogger("happy_jumper.raffles")
 _PACK_WORD_RE = re.compile(r"\bpack\b", re.IGNORECASE)
 _CURLY_QUOTES_RE = re.compile(r"[’‘]")
@@ -313,28 +314,21 @@ class RafflePrizeConfirmDMView(discord.ui.View):
 
         announce_channel_id = raffle.get("announcement_channel_id")
         if announce_channel_id:
-            channel = interaction.client.get_channel(int(announce_channel_id))
-            if channel is None:
-                try:
-                    channel = await interaction.client.fetch_channel(int(announce_channel_id))
-                except Exception:
-                    channel = None
-            if channel and hasattr(channel, "send"):
-                item_lines = []
-                for item_id, qty in expected_map.items():
-                    item_name = await _resolve_item_name(TornItemsRepository(get_pool()), item_id)
-                    item_lines.append(f"- {qty} × {item_name} ({item_id})")
-                log_id = matched.get("id") or matched.get("log") or "unknown"
-                ts = _safe_int(matched.get("timestamp")) or int(datetime.now(timezone.utc).timestamp())
-                proof = (
-                    "✅ **Prize Sent Confirmed**\n"
-                    f"Raffle: {raffle.get('prize')} (#{self.raffle_id})\n"
-                    f"Winner: <@{int(raffle['winner_discord_id'])}> (Torn {winner_torn_id})\n"
-                    f"Sender: <@{int(raffle['creator_discord_id'])}> (Torn {creator_torn_id})\n"
-                    f"Log: {log_id} at <t:{ts}:F>\n"
-                    f"Items:\n" + "\n".join(item_lines)
-                )
-                await channel.send(proof)
+            item_lines = []
+            for item_id, qty in expected_map.items():
+                item_name = await _resolve_item_name(TornItemsRepository(get_pool()), item_id)
+                item_lines.append(f"- {qty} × {item_name} ({item_id})")
+            log_id = matched.get("id") or matched.get("log") or "unknown"
+            ts = _safe_int(matched.get("timestamp")) or int(datetime.now(timezone.utc).timestamp())
+            proof = (
+                "✅ **Prize Sent Confirmed**\n"
+                f"Raffle: {raffle.get('prize')} (#{self.raffle_id})\n"
+                f"Winner: <@{int(raffle['winner_discord_id'])}> (Torn {winner_torn_id})\n"
+                f"Sender: <@{int(raffle['creator_discord_id'])}> (Torn {creator_torn_id})\n"
+                f"Log: {log_id} at <t:{ts}:F>\n"
+                f"Items:\n" + "\n".join(item_lines)
+            )
+            await safe_send_channel(interaction.client, int(announce_channel_id), content=proof)
 
         if interaction.message and interaction.message.embeds:
             embed = interaction.message.embeds[0].copy()
@@ -1704,12 +1698,15 @@ class RafflesCog(commands.Cog):
                         except Exception:
                             announce_channel = None
                     if announce_channel is not None:
-                        announce_message = await announce_channel.send(embed=announce_embed)
-                        await repo.set_announcement_ref(
-                            raffle_id=raffle_id,
-                            channel_id=announce_channel.id,
-                            message_id=announce_message.id,
-                        )
+                        try:
+                            announce_message = await announce_channel.send(embed=announce_embed)
+                            await repo.set_announcement_ref(
+                                raffle_id=raffle_id,
+                                channel_id=announce_channel.id,
+                                message_id=announce_message.id,
+                            )
+                        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                            log.warning("Failed to send raffle announcement raffle_id=%s channel_id=%s", raffle_id, announce_channel_id, exc_info=True)
             response_text = f"✅ Raffle created. {'Giveaway' if is_giveaway else 'Purchase'} panel posted in {purchase_channel.mention}.\n{panel_message.jump_url}"
             if is_bundle:
                 await interaction.response.send_message(response_text, ephemeral=True)

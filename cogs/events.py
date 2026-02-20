@@ -33,6 +33,7 @@ from views.timezone_picker import TimezonePromptView, send_timezone_picker
 from utils.payouts import parse_payout_string, payout_items_to_human, PayoutParseError
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 from utils.payment_normalization import parse_payment_type
+from utils.discord_safe_send import safe_send_channel
 from setup_panel import (
     DEFAULT_WELCOME_TEMPLATE,
     detect_rules_channel,
@@ -1487,17 +1488,16 @@ async def post_99k_jump_created_announcement(
             )
             return
 
-    try:
-        role_ids = GuildSettingsRepository._normalize_role_id_list(settings.get("jump_ping_role_ids"))
-        role_mentions = " ".join(f"<@&{rid}>" for rid in role_ids)
-        content = build_99k_jump_created_announcement_content(session, settings)
-        prefix = f"{role_mentions}\n" if role_mentions else ""
-        await channel.send(f"{prefix}{content}")
-    except Exception:
-        log.exception(
-            "99k jump announcement post failed guild_id=%s channel_id=%s session_id=%s",
+    role_ids = GuildSettingsRepository._normalize_role_id_list(settings.get("jump_ping_role_ids"))
+    role_mentions = " ".join(f"<@&{rid}>" for rid in role_ids)
+    content = build_99k_jump_created_announcement_content(session, settings)
+    prefix = f"{role_mentions}\n" if role_mentions else ""
+    sent = await safe_send_channel(channel.guild if hasattr(channel, "guild") and channel.guild else bot, int(channel_id), content=f"{prefix}{content}")
+    if not sent:
+        log.warning(
+            "99k jump announcement post skipped guild_id=%s channel_id=%s session_id=%s",
             guild_id,
-            getattr(channel, "id", channel_id),
+            channel_id,
             session.get("id"),
         )
 
@@ -1560,7 +1560,11 @@ async def upsert_99k_announcement(
         except Exception:
             return
 
-    msg = await channel.send(content, view=view)
+    try:
+        msg = await channel.send(content, view=view)
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        log.warning("Failed to send/update 99k announcement session_id=%s channel_id=%s", session_id, target_channel_id, exc_info=True)
+        return
     await repo.set_announcement_message(session_id, channel_id=int(channel.id), message_id=int(msg.id))
 
 async def _refresh_99k_panel(bot_client: commands.Bot, session_id: int) -> None:

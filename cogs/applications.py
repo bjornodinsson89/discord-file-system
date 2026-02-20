@@ -212,11 +212,15 @@ class ApplicationsCog(commands.Cog):
         )
         jump_url = f"https://discord.com/channels/{guild.id}/{int(app.get('application_channel_id') or 0)}"
         view = self._build_admin_inbox_view(app_type, int(app["id"]), str(app.get("status") or "in_progress"), jump_url)
-        message = await inbox.send(
-            content=f"**New {self._label_for(app_type)} Application #{int(app['id'])}** — <#{int(app.get('application_channel_id') or 0)}>",
-            embed=embed,
-            view=view,
-        )
+        try:
+            message = await inbox.send(
+                content=f"**New {self._label_for(app_type)} Application #{int(app['id'])}** — <#{int(app.get('application_channel_id') or 0)}>",
+                embed=embed,
+                view=view,
+            )
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            logger.warning("Failed to ensure applications admin inbox message guild=%s app_type=%s app_id=%s", guild.id, app_type, int(app['id']), exc_info=True)
+            return None
         repo = host_repo if app_type == "host" else insurance_repo
         await repo.set_admin_inbox_message_id(int(app["id"]), int(message.id))
         return int(message.id)
@@ -351,12 +355,16 @@ class ApplicationsCog(commands.Cog):
                 self._coerce_answers(app.get("answers")),
             )
             view = self._build_admin_inbox_view(app_type, app_id, str(app.get("status") or "in_progress"), app_channel.jump_url)
-            msg = await inbox.send(
-                content=f"**New {self._label_for(app_type)} Application #{app_id}** — {app_channel.mention}",
-                embed=embed,
-                view=view,
-            )
-            await repo.set_admin_inbox_message_id(app_id, int(msg.id))
+            try:
+                msg = await inbox.send(
+                    content=f"**New {self._label_for(app_type)} Application #{app_id}** — {app_channel.mention}",
+                    embed=embed,
+                    view=view,
+                )
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                logger.warning("Failed to post applications inbox message guild=%s app_type=%s app_id=%s", interaction.guild.id, app_type, app_id, exc_info=True)
+            else:
+                await repo.set_admin_inbox_message_id(app_id, int(msg.id))
 
         await app_channel.send(f"Application #{app_id} — {self._label_for(app_type)} for {interaction.user.mention}")
         await app_channel.send(

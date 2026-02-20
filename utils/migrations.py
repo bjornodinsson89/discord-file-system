@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import asyncpg
@@ -10,10 +11,31 @@ log = logging.getLogger("happy_jumper.migrations")
 _MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 _MIGRATION_LOCK_KEY = 864201357918426513
 
+_YYYYMMDD_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})(?:_|$)")
+_YYYY_MM_DD_RE = re.compile(r"^(\d{4})_(\d{2})_(\d{2})(?:_|$)")
+
+
+def _parse_migration_key(name: str) -> tuple[tuple[int, int, int], str, str]:
+    """Return sort key that supports YYYYMMDD_* and YYYY_MM_DD_* prefixes."""
+    match = _YYYYMMDD_RE.match(name)
+    if match:
+        yyyy, mm, dd = (int(match.group(i)) for i in range(1, 4))
+        return (yyyy, mm, dd), name[match.end() :], name
+
+    match = _YYYY_MM_DD_RE.match(name)
+    if match:
+        yyyy, mm, dd = (int(match.group(i)) for i in range(1, 4))
+        return (yyyy, mm, dd), name[match.end() :], name
+
+    return (9999, 12, 31), name, name
+
 
 async def run_migrations(pool: asyncpg.Pool) -> None:
     """Apply unapplied SQL migrations from /migrations in filename order."""
-    migration_files = sorted(path for path in _MIGRATIONS_DIR.glob("*.sql") if path.is_file())
+    migration_files = sorted(
+        (path for path in _MIGRATIONS_DIR.glob("*.sql") if path.is_file()),
+        key=lambda path: _parse_migration_key(path.name),
+    )
     if not migration_files:
         log.info("No migration files found in %s", _MIGRATIONS_DIR)
         return
