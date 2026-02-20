@@ -178,7 +178,7 @@ class JumpsRepository(RepositoryBase):
                 roster_message_id,
             )
 
-    async def set_private_channel_id_only(self, session_id: int, *, channel_id: int) -> None:
+    async def set_private_channel_id_only(self, session_id: int, channel_id: int) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
@@ -1277,6 +1277,17 @@ class JumpsRepository(RepositoryBase):
     async def list_active_sessions_with_roster_panels(self) -> list[dict]:
         """Backwards-compatible alias for callers still using the plural method name."""
         return await self.list_active_sessions_with_roster_panel()
+
+    async def list_open_sessions(self) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, guild_id, max_slots, status, signups_locked
+                FROM jump_99k_sessions
+                WHERE status = 'open'
+                """
+            )
+            return [dict(r) for r in rows]
 
     async def list_open_sessions_with_announcement_panels(self) -> list[dict]:
         async with self.pool.acquire() as conn:

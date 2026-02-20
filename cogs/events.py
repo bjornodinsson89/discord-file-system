@@ -19,6 +19,7 @@ from typing import Optional
 import config
 from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager, GuildSettingsRepository, require_api_key
 from utils.database import get_pool
+from utils.migrations import run_migrations
 from utils.embeds import (
     create_success_embed, create_error_embed, create_warning_embed, create_info_embed,
     create_api_key_guide_embed, create_statistics_embed,
@@ -72,6 +73,21 @@ _TORN_NAME_CACHE: dict[int, tuple[str, datetime]] = {}
 _TORN_NAME_FAIL_LOG_CACHE: dict[int, datetime] = {}
 _READINESS_MISSING_KEY_LOG_CACHE: dict[tuple[int, int], datetime] = {}
 
+
+async def _resolve_bot_member(guild: discord.Guild) -> discord.Member:
+    if bot.user is None:
+        raise RuntimeError("Bot user unavailable while resolving guild member")
+    bot_member = guild.get_member(bot.user.id)
+    if bot_member is not None:
+        return bot_member
+    try:
+        fetched = await guild.fetch_member(bot.user.id)
+    except Exception as exc:
+        log.exception("Failed to fetch bot member for guild %s", guild.id)
+        raise RuntimeError(f"Unable to resolve bot member in guild {guild.id}") from exc
+    if fetched is None:
+        raise RuntimeError(f"Unable to resolve bot member in guild {guild.id}")
+    return fetched
 
 
 
@@ -628,6 +644,7 @@ async def setup_hook():
     """Initialize process-scoped dependencies once per bot lifecycle."""
     config.validate_config()
     await init_database()
+    await run_migrations(get_pool())
     init_torn_api()
     await init_security()
     admin_handlers.set_bot_instance(bot)
@@ -758,10 +775,15 @@ async def on_guild_join(guild: discord.Guild):
     if settings.get("announce_channel_id"):
         return
 
-    me = guild.me
+    try:
+        me = await _resolve_bot_member(guild)
+    except RuntimeError:
+        log.exception("Unable to resolve bot member for guild %s during guild join", guild.id)
+        return
+
     for channel in guild.text_channels:
-        perms = channel.permissions_for(me) if me else None
-        if perms and perms.send_messages and perms.embed_links:
+        perms = channel.permissions_for(me)
+        if perms.send_messages and perms.embed_links:
             await repo.set_announce_channel(guild.id, channel.id)
             log.info("Auto-selected announce channel %s for guild %s", channel.id, guild.id)
             break
@@ -2955,9 +2977,10 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                         )
 
                 if interaction.guild and isinstance(interaction.user, discord.Member):
+                    bot_member = await _resolve_bot_member(interaction.guild)
                     overwrites = {
                         interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                        interaction.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+                        bot_member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
                         interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
                     }
                     for role_id in GuildSettingsRepository.resolve_admin_role_ids(self.settings):
@@ -3005,8 +3028,34 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                                 channel_id=int(private_channel.id),
                                 message_id=int(host_controls_msg.id),
                             )
-                        except asyncpg.UndefinedColumnError:
-                            pass
+                        except asyncpg.UndefinedColumnError as exc:
+                            log.warning(
+                                "Missing host controls columns while saving host controls message for session_id=%s: %s",
+                                session_id,
+                                exc,
+                            )
+                    except discord.Forbidden as channel_setup_error:
+                        channel_id = int(private_channel.id) if private_channel else None
+                        log.exception(
+                            "99k private channel setup forbidden for session_id=%s channel_id=%s",
+                            session_id,
+                            channel_id,
+                        )
+                        if private_channel and interaction.guild:
+                            try:
+                                bot_member = await _resolve_bot_member(interaction.guild)
+                                perms = private_channel.permissions_for(bot_member)
+                                if perms.manage_channels:
+                                    await private_channel.delete(reason="99k setup rollback after forbidden")
+                            except Exception:
+                                log.exception(
+                                    "Failed to delete private channel after forbidden setup error session_id=%s channel_id=%s",
+                                    session_id,
+                                    channel_id,
+                                )
+                        raise RuntimeError(
+                            "I couldn't finish setting up the private jump channel because I am missing permissions (Manage Channels / Send Messages / Embed Links). Please fix my permissions and retry."
+                        ) from channel_setup_error
                     except Exception as channel_setup_error:
                         channel_id = int(private_channel.id) if private_channel else None
                         log.exception(
@@ -3014,9 +3063,10 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                             session_id,
                             channel_id,
                         )
-                        if private_channel and interaction.guild and interaction.guild.me:
+                        if private_channel and interaction.guild:
                             try:
-                                perms = private_channel.permissions_for(interaction.guild.me)
+                                bot_member = await _resolve_bot_member(interaction.guild)
+                                perms = private_channel.permissions_for(bot_member)
                                 if perms.manage_channels:
                                     await private_channel.delete(reason=f"99k setup rollback failed: {type(channel_setup_error).__name__}")
                             except Exception:
@@ -3693,8 +3743,9 @@ async def cleanup_worker():
                 else:
                     try:
                         panel_channel = guild.get_channel(panel_channel_id) or await guild.fetch_channel(panel_channel_id)
-                        perms = panel_channel.permissions_for(guild.me) if guild.me else None
-                        if not perms or not perms.view_channel or not perms.read_message_history:
+                        bot_member = await _resolve_bot_member(guild)
+                        perms = panel_channel.permissions_for(bot_member)
+                        if not perms.view_channel or not perms.read_message_history:
                             panel_deleted = False
                             log.warning("cleanup_worker missing_read_history session=%s", session_id)
                         else:
@@ -3716,8 +3767,9 @@ async def cleanup_worker():
                 else:
                     try:
                         private_channel = guild.get_channel(private_channel_id) or await guild.fetch_channel(private_channel_id)
-                        perms = private_channel.permissions_for(guild.me) if guild.me else None
-                        if not perms or not perms.manage_channels:
+                        bot_member = await _resolve_bot_member(guild)
+                        perms = private_channel.permissions_for(bot_member)
+                        if not perms.manage_channels:
                             channel_deleted = False
                             log.warning("cleanup_worker missing_manage_channels session=%s", session_id)
                         else:
@@ -4220,8 +4272,9 @@ async def _draw_raffle_winner(raffle: dict):
             log.warning("Configured raffle channel invalid for guild %s; cleared raffle_channel_id", raffle['guild_id'])
             return
 
-        me = guild.me or guild.get_member(getattr(bot.user, 'id', 0))
-        if me is None:
+        try:
+            me = await _resolve_bot_member(guild)
+        except RuntimeError:
             log.warning("Bot member unavailable while completing raffle %s", raffle_id)
             return
         perms = channel.permissions_for(me)
