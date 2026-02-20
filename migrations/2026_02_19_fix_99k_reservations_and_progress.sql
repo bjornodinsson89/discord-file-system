@@ -15,11 +15,11 @@ CREATE INDEX IF NOT EXISTS idx_jump_99k_signups_session_jump_state
 
 UPDATE jump_99k_signups
 SET status='reserved'
-WHERE status='signed_up'
+WHERE status IN ('signed_up','confirmed')
   AND COALESCE(payment_verified,FALSE)=FALSE;
 
 UPDATE jump_99k_signups
-SET status='signed_up',
+SET status='paid',
     reserved_until=NULL
 WHERE status='reserved'
   AND COALESCE(payment_verified,FALSE)=TRUE;

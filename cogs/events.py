@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional
 
 import config
+from constants.jump99k import SIGNUP_ACTIVE_STATUSES
 from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager, GuildSettingsRepository, require_api_key
 from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
 from utils.migrations import run_migrations
@@ -719,7 +720,7 @@ async def register_persistent_signup_views() -> None:
         is_full = False
         if max_slots > 0:
             signups = await JumpsRepository(db.pool).list_signups(session_id)
-            signed_up = sum(1 for row in signups if row.get("status") in {"paid", "completed", "not_completed"})
+            signed_up = sum(1 for row in signups if row.get("status") in SIGNUP_ACTIVE_STATUSES)
             is_full = signed_up >= max_slots
         bot.add_view(Jump99kSignupView(session_id=session_id, is_full=is_full, is_closed=False, is_locked=bool(session.get("signups_locked"))))
 
@@ -771,13 +772,16 @@ async def on_ready():
         ("start_roster_panel_refresh_worker", roster_panel_refresh_worker),
         ("start_cleanup_retry_worker", cleanup_retry_worker),
     ]
+    started_workers = []
     for step_name, worker in worker_steps:
         try:
             if not worker.is_running():
                 worker.start()
+                started_workers.append(step_name)
         except Exception:
             log.exception("on_ready step failed: %s", step_name)
-    
+
+    log_event(log, logging.INFO, "workers_started", action="startup", result="ok", workers=started_workers)
     log.info("✓ Bot is ready!")
 
 
@@ -1358,8 +1362,12 @@ async def _disable_99k_session_messages(bot_client: commands.Bot, session: dict,
                 for child in view.children:
                     child.disabled = True
                 await roster_msg.edit(view=view)
+            except discord.Forbidden:
+                log.debug("No permission to edit roster message session_id=%s", session_id)
+            except discord.HTTPException:
+                log.warning("HTTP error editing roster message session_id=%s", session_id)
             except Exception:
-                pass
+                log.exception("Unexpected error editing roster message session_id=%s", session_id)
 
 
 def _format_99k_price_item_plain(price_item: str | None) -> str:
@@ -1559,7 +1567,7 @@ async def upsert_99k_announcement(
     users_repo = UsersRepository(get_pool())
 
     signups = await repo.list_signups(session_id)
-    signed_up = sum(1 for row in signups if row.get("status") in {"paid", "completed", "not_completed"})
+    signed_up = sum(1 for row in signups if row.get("status") in SIGNUP_ACTIVE_STATUSES)
     paid = sum(1 for row in signups if row.get("payment_verified"))
     max_slots = int(session.get("max_slots") or 0)
     is_closed = _is_99k_closed(session.get("status"))
@@ -2388,7 +2396,7 @@ class Jump99kManualAddPickerView(discord.ui.View):
                         "You were manually added to a 99k session. Please run /set_api_key (or your existing API key command) so the bot can poll your energy/cooldowns for readiness."
                     )
                 except discord.Forbidden:
-                    pass
+                    log.debug("Manual add API key reminder DM blocked session_id=%s user_id=%s", self.session_id, selected.id)
                 except Exception:
                     log.exception("Manual add API key reminder DM failed session_id=%s user_id=%s", self.session_id, selected.id)
             else:
@@ -2548,7 +2556,7 @@ class Jump99kUserControlsView(discord.ui.View):
                             child.disabled = True
                         await interaction.message.edit(view=view)
                 except Exception:
-                    pass
+                    log.exception("Failed to disable closed session interaction message session_id=%s", self.session_id)
                 await interaction.followup.send("This is closed.", ephemeral=True)
                 return
             if int(session.get("guild_id", 0)) != int(interaction.guild_id):
@@ -2741,7 +2749,7 @@ class Jump99kSignupView(discord.ui.View):
                 return
 
             signups = await repo.list_signups(self.session_id)
-            signed_up = sum(1 for row in signups if row.get("status") in {"paid", "completed", "not_completed"})
+            signed_up = sum(1 for row in signups if row.get("status") in SIGNUP_ACTIVE_STATUSES)
             max_slots = int(session.get("max_slots") or 0)
             if max_slots > 0 and signed_up >= max_slots:
                 await _refresh_99k_panel(interaction.client, self.session_id)
@@ -3415,16 +3423,17 @@ async def jump99k_doctor(interaction: discord.Interaction, session_id: int | Non
     repo = JumpsRepository(db.pool)
     settings = await GuildSettingsRepository(db).get_or_create(interaction.guild_id)
 
+    signup_channel_id = _resolve_99k_signup_channel_id(settings, interaction.channel.id if interaction.channel else None)
     report = validate_99k_permissions(
         interaction.guild,
         bot.user,
-        signup_channel_id=_resolve_99k_signup_channel_id(settings, interaction.channel.id if interaction.channel else None),
+        signup_channel_id=signup_channel_id,
         announce_channel_id=int(settings.get("jump_announce_channel_id") or 0) or None,
         private_category_id=int(settings.get("jump_99k_private_category_id") or 0) or None,
     )
 
     schema_ok = True
-    schema_lines = []
+    schema_lines: list[str] = []
     async with db.pool.acquire() as conn:
         status_constraint = await conn.fetchval(
             """
@@ -3435,23 +3444,33 @@ async def jump99k_doctor(interaction: discord.Interaction, session_id: int | Non
             WHERE n.nspname = 'public' AND t.relname = 'jump_99k_signups' AND c.conname = 'jump_99k_signups_status_check'
             """
         )
-        has_reserved_until = bool(await conn.fetchval(
+        required_cols = await conn.fetch(
             """
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema='public' AND table_name='jump_99k_signups' AND column_name='reserved_until'
-            """
-        ))
-    expected = ["reserved", "paid", "cancelled", "expired"]
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='jump_99k_signups' AND column_name = ANY($1::text[])
+            """,
+            ["participant_discord_id", "reserved_until"],
+        )
+        cleanup_table_exists = bool(await conn.fetchval("SELECT to_regclass('public.jump_99k_cleanup_tasks') IS NOT NULL"))
+
+    existing_cols = {str(r["column_name"]) for r in required_cols}
+    for col in ("participant_discord_id", "reserved_until"):
+        if col not in existing_cols:
+            schema_ok = False
+            schema_lines.append(f"missing column jump_99k_signups.{col}")
+    if not cleanup_table_exists:
+        schema_ok = False
+        schema_lines.append("missing table jump_99k_cleanup_tasks")
+
+    expected = sorted(SIGNUP_ACTIVE_STATUSES | {"reserved", "cancelled", "expired"})
     if not status_constraint or any(v not in str(status_constraint) for v in expected):
         schema_ok = False
         schema_lines.append("status constraint mismatch")
-    if not has_reserved_until:
-        schema_ok = False
-        schema_lines.append("reserved_until missing")
 
     embed = create_info_embed("99k doctor", "Diagnostics complete")
     embed.add_field(name="Config", value=(
-        f"jump_99k_channel_id={settings.get('jump_99k_channel_id')}\n"
+        f"signup_channel_id={signup_channel_id}\n"
         f"announce_channel_id={settings.get('jump_announce_channel_id')}\n"
         f"disable_99k_announcements={bool(settings.get('disable_99k_announcements'))}\n"
         f"private_category_id={settings.get('jump_99k_private_category_id')}"
@@ -3465,15 +3484,34 @@ async def jump99k_doctor(interaction: discord.Interaction, session_id: int | Non
     if session_id:
         session = await repo.get_session(int(session_id))
         if session:
-            announce_channel_id, announce_message_id = get_announce_ids(session)
             cleanup_count = await repo.count_cleanup_tasks_for_session(session_id=int(session_id))
+
+            async def _msg_status(channel_id: int | None, message_id: int | None) -> str:
+                if not channel_id or not message_id:
+                    return "n/a"
+                try:
+                    ch = interaction.guild.get_channel(int(channel_id)) or await interaction.guild.fetch_channel(int(channel_id))
+                    await ch.fetch_message(int(message_id))
+                    return "ok"
+                except discord.NotFound:
+                    return "missing"
+                except discord.Forbidden:
+                    return "forbidden"
+                except Exception as exc:
+                    return f"error:{type(exc).__name__}"
+
+            announce_channel_id, announce_message_id = get_announce_ids(session)
+            announce_status = await _msg_status(announce_channel_id, announce_message_id)
+            roster_status = await _msg_status(session.get("roster_channel_id") or session.get("private_channel_id"), session.get("roster_message_id"))
+            host_status = await _msg_status(session.get("host_controls_channel_id"), session.get("host_controls_message_id"))
+
             embed.add_field(
                 name=f"Session #{session_id}",
                 value=(
                     f"status={session.get('status')}\n"
-                    f"announce={announce_channel_id}/{announce_message_id}\n"
-                    f"roster={session.get('roster_channel_id')}/{session.get('roster_message_id')}\n"
-                    f"host_controls={session.get('host_controls_channel_id')}/{session.get('host_controls_message_id')}\n"
+                    f"announce={announce_channel_id}/{announce_message_id} ({announce_status})\n"
+                    f"roster={session.get('roster_channel_id')}/{session.get('roster_message_id')} ({roster_status})\n"
+                    f"host_controls={session.get('host_controls_channel_id')}/{session.get('host_controls_message_id')} ({host_status})\n"
                     f"private_channel={session.get('private_channel_id')}\n"
                     f"cleanup_tasks={cleanup_count}"
                 ),
@@ -4006,6 +4044,7 @@ async def cleanup_worker():
 @cleanup_worker.before_loop
 async def before_cleanup_worker():
     await bot.wait_until_ready()
+    await wait_until_initialized(timeout=30.0)
 
 
 @tasks.loop(seconds=45)
@@ -4023,13 +4062,28 @@ async def cleanup_retry_worker():
                 ok, status = await delete_message_safe(guild, task.get("channel_id"), task.get("message_id"), "99k cleanup retry", {"session_id": task.get("session_id")})
             else:
                 ok, status = await delete_channel_safe(guild, task.get("channel_id"), "99k cleanup retry", {"session_id": task.get("session_id")})
+            task_id = int(task["id"])
+            session_id = int(task.get("session_id") or 0)
             if ok:
-                await repo.delete_cleanup_task(int(task["id"]))
+                await repo.delete_cleanup_task(task_id)
+                if str(task.get("task_type")) == "delete_message":
+                    await repo.clear_cleanup_message_target(session_id=session_id, channel_id=task.get("channel_id"), message_id=task.get("message_id"))
+                else:
+                    await repo.clear_cleanup_channel_target(session_id=session_id, channel_id=task.get("channel_id"))
+                log_event(log, logging.INFO, "jump99k.cleanup_retry.task", guild_id=task.get("guild_id"), session_id=session_id, action=str(task.get("task_type")), result="success")
                 continue
             attempts = int(task.get("attempts") or 0) + 1
+            if "missing_perms" in str(status):
+                attempts = max(attempts, 8)
+                status = f"forbidden:{status}; grant bot permissions and retry /99k end"
+            if status in {"missing_channel", "already_deleted", "missing_ids"}:
+                await repo.delete_cleanup_task(task_id)
+                log_event(log, logging.INFO, "jump99k.cleanup_retry.task", guild_id=task.get("guild_id"), session_id=session_id, action=str(task.get("task_type")), result="not_found_treated_success")
+                continue
             if attempts >= 10:
                 log.error("cleanup_retry_worker max attempts reached task_id=%s session_id=%s status=%s", task.get("id"), task.get("session_id"), status)
-            await repo.update_cleanup_task_failure(task_id=int(task["id"]), attempts=attempts, error=status)
+            await repo.update_cleanup_task_failure(task_id=task_id, attempts=attempts, error=status)
+            log_event(log, logging.INFO, "jump99k.cleanup_retry.task", guild_id=task.get("guild_id"), session_id=session_id, action=str(task.get("task_type")), result="retry_scheduled", attempts=attempts)
     except RuntimeError as exc:
         if "not initialized" in str(exc):
             log.warning("cleanup_retry_worker waiting for database init")
@@ -4041,6 +4095,7 @@ async def cleanup_retry_worker():
 @cleanup_retry_worker.before_loop
 async def before_cleanup_retry_worker():
     await bot.wait_until_ready()
+    await wait_until_initialized(timeout=30.0)
 
 
 @tasks.loop(seconds=15)
@@ -4082,6 +4137,7 @@ async def roster_panel_refresh_worker():
 @roster_panel_refresh_worker.before_loop
 async def before_roster_panel_refresh_worker():
     await bot.wait_until_ready()
+    await wait_until_initialized(timeout=30.0)
 
 
 @tasks.loop(seconds=config.READINESS_REFRESH_INTERVAL)
@@ -4107,7 +4163,7 @@ async def readiness_worker():
             # Include host in readiness checks as well.
             participant_ids = {int(session.get("host_discord_id"))}
             for s in signups:
-                if s.get("status") in {"paid", "completed", "not_completed"}:
+                if s.get("status") in SIGNUP_ACTIVE_STATUSES:
                     participant_ids.add(int(s["discord_id"]))
 
             for discord_id in sorted(participant_ids):
@@ -4165,6 +4221,7 @@ async def readiness_worker():
 @readiness_worker.before_loop
 async def before_readiness_worker():
     await bot.wait_until_ready()
+    await wait_until_initialized(timeout=30.0)
 
 
 @tasks.loop(seconds=30)
@@ -4201,7 +4258,8 @@ async def auto_verify_99k_payments():
                     continue
 
                 api_key = security.decrypt_api_key(encrypted_key)
-                since_ts = int((signup["created_at"] - timedelta(seconds=60)).timestamp())
+                signup_created_at = signup.get("signup_created_at") or signup.get("created_at")
+                since_ts = int((signup_created_at - timedelta(seconds=60)).timestamp())
                 base_amount = int(signup.get("price_amount") or 0)
                 priority_increment = int(signup.get("priority_increment") or 1)
                 priority_amount = base_amount + priority_increment
@@ -4269,6 +4327,7 @@ async def auto_verify_99k_payments():
 @auto_verify_99k_payments.before_loop
 async def before_auto_verify_99k_payments():
     await bot.wait_until_ready()
+    await wait_until_initialized(timeout=30.0)
 
 
 @tasks.loop(seconds=60)
@@ -4296,7 +4355,7 @@ async def overdose_monitor():
             for signup in signups:
                 if not bool(signup.get("payment_verified")):
                     continue
-                if signup.get("status") not in {"paid", "completed", "not_completed"}:
+                if signup.get("status") not in SIGNUP_ACTIVE_STATUSES:
                     continue
                 verified_at = signup.get("payment_verified_at")
                 if not verified_at:
@@ -4359,6 +4418,7 @@ async def overdose_monitor():
 @overdose_monitor.before_loop
 async def before_overdose_monitor():
     await bot.wait_until_ready()
+    await wait_until_initialized(timeout=30.0)
 
 
 @tasks.loop(seconds=config.INSURANCE_CHECK_INTERVAL)
@@ -4370,6 +4430,7 @@ async def insurance_monitor():
 @insurance_monitor.before_loop
 async def before_insurance_monitor():
     await bot.wait_until_ready()
+    await wait_until_initialized(timeout=30.0)
 
 
 @tasks.loop(seconds=config.RAFFLE_COMPLETION_INTERVAL)
@@ -4399,6 +4460,7 @@ async def raffle_completion_worker():
 @raffle_completion_worker.before_loop
 async def before_raffle_completion_worker():
     await bot.wait_until_ready()
+    await wait_until_initialized(timeout=30.0)
 
 
 # ============================================================================

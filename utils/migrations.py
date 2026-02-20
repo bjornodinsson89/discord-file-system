@@ -13,6 +13,7 @@ _MIGRATION_LOCK_KEY = 864201357918426513
 
 _YYYYMMDD_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})(?:_|$)")
 _YYYY_MM_DD_RE = re.compile(r"^(\d{4})_(\d{2})_(\d{2})(?:_|$)")
+_NNN_RE = re.compile(r"^(\d{3})(?:_|$)")
 
 
 def _parse_migration_key(name: str) -> tuple[tuple[int, int, int], str, str]:
@@ -26,6 +27,10 @@ def _parse_migration_key(name: str) -> tuple[tuple[int, int, int], str, str]:
     if match:
         yyyy, mm, dd = (int(match.group(i)) for i in range(1, 4))
         return (yyyy, mm, dd), name[match.end() :], name
+
+    match = _NNN_RE.match(name)
+    if match:
+        return (0, 0, int(match.group(1))), name[match.end() :], name
 
     return (9999, 12, 31), name, name
 

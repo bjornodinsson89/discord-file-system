@@ -13,41 +13,24 @@ python bot.py
 - Fresh database install:
 
 ```bash
+psql "$DATABASE_URL" -f migrations/000_full_schema.sql
 ```
 
-  This applies `migrations/000_full_schema.sql`.
-
-- Existing database updates:
+- Existing database updates (after baseline):
 
 ```bash
+for f in migrations/*.sql; do
+  [ "$(basename "$f")" = "000_full_schema.sql" ] && continue
+  psql "$DATABASE_URL" -f "$f"
+done
 ```
-
-  This applies numbered incremental migrations after `000_full_schema.sql`.
-
-
-## Supabase SQL required
-
-Use `migrations/000_full_schema.sql` as the canonical schema. At minimum, ensure these columns exist:
-
-- `guild_settings.announce_channel_id BIGINT`
-- `guild_settings.welcome_channel_id BIGINT`
-- `guild_settings.admin_role_ids JSONB`
-- `guild_settings.raffle_channel_id BIGINT`
-- `guild_settings.insurance_channel_id BIGINT`
-- `guild_settings.jump_99k_channel_id BIGINT`
-- `happy_jump_sessions.xanax_count`
-
-If startup schema validation fails, run the full schema SQL in Supabase SQL editor (or equivalent `ALTER TABLE` statements), then restart the bot.
 
 ## Required environment variables
 
 - `DISCORD_TOKEN`
-- `DB_HOST`
-- `DB_PORT`
-- `DB_NAME`
-- `DB_USER`
-- `DB_PASSWORD`
-- `DB_SSL`
+- `DATABASE_URL` (or `DB_HOST` + `DB_PORT` + `DB_NAME` + `DB_USER` + `DB_PASSWORD`)
+- `DB_SSL` (`disable`, `require`, `verify-ca`, `verify-full`)
+- `DB_SSL_VERIFY` (default `true`; set `false` only for local/dev)
 - `FERNET_KEY`
 
 Optional:
