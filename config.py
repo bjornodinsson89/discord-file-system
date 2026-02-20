@@ -2,8 +2,13 @@
 
 import os
 import ssl
+from urllib.parse import parse_qs, urlparse
+import logging
 
 import certifi
+
+
+log = logging.getLogger("happy_jumper.config")
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -33,9 +38,31 @@ elif all([DB_USER, DB_PASSWORD, DB_HOST, DB_NAME]):
 else:
     DATABASE_URL = None
 
-DB_SSL = os.getenv("DB_SSL", "disable")
+
+def _derive_sslmode_from_database_url(database_url: str | None) -> str | None:
+    if not database_url:
+        return None
+    try:
+        parsed = urlparse(database_url)
+        query = parse_qs(parsed.query or "", keep_blank_values=False)
+    except Exception:
+        return None
+    sslmode_values = query.get("sslmode")
+    if not sslmode_values:
+        return None
+    derived = (sslmode_values[0] or "").strip().lower() or None
+    if derived:
+        log.info("Derived DB_SSL from DATABASE_URL sslmode=%s", derived)
+    return derived
+
+
+_DB_SSL_ENV = os.getenv("DB_SSL")
+DB_SSL = (_DB_SSL_ENV.strip().lower() if _DB_SSL_ENV is not None else "") or _derive_sslmode_from_database_url(DATABASE_URL) or "disable"
 DB_SSL_CA_FILE = os.getenv("DB_SSL_CA_FILE")
-DB_SSL_VERIFY = _env_flag("DB_SSL_VERIFY", True)
+_ssl_verify_default = DB_SSL in {"verify-ca", "verify-full"}
+if DB_SSL in {"allow", "prefer", "require", "true", "1", "yes", "on"}:
+    _ssl_verify_default = False
+DB_SSL_VERIFY = _env_flag("DB_SSL_VERIFY", _ssl_verify_default)
 DB_SSL_ALLOW_INSECURE_FALLBACK = _env_flag("DB_SSL_ALLOW_INSECURE_FALLBACK", False)
 
 FERNET_KEY = os.getenv("FERNET_KEY")
@@ -51,10 +78,9 @@ def get_db_ssl_config() -> ssl.SSLContext | None:
         with open(ca_file, "rb"):
             pass
 
-    cafile = ca_file or certifi.where()
-
     if value in {"allow", "prefer", "require", "true", "1", "on", "yes", "verify-ca", "verify-full"}:
         if DB_SSL_VERIFY:
+            cafile = ca_file or certifi.where()
             context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=cafile)
             context.check_hostname = True
             context.verify_mode = ssl.CERT_REQUIRED
