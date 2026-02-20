@@ -10,7 +10,7 @@ from discord.ext import commands, tasks
 from repositories.free_raffle_repo import FreeRaffleRepository
 from repositories.torn_items import TornItemsRepository
 from utils import get_database, require_api_key
-from utils.database import get_pool
+from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
 from views.free_raffle_views import EnterRaffleView, HostControlsView
 
 log = logging.getLogger("happy_jumper.free_raffle")
@@ -114,7 +114,9 @@ class FreeRaffleCog(commands.Cog):
 
     async def cog_load(self) -> None:
         self._views_registered = False
-        if not self.free_raffle_expiration_worker.is_running():
+        await self.bot.wait_until_ready()
+        await wait_until_initialized(timeout=30.0)
+        if not self.free_raffle_expiration_worker.is_running() and db_is_initialized():
             self.free_raffle_expiration_worker.start()
 
     async def cog_unload(self) -> None:
@@ -410,6 +412,8 @@ class FreeRaffleCog(commands.Cog):
 
     @tasks.loop(seconds=60)
     async def free_raffle_expiration_worker(self) -> None:
+        if not db_is_initialized():
+            return
         await self.bot.wait_until_ready()
         try:
             await self.process_expired_raffles()

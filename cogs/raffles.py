@@ -2,7 +2,6 @@
 Raffle system with sell-out trigger support and automatic payment verification.
 """
 import logging
-import asyncio
 import re
 from datetime import datetime, timedelta, timezone
 import discord
@@ -13,8 +12,9 @@ from repositories.torn_items import TornItemsRepository
 from repositories.users import UsersRepository
 from services.raffle_payment import RafflePaymentService
 from services.payment_receipts import PaymentReceiptService
+from services.logging_utils import log_event
 from utils import GuildSettingsRepository, get_database, get_security_manager, get_torn_api, require_api_key
-from utils.database import get_pool
+from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
 from utils.embeds import create_error_embed
 from utils.icon_strips import build_icon_strip_file
 from utils.item_resolver import ItemResolver
@@ -1208,25 +1208,39 @@ class RafflesCog(commands.Cog):
         self._pack_drafts: dict[int, tuple[dict, datetime]] = {}
         self._raffle_create_drafts: dict[int, tuple[dict, datetime]] = {}
         self._payment_meta_cache: dict[str, dict | None] = {}
-        self._post_ready_init_task: asyncio.Task | None = None
-        self.check_raffles.start()
-        self.cleanup_expired.start()
-        self.auto_verify_payments.start()
-        self.cleanup_closed_panels.start()
+        self._workers_started = False
+        self._db_wait_logged = False
 
     def cog_unload(self):
-        self.check_raffles.cancel()
-        self.cleanup_expired.cancel()
-        self.auto_verify_payments.cancel()
-        self.cleanup_closed_panels.cancel()
-        if self._post_ready_init_task and not self._post_ready_init_task.done():
-            try:
-                self._post_ready_init_task.cancel()
-            except Exception:
-                log.exception("Failed to cancel post-ready raffle init task")
+        if self.check_raffles.is_running():
+            self.check_raffles.cancel()
+        if self.cleanup_expired.is_running():
+            self.cleanup_expired.cancel()
+        if self.auto_verify_payments.is_running():
+            self.auto_verify_payments.cancel()
+        if self.cleanup_closed_panels.is_running():
+            self.cleanup_closed_panels.cancel()
 
     async def cog_load(self):
-        self._post_ready_init_task = asyncio.create_task(self._post_ready_init())
+        await self.bot.wait_until_ready()
+        await wait_until_initialized(timeout=30.0)
+        await self._post_ready_init()
+        self._start_workers()
+
+    def _start_workers(self) -> None:
+        if self._workers_started:
+            return
+        if not db_is_initialized():
+            return
+        if not self.check_raffles.is_running():
+            self.check_raffles.start()
+        if not self.cleanup_expired.is_running():
+            self.cleanup_expired.start()
+        if not self.auto_verify_payments.is_running():
+            self.auto_verify_payments.start()
+        if not self.cleanup_closed_panels.is_running():
+            self.cleanup_closed_panels.start()
+        self._workers_started = True
 
     async def _post_ready_init(self):
         """Register persistent raffle purchase views for existing panel messages."""
@@ -1274,8 +1288,17 @@ class RafflesCog(commands.Cog):
             except Exception:
                 log.exception("Failed registering persistent raffle views")
         except Exception:
-            log.exception("Failed registering persistent raffle views")
-            return
+            log.exception("Failed during post-ready raffle initialization")
+
+    async def _ensure_db_ready(self, worker_name: str) -> bool:
+        if db_is_initialized():
+            self._db_wait_logged = False
+            return True
+        if not self._db_wait_logged:
+            log.debug("%s waiting for database pool initialization", worker_name)
+            self._db_wait_logged = True
+        return False
+
     def store_pack_draft(self, creator_discord_id: int, draft: dict) -> None:
         self._pack_drafts[creator_discord_id] = (draft, datetime.utcnow() + timedelta(minutes=10))
     def get_pack_draft(self, creator_discord_id: int) -> dict | None:
@@ -1922,6 +1945,8 @@ class RafflesCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
     @tasks.loop(seconds=30)
     async def auto_verify_payments(self):
+        if not await self._ensure_db_ready("raffles.auto_verify_payments"):
+            return
         """Auto-poll Torn API for payment verification at 4:30 mark."""
         await self.bot.wait_until_ready()
         try:
@@ -1962,6 +1987,8 @@ class RafflesCog(commands.Cog):
             log.error(f"Error in auto_verify_payments task: {e}")
     @tasks.loop(minutes=1)
     async def check_raffles(self):
+        if not await self._ensure_db_ready("raffles.check_raffles"):
+            return
         """Check for raffles that need to be drawn."""
         await self.bot.wait_until_ready()
         try:
@@ -1995,26 +2022,36 @@ class RafflesCog(commands.Cog):
             log.error(f"Error in check_raffles task: {e}")
     @tasks.loop(minutes=5)
     async def cleanup_expired(self):
+        if not await self._ensure_db_ready("raffles.cleanup_expired"):
+            return
         """Clean up expired unpaid reservations."""
         try:
+            log_event(log, logging.INFO, "raffle.cleanup_expired.start", action="cleanup_expired", result="started")
             repo = RafflesRepository(get_pool())
             count = await repo.cleanup_expired_raffle_entries()
+            log_event(log, logging.INFO, "raffle.cleanup_expired.end", action="cleanup_expired", result="ok", cleaned=count)
             if count > 0:
                 log.info(f"Cleaned up {count} expired raffle entries")
         except Exception as e:
+            log_event(log, logging.ERROR, "raffle.cleanup_expired.failed", action="cleanup_expired", result="error", error_type=type(e).__name__, exc_info=True)
             log.error(f"Error cleaning up expired entries: {e}")
 
     @tasks.loop(minutes=5)
     async def cleanup_closed_panels(self):
+        if not await self._ensure_db_ready("raffles.cleanup_closed_panels"):
+            return
         await self.bot.wait_until_ready()
         try:
+            log_event(log, logging.INFO, "raffle.cleanup_panels.start", action="cleanup_panels", result="started")
             repo = RafflesRepository(get_pool())
             stale = await repo.get_stale_raffles_for_cleanup()
             for raffle in stale:
                 await self._disable_raffle_panels(raffle, status_text=f"Raffle {raffle.get('status')}.")
                 await self._disable_prize_dm_confirm(raffle)
                 await repo.mark_cleaned(int(raffle["raffle_id"]))
+            log_event(log, logging.INFO, "raffle.cleanup_panels.end", action="cleanup_panels", result="ok", cleaned=len(stale))
         except Exception as e:
+            log_event(log, logging.ERROR, "raffle.cleanup_panels.failed", action="cleanup_panels", result="error", error_type=type(e).__name__, exc_info=True)
             log.error(f"Error cleaning raffle panels: {e}")
 
 async def setup(bot: commands.Bot):

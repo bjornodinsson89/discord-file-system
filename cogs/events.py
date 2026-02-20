@@ -18,7 +18,7 @@ from typing import Optional
 
 import config
 from utils import init_database, get_database, init_torn_api, get_torn_api, init_security, get_security_manager, GuildSettingsRepository, require_api_key
-from utils.database import get_pool
+from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
 from utils.migrations import run_migrations
 from utils.embeds import (
     create_success_embed, create_error_embed, create_warning_embed, create_info_embed,
@@ -77,6 +77,7 @@ TORN_NAME_CACHE_TTL_MINUTES = 10
 _TORN_NAME_CACHE: dict[int, tuple[str, datetime]] = {}
 _TORN_NAME_FAIL_LOG_CACHE: dict[int, datetime] = {}
 _READINESS_MISSING_KEY_LOG_CACHE: dict[tuple[int, int], datetime] = {}
+_WORKER_DB_WAIT_LOGGED: set[str] = set()
 
 
 async def _resolve_bot_member(guild: discord.Guild) -> discord.Member:
@@ -94,6 +95,15 @@ async def _resolve_bot_member(guild: discord.Guild) -> discord.Member:
         raise RuntimeError(f"Unable to resolve bot member in guild {guild.id}")
     return fetched
 
+
+async def _worker_db_ready(worker_name: str) -> bool:
+    if db_is_initialized():
+        _WORKER_DB_WAIT_LOGGED.discard(worker_name)
+        return True
+    if worker_name not in _WORKER_DB_WAIT_LOGGED:
+        log.debug("%s waiting for database pool initialization", worker_name)
+        _WORKER_DB_WAIT_LOGGED.add(worker_name)
+    return False
 
 
 def _parse_optional_session_start(raw_value: str, _settings: dict, *, host_timezone_name: str | None = None) -> tuple[Optional[datetime], Optional[str], bool]:
@@ -745,6 +755,12 @@ async def on_ready():
             await step()
         except Exception:
             log.exception("on_ready step failed: %s", step_name)
+
+    if not db_is_initialized():
+        initialized = await wait_until_initialized(timeout=30.0)
+        if not initialized:
+            log.error("Database pool not initialized by on_ready; skipping worker startup")
+            return
 
     worker_steps = [
         ("start_cleanup_worker", cleanup_worker),
@@ -2562,6 +2578,17 @@ class Jump99kUserControlsView(discord.ui.View):
             priority_amount = base_amount + priority_increment
 
             item = str(session.get("price_item", "")).lower()
+            log_event(
+                log,
+                logging.INFO,
+                "jump99k.verify_payment.start",
+                guild_id=interaction.guild_id,
+                session_id=self.session_id,
+                user_id=interaction.user.id,
+                action="verify_payment",
+                result="started",
+            )
+
             if item == "xanax":
                 payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, priority_amount, since_timestamp=since_ts)
                 paid_amount = priority_amount if payment else base_amount
@@ -2578,7 +2605,10 @@ class Jump99kUserControlsView(discord.ui.View):
 
             if not payment:
                 await interaction.followup.send(
-                    f"No qualifying payment found in recent logs. Expected **{base_amount}x {item}** to recipient **{host_torn_id}**.",
+                    (
+                        f"No qualifying payment found. Expected **{base_amount}x {item}** sent to **{host_torn_id}**. "
+                        f"Searched transactions since <t:{since_ts}:R> (from session start window)."
+                    ),
                     ephemeral=True,
                 )
                 log_event(
@@ -2609,7 +2639,20 @@ class Jump99kUserControlsView(discord.ui.View):
                     signup_id=int(signup["id"]),
                 )
 
-            await repo.mark_signup_payment_verified(session_id=self.session_id, discord_id=interaction.user.id)
+            updated = await repo.mark_signup_payment_verified(session_id=self.session_id, discord_id=interaction.user.id)
+            if not updated:
+                await interaction.followup.send("Your signup is not in a payable state. If already verified, you are good to go.", ephemeral=True)
+                log_event(
+                    log,
+                    logging.INFO,
+                    "jump99k.verify_payment.noop",
+                    guild_id=interaction.guild_id,
+                    session_id=self.session_id,
+                    user_id=interaction.user.id,
+                    action="verify_payment",
+                    result="no_state_change",
+                )
+                return
             payer_torn = int(key_row.get("torn_user_id") or 0) or None
             receipts = PaymentReceiptService(db.pool)
             await receipts.create_and_verify(
@@ -2633,6 +2676,18 @@ class Jump99kUserControlsView(discord.ui.View):
                 "✅ Payment verified for this 99k session.",
                 view=InsuranceOfferView(self.session_id, interaction.user.id),
                 ephemeral=True,
+            )
+            log_event(
+                log,
+                logging.INFO,
+                "jump99k.verify_payment.success",
+                guild_id=interaction.guild_id,
+                session_id=self.session_id,
+                user_id=interaction.user.id,
+                action="verify_payment",
+                result="paid",
+                paid_amount=paid_amount,
+                payment_item=item,
             )
         except TornAPIError:
             await interaction.followup.send("Torn API may be down right now. Please try again in a minute.", ephemeral=True)
@@ -2713,6 +2768,17 @@ class Jump99kSignupView(discord.ui.View):
                 discord_id=interaction.user.id,
                 torn_user_id=torn_user_id,
                 reserved_until=reserved_until,
+            )
+            log_event(
+                log,
+                logging.INFO,
+                "jump99k.join.reserved",
+                guild_id=interaction.guild_id,
+                session_id=self.session_id,
+                user_id=interaction.user.id,
+                action="join",
+                result="reserved",
+                reserved_until=reserved_until.isoformat(),
             )
             await _refresh_99k_panel(interaction.client, self.session_id)
 
@@ -3865,6 +3931,8 @@ async def audit_log(interaction: discord.Interaction, limit: int = 10):
 
 @tasks.loop(seconds=config.CLEANUP_INTERVAL)
 async def cleanup_worker():
+    if not await _worker_db_ready("cleanup_worker"):
+        return
     """Background cleanup task for 99k private channels and stale buttons."""
     try:
         repo = JumpsRepository(get_pool())
@@ -3942,6 +4010,8 @@ async def before_cleanup_worker():
 
 @tasks.loop(seconds=45)
 async def cleanup_retry_worker():
+    if not await _worker_db_ready("cleanup_retry_worker"):
+        return
     try:
         repo = JumpsRepository(get_pool())
         tasks_due = await repo.list_due_cleanup_tasks(limit=50)
@@ -3975,6 +4045,8 @@ async def before_cleanup_retry_worker():
 
 @tasks.loop(seconds=15)
 async def roster_panel_refresh_worker():
+    if not await _worker_db_ready("roster_panel_refresh_worker"):
+        return
     """Refresh active 99k roster panels and button states."""
     try:
         repo = JumpsRepository(get_pool())
@@ -4014,6 +4086,8 @@ async def before_roster_panel_refresh_worker():
 
 @tasks.loop(seconds=config.READINESS_REFRESH_INTERVAL)
 async def readiness_worker():
+    if not await _worker_db_ready("readiness_worker"):
+        return
     """Refresh readiness snapshots for the active 99k session in each guild."""
     try:
         db = get_database()
@@ -4095,7 +4169,10 @@ async def before_readiness_worker():
 
 @tasks.loop(seconds=30)
 async def auto_verify_99k_payments():
+    if not await _worker_db_ready("auto_verify_99k_payments"):
+        return
     try:
+        log_event(log, logging.INFO, "jump99k.auto_verify.start", action="auto_verify", result="started")
         db = get_database()
         repo = JumpsRepository(get_pool())
         users_repo = UsersRepository(db.pool)
@@ -4152,7 +4229,12 @@ async def auto_verify_99k_payments():
                         signup_id=int(signup["id"]),
                     )
 
-                await repo.mark_signup_payment_verified(session_id=session_id, discord_id=participant_id)
+                updated = await repo.mark_signup_payment_verified(session_id=session_id, discord_id=participant_id)
+                if not updated:
+                    log_event(log, logging.INFO, "jump99k.auto_verify.noop", guild_id=signup.get("guild_id"), session_id=session_id, user_id=participant_id, action="auto_verify", result="no_state_change")
+                    continue
+                log_event(log, logging.INFO, "jump99k.auto_verify.match", guild_id=signup.get("guild_id"), session_id=session_id, user_id=participant_id, action="auto_verify", result="matched", payment_item=item, paid_amount=paid_amount)
+
                 payer_torn = int(key_row.get("torn_user_id") or 0) or None
                 await receipts.create_and_verify(
                     featureType="jump_99k",
@@ -4167,25 +4249,20 @@ async def auto_verify_99k_payments():
                     verifier_discord_id=participant_id,
                     verifier_torn_id=payer_torn,
                 )
-                guild = bot.get_guild(int(signup["guild_id"]))
-                if guild:
-                    verified_session = await repo.get_session(session_id)
-                    if verified_session:
-                        await _grant_private_channel_access(guild, verified_session, participant_id)
 
-                user = bot.get_user(participant_id)
-                if user:
-                    try:
-                        await user.send(f"✅ Payment verified for 99k session #{session_id}")
-                    except Exception:
-                        pass
-                await _refresh_99k_panel(bot, session_id)
-                await _refresh_roster_if_exists(bot, session_id)
-            except (TornAPIRateLimitError, TornAPIError):
-                continue
+                guild = bot.get_guild(int(signup["guild_id"]))
+                session = await repo.get_session(session_id)
+                if guild and session:
+                    await _grant_private_channel_access(guild, session, participant_id)
+                    await _refresh_99k_panel(bot, session_id)
+                    await _refresh_roster_if_exists(bot, session_id)
             except Exception as entry_err:
                 log.warning("Auto verify failed for signup %s/%s: %s", signup.get("session_id"), signup.get("participant_discord_id"), entry_err)
+                continue
+
+        log_event(log, logging.INFO, "jump99k.auto_verify.end", action="auto_verify", result="ok")
     except Exception as e:
+        log_event(log, logging.ERROR, "jump99k.auto_verify.failed", action="auto_verify", result="error", error_type=type(e).__name__, exc_info=True)
         log.error(f"auto_verify_99k_payments error: {e}", exc_info=True)
 
 
@@ -4196,6 +4273,8 @@ async def before_auto_verify_99k_payments():
 
 @tasks.loop(seconds=60)
 async def overdose_monitor():
+    if not await _worker_db_ready("overdose_monitor"):
+        return
     """Track overdose events for open 99k sessions using shared overdose tracker."""
     try:
         db = get_database()
@@ -4295,6 +4374,8 @@ async def before_insurance_monitor():
 
 @tasks.loop(seconds=config.RAFFLE_COMPLETION_INTERVAL)
 async def raffle_completion_worker():
+    if not await _worker_db_ready("raffle_completion_worker"):
+        return
     """Check for completed raffles and draw winners."""
     try:
         db = get_database()
