@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import os
+import random
 from dataclasses import dataclass
 from typing import Optional
 
 import asyncpg
 
 from repositories.base import create_pool, pool_is_open
+from utils.structured_log import log_event
 
 log = logging.getLogger("happy_jumper.database")
 
@@ -26,15 +29,51 @@ _db: Optional[Database] = None
 _initialized_event = asyncio.Event()
 
 
+def _max_connect_attempts() -> int:
+    raw = (os.getenv("DB_CONNECT_MAX_ATTEMPTS", "20") or "20").strip()
+    try:
+        attempts = int(raw)
+    except ValueError:
+        attempts = 20
+    return max(attempts, 1)
+
+
 async def init_pool() -> asyncpg.Pool:
     global _pool, _db
     if pool_is_open(_pool):
         return _pool  # type: ignore[return-value]
-    _pool = await create_pool()
-    _db = Database(pool=_pool)
-    _initialized_event.set()
-    log.info("Database pool initialized")
-    return _pool
+
+    max_attempts = _max_connect_attempts()
+    base_delay_seconds = 1.0
+    max_delay_seconds = 30.0
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            _pool = await create_pool()
+            _db = Database(pool=_pool)
+            _initialized_event.set()
+            log.info("Database pool initialized")
+            return _pool
+        except Exception:
+            if attempt >= max_attempts:
+                log.exception("Database pool initialization failed after %s attempts", max_attempts)
+                raise
+
+            exp_delay = min(max_delay_seconds, base_delay_seconds * (2 ** (attempt - 1)))
+            jittered_delay = exp_delay + random.uniform(0, 0.25 * exp_delay)
+            log_event(
+                log,
+                logging.WARNING,
+                "db_connect_retry_scheduled",
+                action="db_connect",
+                result="retry",
+                attempt=attempt,
+                max_attempts=max_attempts,
+                next_sleep_seconds=round(jittered_delay, 2),
+            )
+            await asyncio.sleep(jittered_delay)
+
+    raise RuntimeError("Database pool initialization exhausted retries")
 
 
 def get_pool() -> asyncpg.Pool:

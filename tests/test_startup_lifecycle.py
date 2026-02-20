@@ -1,3 +1,9 @@
+import sys
+import types
+
+if "certifi" not in sys.modules:
+    sys.modules["certifi"] = types.SimpleNamespace(where=lambda: "/etc/ssl/certs/ca-certificates.crt")
+
 import asyncio
 
 import cogs.events as events
