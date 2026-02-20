@@ -68,6 +68,7 @@ TORN_API_KEY_LINK = (
     "?step=addNewKey&user=basic,discord,bars,cooldowns,log"
     "&title=Happy_Jumper_Bot"
 )
+TORN_API_DISCLAIMER_URL = "https://bjornodinsson89.github.io/happy-jumper-bot-legal/torn-api/"
 
 DVD_ITEM_ID = 366
 XANAX_ITEM_ID = 206
