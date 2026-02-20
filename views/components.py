@@ -49,6 +49,13 @@ class ApiKeyIntroView(ui.View):
                 url=config.TORN_API_KEY_LINK,
             )
         )
+        self.add_item(
+            ui.Button(
+                label="Full Torn API Disclaimer",
+                style=discord.ButtonStyle.link,
+                url=config.TORN_API_DISCLAIMER_URL,
+            )
+        )
 
     @ui.button(label="Enter API Key", style=discord.ButtonStyle.primary, emoji=config.EMOJI_LOCK)
     async def enter_key(self, interaction: discord.Interaction, button: ui.Button):
