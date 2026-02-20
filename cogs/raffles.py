@@ -1210,6 +1210,7 @@ class RafflesCog(commands.Cog):
         self._payment_meta_cache: dict[str, dict | None] = {}
         self._workers_started = False
         self._db_wait_logged = False
+        self._post_ready_initialized = False
 
     def cog_unload(self):
         if self.check_raffles.is_running():
@@ -1222,10 +1223,7 @@ class RafflesCog(commands.Cog):
             self.cleanup_closed_panels.cancel()
 
     async def cog_load(self):
-        await self.bot.wait_until_ready()
-        await wait_until_initialized(timeout=30.0)
-        await self._post_ready_init()
-        self._start_workers()
+        return
 
     def _start_workers(self) -> None:
         if self._workers_started:
@@ -1242,10 +1240,17 @@ class RafflesCog(commands.Cog):
             self.cleanup_closed_panels.start()
         self._workers_started = True
 
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        await wait_until_initialized(timeout=30.0)
+        if not self._post_ready_initialized:
+            await self._post_ready_init()
+            self._post_ready_initialized = True
+        self._start_workers()
+
     async def _post_ready_init(self):
         """Register persistent raffle purchase views for existing panel messages."""
         try:
-            await self.bot.wait_until_ready()
             db = get_database()
             if not db.pool:
                 log.error("Failed registering persistent raffle views: database pool is not initialized")
@@ -1948,7 +1953,6 @@ class RafflesCog(commands.Cog):
         if not await self._ensure_db_ready("raffles.auto_verify_payments"):
             return
         """Auto-poll Torn API for payment verification at 4:30 mark."""
-        await self.bot.wait_until_ready()
         try:
             repo = RafflesRepository(get_pool())
             pending = await repo.get_pending_verifications()
@@ -1990,7 +1994,6 @@ class RafflesCog(commands.Cog):
         if not await self._ensure_db_ready("raffles.check_raffles"):
             return
         """Check for raffles that need to be drawn."""
-        await self.bot.wait_until_ready()
         try:
             repo = RafflesRepository(get_pool())
             raffles = await repo.get_raffles_to_draw()
@@ -2040,7 +2043,6 @@ class RafflesCog(commands.Cog):
     async def cleanup_closed_panels(self):
         if not await self._ensure_db_ready("raffles.cleanup_closed_panels"):
             return
-        await self.bot.wait_until_ready()
         try:
             log_event(log, logging.INFO, "raffle.cleanup_panels.start", action="cleanup_panels", result="started")
             repo = RafflesRepository(get_pool())
@@ -2053,6 +2055,26 @@ class RafflesCog(commands.Cog):
         except Exception as e:
             log_event(log, logging.ERROR, "raffle.cleanup_panels.failed", action="cleanup_panels", result="error", error_type=type(e).__name__, exc_info=True)
             log.error(f"Error cleaning raffle panels: {e}")
+
+    async def _before_worker_loop(self) -> None:
+        await wait_until_initialized(timeout=30.0)
+        await self.bot.wait_until_ready()
+
+    @auto_verify_payments.before_loop
+    async def before_auto_verify_payments(self) -> None:
+        await self._before_worker_loop()
+
+    @check_raffles.before_loop
+    async def before_check_raffles(self) -> None:
+        await self._before_worker_loop()
+
+    @cleanup_expired.before_loop
+    async def before_cleanup_expired(self) -> None:
+        await self._before_worker_loop()
+
+    @cleanup_closed_panels.before_loop
+    async def before_cleanup_closed_panels(self) -> None:
+        await self._before_worker_loop()
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RafflesCog(bot))

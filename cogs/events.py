@@ -43,6 +43,7 @@ from setup_panel import (
     send_setup_panel,
     InsurerProfileModal,
 )
+from cogs import EXTENSIONS
 from cogs.pools import register_persistent_pool_views
 
 from bot_actions import handlers as admin_handlers
@@ -663,8 +664,15 @@ async def setup_hook():
     await run_migrations(get_pool())
     init_torn_api()
     await init_security()
+
+    loaded_extensions: list[str] = []
+    for ext in EXTENSIONS:
+        await bot.load_extension(ext)
+        loaded_extensions.append(ext)
+        log.info("Loaded extension: %s", ext)
+
     admin_handlers.set_bot_instance(bot)
-    log.info("Process dependencies initialized")
+    log.info("Process dependencies initialized (extensions=%s)", loaded_extensions)
 
 
 bot.setup_hook = setup_hook
@@ -1512,13 +1520,23 @@ def build_99k_jump_created_announcement_content(session: dict, settings: dict | 
     )
 
 
+
+
+def get_99k_publication_plan(settings: dict | None) -> dict[str, bool]:
+    disabled = bool((settings or {}).get("disable_99k_announcements", False))
+    return {
+        "upsert_signup_panel": True,
+        "post_announcement": not disabled,
+    }
+
 async def post_99k_jump_created_announcement(
     bot: commands.Bot,
     guild_id: int,
     session: dict,
     settings: dict,
 ) -> None:
-    if bool(settings.get("disable_99k_announcements", False)):
+    plan = get_99k_publication_plan(settings)
+    if not plan["post_announcement"]:
         return
 
     channel_id = int(settings.get("jump_announce_channel_id") or 0)
@@ -3468,12 +3486,24 @@ async def jump99k_doctor(interaction: discord.Interaction, session_id: int | Non
         schema_ok = False
         schema_lines.append("status constraint mismatch")
 
+    db_ready = False
+    if db_is_initialized():
+        try:
+            async with db.pool.acquire() as conn:
+                await conn.execute("SELECT 1")
+            db_ready = True
+        except Exception:
+            db_ready = False
+
     embed = create_info_embed("99k doctor", "Diagnostics complete")
     embed.add_field(name="Config", value=(
         f"signup_channel_id={signup_channel_id}\n"
         f"announce_channel_id={settings.get('jump_announce_channel_id')}\n"
         f"disable_99k_announcements={bool(settings.get('disable_99k_announcements'))}\n"
-        f"private_category_id={settings.get('jump_99k_private_category_id')}"
+        f"private_category_id={settings.get('jump_99k_private_category_id')}\n"
+        f"db_ssl_mode={(config.DB_SSL or 'disable')}\n"
+        f"db_ssl_verify={bool(config.DB_SSL_VERIFY)}\n"
+        f"db_ready={db_ready}"
     ), inline=False)
     perm_lines = []
     for cname, c in report.get("channels", {}).items():
