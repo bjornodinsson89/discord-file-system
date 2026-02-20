@@ -3,6 +3,8 @@
 import os
 import ssl
 
+import certifi
+
 
 def _env_flag(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -49,16 +51,18 @@ def get_db_ssl_config() -> ssl.SSLContext | None:
         with open(ca_file, "rb"):
             pass
 
-    if value in {"allow", "prefer", "require", "true", "1", "on", "yes"}:
-        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=ca_file or None)
-        context.check_hostname = bool(DB_SSL_VERIFY)
-        context.verify_mode = ssl.CERT_REQUIRED if DB_SSL_VERIFY else ssl.CERT_NONE
-        return context
+    cafile = ca_file or certifi.where()
 
-    if value in {"verify-ca", "verify-full"}:
-        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=ca_file or None)
-        context.check_hostname = value == "verify-full"
-        context.verify_mode = ssl.CERT_REQUIRED
+    if value in {"allow", "prefer", "require", "true", "1", "on", "yes", "verify-ca", "verify-full"}:
+        if DB_SSL_VERIFY:
+            context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=cafile)
+            context.check_hostname = True
+            context.verify_mode = ssl.CERT_REQUIRED
+            return context
+
+        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
         return context
 
     raise RuntimeError(f"Unsupported DB_SSL value {DB_SSL!r}.")
