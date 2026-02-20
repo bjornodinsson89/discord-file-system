@@ -2392,25 +2392,6 @@ class Jump99kHostControlsView(discord.ui.View):
             view=Jump99kManualAddPickerView(session_id=self.session_id),
         )
 
-    async def _on_reset_progress(self, interaction: discord.Interaction) -> None:
-        await _safe_defer_ephemeral(interaction)
-        repo = JumpsRepository(get_pool())
-        session = await repo.get_session(self.session_id)
-        if not session or not await can_manage_99k_session(interaction, session):
-            await _safe_edit_original(interaction, content="Not allowed.", view=None)
-            return
-
-        await repo.reset_jump_progress(self.session_id)
-        refreshed = bool(interaction.client) and await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
-        if refreshed:
-            await _safe_edit_original(interaction, content="✅ Progress reset. Start 1 is available again.", view=None)
-            return
-        await _safe_edit_original(
-            interaction,
-            content="Progress reset, but I could not refresh the roster panel automatically.",
-            view=None,
-        )
-
 
 class Jump99kUserControlsView(discord.ui.View):
     def __init__(self, session_id: int):
