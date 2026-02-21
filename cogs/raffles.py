@@ -1085,7 +1085,7 @@ class RafflePrizeImageUrlModal(discord.ui.Modal):
     """Modal for setting or replacing raffle prize image URL."""
     prize_image_url = discord.ui.TextInput(
         label="Prize Image URL",
-        placeholder="https://i.imgur.com/example.png",
+        placeholder="https://i.imgur.com/example.png (Tip: use image2url.com to upload)",
         required=True,
         max_length=1000,
     )
@@ -1130,6 +1130,46 @@ class RafflePrizeImageUrlModal(discord.ui.Modal):
         except Exception:
             log.exception("Failed to handle raffle prize image modal submission raffle_id=%s", self.prompt_view.raffle_id)
             await interaction.followup.send("❌ Failed to set prize image. Please try again.", ephemeral=True)
+
+
+class RafflePrizeImageHelpView(discord.ui.View):
+    """Helper view with upload link and modal opener for prize image setup."""
+
+    def __init__(self, prompt_view: "RafflePrizeImagePromptView"):
+        super().__init__(timeout=300)
+        self.prompt_view = prompt_view
+        self.add_item(
+            discord.ui.Button(
+                label="Create img url",
+                style=discord.ButtonStyle.link,
+                url="https://www.image2url.com/",
+                emoji="🔗",
+            )
+        )
+
+    @discord.ui.button(label="Open image URL form", style=discord.ButtonStyle.primary)
+    async def open_image_url_form(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            if interaction.user.id != self.prompt_view.creator_discord_id:
+                await interaction.response.send_message(
+                    "❌ Only the raffle creator can set the prize image.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_modal(RafflePrizeImageUrlModal(self.prompt_view))
+        except Exception:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "❌ Failed to open prize image form. Please try again.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Failed to open prize image form. Please try again.",
+                    ephemeral=True,
+                )
+
+
 class RafflePrizeImagePromptView(discord.ui.View):
     """Prompt the raffle creator to optionally add a prize image URL."""
     def __init__(
@@ -1180,7 +1220,11 @@ class RafflePrizeImagePromptView(discord.ui.View):
                     ephemeral=True,
                 )
                 return
-            await interaction.response.send_modal(RafflePrizeImageUrlModal(self))
+            await interaction.response.send_message(
+                "Use **Create img url** to upload and get a direct link, then click **Open image URL form**.",
+                view=RafflePrizeImageHelpView(self),
+                ephemeral=True,
+            )
         except Exception:
             if interaction.response.is_done():
                 await interaction.followup.send(
