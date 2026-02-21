@@ -84,18 +84,34 @@ class CasinoCog(commands.Cog):
 
     @jump.command(name="casino_slots_settings", description="Slots settings")
     async def casino_slots_settings(self, interaction: discord.Interaction):
+        settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
+        if not _is_adminish(interaction, settings):
+            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            return
         await interaction.response.send_message("Slots settings", view=SlotsSettingsView(interaction.guild_id), ephemeral=True)
 
     @jump.command(name="casino_roulette_settings", description="Roulette settings")
     async def casino_roulette_settings(self, interaction: discord.Interaction):
+        settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
+        if not _is_adminish(interaction, settings):
+            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            return
         await interaction.response.send_message("Roulette settings", view=RouletteSettingsView(interaction.guild_id), ephemeral=True)
 
     @jump.command(name="casino_wheel_settings", description="Wheel settings")
     async def casino_wheel_settings(self, interaction: discord.Interaction):
+        settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
+        if not _is_adminish(interaction, settings):
+            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            return
         await interaction.response.send_message("Wheel settings", view=WheelSettingsView(interaction.guild_id), ephemeral=True)
 
     @jump.command(name="casino_dice_settings", description="Dice settings")
     async def casino_dice_settings(self, interaction: discord.Interaction):
+        settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
+        if not _is_adminish(interaction, settings):
+            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            return
         await interaction.response.send_message("Dice settings", view=DiceSettingsView(interaction.guild_id), ephemeral=True)
 
 

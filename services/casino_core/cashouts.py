@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timezone
+import logging
 
 import discord
 
@@ -50,15 +51,30 @@ class CasinoCashoutService:
                 )
 
         from views.casino_core.cashout_panel import HouseCashoutActionView
-        house_user = interaction.client.get_user(int(house["house_discord_id"])) or await interaction.client.fetch_user(int(house["house_discord_id"]))
-        if house_user:
-            em = discord.Embed(title="Cashout Requested", color=discord.Color.orange())
-            em.description = f"Cashout #{cashout['id']}\nPlayer: <@{discord_id}>\nQty: **{qty_tokens}**"
-            await house_user.send(embed=em, view=HouseCashoutActionView(int(guild_id), int(cashout["id"])))
+
+        em = discord.Embed(title="Cashout Requested", color=discord.Color.orange())
+        em.description = f"Cashout #{cashout['id']}\nPlayer: <@{discord_id}>\nQty: **{qty_tokens}**"
+        view = HouseCashoutActionView(int(guild_id), int(cashout["id"]))
+
+        try:
+            house_user = interaction.client.get_user(int(house["house_discord_id"]))
+            if house_user is None:
+                house_user = await interaction.client.fetch_user(int(house["house_discord_id"]))
+            if house_user:
+                await house_user.send(embed=em, view=view)
+        except Exception as exc:
+            logging.warning("Cashout request DM failed for guild_id=%s cashout_id=%s: %s", guild_id, int(cashout["id"]), exc)
+
         if house.get("cashout_inbox_channel_id"):
-            channel = interaction.guild.get_channel(int(house["cashout_inbox_channel_id"]))
-            if channel:
-                await channel.send(embed=em, view=HouseCashoutActionView(int(guild_id), int(cashout["id"])))
+            try:
+                channel = interaction.guild.get_channel(int(house["cashout_inbox_channel_id"])) if interaction.guild else None
+                if channel is None:
+                    channel = await interaction.client.fetch_channel(int(house["cashout_inbox_channel_id"]))
+                if isinstance(channel, discord.abc.Messageable):
+                    await channel.send(embed=em, view=view)
+            except Exception as exc:
+                logging.warning("Cashout request inbox post failed for guild_id=%s cashout_id=%s: %s", guild_id, int(cashout["id"]), exc)
+
         return int(cashout["id"])
 
     async def verify_payout(self, interaction: discord.Interaction, guild_id: int, cashout_id: int) -> bool:
@@ -101,13 +117,18 @@ class CasinoCashoutService:
 
                 log_id = str(match.get("id") or match.get("log_id") or match.get("log"))
                 payouts_message_id = None
-                payouts_channel = interaction.guild.get_channel(int(house["payouts_channel_id"]))
                 proof_embed = discord.Embed(title="Casino Payout Verified", color=discord.Color.green())
                 proof_embed.description = f"Cashout #{cashout['id']} | <@{wallet['discord_id']}>\nQty: **{cashout['qty_tokens']}**\nLog: `{log_id}`"
                 proof_embed.add_field(name="Log excerpt", value=f"```json\n{trunc_json(match, 500)}\n```", inline=False)
-                if payouts_channel:
-                    msg = await payouts_channel.send(embed=proof_embed)
-                    payouts_message_id = int(msg.id)
+                try:
+                    payouts_channel = interaction.guild.get_channel(int(house["payouts_channel_id"])) if interaction.guild else None
+                    if payouts_channel is None:
+                        payouts_channel = await interaction.client.fetch_channel(int(house["payouts_channel_id"]))
+                    if isinstance(payouts_channel, discord.abc.Messageable):
+                        msg = await payouts_channel.send(embed=proof_embed)
+                        payouts_message_id = int(msg.id)
+                except Exception as exc:
+                    logging.warning("Payout proof post failed for guild_id=%s cashout_id=%s: %s", guild_id, cashout_id, exc)
 
                 await self.repo.mark_cashout_verified_sent(
                     conn,
