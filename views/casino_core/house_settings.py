@@ -3,8 +3,8 @@ from __future__ import annotations
 import discord
 
 from services.casino_core.settings import get_house_config, update_house_config
-from setup_panel import has_setup_permission
 from utils import GuildSettingsRepository, get_database
+from views.casino_core.permissions import ensure_casino_admin
 from views.casino_core.shared import parse_snowflake
 
 
@@ -17,6 +17,8 @@ class _SetValueModal(discord.ui.Modal):
         self.guild_id = guild_id
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
         v = parse_snowflake(str(self.value.value))
         await update_house_config(self.guild_id, {self.key: v})
         await interaction.response.send_message("✅ Saved.", ephemeral=True)
@@ -28,22 +30,7 @@ class HouseSettingsView(discord.ui.View):
         self.guild_id = guild_id
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        settings = await GuildSettingsRepository(get_database()).get_or_create(self.guild_id)
-        admin_roles = set(GuildSettingsRepository.resolve_admin_role_ids(settings))
-        house_cfg = get_house_config(settings)
-        member = interaction.user
-        role_ids = {r.id for r in getattr(member, "roles", [])}
-        allowed = has_setup_permission(
-            member_id=member.id,
-            guild_owner_id=interaction.guild.owner_id,
-            is_administrator=member.guild_permissions.administrator,
-            can_manage_guild=member.guild_permissions.manage_guild,
-            member_role_ids=role_ids,
-            admin_role_ids=admin_roles,
-        ) or (house_cfg.get("casino_admin_role_id") and int(house_cfg["casino_admin_role_id"]) in role_ids)
-        if not allowed:
-            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
-        return bool(allowed)
+        return await ensure_casino_admin(interaction, self.guild_id)
 
     @discord.ui.button(label="House Discord User", style=discord.ButtonStyle.primary)
     async def set_house_discord(self, interaction: discord.Interaction, _: discord.ui.Button):
