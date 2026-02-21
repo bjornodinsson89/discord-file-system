@@ -46,14 +46,28 @@ async def get_item_image_small(item_id: int) -> Image.Image:
     return img
 
 
-async def render_slots_png(reels: list[int], bet: int, payout: int, balance: int, pool_tokens: int, pool_millis: int, win_label: str) -> bytes:
+async def render_slots_png(
+    reels: list[int],
+    bet: int,
+    payout: int,
+    balance: int,
+    pool_tokens: int,
+    pool_millis: int,
+    win_label: str,
+) -> bytes:
     try:
         w, h = 520, 260
         canvas = Image.new("RGBA", (w, h), (22, 23, 30, 255))
         draw = ImageDraw.Draw(canvas)
         font = ImageFont.load_default()
 
-        draw.rounded_rectangle((10, 10, w - 10, h - 10), radius=18, fill=(36, 38, 50, 255), outline=(95, 100, 130, 255), width=3)
+        draw.rounded_rectangle(
+            (10, 10, w - 10, h - 10),
+            radius=18,
+            fill=(36, 38, 50, 255),
+            outline=(95, 100, 130, 255),
+            width=3,
+        )
 
         draw.text((24, 20), "Jumper Slots", font=font, fill=(245, 245, 245, 255))
         draw.text((24, 44), f"Result: {win_label}", font=font, fill=(205, 210, 225, 255))
@@ -65,7 +79,13 @@ async def render_slots_png(reels: list[int], bet: int, payout: int, balance: int
             x1 = x0 + reel_w
             y0 = reel_top
             y1 = y0 + reel_h
-            draw.rounded_rectangle((x0, y0, x1, y1), radius=12, fill=(16, 17, 24, 255), outline=(115, 121, 154, 255), width=2)
+            draw.rounded_rectangle(
+                (x0, y0, x1, y1),
+                radius=12,
+                fill=(16, 17, 24, 255),
+                outline=(115, 121, 154, 255),
+                width=2,
+            )
             img = await get_item_image_small(int(item_id))
             fitted = img.copy()
             fitted.thumbnail((76, 76))
