@@ -51,15 +51,14 @@ async def render_slots_png(
     reels: list[int],
     bet: int,
     payout: int,
-    balance: int,
+    balance: int | None,
     pool_tokens: int,
     pool_millis: int,
-    win_label: str,
+    status_text: str,
     spin_mask: list[bool] | None = None,
-    spin_symbols: list[list[int]] | None = None,
 ) -> bytes:
     try:
-        w, h = 520, 260
+        w, h = 640, 300
         canvas = Image.new("RGBA", (w, h), (22, 23, 30, 255))
         draw = ImageDraw.Draw(canvas)
         font = ImageFont.load_default()
@@ -72,17 +71,17 @@ async def render_slots_png(
             width=3,
         )
 
-        draw.text((24, 20), "Jumper Slots", font=font, fill=(245, 245, 245, 255))
-        draw.text((24, 44), f"Result: {win_label}", font=font, fill=(205, 210, 225, 255))
+        draw.text((24, 20), "🎰 7️⃣7️⃣7️⃣  S L O T S  7️⃣7️⃣7️⃣ 🎰", font=font, fill=(245, 245, 245, 255))
+        draw.text((24, 44), f"Status: {status_text}", font=font, fill=(205, 210, 225, 255))
 
-        reel_top, reel_h, reel_w = 78, 96, 140
-        start_x = 26
+        reel_top, reel_h, reel_w = 84, 120, 176
+        start_x = 24
         spin_mask = list(spin_mask or [False, False, False])[:3]
         while len(spin_mask) < 3:
             spin_mask.append(False)
 
         for idx, item_id in enumerate(reels):
-            x0 = start_x + idx * (reel_w + 20)
+            x0 = start_x + idx * (reel_w + 32)
             x1 = x0 + reel_w
             y0 = reel_top
             y1 = y0 + reel_h
@@ -95,18 +94,14 @@ async def render_slots_png(
             )
             if spin_mask[idx]:
                 reel_layer = Image.new("RGBA", (reel_w, reel_h), (0, 0, 0, 0))
-                reel_symbols = [int(item_id)]
-                if spin_symbols and idx < len(spin_symbols):
-                    reel_symbols.extend(int(v) for v in (spin_symbols[idx] or [])[:2])
-                while len(reel_symbols) < 3:
-                    reel_symbols.append(int(item_id))
+                reel_symbols = [int(item_id), random.choice(reels), random.choice(reels)]
 
-                offsets = (-10, 0, 10)
-                alphas = (110, 255, 110)
+                offsets = (-26, 0, 26)
+                alphas = (100, 230, 100)
                 for sym_id, offset, alpha in zip(reel_symbols[:3], offsets, alphas, strict=False):
                     img = await get_item_image_small(sym_id)
                     fitted = img.copy()
-                    fitted.thumbnail((76, 76))
+                    fitted.thumbnail((88, 88))
                     if alpha < 255:
                         alpha_channel = fitted.getchannel("A")
                         alpha_channel = alpha_channel.point(lambda p, a=alpha: (p * a) // 255)
@@ -115,22 +110,24 @@ async def render_slots_png(
                     py = (reel_h - fitted.height) // 2 + offset
                     reel_layer.alpha_composite(fitted, (px, py))
 
-                if random.random() < 0.65:
-                    reel_layer = reel_layer.filter(ImageFilter.GaussianBlur(radius=1))
+                reel_layer = reel_layer.filter(ImageFilter.GaussianBlur(radius=1))
                 canvas.alpha_composite(reel_layer, (x0, y0))
             else:
                 img = await get_item_image_small(int(item_id))
                 fitted = img.copy()
-                fitted.thumbnail((76, 76))
+                fitted.thumbnail((88, 88))
                 px = x0 + (reel_w - fitted.width) // 2
                 py = y0 + (reel_h - fitted.height) // 2
                 canvas.alpha_composite(fitted, (px, py))
 
         pool_value = f"{pool_tokens}.{pool_millis:03d}"
-        draw.text((24, 192), f"Bet: {bet}", font=font, fill=(240, 240, 240, 255))
-        draw.text((130, 192), f"Payout: {payout}", font=font, fill=(240, 240, 240, 255))
-        draw.text((260, 192), f"Balance: {balance}", font=font, fill=(240, 240, 240, 255))
-        draw.text((24, 216), f"Jackpot Pool: {pool_value}", font=font, fill=(248, 214, 102, 255))
+        draw.text((24, 228), f"Bet: {bet}", font=font, fill=(240, 240, 240, 255))
+        draw.text((150, 228), f"Payout: {payout}", font=font, fill=(240, 240, 240, 255))
+        if balance is None:
+            draw.text((300, 228), "Balance: …", font=font, fill=(210, 210, 210, 255))
+        else:
+            draw.text((300, 228), f"Balance: {balance}", font=font, fill=(240, 240, 240, 255))
+        draw.text((24, 256), f"Jackpot Pool: {pool_value}", font=font, fill=(248, 214, 102, 255))
 
         out = io.BytesIO()
         canvas.save(out, format="PNG", optimize=True)
