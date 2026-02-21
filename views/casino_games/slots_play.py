@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import io
+from io import BytesIO
 import random
 
 import discord
@@ -89,7 +89,14 @@ class SlotsPlayView(discord.ui.View):
             return random.choices(ids, weights=weights, k=1)[0]
         return random.choice([394, 707, 274, 281, 197, 366, 865, 206])
 
-    def _build_frame_embed(self, reels: list[int], spin_mask: list[bool], result: dict, is_final: bool) -> discord.Embed:
+    def _build_frame_embed(
+        self,
+        reels: list[int],
+        spin_mask: list[bool],
+        result: dict,
+        is_final: bool,
+        status_label: str,
+    ) -> discord.Embed:
         display = ["???" if spin_mask[idx] else self._symbol_name(reels[idx]) for idx in range(3)]
         body = (
             "```text\n"
@@ -102,8 +109,7 @@ class SlotsPlayView(discord.ui.View):
         if not is_final:
             body += "\nS P I N N I N G…"
         else:
-            win = int(result["payout"]) > 0
-            body += "\nW I N ✅" if win else "\nL O S E ☹️"
+            body += f"\n{status_label}"
             body += (
                 f"\nBet **{int(result['bet'])}** → Payout **{int(result['payout'])}** "
                 f"(Net {int(result['net']):+d})"
@@ -147,6 +153,8 @@ class SlotsPlayView(discord.ui.View):
         await interaction.edit_original_response(view=self)
 
         try:
+            pool_before_tokens = self.pool_tokens
+            pool_before_millis = self.pool_millis
             result = await self.service.spin(self.guild_id, self.discord_id, self.current_bet)
             self.balance = int(result["balance_after"])
             self.pool_tokens = int(result["pool_after_tokens"])
@@ -157,54 +165,69 @@ class SlotsPlayView(discord.ui.View):
             while len(final_reels) < 3:
                 final_reels.append(self._pick_weighted_symbol())
 
-            frames_total = max(1, self._animation_int("animation_total_frames", 18))
-            delay_ms = max(1, self._animation_int("animation_delay_ms", 280))
-            lock_left = max(1, self._animation_int("animation_lock_left", 7))
-            lock_mid = max(lock_left + 1, self._animation_int("animation_lock_mid", 12))
-            lock_right = max(lock_mid + 1, self._animation_int("animation_lock_right", 17))
+            frames_total = max(1, self._animation_int("animation_total_frames", 15))
+            delay_ms = max(1, self._animation_int("animation_delay_ms", 335))
+
+            lock_left = min(frames_total, max(1, self._animation_int("animation_lock_left", 6)))
+            lock_mid = min(frames_total, max(1, self._animation_int("animation_lock_mid", 10)))
+            lock_right = min(frames_total, max(1, self._animation_int("animation_lock_right", 14)))
+
+            if lock_mid <= lock_left:
+                lock_mid = min(frames_total, lock_left + 1)
+            if lock_right <= lock_mid:
+                lock_right = min(frames_total, lock_mid + 1)
+            if lock_mid <= lock_left:
+                lock_left = max(1, lock_mid - 1)
+            if lock_right <= lock_mid:
+                lock_mid = max(1, lock_right - 1)
+
+            net = int(result["payout"]) - int(result["bet"])
+            if int(result["payout"]) <= 0:
+                status_label = "L O S E ☹️"
+            elif net == 0:
+                status_label = "P U S H 😐"
+            else:
+                status_label = "W I N ✅"
 
             for frame in range(1, frames_total + 1):
                 if frame < lock_left:
-                    reels_for_frame = [self._pick_weighted_symbol(), self._pick_weighted_symbol(), self._pick_weighted_symbol()]
-                    spin_mask = [True, True, True]
+                    locked = [False, False, False]
                 elif frame < lock_mid:
-                    reels_for_frame = [final_reels[0], self._pick_weighted_symbol(), self._pick_weighted_symbol()]
-                    spin_mask = [False, True, True]
+                    locked = [True, False, False]
                 elif frame < lock_right:
-                    reels_for_frame = [final_reels[0], final_reels[1], self._pick_weighted_symbol()]
-                    spin_mask = [False, False, True]
+                    locked = [True, True, False]
                 else:
-                    reels_for_frame = final_reels
-                    spin_mask = [False, False, False]
+                    locked = [True, True, True]
 
-                is_final_frame = frame >= frames_total
+                reels_for_frame = [
+                    final_reels[idx] if locked[idx] else self._pick_weighted_symbol()
+                    for idx in range(3)
+                ]
+                spin_mask = [not locked[0], not locked[1], not locked[2]]
+
+                is_final_frame = frame == frames_total
                 if is_final_frame:
                     reels_for_frame = final_reels
                     spin_mask = [False, False, False]
 
-                embed = self._build_frame_embed(reels_for_frame, spin_mask, result, is_final_frame)
+                embed = self._build_frame_embed(reels_for_frame, spin_mask, result, is_final_frame, status_label)
 
                 try:
-                    spin_symbols = [
-                        [self._pick_weighted_symbol(), self._pick_weighted_symbol()] if spin else []
-                        for spin in spin_mask
-                    ]
                     png = await render_slots_png(
                         reels=reels_for_frame,
                         bet=int(result["bet"]),
                         payout=int(result["payout"]) if is_final_frame else 0,
-                        balance=int(result["balance_after"]),
-                        pool_tokens=int(result["pool_after_tokens"]),
-                        pool_millis=int(result["pool_after_millis"]),
-                        win_label=("WIN" if int(result["payout"]) > 0 else "LOSE") if is_final_frame else "SPINNING...",
+                        balance=int(result["balance_after"]) if is_final_frame else None,
+                        pool_tokens=int(result["pool_after_tokens"]) if is_final_frame else int(pool_before_tokens),
+                        pool_millis=int(result["pool_after_millis"]) if is_final_frame else int(pool_before_millis),
+                        status_text=status_label if is_final_frame else "SPINNING",
                         spin_mask=spin_mask,
-                        spin_symbols=spin_symbols,
                     )
                     embed.set_image(url="attachment://slots.png")
                     await interaction.edit_original_response(
                         embed=embed,
                         view=self,
-                        files=[discord.File(io.BytesIO(png), filename="slots.png")],
+                        files=[discord.File(BytesIO(png), filename="slots.png")],
                     )
                 except Exception:
                     await interaction.edit_original_response(embed=embed, view=self)
