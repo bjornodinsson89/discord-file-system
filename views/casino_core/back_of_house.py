@@ -3,13 +3,8 @@ from __future__ import annotations
 import discord
 
 from utils import GuildSettingsRepository, get_database
-from views.casino_core.admin_credit import AdminCreditModal
-from views.casino_core.game_settings_panels import (
-    DiceSettingsView,
-    RouletteSettingsView,
-    SlotsSettingsView,
-    WheelSettingsView,
-)
+from views.casino_core.admin_credit import AdminCreditView
+from views.casino_core.game_settings_panels import build_game_settings_view
 from views.casino_core.house_settings import HouseSettingsView, house_settings_embed
 from views.casino_core.ledger_panel import send_admin_ledger_panel
 from views.casino_core.permissions import ensure_casino_admin
@@ -87,25 +82,29 @@ class BackOfHouseView(discord.ui.View):
     async def slots_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        await interaction.response.send_message("Slots settings", view=SlotsSettingsView(self.guild_id), ephemeral=True)
+        view = await build_game_settings_view(self.guild_id, "slots")
+        await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     @discord.ui.button(label="Roulette Settings", style=discord.ButtonStyle.secondary, row=1)
     async def roulette_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        await interaction.response.send_message("Roulette settings", view=RouletteSettingsView(self.guild_id), ephemeral=True)
+        view = await build_game_settings_view(self.guild_id, "roulette")
+        await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     @discord.ui.button(label="Wheel Settings", style=discord.ButtonStyle.secondary, row=1)
     async def wheel_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        await interaction.response.send_message("Wheel settings", view=WheelSettingsView(self.guild_id), ephemeral=True)
+        view = await build_game_settings_view(self.guild_id, "wheel")
+        await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     @discord.ui.button(label="Dice Settings", style=discord.ButtonStyle.secondary, row=2)
     async def dice_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        await interaction.response.send_message("Dice settings", view=DiceSettingsView(self.guild_id), ephemeral=True)
+        view = await build_game_settings_view(self.guild_id, "dice")
+        await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     @discord.ui.button(label="Ledger", style=discord.ButtonStyle.success, row=2)
     async def ledger(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -117,12 +116,11 @@ class BackOfHouseView(discord.ui.View):
     async def admin_credit(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        await interaction.response.send_modal(AdminCreditModal(self.guild_id))
+        view = AdminCreditView(self.guild_id)
+        await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=3)
     async def close(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(content="Closed.", view=self)
+        await interaction.response.edit_message(content="Closed.", embed=None, view=None)

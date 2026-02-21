@@ -3,9 +3,13 @@ from __future__ import annotations
 import asyncpg
 
 
-def wallet_lock_key(guild_id: int, wallet_id: int) -> int:
-    return (int(guild_id) << 32) ^ (int(wallet_id) & 0xFFFFFFFF)
+def wallet_lock_pair(guild_id: int, wallet_id: int) -> tuple[int, int]:
+    cap = 2_147_483_647
+    a = int(guild_id) % cap
+    b = int(wallet_id) % cap
+    return a, b
 
 
 async def advisory_lock_for_wallet(conn: asyncpg.Connection, *, guild_id: int, wallet_id: int) -> None:
-    await conn.execute("SELECT pg_advisory_xact_lock($1)", wallet_lock_key(guild_id, wallet_id))
+    a, b = wallet_lock_pair(guild_id, wallet_id)
+    await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", a, b)

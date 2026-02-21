@@ -4,7 +4,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from services.casino_core.registry import get_game_registry
 from views.casino_core import (
     CasinoHomeView,
     CashoutRequestModal,
@@ -53,15 +52,6 @@ class CasinoCog(commands.Cog):
         await interaction.response.send_message(
             embed=await back_of_house_embed(interaction.guild_id),
             view=BackOfHouseView(interaction.guild_id),
-            ephemeral=True,
-        )
-
-    @jump.command(name="casino_play", description="Choose casino game")
-    async def casino_play(self, interaction: discord.Interaction):
-        labels = ", ".join(v.display_name for v in get_game_registry().values())
-        await interaction.response.send_message(
-            f"Games: {labels}.",
-            view=CasinoHomeView(interaction.guild_id),
             ephemeral=True,
         )
 

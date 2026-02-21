@@ -10,7 +10,7 @@ import discord
 
 from repositories.casino_core import CasinoCoreRepository
 from repositories.users import UsersRepository
-from services.casino_core.settings import get_house_config
+from services.casino_core.settings import _coerce_dict, get_house_config
 from utils import GuildSettingsRepository, get_database
 
 SLOTS_POOL_KEY = "slots_jackpot"
@@ -64,8 +64,8 @@ class CasinoSlotsService:
 
     async def ensure_slots_config(self, guild_id: int) -> dict:
         row = await self.settings_repo.get_or_create(int(guild_id))
-        games = dict((row or {}).get("casino_games") or {})
-        current = dict(games.get("slots") or {})
+        games = _coerce_dict((row or {}).get("casino_games"))
+        current = _coerce_dict(games.get("slots"))
         merged = self._merge_defaults(DEFAULT_SLOTS_CONFIG, current)
         if merged != current:
             games["slots"] = merged
@@ -106,9 +106,10 @@ class CasinoSlotsService:
                 settings = await self.settings_repo.get_or_create(int(guild_id))
                 house = get_house_config(settings)
                 if not settings.get("casino_enabled"):
-                    raise SlotsError("Casino is disabled. Ask admins to run /jump house_settings and enable casino.")
+                    raise SlotsError("Casino is disabled. Ask admins to run /back_of_house and enable casino.")
 
-                cfg = self._merge_defaults(DEFAULT_SLOTS_CONFIG, dict(((settings or {}).get("casino_games") or {}).get("slots") or {}))
+                games = _coerce_dict((settings or {}).get("casino_games"))
+                cfg = self._merge_defaults(DEFAULT_SLOTS_CONFIG, _coerce_dict(games.get("slots")))
                 if not cfg.get("enabled", True):
                     raise SlotsError("Slots is disabled in this server.")
 
