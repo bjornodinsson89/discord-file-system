@@ -59,6 +59,9 @@ class GuildSettingsRepository:
         "host_tax_item_id",
         "host_tax_quantity",
         "host_tax_cash_amount",
+        "casino_enabled",
+        "casino_house",
+        "casino_games",
     }
     BIGINT_FIELDS = {
         "announce_channel_id",
@@ -87,6 +90,7 @@ class GuildSettingsRepository:
         "auto_complete_enabled",
         "host_tax_enabled",
         "disable_99k_announcements",
+        "casino_enabled",
     }
     DEFAULT_KEYS = {
         "guild_id": None,
@@ -122,6 +126,9 @@ class GuildSettingsRepository:
         "host_tax_item_id": None,
         "host_tax_quantity": None,
         "host_tax_cash_amount": None,
+        "casino_enabled": False,
+        "casino_house": {},
+        "casino_games": {},
     }
 
     def __init__(self, db_manager):
@@ -344,7 +351,7 @@ class GuildSettingsRepository:
 
             for index, (key, value) in enumerate(fields.items(), start=2):
                 columns.append(key)
-                if key in {"admin_role_ids", "jump_ping_role_ids"}:
+                if key in {"admin_role_ids", "jump_ping_role_ids", "casino_house", "casino_games"}:
                     placeholders.append(f"${index}::jsonb")
                     values.append(_jsonb(value))
                 else:
@@ -377,7 +384,7 @@ class GuildSettingsRepository:
             sets = []
             values = []
             for i, (key, value) in enumerate(fields.items(), 1):
-                if key in {"admin_role_ids", "jump_ping_role_ids"}:
+                if key in {"admin_role_ids", "jump_ping_role_ids", "casino_house", "casino_games"}:
                     sets.append(f"{key} = ${i}::jsonb")
                     values.append(_jsonb(value))
                 else:
@@ -452,6 +459,9 @@ class GuildSettingsRepository:
             "host_tax_item_id": None,
             "host_tax_quantity": None,
             "host_tax_cash_amount": None,
+            "casino_enabled": False,
+            "casino_house": {},
+            "casino_games": {},
         }
         row = await self._db_insert_settings(guild_id, defaults)
         return self._merge_defaults(row, guild_id)
