@@ -967,17 +967,14 @@ class InsurerProviderSelect(ui.Select):
     def __init__(self, browser_view: "InsurerBrowserView", providers: List[Dict]):
         options: List[discord.SelectOption] = []
         for provider in providers[:25]:
-            title = provider.get("company_name") or provider.get("display_name") or f"Provider {provider['provider_id']}"
-            type_values = provider.get("policy_types") or []
-            type_summary = ", ".join(_coverage_label(v) for v in type_values[:2]) or "None"
-            if len(type_values) > 2:
-                type_summary += "+"
-            policy_count = provider.get("active_policy_count", 0) if browser_view.active_only else provider.get("total_policy_count", 0)
-            desc = f"Types: {type_summary} • Policies: {policy_count}"
+            user_id = int(provider.get("user_id") or provider.get("discord_id") or 0)
+            title = provider.get("display_name") or (f"Insurer {user_id}" if user_id else "Insurer")
+            coverage = (provider.get("coverage_summary") or "No coverage summary")
+            desc = _trim_text(coverage.replace("\n", " "), 100)
             options.append(discord.SelectOption(
                 label=title[:100],
                 description=desc[:100],
-                value=str(provider["provider_id"]),
+                value=str(user_id),
             ))
 
         super().__init__(
@@ -988,10 +985,10 @@ class InsurerProviderSelect(ui.Select):
         self.browser_view = browser_view
 
     async def callback(self, interaction: discord.Interaction):
-        provider_id = int(self.values[0])
+        insurer_user_id = int(self.values[0])
         card_view = InsurerCardView(
             guild_id=self.browser_view.guild_id,
-            provider_id=provider_id,
+            insurer_user_id=insurer_user_id,
             active_only=self.browser_view.active_only,
             coverage_type=self.browser_view.coverage_type,
             jump_type=self.browser_view.jump_type,
@@ -1022,22 +1019,26 @@ class InsurerBrowserView(ui.View):
 
     async def _load(self, client: discord.Client):
         db = get_database()
-        rows = await InsuranceRepository(db.pool).get_approved_providers_for_browser(
+        rows = await ApplicationsRepository(db.pool).list_approved_insurers_for_browser(
             guild_id=self.guild_id,
             active_only=self.active_only,
             coverage_type=self.coverage_type,
             jump_type=self.jump_type,
         )
         for row in rows:
-            row["display_name"] = f"Discord User {row['discord_id']}"
-            user = client.get_user(int(row["discord_id"]))
-            if user is None:
-                try:
-                    user = await client.fetch_user(int(row["discord_id"]))
-                except Exception:
-                    user = None
-            if user:
-                row["display_name"] = user.display_name
+            discord_id = int(row.get("user_id") or row.get("discord_id") or 0)
+            row["user_id"] = discord_id
+            row["discord_id"] = discord_id
+            row["display_name"] = row.get("display_name") or f"Discord User {discord_id}"
+            if discord_id:
+                user = client.get_user(discord_id)
+                if user is None:
+                    try:
+                        user = await client.fetch_user(discord_id)
+                    except Exception:
+                        user = None
+                if user:
+                    row["display_name"] = user.display_name
         self.providers = rows
 
     def _max_page(self) -> int:
@@ -1105,7 +1106,7 @@ class InsurerCardView(ui.View):
     def __init__(
         self,
         guild_id: int,
-        provider_id: int,
+        insurer_user_id: int,
         active_only: bool = True,
         coverage_type: Optional[str] = None,
         jump_type: str = "99k",
@@ -1115,7 +1116,7 @@ class InsurerCardView(ui.View):
     ):
         super().__init__(timeout=timeout)
         self.guild_id = guild_id
-        self.provider_id = provider_id
+        self.insurer_user_id = insurer_user_id
         self.active_only = active_only
         self.coverage_type = coverage_type
         self.jump_type = jump_type
@@ -1126,21 +1127,23 @@ class InsurerCardView(ui.View):
 
     async def _load(self, client: discord.Client):
         db = get_database()
-        self.provider = await InsuranceRepository(db.pool).get_provider_by_id(self.provider_id)
-        self.policies = await InsuranceRepository(db.pool).get_provider_policies_for_browser(
+        rows = await ApplicationsRepository(db.pool).list_approved_insurers_for_browser(
             guild_id=self.guild_id,
-            provider_id=self.provider_id,
             active_only=self.active_only,
             coverage_type=self.coverage_type,
             jump_type=self.jump_type,
         )
+        self.provider = next((dict(r) for r in rows if int(r.get("user_id") or 0) == self.insurer_user_id), None)
+        self.policies = []
         if self.provider:
-            self.provider = dict(self.provider)
-            self.provider["display_name"] = f"Discord User {self.provider['discord_id']}"
-            user = client.get_user(int(self.provider["discord_id"]))
-            if user is None:
+            discord_id = int(self.provider.get("user_id") or self.provider.get("discord_id") or 0)
+            self.provider["user_id"] = discord_id
+            self.provider["discord_id"] = discord_id
+            self.provider["display_name"] = self.provider.get("display_name") or f"Discord User {discord_id}"
+            user = client.get_user(discord_id)
+            if user is None and discord_id:
                 try:
-                    user = await client.fetch_user(int(self.provider["discord_id"]))
+                    user = await client.fetch_user(discord_id)
                 except Exception:
                     user = None
             if user:
@@ -1155,48 +1158,40 @@ class InsurerCardView(ui.View):
             embed = create_error_embed("Insurer Not Found", "That insurer could not be loaded.")
             return embed
 
-        policies_per_page = 5
-        max_page = max((len(self.policies) - 1) // policies_per_page, 0) if self.policies else 0
-        self.policy_page = min(self.policy_page, max_page)
-        start = self.policy_page * policies_per_page
-        subset = self.policies[start:start + policies_per_page]
-
-        title = self.provider.get("company_name") or self.provider.get("display_name") or f"Provider {self.provider_id}"
-        description = (
-            f"**Provider:** <@{self.provider['discord_id']}>\n"
-            f"**Torn ID:** `{self.provider.get('torn_user_id', 'Unknown')}`\n"
-            f"**Company:** {title}"
-        )
-
-        app_data = self.provider.get("application_data") or {}
-        forum_url = app_data.get("forum_url") if isinstance(app_data, dict) else None
-        if forum_url:
-            description += f"\n**Forum URL:** {forum_url}"
+        title = self.provider.get("display_name") or f"Insurer {self.insurer_user_id}"
+        description = f"**Provider:** <@{self.provider['discord_id']}>\n**Display Name:** {title}"
 
         embed = create_info_embed("Insurer Card", description)
+        embed.add_field(
+            name="Coverage Summary",
+            value=_trim_text(self.provider.get("coverage_summary") or "Not provided.", 900),
+            inline=False,
+        )
+        embed.add_field(
+            name="Pricing",
+            value=_trim_text(self.provider.get("pricing_text") or "Not provided.", 900),
+            inline=False,
+        )
+        embed.add_field(
+            name="Rules / Exclusions",
+            value=_trim_text(self.provider.get("rules_exclusions") or "Not provided.", 900),
+            inline=False,
+        )
+        if self.provider.get("response_time_text"):
+            embed.add_field(name="Response Time", value=_trim_text(self.provider.get("response_time_text"), 900), inline=False)
+        if self.provider.get("contact_notes"):
+            embed.add_field(name="Contact Notes", value=_trim_text(self.provider.get("contact_notes"), 900), inline=False)
 
-        if not subset:
-            embed.add_field(name="Policy Summary", value="No policies found for the selected filters.", inline=False)
-        else:
-            for policy in subset:
-                covered = policy.get("covered_jump_types") or []
-                covered_text = ", ".join(covered) if covered else "None"
-                body = (
-                    f"**Jump Types:** {covered_text}\n"
-                    f"**Coverage:** {_coverage_label(policy.get('coverage_type'))}\n"
-                    f"**Cost:** {policy.get('cost_type', 'unknown')} {policy.get('cost_amount', 0)}\n"
-                    f"**Duration:** {policy.get('duration_hours', 0)} hours\n"
-                    f"**{_payout_line(policy.get('payout_items') or [])}**\n"
-                    f"**Description:** {_trim_text(policy.get('description') or 'No description provided.', 220)}"
-                )
-                embed.add_field(name=f"#{policy['policy_id']} • {policy.get('name', 'Policy')}", value=body, inline=False)
+        if self.provider.get("activation_delay_minutes") is not None or self.provider.get("coverage_duration_minutes") is not None:
+            meta_bits = []
+            if self.provider.get("activation_delay_minutes") is not None:
+                meta_bits.append(f"Activation delay: {self.provider.get('activation_delay_minutes')} minutes")
+            if self.provider.get("coverage_duration_minutes") is not None:
+                meta_bits.append(f"Coverage duration: {self.provider.get('coverage_duration_minutes')} minutes")
+            embed.add_field(name="Timing", value="\n".join(meta_bits), inline=False)
 
-        if len(self.policies) > policies_per_page:
-            self.prev_policies_button.disabled = self.policy_page <= 0
-            self.next_policies_button.disabled = self.policy_page >= max_page
-            self.add_item(self.prev_policies_button)
-            self.add_item(self.next_policies_button)
-            embed.set_footer(text=f"Policy page {self.policy_page + 1}/{max_page + 1}")
+        if self.provider.get("image_url"):
+            embed.set_thumbnail(url=self.provider.get("image_url"))
 
         return embed
 
