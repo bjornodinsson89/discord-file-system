@@ -7,16 +7,10 @@ import logging
 from typing import Any, Dict, Iterable, Optional
 
 import config
+from utils.db_acquire import acquire_conn
 
 
 logger = logging.getLogger(__name__)
-
-
-def _acquire_with_optional_timeout(pool):
-    try:
-        return pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT)
-    except TypeError:
-        return pool.acquire()
 
 
 def _jsonb(v: Any) -> Optional[str]:
@@ -326,7 +320,7 @@ class GuildSettingsRepository:
     async def _db_insert_or_get_settings(self, guild_id: int) -> Optional[dict[str, Any]]:
         if not hasattr(self._db, "pool"):
             return None
-        async with _acquire_with_optional_timeout(self._db.pool) as conn:
+        async with acquire_conn(self._db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO public.guild_settings (guild_id)
@@ -343,7 +337,7 @@ class GuildSettingsRepository:
     ) -> Optional[dict[str, Any]]:
         if not hasattr(self._db, "pool"):
             return None
-        async with _acquire_with_optional_timeout(self._db.pool) as conn:
+        async with acquire_conn(self._db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
             columns = ["guild_id"]
             placeholders = ["$1"]
             values: list[Any] = [guild_id]
@@ -379,7 +373,7 @@ class GuildSettingsRepository:
     ) -> Optional[dict[str, Any]]:
         if not hasattr(self._db, "pool"):
             return None
-        async with _acquire_with_optional_timeout(self._db.pool) as conn:
+        async with acquire_conn(self._db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
             sets = []
             values = []
             for i, (key, value) in enumerate(fields.items(), 1):
@@ -465,7 +459,7 @@ class GuildSettingsRepository:
     async def ensure_guild_exists(self, guild_id: int):
         if not hasattr(self._db, "pool"):
             return
-        async with _acquire_with_optional_timeout(self._db.pool) as conn:
+        async with acquire_conn(self._db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
             existing = await conn.fetchrow(
                 "SELECT guild_id FROM public.guild_settings WHERE guild_id = $1", guild_id
             )

@@ -9,6 +9,7 @@ from typing import Optional
 import asyncpg
 
 import config
+from utils.db_acquire import acquire_conn
 from utils.structured_log import log_event
 
 log = logging.getLogger("happy_jumper.repositories")
@@ -20,12 +21,7 @@ class RepositoryBase:
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[asyncpg.Connection]:
-        try:
-            ctx = self.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT)
-        except TypeError:
-            ctx = self.pool.acquire()
-
-        async with ctx as conn:
+        async with acquire_conn(self.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
             yield conn
 
 

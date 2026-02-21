@@ -28,6 +28,7 @@ from utils.database import (
     wait_until_initialized,
 )
 from utils.migrations import run_migrations
+from utils.db_acquire import acquire_conn
 from utils.embeds import (
     create_success_embed, create_error_embed, create_warning_embed, create_info_embed,
     create_api_key_guide_embed, create_statistics_embed,
@@ -298,12 +299,12 @@ def _extract_torn_log_id(entry: dict) -> str:
 
 
 async def try_advisory_lock(pool, lock_key: int) -> bool:
-    async with pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+    async with acquire_conn(pool, config.DB_ACQUIRE_TIMEOUT) as conn:
         return bool(await conn.fetchval("SELECT pg_try_advisory_lock($1)", lock_key))
 
 
 async def release_advisory_lock(pool, lock_key: int) -> bool:
-    async with pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+    async with acquire_conn(pool, config.DB_ACQUIRE_TIMEOUT) as conn:
         return bool(await conn.fetchval("SELECT pg_advisory_unlock($1)", lock_key))
 
 
@@ -2811,13 +2812,18 @@ class Jump99kUserControlsView(discord.ui.View):
         except TornAPIError:
             await interaction.followup.send("Torn API may be down right now. Please try again in a minute.", ephemeral=True)
         except Exception:
+            custom_id = str((interaction.data or {}).get("custom_id") or "")
             log.exception(
-                "99k verify_payment failed session_id=%s guild_id=%s user_id=%s",
-                self.session_id,
+                "99k verify_payment failed guild_id=%s jump_id=%s user_id=%s custom_id=%s",
                 interaction.guild_id,
+                self.session_id,
                 interaction.user.id if interaction.user else None,
+                custom_id,
             )
-            await interaction.followup.send("Sorry—payment verification failed. Please try again.", ephemeral=True)
+            await interaction.followup.send(
+                "Payment verification hit an internal error (database schema mismatch). The admin has been notified. Try again in a minute.",
+                ephemeral=True,
+            )
 
 
 class Jump99kSignupView(discord.ui.View):
