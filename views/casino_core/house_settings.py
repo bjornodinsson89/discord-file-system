@@ -2,62 +2,122 @@ from __future__ import annotations
 
 import discord
 
+from repositories.users import UsersRepository
 from services.casino_core.settings import get_house_config, update_house_config
 from utils import GuildSettingsRepository, get_database
+from utils.database import get_pool
 from views.casino_core.permissions import ensure_casino_admin
-from views.casino_core.shared import parse_snowflake
 
 
-class _SetValueModal(discord.ui.Modal):
-    value = discord.ui.TextInput(label="Value", required=False, max_length=100)
+class _HouseUserSelect(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(placeholder="Select house Discord user", min_values=1, max_values=1)
 
-    def __init__(self, title: str, key: str, guild_id: int):
-        super().__init__(title=title)
-        self.key = key
-        self.guild_id = guild_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not await ensure_casino_admin(interaction, self.guild_id):
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, HouseSettingsView):
             return
-        v = parse_snowflake(str(self.value.value))
-        await update_house_config(self.guild_id, {self.key: v})
-        await interaction.response.send_message("✅ Saved.", ephemeral=True)
+        if not await ensure_casino_admin(interaction, view.guild_id):
+            return
+        house_user = int(self.values[0].id)
+        await update_house_config(view.guild_id, {"house_discord_id": house_user})
+        await interaction.response.edit_message(embed=await house_settings_embed(view.guild_id), view=view)
+
+
+class _PayoutsChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="Select payouts channel",
+            min_values=1,
+            max_values=1,
+            channel_types=[discord.ChannelType.text],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, HouseSettingsView):
+            return
+        if not await ensure_casino_admin(interaction, view.guild_id):
+            return
+        channel_id = int(self.values[0].id)
+        await update_house_config(view.guild_id, {"payouts_channel_id": channel_id})
+        await interaction.response.edit_message(embed=await house_settings_embed(view.guild_id), view=view)
+
+
+class _CashoutInboxChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="Select cashout inbox channel",
+            min_values=1,
+            max_values=1,
+            channel_types=[discord.ChannelType.text],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, HouseSettingsView):
+            return
+        if not await ensure_casino_admin(interaction, view.guild_id):
+            return
+        channel_id = int(self.values[0].id)
+        await update_house_config(view.guild_id, {"cashout_inbox_channel_id": channel_id})
+        await interaction.response.edit_message(embed=await house_settings_embed(view.guild_id), view=view)
+
+
+class _AdminRoleSelect(discord.ui.RoleSelect):
+    def __init__(self):
+        super().__init__(placeholder="Select casino admin role", min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, HouseSettingsView):
+            return
+        if not await ensure_casino_admin(interaction, view.guild_id):
+            return
+        role_id = int(self.values[0].id)
+        await update_house_config(view.guild_id, {"casino_admin_role_id": role_id})
+        await interaction.response.edit_message(embed=await house_settings_embed(view.guild_id), view=view)
 
 
 class HouseSettingsView(discord.ui.View):
     def __init__(self, guild_id: int):
         super().__init__(timeout=300)
         self.guild_id = guild_id
+        self.users_repo = UsersRepository(get_pool())
+        self.add_item(_HouseUserSelect())
+        self.add_item(_PayoutsChannelSelect())
+        self.add_item(_CashoutInboxChannelSelect())
+        self.add_item(_AdminRoleSelect())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return await ensure_casino_admin(interaction, self.guild_id)
 
-    @discord.ui.button(label="House Discord User", style=discord.ButtonStyle.primary)
-    async def set_house_discord(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(_SetValueModal("Set House Discord User", "house_discord_id", self.guild_id))
+    @discord.ui.button(label="Use House API Profile", style=discord.ButtonStyle.primary, row=3)
+    async def use_house_api_profile(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
+        settings = await GuildSettingsRepository(get_database()).get_or_create(self.guild_id)
+        cfg = get_house_config(settings)
+        house_discord_id = int(cfg.get("house_discord_id") or 0)
+        if not house_discord_id:
+            await interaction.response.send_message("❌ Set House Discord user first.", ephemeral=True)
+            return
+        house_row = await self.users_repo.get_user_api_key(house_discord_id)
+        house_torn_id = int((house_row or {}).get("torn_user_id") or 0)
+        if not house_torn_id:
+            await interaction.response.send_message("❌ House must set API key first.", ephemeral=True)
+            return
+        await update_house_config(self.guild_id, {"house_torn_id": house_torn_id})
+        await interaction.response.edit_message(embed=await house_settings_embed(self.guild_id), view=self)
 
-    @discord.ui.button(label="House Torn ID", style=discord.ButtonStyle.primary)
-    async def set_house_torn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(_SetValueModal("Set House Torn ID", "house_torn_id", self.guild_id))
-
-    @discord.ui.button(label="Payouts Channel", style=discord.ButtonStyle.secondary)
-    async def set_payouts_channel(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(_SetValueModal("Set Payouts Channel", "payouts_channel_id", self.guild_id))
-
-    @discord.ui.button(label="Cashout Inbox Channel", style=discord.ButtonStyle.secondary)
-    async def set_cashout_inbox(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(_SetValueModal("Set Cashout Inbox Channel", "cashout_inbox_channel_id", self.guild_id))
-
-    @discord.ui.button(label="Casino Admin Role", style=discord.ButtonStyle.secondary)
-    async def set_admin_role(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(_SetValueModal("Set Casino Admin Role", "casino_admin_role_id", self.guild_id))
-
-    @discord.ui.button(label="Toggle Casino Enabled", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Toggle Casino Enabled", style=discord.ButtonStyle.success, row=3)
     async def toggle_enabled(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
         repo = GuildSettingsRepository(get_database())
         row = await repo.get_or_create(self.guild_id)
         await repo.upsert_settings(self.guild_id, casino_enabled=not bool(row.get("casino_enabled")))
-        await interaction.response.send_message("✅ Toggled casino enabled.", ephemeral=True)
+        await interaction.response.edit_message(embed=await house_settings_embed(self.guild_id), view=self)
 
 
 async def house_settings_embed(guild_id: int) -> discord.Embed:
