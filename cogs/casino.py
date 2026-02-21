@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from services.casino_core.registry import GAME_REGISTRY
+from services.casino_core.registry import get_game_registry
 from services.casino_games.slots import CasinoSlotsService, SlotsError
 from utils import GuildSettingsRepository, get_database
 from utils.database import get_pool
@@ -132,7 +132,7 @@ class CasinoCog(commands.Cog):
 
     @jump.command(name="casino_play", description="Choose casino game")
     async def casino_play(self, interaction: discord.Interaction):
-        labels = ", ".join(v.display_name for v in GAME_REGISTRY.values())
+        labels = ", ".join(v.display_name for v in get_game_registry().values())
         await interaction.response.send_message(f"Games: {labels} (coming soon)", view=CasinoHomeView(interaction.guild_id), ephemeral=True)
 
 

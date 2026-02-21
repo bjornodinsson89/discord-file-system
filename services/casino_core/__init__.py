@@ -1,10 +1,10 @@
 from .cashouts import CasinoCashoutService
 from .deposits import CasinoDepositService
-from .registry import CasinoGameDefinition, GAME_REGISTRY
+from .registry import CasinoGameDefinition, get_game_registry
 
 __all__ = [
     "CasinoCashoutService",
     "CasinoDepositService",
     "CasinoGameDefinition",
-    "GAME_REGISTRY",
+    "get_game_registry",
 ]

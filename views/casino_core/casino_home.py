@@ -3,10 +3,9 @@ from __future__ import annotations
 import discord
 
 from repositories.casino_core import CasinoCoreRepository
-from services.casino_core.registry import GAME_REGISTRY
+from services.casino_core.registry import get_game_registry
 from views.casino_core.cashout_panel import CashoutRequestModal
 from views.casino_core.deposit_panel import DepositPanelView, deposit_panel_embed
-from views.casino_core.game_settings_panels import DiceSettingsView, RouletteSettingsView, SlotsSettingsView, WheelSettingsView
 from views.casino_core.ledger_panel import AdminLedgerView
 
 from utils.database import get_pool
@@ -14,12 +13,12 @@ from utils.database import get_pool
 
 class GameSelect(discord.ui.Select):
     def __init__(self):
-        options = [discord.SelectOption(label=v.display_name, value=v.key, description=f"{v.description} (coming soon)") for v in GAME_REGISTRY.values()]
+        options = [discord.SelectOption(label=v.display_name, value=v.key, description=f"{v.description} (coming soon)") for v in get_game_registry().values()]
         super().__init__(placeholder="Choose game", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         key = self.values[0]
-        await interaction.response.send_message(f"{GAME_REGISTRY[key].display_name} coming soon.", ephemeral=True, view=GAME_REGISTRY[key].build_play_view(interaction, {}))
+        await interaction.response.send_message(f"{get_game_registry()[key].display_name} coming soon.", ephemeral=True, view=get_game_registry()[key].build_play_view(interaction, {}))
 
 
 class CasinoHomeView(discord.ui.View):
