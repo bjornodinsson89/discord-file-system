@@ -4,13 +4,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from views.casino_core import (
-    CasinoHomeView,
-    CashoutRequestModal,
-    DepositPanelView,
-    casino_home_embed,
-    deposit_panel_embed,
-)
+from views.casino_core.casino_home import CasinoHomeView, casino_home_embed
+from views.casino_core.cashout_panel import CashoutRequestModal
+from views.casino_core.deposit_panel import DepositPanelView, deposit_panel_embed
 from views.casino_core.back_of_house import BackOfHouseView, back_of_house_embed
 from views.casino_core.permissions import ensure_casino_admin
 
