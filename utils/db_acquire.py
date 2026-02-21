@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+
 @asynccontextmanager
 async def acquire_conn(pool, timeout_seconds: float | int | None):
     """Acquire a DB connection, tolerating pools that do not accept timeout kwarg."""
