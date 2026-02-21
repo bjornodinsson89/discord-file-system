@@ -75,6 +75,7 @@ from repositories.users import UsersRepository
 from repositories.overdose import OverdoseRepository
 from repositories.torn_items import TornItemsRepository, norm_name
 from repositories.host_tax import HostTaxRepository
+from repositories.applications import ApplicationsRepository
 from services.payment_receipts import PaymentReceiptService
 from services.permissions import validate_99k_permissions
 from services.discord_cleanup import delete_message_safe, delete_channel_safe
@@ -1113,7 +1114,8 @@ async def insurer_profile(interaction: discord.Interaction):
         )
         return
 
-    await interaction.response.send_modal(InsurerProfileModal(db=db))
+    profile = await ApplicationsRepository(db.pool).get_insurer_profile(guild_id=interaction.guild_id, user_id=interaction.user.id)
+    await interaction.response.send_modal(InsurerProfileModal(db=db, existing_profile=profile))
 
 
 
@@ -3574,124 +3576,6 @@ async def jump99k_list(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@jump99k_group.command(name="doctor", description="99k health checks and diagnostics")
-@app_commands.describe(session_id="Optional 99k session ID")
-async def jump99k_doctor(interaction: discord.Interaction, session_id: int | None = None):
-    await interaction.response.defer(ephemeral=True)
-    db = get_database()
-    repo = JumpsRepository(db.pool)
-    settings = await GuildSettingsRepository(db).get_or_create(interaction.guild_id)
-
-    signup_channel_id = _resolve_99k_signup_channel_id(settings, interaction.channel.id if interaction.channel else None)
-    report = validate_99k_permissions(
-        interaction.guild,
-        bot.user,
-        signup_channel_id=signup_channel_id,
-        announce_channel_id=int(settings.get("jump_announce_channel_id") or 0) or None,
-        private_category_id=int(settings.get("jump_99k_private_category_id") or 0) or None,
-    )
-
-    schema_ok = True
-    schema_lines: list[str] = []
-    async with db.acquire(timeout=10, operation="jump99k_doctor_schema_check") as conn:
-        status_constraint = await conn.fetchval(
-            """
-            SELECT pg_get_constraintdef(c.oid)
-            FROM pg_constraint c
-            JOIN pg_class t ON t.oid = c.conrelid
-            JOIN pg_namespace n ON n.oid = t.relnamespace
-            WHERE n.nspname = 'public' AND t.relname = 'jump_99k_signups' AND c.conname = 'jump_99k_signups_status_check'
-            """
-        )
-        required_cols = await conn.fetch(
-            """
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema='public' AND table_name='jump_99k_signups' AND column_name = ANY($1::text[])
-            """,
-            ["participant_discord_id", "reserved_until"],
-        )
-        cleanup_table_exists = bool(await conn.fetchval("SELECT to_regclass('public.jump_99k_cleanup_tasks') IS NOT NULL"))
-
-    existing_cols = {str(r["column_name"]) for r in required_cols}
-    for col in ("participant_discord_id", "reserved_until"):
-        if col not in existing_cols:
-            schema_ok = False
-            schema_lines.append(f"missing column jump_99k_signups.{col}")
-    if not cleanup_table_exists:
-        schema_ok = False
-        schema_lines.append("missing table jump_99k_cleanup_tasks")
-
-    expected = sorted(SIGNUP_ACTIVE_STATUSES | {"reserved", "cancelled", "expired"})
-    if not status_constraint or any(v not in str(status_constraint) for v in expected):
-        schema_ok = False
-        schema_lines.append("status constraint mismatch")
-
-    db_ready = False
-    if db_is_initialized():
-        try:
-            async with db.acquire(timeout=5, operation="jump99k_doctor_db_probe") as conn:
-                await conn.execute("SELECT 1")
-            db_ready = True
-        except Exception:
-            db_ready = False
-
-    embed = create_info_embed("99k doctor", "Diagnostics complete")
-    embed.add_field(name="Config", value=(
-        f"signup_channel_id={signup_channel_id}\n"
-        f"announce_channel_id={settings.get('jump_announce_channel_id')}\n"
-        f"disable_99k_announcements={bool(settings.get('disable_99k_announcements'))}\n"
-        f"private_category_id={settings.get('jump_99k_private_category_id')}\n"
-        f"db_ssl_mode={(config.DB_SSL or 'disable')}\n"
-        f"db_ssl_verify={bool(config.DB_SSL_VERIFY)}\n"
-        f"db_ready={db_ready}"
-    ), inline=False)
-    perm_lines = []
-    for cname, c in report.get("channels", {}).items():
-        perm_lines.append(f"{cname}: {'ok' if not c.get('missing_permissions') else ', '.join(c.get('missing_permissions'))}")
-    embed.add_field(name="Permissions", value="\n".join(perm_lines) or "n/a", inline=False)
-    embed.add_field(name="Schema", value=("ok" if schema_ok else "; ".join(schema_lines)), inline=False)
-
-    if session_id:
-        session = await repo.get_session(int(session_id))
-        if session:
-            cleanup_count = await repo.count_cleanup_tasks_for_session(session_id=int(session_id))
-
-            async def _msg_status(channel_id: int | None, message_id: int | None) -> str:
-                if not channel_id or not message_id:
-                    return "n/a"
-                try:
-                    ch = interaction.guild.get_channel(int(channel_id)) or await interaction.guild.fetch_channel(int(channel_id))
-                    await ch.fetch_message(int(message_id))
-                    return "ok"
-                except discord.NotFound:
-                    return "missing"
-                except discord.Forbidden:
-                    return "forbidden"
-                except Exception as exc:
-                    return f"error:{type(exc).__name__}"
-
-            announce_channel_id, announce_message_id = get_announce_ids(session)
-            announce_status = await _msg_status(announce_channel_id, announce_message_id)
-            roster_status = await _msg_status(session.get("roster_channel_id") or session.get("private_channel_id"), session.get("roster_message_id"))
-            host_status = await _msg_status(session.get("host_controls_channel_id"), session.get("host_controls_message_id"))
-
-            embed.add_field(
-                name=f"Session #{session_id}",
-                value=(
-                    f"status={session.get('status')}\n"
-                    f"announce={announce_channel_id}/{announce_message_id} ({announce_status})\n"
-                    f"roster={session.get('roster_channel_id')}/{session.get('roster_message_id')} ({roster_status})\n"
-                    f"host_controls={session.get('host_controls_channel_id')}/{session.get('host_controls_message_id')} ({host_status})\n"
-                    f"private_channel={session.get('private_channel_id')}\n"
-                    f"cleanup_tasks={cleanup_count}"
-                ),
-                inline=False,
-            )
-
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
 @jump99k_group.command(name="end", description="End a specific 99k session by ID")
 @require_command_access(required_role_setting_keys=("host99k_role_id", "host_role_id"), failure_message="Administrator or the configured 99k Host role is required.")
 @app_commands.describe(jump_id="99k session ID to end")
@@ -3994,38 +3878,30 @@ async def claim_reject(interaction: discord.Interaction, claim_id: int, notes: s
 
 
 @bot.tree.command(name="insurers", description="Browse approved insurers in this server")
-@app_commands.describe(
-    active_only="Show only active insurers and active policies",
-    coverage_type="Filter insurer policies by coverage type",
-    jump_type="Filter policies by covered jump type (default: 99k)",
-)
+@app_commands.describe(category="Filter by insurer category")
 @app_commands.choices(
-    coverage_type=[
-        app_commands.Choice(name="Xanax Stack", value="xanax_stack"),
-        app_commands.Choice(name="Ecstasy After Stack", value="ecstasy_after_stack"),
-        app_commands.Choice(name="All Drugs", value="all_drugs"),
+    category=[
+        app_commands.Choice(name="All insurers", value="all"),
+        app_commands.Choice(name="99k jump", value="99k jump"),
+        app_commands.Choice(name="Happy jump", value="Happy jump"),
+        app_commands.Choice(name="Xanax stack", value="Xanax stack"),
+        app_commands.Choice(name="Ecstasy only", value="Ecstasy only"),
+        app_commands.Choice(name="Multi day", value="Multi day"),
+        app_commands.Choice(name="2 hours after purchase", value="2 hours after purchase"),
     ]
 )
 async def insurers(
     interaction: discord.Interaction,
-    active_only: bool = True,
-    coverage_type: app_commands.Choice[str] = None,
-    jump_type: str = "99k",
+    category: app_commands.Choice[str] = None,
 ):
     if not interaction.guild_id:
         await interaction.response.send_message(embed=create_error_embed("Unavailable", "This command only works in a server."), ephemeral=True)
         return
 
-    normalized_jump = (jump_type or "99k").strip()
-    normalized_coverage = coverage_type.value if coverage_type else None
-    if normalized_coverage == "xanax_stack":
-        normalized_coverage = "xanax"
-
+    selected_category = None if not category or category.value == "all" else category.value
     view = InsurerBrowserView(
         guild_id=interaction.guild_id,
-        active_only=active_only,
-        coverage_type=normalized_coverage,
-        jump_type=normalized_jump,
+        category=selected_category,
         timeout=300,
     )
     embed = await view.build_embed(bot)
