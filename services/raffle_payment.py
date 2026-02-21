@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import config
 from repositories.raffles import RafflesRepository
 from repositories.users import UsersRepository
 from utils import get_security_manager, get_torn_api
@@ -62,7 +63,9 @@ class RafflePaymentService:
 
         try:
             api_key = security.decrypt(buyer_key["encrypted_key"])
-            logs = await torn_api.get_user_log(api_key, limit=5)
+            logs = await torn_api.get_item_send_receive_logs(
+                api_key, limit=config.PAYMENT_VERIFICATION_LOG_LIMIT
+            )
         except TornAPIRateLimitError:
             return False, None, "Torn API is rate-limited right now. Please try again in a moment."
         except TornAPIPermissionError:

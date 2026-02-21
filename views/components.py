@@ -1446,7 +1446,9 @@ class ClaimManageView(ui.View):
             api_key = security.decrypt(key_data['encrypted_key'])
             torn_api = get_torn_api()
 
-            candidate_logs = await torn_api.get_user_log(api_key, limit=5)
+            candidate_logs = await torn_api.get_item_send_receive_logs(
+                api_key, limit=config.PAYMENT_VERIFICATION_LOG_LIMIT
+            )
 
             resolver = ItemResolver(db.pool)
             resolved_payout_items = []

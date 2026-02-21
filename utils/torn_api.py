@@ -260,10 +260,12 @@ class TornAPIClient:
         if not required_item_id:
             return None
         try:
-            logs = await self.get_user_log(api_key, limit=200)
+            logs = await self.get_item_send_receive_logs(
+                api_key, limit=config.PAYMENT_VERIFICATION_LOG_LIMIT
+            )
         except Exception as exc:
             log.warning(
-                "Payment verification failed while reading Torn logs recipient=%s required_item_id=%s amount=%s since=%s error=%s",
+                "Payment verification failed while reading Torn item logs (cat=85) recipient=%s required_item_id=%s amount=%s since=%s error=%s",
                 recipient_torn_id,
                 required_item_id,
                 amount,
@@ -343,7 +345,9 @@ class TornAPIClient:
         cash_amount: Optional[int] = None,
         since_timestamp: Optional[int] = None,
     ) -> Optional[Dict]:
-        logs = await self.get_user_log(api_key, limit=200)
+        logs = await self.get_item_send_receive_logs(
+            api_key, limit=config.PAYMENT_VERIFICATION_LOG_LIMIT
+        )
         for entry in logs:
             timestamp = int(entry.get("timestamp") or 0)
             if since_timestamp and timestamp < since_timestamp:
@@ -412,7 +416,9 @@ class TornAPIClient:
             {"log": int(log_id), "limit": int(limit), "key": api_key},
         )
 
-    async def get_item_send_receive_logs(self, api_key: str, limit: int = 5) -> List[Dict]:
+    async def get_item_send_receive_logs(
+        self, api_key: str, limit: int = config.PAYMENT_VERIFICATION_LOG_LIMIT
+    ) -> List[Dict]:
         data = await self._request("/user/log", {"cat": 85, "limit": limit, "key": api_key})
         log_data = data.get("log") if isinstance(data, dict) else None
         if isinstance(log_data, list):
