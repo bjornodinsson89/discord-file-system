@@ -3,12 +3,13 @@ from __future__ import annotations
 import discord
 
 from utils import GuildSettingsRepository, get_database
-from views.casino_core.admin_credit import AdminCreditModal
+from views.casino_core.admin_credit import AdminCreditView
 from views.casino_core.game_settings_panels import (
     DiceSettingsView,
     RouletteSettingsView,
     SlotsSettingsView,
     WheelSettingsView,
+    build_game_settings_embed,
 )
 from views.casino_core.house_settings import HouseSettingsView, house_settings_embed
 from views.casino_core.ledger_panel import send_admin_ledger_panel
@@ -87,25 +88,41 @@ class BackOfHouseView(discord.ui.View):
     async def slots_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        await interaction.response.send_message("Slots settings", view=SlotsSettingsView(self.guild_id), ephemeral=True)
+        await interaction.response.send_message(
+            embed=await build_game_settings_embed(self.guild_id, "slots"),
+            view=SlotsSettingsView(self.guild_id),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Roulette Settings", style=discord.ButtonStyle.secondary, row=1)
     async def roulette_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        await interaction.response.send_message("Roulette settings", view=RouletteSettingsView(self.guild_id), ephemeral=True)
+        await interaction.response.send_message(
+            embed=await build_game_settings_embed(self.guild_id, "roulette"),
+            view=RouletteSettingsView(self.guild_id),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Wheel Settings", style=discord.ButtonStyle.secondary, row=1)
     async def wheel_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        await interaction.response.send_message("Wheel settings", view=WheelSettingsView(self.guild_id), ephemeral=True)
+        await interaction.response.send_message(
+            embed=await build_game_settings_embed(self.guild_id, "wheel"),
+            view=WheelSettingsView(self.guild_id),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Dice Settings", style=discord.ButtonStyle.secondary, row=2)
     async def dice_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        await interaction.response.send_message("Dice settings", view=DiceSettingsView(self.guild_id), ephemeral=True)
+        await interaction.response.send_message(
+            embed=await build_game_settings_embed(self.guild_id, "dice"),
+            view=DiceSettingsView(self.guild_id),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Ledger", style=discord.ButtonStyle.success, row=2)
     async def ledger(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -117,7 +134,7 @@ class BackOfHouseView(discord.ui.View):
     async def admin_credit(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        await interaction.response.send_modal(AdminCreditModal(self.guild_id))
+        await interaction.response.send_message("Admin Credit", view=AdminCreditView(self.guild_id), ephemeral=True)
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=3)
     async def close(self, interaction: discord.Interaction, _: discord.ui.Button):

@@ -5,6 +5,7 @@ import discord
 from repositories.casino_core import CasinoCoreRepository
 from services.casino_core.registry import get_game_registry
 from services.casino_games.slots import CasinoSlotsService, SlotsError
+from services.casino_core.settings import get_house_config
 from utils import GuildSettingsRepository, get_database
 from utils.database import get_pool
 from views.casino_core.cashout_panel import CashoutRequestModal
@@ -46,6 +47,7 @@ class GameSelect(discord.ui.Select):
             return
 
         settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
+        get_house_config(settings)
         if not settings.get("casino_enabled"):
             await interaction.response.send_message(
                 "Casino is disabled. Ask admins to run /back_of_house and enable casino.",
