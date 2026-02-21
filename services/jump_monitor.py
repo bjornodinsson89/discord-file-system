@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from utils.tasks import TaskSupervisor, supervise
+from utils.structured_log import log_event
 
 from utils import get_database, get_security_manager, get_torn_api
 from repositories.users import UsersRepository
@@ -54,7 +55,6 @@ class JumpMonitor:
         self._start_countdown.pop(jump_id, None)
         self._last_heartbeat_at.pop(jump_id, None)
 
-
     async def stop_all(self) -> None:
         jump_ids = list(self._tasks.keys())
         for jump_id in jump_ids:
@@ -62,6 +62,17 @@ class JumpMonitor:
 
     def get_status(self, jump_id: int) -> dict[int, dict[str, Any]]:
         return self._statuses.get(jump_id, {})
+
+    def get_worker_status(self) -> list[dict[str, Any]]:
+        statuses: list[dict[str, Any]] = []
+        for jump_id, last in self._last_heartbeat_at.items():
+            statuses.append(
+                {
+                    "name": f"jump_monitor:{jump_id}",
+                    "last_heartbeat": last.isoformat(),
+                }
+            )
+        return sorted(statuses, key=lambda row: row["name"])
 
     def mark_needs_refresh(self, jump_id: int) -> None:
         self._needs_refresh.add(jump_id)
@@ -77,8 +88,20 @@ class JumpMonitor:
         while True:
             now_utc = datetime.now(timezone.utc)
             last_heartbeat = self._last_heartbeat_at.get(jump_id)
-            if last_heartbeat is None or (now_utc - last_heartbeat).total_seconds() >= self.heartbeat_interval_seconds:
-                log.debug("jump_monitor heartbeat jump_id=%s", jump_id)
+            if (
+                last_heartbeat is None
+                or (now_utc - last_heartbeat).total_seconds() >= self.heartbeat_interval_seconds
+            ):
+                loop_count = len(self._statuses.get(jump_id, {}))
+                uptime_seconds = int((now_utc - (last_heartbeat or now_utc)).total_seconds())
+                log_event(
+                    log,
+                    logging.INFO,
+                    "worker_heartbeat",
+                    name=f"jump_monitor:{jump_id}",
+                    uptime_s=uptime_seconds,
+                    loop_count=loop_count,
+                )
                 self._last_heartbeat_at[jump_id] = now_utc
             keep_running = await self._poll_once(jump_id)
             if not keep_running:
@@ -96,9 +119,13 @@ class JumpMonitor:
             raise
         users_repo = UsersRepository(db.pool)
         jumps_repo = JumpsRepository(db.pool)
-        od_tracker = OverdoseTracker(users_repo=users_repo, overdose_repo=OverdoseRepository(db.pool), jumps_repo=jumps_repo)
+        od_tracker = OverdoseTracker(
+            users_repo=users_repo, overdose_repo=OverdoseRepository(db.pool), jumps_repo=jumps_repo
+        )
         async with db.acquire(timeout=10, operation="jump_monitor_poll") as conn:
-            session = await conn.fetchrow("SELECT * FROM happy_jump_sessions WHERE id = $1", jump_id)
+            session = await conn.fetchrow(
+                "SELECT * FROM happy_jump_sessions WHERE id = $1", jump_id
+            )
             if not session:
                 return False
 
@@ -107,13 +134,13 @@ class JumpMonitor:
                 return False
 
             signup_rows = await conn.fetch(
-                "SELECT discord_id, purchase_verified_at FROM happy_jump_signups WHERE session_id = $1", jump_id
+                "SELECT discord_id, purchase_verified_at FROM happy_jump_signups WHERE session_id = $1",
+                jump_id,
             )
 
         participant_ids = {int(row["discord_id"]) for row in signup_rows}
         purchase_verified_map = {
-            int(row["discord_id"]): row.get("purchase_verified_at")
-            for row in signup_rows
+            int(row["discord_id"]): row.get("purchase_verified_at") for row in signup_rows
         }
         participant_ids.add(int(session["host_discord_id"]))
 
@@ -131,7 +158,11 @@ class JumpMonitor:
             try:
                 key_data = await users_repo.get_user_api_key(discord_id)
                 if not key_data:
-                    log.warning("Skipping jump monitor poll due to missing API key discord_id=%s guild_id=%s", discord_id, session.get("guild_id"))
+                    log.warning(
+                        "Skipping jump monitor poll due to missing API key discord_id=%s guild_id=%s",
+                        discord_id,
+                        session.get("guild_id"),
+                    )
                     jump_status[discord_id] = {
                         "energy_current": None,
                         "drug_cd": None,
@@ -151,7 +182,9 @@ class JumpMonitor:
                 bars = await torn_api.get_user_bars_v2(api_key)
                 cooldowns = await torn_api.get_user_cooldowns_v2(api_key)
 
-                energy = int((((bars or {}).get("bars") or {}).get("energy") or {}).get("current", 0))
+                energy = int(
+                    (((bars or {}).get("bars") or {}).get("energy") or {}).get("current", 0)
+                )
                 cooldown_data = (cooldowns or {}).get("cooldowns") or {}
                 drug_cd = int(cooldown_data.get("drug", 0))
                 booster_cd = int(cooldown_data.get("booster", 0))
@@ -178,7 +211,12 @@ class JumpMonitor:
                                 od_xanax = event.get("event_type") == "xanax_overdose"
                                 od_ecstasy = event.get("event_type") == "ecstasy_overdose"
                         except OverdoseTrackerError as exc:
-                            log.warning("jump_monitor OD tracker failed jump_id=%s discord_id=%s err=%s", jump_id, discord_id, exc)
+                            log.warning(
+                                "jump_monitor OD tracker failed jump_id=%s discord_id=%s err=%s",
+                                jump_id,
+                                discord_id,
+                                exc,
+                            )
                         self._last_user_overdose_check[key] = now_utc
                         last_od_check_at = now_utc
                 elif not purchase_verified_at:
@@ -203,7 +241,9 @@ class JumpMonitor:
                     "updated_at": now_utc,
                 }
             except Exception:
-                log.exception("Failed monitoring participant jump_id=%s discord_id=%s", jump_id, discord_id)
+                log.exception(
+                    "Failed monitoring participant jump_id=%s discord_id=%s", jump_id, discord_id
+                )
                 jump_status[discord_id] = {
                     "energy_current": None,
                     "drug_cd": None,

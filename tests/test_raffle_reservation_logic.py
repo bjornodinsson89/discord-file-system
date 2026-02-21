@@ -1,4 +1,6 @@
-def merge_raffle_tickets(existing_tickets: int, incoming_tickets: int, payment_verified: bool) -> int:
+def merge_raffle_tickets(
+    existing_tickets: int, incoming_tickets: int, payment_verified: bool
+) -> int:
     if payment_verified:
         return int(existing_tickets) + int(incoming_tickets)
     return int(incoming_tickets)

@@ -26,7 +26,9 @@ def test_000_full_schema_contains_required_columns():
 
 
 def test_005_canonical_jump_99k_pricing_migration_defines_required_columns():
-    migration_sql = Path("migrations/005_canonicalize_jump_99k_pricing.sql").read_text(encoding="utf-8")
+    migration_sql = Path("migrations/005_canonicalize_jump_99k_pricing.sql").read_text(
+        encoding="utf-8"
+    )
 
     required_snippets = [
         "ADD COLUMN IF NOT EXISTS price_item TEXT",

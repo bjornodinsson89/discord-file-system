@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 def _jsonb(v: Any) -> Optional[str]:
     if v is None:
         return None
-    if isinstance(v, (list, dict)):
+    if isinstance(v, list | dict):
         return json.dumps(v)
     if isinstance(v, str):
         return v
@@ -152,7 +152,7 @@ class GuildSettingsRepository:
         if admin_role_ids in ("", []):
             return []
 
-        if isinstance(admin_role_ids, (int, str)):
+        if isinstance(admin_role_ids, int | str):
             stripped = admin_role_ids.strip() if isinstance(admin_role_ids, str) else admin_role_ids
             if isinstance(stripped, str) and "," in stripped:
                 candidate_values = [part.strip() for part in stripped.split(",")]
@@ -192,7 +192,7 @@ class GuildSettingsRepository:
     def _normalize_bool(value: Any) -> bool:
         if isinstance(value, bool):
             return value
-        if isinstance(value, (int, float)):
+        if isinstance(value, int | float):
             return bool(value)
         if isinstance(value, str):
             normalized = value.strip().lower()
@@ -218,7 +218,7 @@ class GuildSettingsRepository:
         if role_ids in ("", []):
             return []
 
-        if isinstance(role_ids, (int, str)):
+        if isinstance(role_ids, int | str):
             stripped = role_ids.strip() if isinstance(role_ids, str) else role_ids
             if isinstance(stripped, str) and "," in stripped:
                 candidate_values = [part.strip() for part in stripped.split(",")]

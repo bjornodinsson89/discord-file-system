@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from utils.redaction import redact_mapping
+from utils.redaction import redact_dict
 
 
 def log_event(logger: logging.Logger, level: int, event: str, **fields) -> None:
@@ -18,6 +18,6 @@ def log_event(logger: logging.Logger, level: int, event: str, **fields) -> None:
         "error_type": fields.pop("error_type", None),
         **fields,
     }
-    payload = redact_mapping(payload)
+    payload = redact_dict(payload)
     exc_info = payload.pop("exc_info", None)
     logger.log(level, event, extra={"structured": payload}, exc_info=exc_info)

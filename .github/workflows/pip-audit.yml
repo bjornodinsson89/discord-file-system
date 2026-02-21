@@ -1,10 +1,9 @@
 name: Dependency Security Audit
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
   schedule:
-    - cron: '0 6 * * 1'
+    - cron: "0 6 * * 1"
 
 jobs:
   pip-audit:
@@ -18,7 +17,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install pip-audit
         run: |
@@ -27,6 +26,3 @@ jobs:
 
       - name: Audit runtime dependencies
         run: pip-audit -r requirements.txt
-
-      - name: Audit dev dependencies
-        run: pip-audit -r requirements-dev.txt

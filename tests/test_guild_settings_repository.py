@@ -67,7 +67,9 @@ def test_repo_normalizes_string_json_and_csv_role_lists():
 def test_repo_normalizes_jsonb_string_array_from_db_row():
     repo = GuildSettingsRepository(_DB())
 
-    merged = repo._merge_defaults({"jump_ping_role_ids": "[]", "admin_role_ids": "[123,456]"}, guild_id=99)
+    merged = repo._merge_defaults(
+        {"jump_ping_role_ids": "[]", "admin_role_ids": "[123,456]"}, guild_id=99
+    )
 
     assert merged["jump_ping_role_ids"] == []
     assert merged["admin_role_ids"] == [123, 456]
@@ -76,8 +78,8 @@ def test_repo_normalizes_jsonb_string_array_from_db_row():
 def test_repo_bad_role_list_values_return_empty_list_and_do_not_raise():
     repo = GuildSettingsRepository(_DB())
 
-    assert repo._normalize_role_id_list("[1,\"oops\"]", guild_id=123) == []
-    assert repo._normalize_admin_role_ids("[1,\"oops\"]", guild_id=123) == []
+    assert repo._normalize_role_id_list('[1,"oops"]', guild_id=123) == []
+    assert repo._normalize_admin_role_ids('[1,"oops"]', guild_id=123) == []
 
 
 def test_repo_merge_defaults_normalizes_jump_ping_roles():
@@ -95,6 +97,7 @@ def test_repo_get_guild_settings_alias_calls_get_settings(monkeypatch):
     monkeypatch.setattr(repo, "get_settings", fake_get_settings)
 
     import asyncio
+
     result = asyncio.run(repo.get_guild_settings(42))
     assert result["guild_id"] == 42
 
@@ -108,7 +111,10 @@ def test_repo_upsert_guild_settings_merges_dict_and_kwargs(monkeypatch):
     monkeypatch.setattr(repo, "upsert_settings", fake_upsert)
 
     import asyncio
-    result = asyncio.run(repo.upsert_guild_settings(7, {"welcome_enabled": True}, welcome_channel_id=99))
+
+    result = asyncio.run(
+        repo.upsert_guild_settings(7, {"welcome_enabled": True}, welcome_channel_id=99)
+    )
     assert result["welcome_enabled"] is True
     assert result["welcome_channel_id"] == 99
 
@@ -122,6 +128,7 @@ def test_repo_insert_or_get_guild_settings_alias_calls_get_settings(monkeypatch)
     monkeypatch.setattr(repo, "get_settings", fake_get_settings)
 
     import asyncio
+
     result = asyncio.run(repo.insert_or_get_guild_settings(73))
     assert result["guild_id"] == 73
 

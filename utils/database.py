@@ -10,6 +10,7 @@ from typing import AsyncIterator, Optional
 
 import asyncpg
 
+import config
 from repositories.base import create_pool, pool_is_open
 from utils.structured_log import log_event
 
@@ -30,11 +31,12 @@ class Database:
 
     @asynccontextmanager
     async def acquire(
-        self, *, timeout: float = 10.0, operation: str = "db_operation"
+        self, *, timeout: float | None = None, operation: str = "db_operation"
     ) -> AsyncIterator[asyncpg.Connection]:
         conn: asyncpg.Connection | None = None
+        acquire_timeout = float(timeout if timeout is not None else config.DB_ACQUIRE_TIMEOUT)
         try:
-            conn = await asyncio.wait_for(self.pool.acquire(), timeout=timeout)
+            conn = await asyncio.wait_for(self.pool.acquire(), timeout=acquire_timeout)
         except asyncio.TimeoutError as exc:
             log_event(
                 log,
@@ -42,12 +44,17 @@ class Database:
                 "db_acquire_timeout",
                 action="db_acquire",
                 result="timeout",
-                timeout_seconds=timeout,
+                timeout_seconds=acquire_timeout,
                 operation=operation,
             )
             raise DatabaseAcquireTimeoutError(
                 "Database is busy, please try again shortly."
             ) from exc
+
+        statement_timeout_ms = int(getattr(config, "DB_STATEMENT_TIMEOUT_MS", 15000) or 15000)
+        execute = getattr(conn, "execute", None)
+        if callable(execute):
+            await execute(f"SET statement_timeout = '{statement_timeout_ms}ms'")
 
         try:
             yield conn

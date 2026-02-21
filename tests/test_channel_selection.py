@@ -44,9 +44,13 @@ class _FakeClient:
 
 def test_setup_set_channel_handles_channel_without_mention():
     async def _run():
-        panel = SetupPanelView(owner_id=1, db=SimpleNamespace(), settings={}, guild=SimpleNamespace())
+        panel = SetupPanelView(
+            owner_id=1, db=SimpleNamespace(), settings={}, guild=SimpleNamespace()
+        )
         channel = _FakeChannel(123)
-        panel._resolve_real_channel = lambda _interaction, _selected: asyncio.sleep(0, result=channel)
+        panel._resolve_real_channel = lambda _interaction, _selected: asyncio.sleep(
+            0, result=channel
+        )
         panel._resolve_bot_member = lambda _interaction: object()
 
         interaction = SimpleNamespace(

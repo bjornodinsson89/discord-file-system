@@ -2,7 +2,11 @@ import asyncio
 from types import SimpleNamespace
 
 import cogs.events as events
-from utils.command_checks import CommandAccessError, has_role_hierarchy_access, require_command_access
+from utils.command_checks import (
+    CommandAccessError,
+    has_role_hierarchy_access,
+    require_command_access,
+)
 
 
 class _DummyResponse:
@@ -27,7 +31,11 @@ def test_on_app_command_error_user_message_is_sanitized(monkeypatch):
     monkeypatch.setattr(events, "_send_interaction_error", _fake_send_error)
 
     interaction = _DummyInteraction()
-    asyncio.run(events.on_app_command_error(interaction, RuntimeError("boom at /tmp/private.py\nTraceback...")))
+    asyncio.run(
+        events.on_app_command_error(
+            interaction, RuntimeError("boom at /tmp/private.py\nTraceback...")
+        )
+    )
 
     message = captured["message"]
     assert "Error ID:" in message
@@ -51,7 +59,9 @@ def _build_interaction(*, guild_owner_id: int, member):
 
 
 def test_permission_validator_blocks_low_priv_user(monkeypatch):
-    check_decorator = require_command_access(required_role_setting_keys=("host99k_role_id",), failure_message="nope")
+    check_decorator = require_command_access(
+        required_role_setting_keys=("host99k_role_id",), failure_message="nope"
+    )
 
     async def _dummy(_interaction):
         return None
@@ -63,16 +73,22 @@ def test_permission_validator_blocks_low_priv_user(monkeypatch):
         return {"host99k_role_id": 999}
 
     monkeypatch.setattr("utils.command_checks.get_database", lambda: object())
-    monkeypatch.setattr("utils.command_checks.GuildSettingsRepository.get_or_create", _fake_get_or_create)
+    monkeypatch.setattr(
+        "utils.command_checks.GuildSettingsRepository.get_or_create", _fake_get_or_create
+    )
 
-    interaction = _build_interaction(guild_owner_id=1, member=_build_member(member_id=2, roles=(10,)))
+    interaction = _build_interaction(
+        guild_owner_id=1, member=_build_member(member_id=2, roles=(10,))
+    )
 
     with __import__("pytest").raises(CommandAccessError):
         asyncio.run(check(interaction))
 
 
 def test_permission_validator_allows_matching_role(monkeypatch):
-    check_decorator = require_command_access(required_role_setting_keys=("host99k_role_id",), failure_message="nope")
+    check_decorator = require_command_access(
+        required_role_setting_keys=("host99k_role_id",), failure_message="nope"
+    )
 
     async def _dummy(_interaction):
         return None
@@ -84,9 +100,13 @@ def test_permission_validator_allows_matching_role(monkeypatch):
         return {"host99k_role_id": 999}
 
     monkeypatch.setattr("utils.command_checks.get_database", lambda: object())
-    monkeypatch.setattr("utils.command_checks.GuildSettingsRepository.get_or_create", _fake_get_or_create)
+    monkeypatch.setattr(
+        "utils.command_checks.GuildSettingsRepository.get_or_create", _fake_get_or_create
+    )
 
-    interaction = _build_interaction(guild_owner_id=1, member=_build_member(member_id=2, roles=(999,)))
+    interaction = _build_interaction(
+        guild_owner_id=1, member=_build_member(member_id=2, roles=(999,))
+    )
     assert asyncio.run(check(interaction)) is True
 
 

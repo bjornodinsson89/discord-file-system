@@ -4,7 +4,13 @@ import sys
 import types
 
 
-def _load_config(monkeypatch, *, db_ssl: str | None = None, verify: str | None = None, database_url: str | None = None):
+def _load_config(
+    monkeypatch,
+    *,
+    db_ssl: str | None = None,
+    verify: str | None = None,
+    database_url: str | None = None,
+):
     if db_ssl is None:
         monkeypatch.delenv("DB_SSL", raising=False)
     else:
@@ -62,7 +68,12 @@ def test_db_ssl_require_with_explicit_verify_true(monkeypatch):
 
 
 def test_database_url_sslmode_derives_db_ssl_when_unset(monkeypatch):
-    cfg = _load_config(monkeypatch, db_ssl=None, verify=None, database_url="postgresql://u:p@h:5432/db?sslmode=verify-full")
+    cfg = _load_config(
+        monkeypatch,
+        db_ssl=None,
+        verify=None,
+        database_url="postgresql://u:p@h:5432/db?sslmode=verify-full",
+    )
 
     assert cfg.DB_SSL == "verify-full"
     assert cfg.DB_SSL_VERIFY is True

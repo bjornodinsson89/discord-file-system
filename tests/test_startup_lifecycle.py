@@ -2,7 +2,9 @@ import sys
 import types
 
 if "certifi" not in sys.modules:
-    sys.modules["certifi"] = types.SimpleNamespace(where=lambda: "/etc/ssl/certs/ca-certificates.crt")
+    sys.modules["certifi"] = types.SimpleNamespace(
+        where=lambda: "/etc/ssl/certs/ca-certificates.crt"
+    )
 
 import asyncio
 
@@ -33,7 +35,9 @@ def test_setup_hook_initializes_then_loads_extensions(monkeypatch):
     monkeypatch.setattr(events, "get_pool", lambda: object())
     monkeypatch.setattr(events, "init_torn_api", _init_torn_api)
     monkeypatch.setattr(events, "init_security", _init_security)
-    monkeypatch.setattr(events.admin_handlers, "set_bot_instance", lambda _bot: calls.append("set_bot_instance"))
+    monkeypatch.setattr(
+        events.admin_handlers, "set_bot_instance", lambda _bot: calls.append("set_bot_instance")
+    )
     monkeypatch.setattr(events, "EXTENSIONS", ["cogs.raffles", "cogs.free_raffle"])
     monkeypatch.setattr(events.bot, "load_extension", _load_extension)
 
