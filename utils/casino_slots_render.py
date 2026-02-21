@@ -109,7 +109,7 @@ async def render_slots_png(
                     fitted.thumbnail((76, 76))
                     if alpha < 255:
                         alpha_channel = fitted.getchannel("A")
-                        alpha_channel = alpha_channel.point(lambda p: (p * alpha) // 255)
+                        alpha_channel = alpha_channel.point(lambda p, a=alpha: (p * a) // 255)
                         fitted.putalpha(alpha_channel)
                     px = (reel_w - fitted.width) // 2
                     py = (reel_h - fitted.height) // 2 + offset
