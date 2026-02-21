@@ -598,73 +598,87 @@ class InsuranceFeeVerifyView(ui.View):
     @ui.button(label="Verify Payment", style=discord.ButtonStyle.success)
     async def verify_payment(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        if interaction.user.id != self.requester_discord_id:
-            await interaction.followup.send("This action is only for the requester.", ephemeral=True)
-            return
+        try:
+            if interaction.user.id != self.requester_discord_id:
+                await interaction.followup.send("This action is only for the requester.", ephemeral=True)
+                return
 
-        db = get_database()
-        repo = JumpsRepository(db.pool)
-        req = await repo.get_insurance_request(self.request_id)
-        if not req or req.get("status") not in {"accepted", "completed"}:
+            db = get_database()
+            repo = JumpsRepository(db.pool)
+            req = await repo.get_insurance_request(self.request_id)
+            if not req or req.get("status") not in {"accepted", "completed"}:
+                for child in self.children:
+                    child.disabled = True
+                try:
+                    await interaction.message.edit(view=self)
+                except Exception:
+                    pass
+                await interaction.followup.send("This insurance request is no longer active.", ephemeral=True)
+                return
+            if req.get("status") == "completed":
+                await interaction.followup.send("Insurance is already active ✅", ephemeral=True)
+                return
+
+            if not await require_api_key(interaction, db, "verify insurance payment"):
+                return
+            key_row = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
+            encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
+
+            profile = await ApplicationsRepository(db.pool).get_insurer_profile(guild_id=interaction.guild_id, user_id=self.insurer_discord_id)
+            pricing_text = str((profile or {}).get("pricing_text") or "")
+            qty = 1
+            if pricing_text:
+                m = re.search(r"(\d+)", pricing_text)
+                if m:
+                    qty = int(m.group(1))
+
+            security = get_security_manager()
+            api_key = security.decrypt_api_key(encrypted_key)
+            since_ts = int((req.get("accepted_at") or datetime.now(timezone.utc)).timestamp())
+
+            try:
+                payment = await get_torn_api().verify_item_payment(
+                    api_key=api_key,
+                    recipient_torn_id=int(self.insurer_torn_id),
+                    required_item_id=config.XANAX_ITEM_ID,
+                    amount=max(1, qty),
+                    since_timestamp=since_ts,
+                )
+            except TornAPIError:
+                await interaction.followup.send("Torn API may be down right now. Please try again in a minute.", ephemeral=True)
+                return
+
+            if not payment:
+                await interaction.followup.send("Payment not found yet. Please try again shortly.", ephemeral=True)
+                return
+
+            await repo.mark_insurance_payment_verified(request_id=self.request_id)
             for child in self.children:
                 child.disabled = True
             try:
                 await interaction.message.edit(view=self)
             except Exception:
                 pass
-            await interaction.followup.send("This insurance request is no longer active.", ephemeral=True)
-            return
-        if req.get("status") == "completed":
-            await interaction.followup.send("Insurance is already active ✅", ephemeral=True)
-            return
 
-        if not await require_api_key(interaction, db, "verify insurance payment"):
-            return
-        key_row = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
-        encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
-
-        profile = await ApplicationsRepository(db.pool).get_insurer_profile(guild_id=interaction.guild_id, user_id=self.insurer_discord_id)
-        pricing_text = str((profile or {}).get("pricing_text") or "")
-        qty = 1
-        if pricing_text:
-            m = re.search(r"(\d+)", pricing_text)
-            if m:
-                qty = int(m.group(1))
-
-        security = get_security_manager()
-        api_key = security.decrypt_api_key(encrypted_key)
-        since_ts = int((req.get("accepted_at") or datetime.now(timezone.utc)).timestamp())
-
-        try:
-            payment = await get_torn_api().verify_item_payment(
-                api_key=api_key,
-                recipient_torn_id=int(self.insurer_torn_id),
-                required_item_id=config.XANAX_ITEM_ID,
-                amount=max(1, qty),
-                since_timestamp=since_ts,
+            await interaction.followup.send("Insurance active ✅", ephemeral=True)
+            try:
+                insurer = interaction.client.get_user(self.insurer_discord_id) or await interaction.client.fetch_user(self.insurer_discord_id)
+                await insurer.send(f"Insurance purchased by {interaction.user.display_name} ✅")
+            except Exception:
+                pass
+        except Exception:
+            custom_id = str((interaction.data or {}).get("custom_id") or "")
+            log.exception(
+                "insurance verify_payment failed guild_id=%s jump_id=%s user_id=%s custom_id=%s",
+                interaction.guild_id,
+                self.session_id,
+                interaction.user.id if interaction.user else None,
+                custom_id,
             )
-        except TornAPIError:
-            await interaction.followup.send("Torn API may be down right now. Please try again in a minute.", ephemeral=True)
-            return
-
-        if not payment:
-            await interaction.followup.send("Payment not found yet. Please try again shortly.", ephemeral=True)
-            return
-
-        await repo.mark_insurance_payment_verified(request_id=self.request_id)
-        for child in self.children:
-            child.disabled = True
-        try:
-            await interaction.message.edit(view=self)
-        except Exception:
-            pass
-
-        await interaction.followup.send("Insurance active ✅", ephemeral=True)
-        try:
-            insurer = interaction.client.get_user(self.insurer_discord_id) or await interaction.client.fetch_user(self.insurer_discord_id)
-            await insurer.send(f"Insurance purchased by {interaction.user.display_name} ✅")
-        except Exception:
-            pass
+            await interaction.followup.send(
+                "Payment verification hit an internal error (database schema mismatch). The admin has been notified. Try again in a minute.",
+                ephemeral=True,
+            )
 
 
 class InsuranceClaimView(ui.View):

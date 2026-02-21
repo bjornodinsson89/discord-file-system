@@ -4,6 +4,7 @@ import json
 from typing import Any, Optional
 
 import config
+from utils.db_acquire import acquire_conn
 
 
 class PaymentReceiptService:
@@ -24,7 +25,7 @@ class PaymentReceiptService:
         metadata: Optional[dict[str, Any]] = None,
         receipt_hash: Optional[str] = None,
     ) -> int:
-        async with self.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+        async with acquire_conn(self.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO payment_receipts (
@@ -52,7 +53,7 @@ class PaymentReceiptService:
             return int(row["id"])
 
     async def markVerified(self, *, receiptId: int, verifier_discord_id: Optional[int], verifier_torn_id: Optional[int] = None, verification_metadata: Optional[dict[str, Any]] = None) -> bool:
-        async with self.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+        async with acquire_conn(self.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE payment_receipts
@@ -87,7 +88,7 @@ class PaymentReceiptService:
         verifier_torn_id: Optional[int] = None,
         receipt_hash: Optional[str] = None,
     ) -> int:
-        async with self.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+        async with acquire_conn(self.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
                     """
@@ -129,7 +130,7 @@ class PaymentReceiptService:
                 )
                 return receipt_id
     async def markRejected(self, *, receiptId: int, verifier_discord_id: Optional[int], verification_metadata: Optional[dict[str, Any]] = None) -> bool:
-        async with self.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+        async with acquire_conn(self.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE payment_receipts
