@@ -1,3 +1,4 @@
+import pytest
 import importlib
 import ssl
 import sys
@@ -57,14 +58,14 @@ def test_db_ssl_verify_full_defaults_to_required_verification(monkeypatch):
     assert ctx.check_hostname is True
 
 
-def test_db_ssl_require_with_explicit_verify_true(monkeypatch):
+def test_db_ssl_require_with_explicit_verify_true_is_ignored(monkeypatch):
     cfg = _load_config(monkeypatch, db_ssl="require", verify="true")
 
     ctx = cfg.get_db_ssl_config()
 
     assert ctx is not None
-    assert ctx.verify_mode == ssl.CERT_REQUIRED
-    assert ctx.check_hostname is True
+    assert ctx.verify_mode == ssl.CERT_NONE
+    assert ctx.check_hostname is False
 
 
 def test_database_url_sslmode_derives_db_ssl_when_unset(monkeypatch):
@@ -77,3 +78,16 @@ def test_database_url_sslmode_derives_db_ssl_when_unset(monkeypatch):
 
     assert cfg.DB_SSL == "verify-full"
     assert cfg.DB_SSL_VERIFY is True
+
+
+def test_verify_full_without_ca_bundle_raises_clear_error(monkeypatch):
+    monkeypatch.setenv("DB_SSL", "verify-full")
+    monkeypatch.delenv("DB_SSL_CA_FILE", raising=False)
+    monkeypatch.delenv("DB_SSL_VERIFY", raising=False)
+    monkeypatch.setitem(sys.modules, "certifi", None)
+
+    import config
+
+    cfg = importlib.reload(config)
+    with pytest.raises(RuntimeError, match="Install certifi or set DB_SSL_CA_FILE"):
+        cfg.get_db_ssl_config()

@@ -23,7 +23,7 @@ class AuditRepository(RepositoryBase):
     ) -> int:
         """Create audit log entry and return audit ID."""
         payload_json = json.dumps(payload or {}, separators=(",", ":"), ensure_ascii=False)
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO audit_log (
@@ -59,7 +59,7 @@ class AuditRepository(RepositoryBase):
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Get audit logs with optional filters."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             conditions = []
             values = []
             param_idx = 0
@@ -116,7 +116,7 @@ class AuditRepository(RepositoryBase):
 
     async def get_audit_log_by_id(self, audit_id: int) -> Optional[dict[str, Any]]:
         """Get specific audit log entry by ID."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT id, guild_id, actor_discord_id, actor_torn_id, action,
@@ -136,7 +136,7 @@ class AuditRepository(RepositoryBase):
         minutes: int = 60,
     ) -> list[dict[str, Any]]:
         """Get recent actions by an actor within time window."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, guild_id, action, target_type, target_id, 
@@ -155,7 +155,7 @@ class AuditRepository(RepositoryBase):
 
     async def cleanup_old_audit_logs(self, days: int = 90) -> int:
         """Delete audit logs older than specified days."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.execute(
                 """
                 DELETE FROM audit_log 

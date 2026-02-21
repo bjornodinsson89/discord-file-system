@@ -25,7 +25,7 @@ class HostAppsRepository(RepositoryBase):
         return row
 
     async def get_open_app(self, guild_id: int, applicant_discord_id: int) -> dict[str, Any] | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT *
@@ -42,12 +42,12 @@ class HostAppsRepository(RepositoryBase):
             return self._normalize_row(dict(row)) if row else None
 
     async def get_by_id(self, app_id: int) -> dict[str, Any] | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM public.host_apps WHERE id = $1", app_id)
             return self._normalize_row(dict(row)) if row else None
 
     async def get_by_channel_id(self, guild_id: int, channel_id: int) -> dict[str, Any] | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT *
@@ -63,7 +63,7 @@ class HostAppsRepository(RepositoryBase):
             return self._normalize_row(dict(row)) if row else None
 
     async def create_app(self, guild_id: int, applicant_discord_id: int, application_channel_id: int) -> dict[str, Any]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO public.host_apps (guild_id, applicant_discord_id, application_channel_id)
@@ -77,7 +77,7 @@ class HostAppsRepository(RepositoryBase):
             return self._normalize_row(dict(row))
 
     async def set_summary_message_id(self, app_id: int, message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE public.host_apps SET summary_message_id = $2, updated_at = NOW() WHERE id = $1",
                 app_id,
@@ -85,7 +85,7 @@ class HostAppsRepository(RepositoryBase):
             )
 
     async def set_admin_inbox_message_id(self, app_id: int, message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE public.host_apps SET admin_inbox_message_id = $2, updated_at = NOW() WHERE id = $1",
                 app_id,
@@ -93,7 +93,7 @@ class HostAppsRepository(RepositoryBase):
             )
 
     async def advance_answer(self, app_id: int, expected_question: int, answer_text: str) -> dict[str, Any] | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             async with conn.transaction():
                 current = await conn.fetchrow("SELECT * FROM public.host_apps WHERE id = $1 FOR UPDATE", app_id)
                 if not current:
@@ -135,7 +135,7 @@ class HostAppsRepository(RepositoryBase):
                 return self._normalize_row(dict(updated)) if updated else None
 
     async def set_status(self, app_id: int, status: str, reviewer_id: int | None, reason: str | None) -> dict[str, Any] | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE public.host_apps
@@ -158,12 +158,12 @@ class HostAppsRepository(RepositoryBase):
         return await self.set_status(app_id, "closed", reviewer_id, None)
 
     async def delete_app(self, app_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.execute("DELETE FROM public.host_apps WHERE id = $1", app_id)
             return result.split(" ")[-1] == "1"
 
     async def list_open(self, guild_id: int, applicant_discord_id: int | None = None) -> list[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             if applicant_discord_id is not None:
                 rows = await conn.fetch(
                     """

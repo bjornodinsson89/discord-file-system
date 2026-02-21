@@ -16,7 +16,7 @@ class FreeRaffleRepository(RepositoryBase):
         note_text: str | None,
         ends_at: datetime,
     ) -> dict:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO free_raffles (
@@ -41,7 +41,7 @@ class FreeRaffleRepository(RepositoryBase):
             return dict(row)
 
     async def set_message_id(self, raffle_id: int, message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE free_raffles
@@ -54,7 +54,7 @@ class FreeRaffleRepository(RepositoryBase):
             )
 
     async def get_raffle(self, raffle_id: int) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM free_raffles WHERE id = $1",
                 raffle_id,
@@ -62,7 +62,7 @@ class FreeRaffleRepository(RepositoryBase):
             return dict(row) if row else None
 
     async def set_status(self, raffle_id: int, status: str, ended_at: datetime | None = None) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE free_raffles
@@ -77,7 +77,7 @@ class FreeRaffleRepository(RepositoryBase):
             )
 
     async def add_entry(self, raffle_id: int, discord_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.execute(
                 """
                 INSERT INTO free_raffle_entries (raffle_id, discord_id)
@@ -90,7 +90,7 @@ class FreeRaffleRepository(RepositoryBase):
             return result.endswith("1")
 
     async def get_entry_count(self, raffle_id: int) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             value = await conn.fetchval(
                 "SELECT COUNT(*) FROM free_raffle_entries WHERE raffle_id = $1",
                 raffle_id,
@@ -98,7 +98,7 @@ class FreeRaffleRepository(RepositoryBase):
             return int(value or 0)
 
     async def list_entry_ids(self, raffle_id: int) -> list[int]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT discord_id FROM free_raffle_entries WHERE raffle_id = $1",
                 raffle_id,
@@ -106,7 +106,7 @@ class FreeRaffleRepository(RepositoryBase):
             return [int(row["discord_id"]) for row in rows]
 
     async def create_winner(self, raffle_id: int, discord_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO free_raffle_winners (raffle_id, discord_id)
@@ -120,7 +120,7 @@ class FreeRaffleRepository(RepositoryBase):
             )
 
     async def get_winner(self, raffle_id: int) -> int | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             value = await conn.fetchval(
                 """
                 SELECT COALESCE(
@@ -135,7 +135,7 @@ class FreeRaffleRepository(RepositoryBase):
             return int(value) if value is not None else None
 
     async def list_active_raffles(self, guild_id: int | None = None) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             if guild_id is None:
                 rows = await conn.fetch(
                     "SELECT * FROM free_raffles WHERE status = 'active' AND message_id IS NOT NULL"
@@ -154,7 +154,7 @@ class FreeRaffleRepository(RepositoryBase):
             return [dict(row) for row in rows]
 
     async def list_expired_active_raffles(self, *, now: datetime, limit: int = 10) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT *
@@ -171,7 +171,7 @@ class FreeRaffleRepository(RepositoryBase):
 
     async def draw_expired_raffle(self, raffle_id: int, *, now: datetime | None = None) -> dict | None:
         draw_time = now or datetime.now(timezone.utc)
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             async with conn.transaction():
                 raffle_row = await conn.fetchrow(
                     """
@@ -238,7 +238,7 @@ class FreeRaffleRepository(RepositoryBase):
                 }
 
     async def backfill_missing_ends_at(self) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.execute(
                 """
                 UPDATE free_raffles

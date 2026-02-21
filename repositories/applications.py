@@ -22,7 +22,7 @@ class ApplicationsRepository(RepositoryBase):
             row["answers"] = {}
         return row
     async def get_insurer_profile(self, *, guild_id: int, user_id: int) -> Optional[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM insurer_profiles WHERE guild_id = $1 AND user_id = $2",
                 guild_id,
@@ -31,7 +31,7 @@ class ApplicationsRepository(RepositoryBase):
             return self._coerce_answers(dict(row)) if row else None
 
     async def get_open_application(self, *, guild_id: int, user_id: Optional[int] = None, user_discord_id: Optional[int] = None, app_type: str) -> Optional[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT *
@@ -62,7 +62,7 @@ class ApplicationsRepository(RepositoryBase):
         summary_message_id: Optional[int] = None,
         answers: Optional[dict[str, Any]] = None,
     ) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO applications (guild_id, user_id, app_type, application_channel_id, thread_id, channel_id, summary_message_id, answers)
@@ -81,7 +81,7 @@ class ApplicationsRepository(RepositoryBase):
             return int(row["id"])
 
     async def set_summary_message_id(self, *, app_id: int, message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE applications SET summary_message_id = $2, updated_at = NOW() WHERE id = $1",
                 app_id,
@@ -89,17 +89,17 @@ class ApplicationsRepository(RepositoryBase):
             )
 
     async def get_by_thread_id(self, thread_id: int) -> Optional[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM applications WHERE thread_id = $1", thread_id)
             return self._coerce_answers(dict(row)) if row else None
 
     async def get_by_application_channel_id(self, channel_id: int) -> Optional[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM applications WHERE application_channel_id = $1", channel_id)
             return self._coerce_answers(dict(row)) if row else None
 
     async def get_application_by_id(self, app_id: int) -> Optional[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM applications WHERE id = $1", app_id)
             return self._coerce_answers(dict(row)) if row else None
 
@@ -107,7 +107,7 @@ class ApplicationsRepository(RepositoryBase):
         return await self.get_application_by_id(app_id)
 
     async def delete_application(self, app_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.execute("DELETE FROM applications WHERE id = $1", app_id)
             return result.split(" ")[-1] == "1"
 
@@ -132,7 +132,7 @@ class ApplicationsRepository(RepositoryBase):
               AND status = 'in_progress'
             RETURNING *
         """
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 query,
                 app_id,
@@ -153,7 +153,7 @@ class ApplicationsRepository(RepositoryBase):
         reviewed_by: int,
         denial_reason: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE applications
@@ -175,7 +175,7 @@ class ApplicationsRepository(RepositoryBase):
             return self._coerce_answers(dict(row)) if row else None
 
     async def request_changes(self, *, app_id: int, current_question: int) -> Optional[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE applications
@@ -196,7 +196,7 @@ class ApplicationsRepository(RepositoryBase):
             keys = [f"q{i}" for i in range(1, 6)]
         else:
             keys = [f"q{i}" for i in range(from_question, 6)]
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE applications SET answers = answers - $2::text[], updated_at = NOW() WHERE id = $1",
                 app_id,
@@ -204,7 +204,7 @@ class ApplicationsRepository(RepositoryBase):
             )
 
     async def list_expired_candidates(self, *, older_than: datetime) -> list[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM applications
@@ -216,14 +216,14 @@ class ApplicationsRepository(RepositoryBase):
             return [self._coerce_answers(dict(r)) for r in rows]
 
     async def mark_expired(self, app_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE applications SET status = 'expired', updated_at = NOW() WHERE id = $1 AND status = 'in_progress'",
                 app_id,
             )
 
     async def upsert_insurer_profile(self, *, guild_id: int, user_id: int, data: dict[str, Any]) -> dict[str, Any]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO insurer_profiles (
@@ -270,7 +270,7 @@ class ApplicationsRepository(RepositoryBase):
             return dict(row)
 
     async def upsert_wizard_state(self, *, guild_id: int, user_id: int, step: int, draft: dict[str, Any]) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO insurer_profile_wizards (guild_id, user_id, step, draft, updated_at)
@@ -285,7 +285,7 @@ class ApplicationsRepository(RepositoryBase):
             )
 
     async def get_wizard_state(self, *, guild_id: int, user_id: int) -> Optional[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM insurer_profile_wizards WHERE guild_id = $1 AND user_id = $2",
                 guild_id,
@@ -294,7 +294,7 @@ class ApplicationsRepository(RepositoryBase):
             return self._coerce_answers(dict(row)) if row else None
 
     async def get_active_wizard_state_for_user(self, *, user_id: int) -> Optional[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT *
@@ -308,7 +308,7 @@ class ApplicationsRepository(RepositoryBase):
             return self._coerce_answers(dict(row)) if row else None
 
     async def clear_wizard_state(self, *, guild_id: int, user_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "DELETE FROM insurer_profile_wizards WHERE guild_id = $1 AND user_id = $2",
                 guild_id,
@@ -316,7 +316,7 @@ class ApplicationsRepository(RepositoryBase):
             )
 
     async def has_approved_insurer_application(self, *, guild_id: int, user_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             val = await conn.fetchval(
                 """
                 SELECT 1

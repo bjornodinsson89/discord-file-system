@@ -73,17 +73,28 @@ def _derive_sslmode_from_database_url(database_url: str | None) -> str | None:
 
 
 _DB_SSL_ENV = os.getenv("DB_SSL")
-DB_SSL = (
+
+
+def _normalize_db_ssl_mode(raw_value: str | None) -> str:
+    value = (raw_value or "").strip().lower()
+    if value in {"true", "1", "yes", "on"}:
+        return "require"
+    return value
+
+
+DB_SSL = _normalize_db_ssl_mode(
     (_DB_SSL_ENV.strip().lower() if _DB_SSL_ENV is not None else "")
     or _derive_sslmode_from_database_url(DATABASE_URL)
     or "disable"
 )
 DB_SSL_CA_FILE = os.getenv("DB_SSL_CA_FILE")
 _ssl_verify_default = DB_SSL in {"verify-ca", "verify-full"}
-if DB_SSL in {"allow", "prefer", "require", "true", "1", "yes", "on"}:
+if DB_SSL in {"allow", "prefer", "require"}:
     _ssl_verify_default = False
 DB_SSL_VERIFY = _env_flag("DB_SSL_VERIFY", _ssl_verify_default)
 DB_SSL_ALLOW_INSECURE_FALLBACK = _env_flag("DB_SSL_ALLOW_INSECURE_FALLBACK", False)
+
+_SSL_VERIFY_IGNORED_WARNING_LOGGED = False
 
 FERNET_KEY = os.getenv("FERNET_KEY")
 
@@ -96,6 +107,7 @@ DB_STATEMENT_TIMEOUT_MS = max(
 
 
 def get_db_ssl_config() -> ssl.SSLContext | None:
+    global _SSL_VERIFY_IGNORED_WARNING_LOGGED
     value = (DB_SSL or "").strip().lower()
     if value in {"", "disable", "false", "0", "off", "no"}:
         return None
@@ -105,27 +117,28 @@ def get_db_ssl_config() -> ssl.SSLContext | None:
         with open(ca_file, "rb"):
             pass
 
-    if value in {
-        "allow",
-        "prefer",
-        "require",
-        "true",
-        "1",
-        "on",
-        "yes",
-        "verify-ca",
-        "verify-full",
-    }:
-        if DB_SSL_VERIFY:
-            cafile = ca_file or (certifi.where() if certifi is not None else None)
-            context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=cafile)
-            context.check_hostname = True
-            context.verify_mode = ssl.CERT_REQUIRED
-            return context
-
+    if value in {"allow", "prefer", "require"}:
+        if DB_SSL_VERIFY and not _SSL_VERIFY_IGNORED_WARNING_LOGGED:
+            log.warning(
+                "DB_SSL_VERIFY is ignored for sslmode=%s; use verify-ca or verify-full instead.",
+                value,
+            )
+            _SSL_VERIFY_IGNORED_WARNING_LOGGED = True
         context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
+        return context
+
+    if value in {"verify-ca", "verify-full"}:
+        cafile = ca_file or (certifi.where() if certifi is not None else None)
+        if not cafile:
+            raise RuntimeError(
+                "DB_SSL is set to verify-ca/verify-full but no CA bundle is available. "
+                "Install certifi or set DB_SSL_CA_FILE to a valid PEM CA bundle."
+            )
+        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=cafile)
+        context.check_hostname = value == "verify-full"
+        context.verify_mode = ssl.CERT_REQUIRED
         return context
 
     raise RuntimeError(f"Unsupported DB_SSL value {DB_SSL!r}.")

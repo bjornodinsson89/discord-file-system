@@ -25,7 +25,7 @@ class RafflesRepository(RepositoryBase):
         bundle_text: Optional[str] = None,
     ) -> int:
         """Create a new raffle."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             creator = await conn.fetchrow(
                 "SELECT torn_user_id FROM user_api_keys WHERE discord_id = $1",
                 creator_discord_id
@@ -61,7 +61,7 @@ class RafflesRepository(RepositoryBase):
             return int(row["raffle_id"])
 
     async def reserve_entry(self, raffle_id: int, discord_id: int, torn_user_id: int, num_tickets: int, reserved_until: datetime):
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO raffle_entries (
@@ -90,7 +90,7 @@ class RafflesRepository(RepositoryBase):
 
     async def reserve_free_entry(self, raffle_id: int, discord_id: int, torn_user_id: int, num_tickets: int) -> Optional[dict]:
         """Reserve entry for free raffle - instantly confirmed, no payment needed."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
                     """
@@ -145,14 +145,14 @@ class RafflesRepository(RepositoryBase):
 
 
     async def cancel_active_raffle(self, raffle_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "UPDATE raffles SET status = 'cancelled' WHERE raffle_id = $1 AND status = 'active' RETURNING raffle_id",
                 raffle_id,
             )
             return row is not None
     async def get_raffle(self, raffle_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT 
@@ -169,7 +169,7 @@ class RafflesRepository(RepositoryBase):
             return dict(row) if row else None
 
     async def get_active_raffles(self, guild_id: int) -> list:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT 
@@ -189,7 +189,7 @@ class RafflesRepository(RepositoryBase):
 
     async def get_all_active_raffle_ids(self) -> list[int]:
         """Get raffle IDs for all active raffles."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT raffle_id
@@ -201,7 +201,7 @@ class RafflesRepository(RepositoryBase):
 
     async def get_active_raffles_with_panels(self) -> list:
         """Get active raffles that already have purchase panel message references."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT raffle_id, purchase_panel_channel_id, purchase_panel_message_id
@@ -214,7 +214,7 @@ class RafflesRepository(RepositoryBase):
             return [dict(row) for row in rows]
 
     async def get_stale_raffles_for_cleanup(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT *
@@ -226,14 +226,14 @@ class RafflesRepository(RepositoryBase):
             return [dict(row) for row in rows]
 
     async def mark_cleaned(self, raffle_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE raffles SET cleaned_at = NOW() WHERE raffle_id = $1",
                 raffle_id,
             )
 
     async def set_announcement_ref(self, raffle_id: int, channel_id: int, message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE raffles
@@ -247,7 +247,7 @@ class RafflesRepository(RepositoryBase):
             )
 
     async def set_prize_confirm_dm_ref(self, raffle_id: int, channel_id: int, message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE raffles
@@ -261,7 +261,7 @@ class RafflesRepository(RepositoryBase):
             )
 
     async def set_prize_sent(self, raffle_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE raffles SET prize_sent_at = NOW() WHERE raffle_id = $1",
                 raffle_id,
@@ -277,7 +277,7 @@ class RafflesRepository(RepositoryBase):
         verified_by_discord_id: Optional[int] = None,
         verification_log_id: Optional[str] = None,
     ) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE raffles
@@ -297,7 +297,7 @@ class RafflesRepository(RepositoryBase):
             )
 
     async def get_pending_prize_verification_rows(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT raffle_id, announcement_message_id
@@ -312,7 +312,7 @@ class RafflesRepository(RepositoryBase):
             return [dict(row) for row in rows]
 
     async def get_pending_prize_confirm_dm_rows(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT raffle_id, creator_discord_id, prize_confirm_dm_message_id
@@ -355,7 +355,7 @@ class RafflesRepository(RepositoryBase):
         return items
 
     async def get_raffle_entries(self, raffle_id: int) -> list:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM raffle_entries WHERE raffle_id = $1",
                 raffle_id
@@ -365,7 +365,7 @@ class RafflesRepository(RepositoryBase):
 
 
     async def get_entry_by_raffle_and_discord(self, raffle_id: int, discord_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM raffle_entries WHERE raffle_id = $1 AND discord_id = $2",
                 raffle_id,
@@ -374,7 +374,7 @@ class RafflesRepository(RepositoryBase):
             return dict(row) if row else None
 
     async def get_reserved_tickets_count(self, raffle_id: int) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             value = await conn.fetchval(
                 """
                 SELECT COALESCE(SUM(num_tickets), 0)
@@ -391,7 +391,7 @@ class RafflesRepository(RepositoryBase):
         return await self.draw_raffle_winner(raffle_id)
     async def get_pending_verifications(self) -> list:
         """Get entries that need auto-verification."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM raffle_entries 
@@ -404,7 +404,7 @@ class RafflesRepository(RepositoryBase):
 
     async def get_entry_with_raffle(self, entry_id: int) -> Optional[dict]:
         """Fetch reservation and raffle details used for payment verification."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT
@@ -440,7 +440,7 @@ class RafflesRepository(RepositoryBase):
 
     async def mark_entry_verified(self, entry_id: int) -> bool:
         """Mark a reservation as paid after external verification succeeds."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.execute(
                 """
                 UPDATE raffle_entries
@@ -455,7 +455,7 @@ class RafflesRepository(RepositoryBase):
 
     async def recompute_tickets_sold_and_maybe_set_sold_out(self, raffle_id: int) -> Optional[int]:
         """Recompute verified ticket totals and set sold-out timestamp when threshold is reached."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
                     """
@@ -507,7 +507,7 @@ class RafflesRepository(RepositoryBase):
         return await self.recompute_tickets_sold_and_maybe_set_sold_out(raffle_id)
 
     async def set_purchase_panel_ref(self, raffle_id: int, channel_id: int, message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE raffles
@@ -523,7 +523,7 @@ class RafflesRepository(RepositoryBase):
             )
 
     async def get_purchase_panel_ref(self, raffle_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT raffle_id, purchase_panel_channel_id, purchase_panel_message_id
@@ -535,7 +535,7 @@ class RafflesRepository(RepositoryBase):
             return dict(row) if row else None
 
     async def set_prize_image_url(self, raffle_id: int, url: str) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE raffles
@@ -547,14 +547,14 @@ class RafflesRepository(RepositoryBase):
             )
 
     async def cancel_expired_reservation(self, entry_id: int):
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "DELETE FROM raffle_entries WHERE entry_id = $1 AND payment_verified = FALSE",
                 entry_id
             )
 
     async def cleanup_expired_raffle_entries(self) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.execute(
                 """
                 DELETE FROM raffle_entries 
@@ -566,7 +566,7 @@ class RafflesRepository(RepositoryBase):
 
     async def draw_raffle_winner_atomic(self, raffle_id: int) -> dict:
         """Atomically draw raffle winner while guarding against concurrent draws."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             async with conn.transaction():
                 raffle = await conn.fetchrow(
                     """
@@ -662,7 +662,7 @@ class RafflesRepository(RepositoryBase):
 
     async def get_raffles_to_draw(self) -> list:
         """Get raffles that are ready to be drawn."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM raffles

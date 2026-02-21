@@ -79,7 +79,7 @@ class JumpsRepository(RepositoryBase):
         error: str,
         attempts: int = 0,
     ) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO jump_99k_cleanup_tasks (guild_id, session_id, task_type, channel_id, message_id, attempts, next_retry_at, last_error, updated_at)
@@ -100,7 +100,7 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def list_due_cleanup_tasks(self, *, limit: int = 50) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT *
@@ -114,7 +114,7 @@ class JumpsRepository(RepositoryBase):
             return [dict(r) for r in rows]
 
     async def update_cleanup_task_failure(self, *, task_id: int, attempts: int, error: str) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_cleanup_tasks
@@ -130,14 +130,14 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def delete_cleanup_task(self, task_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute("DELETE FROM jump_99k_cleanup_tasks WHERE id = $1", task_id)
 
     async def count_cleanup_tasks_for_session(self, *, session_id: int) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             return int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_cleanup_tasks WHERE session_id = $1", session_id) or 0)
     async def get_settings(self, guild_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_settings WHERE guild_id = $1", guild_id)
             return dict(row) if row else None
 
@@ -153,7 +153,7 @@ class JumpsRepository(RepositoryBase):
     ) -> dict:
         if default_max_slots < 1 or default_max_slots > 7:
             raise ValueError("default_max_slots must be between 1 and 7.")
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO jump_99k_settings (
@@ -196,7 +196,7 @@ class JumpsRepository(RepositoryBase):
     ) -> int:
         if price_amount is None or int(price_amount) < 1:
             raise ValueError("price_amount must be a positive integer (>= 1).")
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO jump_99k_sessions (
@@ -232,7 +232,7 @@ class JumpsRepository(RepositoryBase):
     ) -> bool:
         if price_amount is None or int(price_amount) < 1:
             raise ValueError("price_amount must be a positive integer (>= 1).")
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE jump_99k_sessions
@@ -252,11 +252,11 @@ class JumpsRepository(RepositoryBase):
             return row is not None
 
     async def set_announcement_message(self, session_id: int, *, channel_id: int, message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute("UPDATE jump_99k_sessions SET announce_channel_id = $2, announce_message_id = $3 WHERE id = $1", session_id, channel_id, message_id)
 
     async def set_private_channel(self, session_id: int, *, channel_id: int, roster_message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -272,7 +272,7 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def set_private_channel_id_only(self, session_id: int, channel_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -286,7 +286,7 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def set_roster_panel_message(self, session_id: int, *, channel_id: int, message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -301,7 +301,7 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def clear_roster_panel_message(self, session_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -314,7 +314,7 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def touch_roster_refreshed(self, session_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -326,7 +326,7 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def clear_private_channel(self, session_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -340,7 +340,7 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def clear_roster_message(self, session_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -353,7 +353,7 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def clear_announcement_message(self, session_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -366,7 +366,7 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def clear_host_controls_message(self, session_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -379,7 +379,7 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def clear_private_channel_only(self, session_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -392,7 +392,7 @@ class JumpsRepository(RepositoryBase):
 
 
     async def clear_cleanup_message_target(self, *, session_id: int, channel_id: int | None, message_id: int | None) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             session = await conn.fetchrow(
                 "SELECT announce_channel_id, announce_message_id, roster_channel_id, roster_message_id, host_controls_channel_id, host_controls_message_id FROM jump_99k_sessions WHERE id=$1",
                 session_id,
@@ -409,18 +409,18 @@ class JumpsRepository(RepositoryBase):
     async def clear_cleanup_channel_target(self, *, session_id: int, channel_id: int | None) -> None:
         if channel_id is None:
             return
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             current_id = await conn.fetchval("SELECT private_channel_id FROM jump_99k_sessions WHERE id=$1", session_id)
             if int(current_id or 0) == int(channel_id):
                 await conn.execute("UPDATE jump_99k_sessions SET private_channel_id=NULL, updated_at=NOW() WHERE id=$1", session_id)
 
     async def get_active_session(self, guild_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open' ORDER BY created_at DESC LIMIT 1", guild_id)
             return dict(row) if row else None
 
     async def list_open_sessions(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id,
@@ -436,7 +436,7 @@ class JumpsRepository(RepositoryBase):
             return [dict(row) for row in rows]
 
     async def list_open_sessions_for_monitoring(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id,
@@ -455,7 +455,7 @@ class JumpsRepository(RepositoryBase):
 
     async def list_open_sessions_for_guild(self, guild_id: int) -> list[dict]:
         """Return all open 99k sessions for a specific guild."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status='open' ORDER BY created_at DESC",
                 guild_id,
@@ -463,25 +463,25 @@ class JumpsRepository(RepositoryBase):
             return [dict(row) for row in rows]
 
     async def get_session(self, session_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_sessions WHERE id = $1", session_id)
             return dict(row) if row else None
 
 
     async def get_legacy_happy_jump_session(self, jump_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM happy_jump_sessions WHERE id = $1", jump_id)
             return dict(row) if row else None
 
     async def list_legacy_happy_jump_signups(self, jump_id: int) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT discord_id, torn_user_id, payment_verified, payment_verified_at FROM happy_jump_signups WHERE session_id = $1",
                 jump_id,
             )
             return [dict(row) for row in rows]
     async def signup_count(self, session_id: int) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             return int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_signups WHERE session_id = $1 AND status = ANY($2::text[])", session_id, list(SIGNUP_ACTIVE_STATUSES)))
 
     async def _create_or_restore_signup_on_conn(
@@ -519,7 +519,7 @@ class JumpsRepository(RepositoryBase):
             _raise_reserved_until_migration_error(exc)
 
     async def create_or_restore_signup(self, *, session_id: int, guild_id: int, discord_id: int, torn_user_id: Optional[int], reserved_until: Optional[datetime] = None) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await self._create_or_restore_signup_on_conn(
                 conn,
                 session_id=session_id,
@@ -531,12 +531,12 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def cancel_signup(self, *, session_id: int, discord_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("UPDATE jump_99k_signups SET status = $3 WHERE session_id = $1 AND participant_discord_id = $2 RETURNING id", session_id, discord_id, SIGNUP_STATUS_CANCELLED)
             return row is not None
 
     async def list_signups(self, session_id: int) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT *, participant_discord_id AS discord_id, participant_torn_user_id AS torn_user_id
@@ -549,7 +549,7 @@ class JumpsRepository(RepositoryBase):
             return [dict(r) for r in rows]
 
     async def upsert_readiness_snapshot(self, *, session_id: int, guild_id: int, discord_id: int, energy: int, energy_max: int, drug_cooldown: int, booster_cooldown: int | None, status_text: str) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 await conn.execute(
                     """
@@ -564,7 +564,7 @@ class JumpsRepository(RepositoryBase):
                 log.error(_READINESS_MIGRATION_HINT)
 
     async def list_signups_with_readiness(self, session_id: int) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT s.*, s.participant_discord_id AS discord_id, s.participant_torn_user_id AS torn_user_id, r.energy, r.energy_max, r.drug_cooldown, r.booster_cooldown, r.status_text, r.checked_at
@@ -579,7 +579,7 @@ class JumpsRepository(RepositoryBase):
 
     async def list_roster_signups_with_readiness(self, session_id: int) -> list[dict]:
         """Roster participants: paid/verified only, excluding cancelled/unpaid reservations."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT
@@ -601,7 +601,7 @@ class JumpsRepository(RepositoryBase):
 
 
     async def get_jump_progress(self, session_id: int) -> dict:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 session_row = await conn.fetchrow(
                     """
@@ -650,7 +650,7 @@ class JumpsRepository(RepositoryBase):
         if int(position) < 1:
             return False, "Invalid roster position."
 
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 async with conn.transaction():
                     session = await conn.fetchrow(
@@ -771,7 +771,7 @@ class JumpsRepository(RepositoryBase):
                 return False, "Jump progress columns are missing. Ask an admin to run migration 2026_02_18_add_99k_jump_progress.sql."
 
     async def reset_jump_progress(self, session_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 await conn.execute(
                     """
@@ -804,7 +804,7 @@ class JumpsRepository(RepositoryBase):
                 return
 
     async def get_session_id_by_channel(self, channel_id: int) -> int | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT id
@@ -819,7 +819,7 @@ class JumpsRepository(RepositoryBase):
         return int(row["id"]) if row else None
 
     async def cancel_expired_unpaid(self) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 result = await conn.execute(
                     """
@@ -840,7 +840,7 @@ class JumpsRepository(RepositoryBase):
 
     async def expire_and_promote_waitlist(self, *, session_id: int, reservation_minutes: int = 5) -> dict[str, int | None]:
         """Atomically expire unpaid reservations and promote one waitlisted user for a legacy jump session."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT pg_advisory_xact_lock($1)", int(session_id))
 
@@ -938,7 +938,7 @@ class JumpsRepository(RepositoryBase):
                 return {"expired_count": len(expired_rows), "promoted_discord_id": promoted_discord_id}
 
     async def list_pending_payment_signups(self, *, limit: int = 50) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 rows = await conn.fetch(
                     """
@@ -984,7 +984,7 @@ class JumpsRepository(RepositoryBase):
             return mapped
 
     async def set_priority_enabled(self, *, session_id: int, enabled: bool) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "UPDATE jump_99k_sessions SET priority_enabled = $2, updated_at = NOW() WHERE id = $1 RETURNING id",
                 session_id,
@@ -993,7 +993,7 @@ class JumpsRepository(RepositoryBase):
             return row is not None
 
     async def reserve_priority(self, *, session_id: int, buyer_discord_id: int, signup_id: int, ttl_seconds: int = 300) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.fetchval(
                 "SELECT public.jump_99k_reserve_priority($1, $2, $3, $4)",
                 session_id,
@@ -1004,7 +1004,7 @@ class JumpsRepository(RepositoryBase):
             return bool(result)
 
     async def finalize_priority(self, *, session_id: int, buyer_discord_id: int, signup_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.fetchval(
                 "SELECT public.jump_99k_finalize_priority($1, $2, $3)",
                 session_id,
@@ -1014,7 +1014,7 @@ class JumpsRepository(RepositoryBase):
             return bool(result)
 
     async def lock_signups(self, session_id: int, *, by_discord_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -1043,7 +1043,7 @@ class JumpsRepository(RepositoryBase):
         if normalized_reason == "":
             normalized_reason = None
 
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             async with conn.transaction():
                 session = await conn.fetchrow(
                     """
@@ -1187,7 +1187,7 @@ class JumpsRepository(RepositoryBase):
         )
 
     async def mark_signup_payment_verified(self, *, session_id: int, discord_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             column_rows = await conn.fetch(
                 """
                 SELECT column_name
@@ -1227,7 +1227,7 @@ class JumpsRepository(RepositoryBase):
         event_timestamp: int,
         meta_json: dict[str, Any],
     ) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 row = await conn.fetchrow(
                     """
@@ -1261,7 +1261,7 @@ class JumpsRepository(RepositoryBase):
             return row is not None
 
     async def get_selected_insurer_for_signup(self, *, session_id: int, discord_id: int) -> Optional[int]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT claimed_by_discord_id
@@ -1281,7 +1281,7 @@ class JumpsRepository(RepositoryBase):
             return int(row["claimed_by_discord_id"])
 
     async def close_session_and_record(self, *, session_id: int, guild_id: int, completed_discord_ids: list[int], not_completed_discord_ids: list[int]) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow("UPDATE jump_99k_sessions SET status = 'closed', ends_at = NOW(), updated_at = NOW() WHERE id = $1 AND status = 'open' RETURNING id", session_id)
                 if not row:
@@ -1307,7 +1307,7 @@ class JumpsRepository(RepositoryBase):
                 return True
 
     async def create_insurer_profile(self, *, guild_id: int, insurer_discord_id: int, display_name: str, policy_summary: str, contact_instructions: str, metadata: dict[str, Any]) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO jump_99k_insurers (guild_id, insurer_discord_id, display_name, policy_summary, contact_instructions, insurer_meta, updated_at)
@@ -1319,12 +1319,12 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def get_insurer_profile(self, *, guild_id: int, insurer_discord_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_insurers WHERE guild_id=$1 AND insurer_discord_id=$2", guild_id, insurer_discord_id)
             return dict(row) if row else None
 
     async def create_insurance_request(self, *, session_id: int, participant_discord_id: int, channel_id: int, message_id: int) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO jump_99k_insurance_requests (session_id, participant_discord_id, status, requested_at, channel_id, message_id)
@@ -1341,13 +1341,13 @@ class JumpsRepository(RepositoryBase):
             return int(row["id"])
 
     async def get_insurance_request(self, request_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_insurance_requests WHERE id=$1", request_id)
             return dict(row) if row else None
 
 
     async def get_insurance_request_for_signup(self, *, session_id: int, participant_discord_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT *
@@ -1362,7 +1362,7 @@ class JumpsRepository(RepositoryBase):
             return dict(row) if row else None
 
     async def mark_insurance_payment_verified(self, *, request_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE jump_99k_insurance_requests
@@ -1375,7 +1375,7 @@ class JumpsRepository(RepositoryBase):
             return row is not None
 
     async def claim_insurance_request(self, *, request_id: int, claimed_by_discord_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE jump_99k_insurance_requests
@@ -1397,7 +1397,7 @@ class JumpsRepository(RepositoryBase):
         }
         if status not in column_sql:
             return False
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 f"UPDATE jump_99k_insurance_requests SET status=$2, {column_sql[status]} WHERE id=$1 RETURNING id",
                 request_id,
@@ -1407,13 +1407,13 @@ class JumpsRepository(RepositoryBase):
             return row is not None
 
     async def get_totals(self, guild_id: int) -> dict:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM jump_99k_totals WHERE guild_id = $1", guild_id)
             return dict(row) if row else {"guild_id": guild_id, "completed_count": 0, "not_completed_count": 0}
 
 
     async def is_blacklisted(self, guild_id: int, discord_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT * FROM blacklist
@@ -1426,7 +1426,7 @@ class JumpsRepository(RepositoryBase):
             return dict(row) if row else None
 
     async def get_signup(self, session_id: int, discord_id: int) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT *, participant_discord_id AS discord_id, participant_torn_user_id AS torn_user_id
@@ -1440,7 +1440,7 @@ class JumpsRepository(RepositoryBase):
             return dict(row) if row else None
 
     async def list_readiness(self, session_id: int) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 rows = await conn.fetch(
                     "SELECT session_id, guild_id, discord_id, energy, energy_max, drug_cooldown, booster_cooldown, status_text, checked_at FROM jump_99k_readiness WHERE session_id = $1",
@@ -1452,7 +1452,7 @@ class JumpsRepository(RepositoryBase):
             return [dict(r) for r in rows]
 
     async def update_session_status(self, session_id: int, status: str) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "UPDATE jump_99k_sessions SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING id",
                 session_id,
@@ -1461,12 +1461,12 @@ class JumpsRepository(RepositoryBase):
             return row is not None
 
     async def list_non_open_sessions_with_private_channel(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT *
                 FROM jump_99k_sessions
-                WHERE status IN ('closed', 'cancelled', 'expired', 'completed')
+                WHERE status IN ('closed', 'cancelled', 'expired', 'completed', 'needs_cleanup')
                   AND private_channel_id IS NOT NULL
                   AND cleaned_at IS NULL
                 """
@@ -1475,29 +1475,29 @@ class JumpsRepository(RepositoryBase):
 
 
     async def list_non_open_sessions_for_cleanup(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT *
                 FROM jump_99k_sessions
-                WHERE status IN ('closed', 'cancelled', 'expired', 'completed')
+                WHERE status IN ('closed', 'cancelled', 'expired', 'completed', 'needs_cleanup')
                   AND cleaned_at IS NULL
                 """
             )
             return [dict(r) for r in rows]
 
     async def mark_cleaned(self, session_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute("UPDATE jump_99k_sessions SET cleaned_at = NOW(), updated_at = NOW() WHERE id = $1", session_id)
 
     async def list_open_sessions_by_guild(self, guild_id: int) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open' ORDER BY created_at DESC", guild_id)
             return [dict(r) for r in rows]
 
     async def list_open_sessions_with_user_signup(self, *, guild_id: int, user_id: int) -> list[dict]:
         """List open sessions for guild with optional signup status for one user in one query."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT s.*, su.status AS user_signup_status
@@ -1515,7 +1515,7 @@ class JumpsRepository(RepositoryBase):
             return [dict(r) for r in rows]
 
     async def set_host_controls_message(self, session_id: int, *, channel_id: int, message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jump_99k_sessions
@@ -1530,7 +1530,7 @@ class JumpsRepository(RepositoryBase):
             )
 
     async def list_active_sessions_with_roster_panel(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id,
@@ -1556,7 +1556,7 @@ class JumpsRepository(RepositoryBase):
         return await self.list_active_sessions_with_roster_panel()
 
     async def list_open_sessions(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, guild_id, max_slots, status, signups_locked
@@ -1567,7 +1567,7 @@ class JumpsRepository(RepositoryBase):
             return [dict(r) for r in rows]
 
     async def list_open_sessions_with_announcement_panels(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, guild_id, announce_channel_id, announce_message_id, max_slots, status, signups_locked, signups_locked_at, signups_locked_by_discord_id
@@ -1581,7 +1581,7 @@ class JumpsRepository(RepositoryBase):
 
 
     async def upsert_host_application(self, *, guild_id: int, discord_id: int, torn_user_id: int, torn_name: Optional[str], display_name: Optional[str], forum_url: str, application_data: dict[str, Any]) -> dict:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO host_applications
@@ -1606,7 +1606,7 @@ class JumpsRepository(RepositoryBase):
 
     async def review_host_application(self, *, application_id: int, decision: str, admin_discord_id: int, reason: Optional[str] = None) -> Optional[dict]:
         status = 'approved' if decision == 'approve' else 'rejected'
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE host_applications
@@ -1619,7 +1619,7 @@ class JumpsRepository(RepositoryBase):
             return dict(row) if row else None
 
     async def list_pending_host_applications(self, guild_id: Optional[int] = None) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             if guild_id is None:
                 rows = await conn.fetch("SELECT id, discord_id, guild_id FROM host_applications WHERE approval_status = 'pending'")
             else:
@@ -1627,7 +1627,7 @@ class JumpsRepository(RepositoryBase):
             return [dict(r) for r in rows]
 
     async def get_guild_statistics(self, guild_id: int) -> dict:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             total = int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_sessions WHERE guild_id = $1", guild_id) or 0)
             open_count = int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open'", guild_id) or 0)
             signups = int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_signups WHERE guild_id = $1", guild_id) or 0)

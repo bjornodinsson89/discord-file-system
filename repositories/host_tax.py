@@ -19,7 +19,7 @@ class HostTaxRepository(RepositoryBase):
         cash_amount: Optional[int],
         since_dt: datetime,
     ) -> Optional[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT *
@@ -59,7 +59,7 @@ class HostTaxRepository(RepositoryBase):
         torn_log_id: str,
         paid_at: datetime,
     ) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO host_tax_receipts (
@@ -100,7 +100,7 @@ class HostTaxRepository(RepositoryBase):
         cash_amount: Optional[int],
         since_dt: datetime,
     ) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE host_tax_receipts

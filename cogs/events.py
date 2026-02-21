@@ -8,6 +8,7 @@ import asyncpg
 from discord import app_commands
 from discord.ext import commands, tasks
 import logging
+import ssl
 import asyncio
 import json
 import re
@@ -297,12 +298,12 @@ def _extract_torn_log_id(entry: dict) -> str:
 
 
 async def try_advisory_lock(pool, lock_key: int) -> bool:
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
         return bool(await conn.fetchval("SELECT pg_try_advisory_lock($1)", lock_key))
 
 
 async def release_advisory_lock(pool, lock_key: int) -> bool:
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
         return bool(await conn.fetchval("SELECT pg_advisory_unlock($1)", lock_key))
 
 
@@ -533,6 +534,10 @@ def _excerpt(text: str, limit: int = 180) -> str:
     if len(value) <= limit:
         return value
     return f"{value[: limit - 3]}..."
+
+
+def _is_db_unavailable_error(exc: BaseException) -> bool:
+    return isinstance(exc, (DatabaseAcquireTimeoutError, asyncpg.PostgresError, OSError, ssl.SSLError))
 
 
 async def _resolve_announce_channel(interaction: discord.Interaction) -> discord.abc.Messageable | None:
@@ -3142,6 +3147,8 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
 
     async def on_submit(self, interaction: discord.Interaction):
         repo = JumpsRepository(get_pool())
+        session_id: int | None = int(self.session["id"]) if self.session else None
+        created_new_session = False
         try:
             title = "✨ 99k Happy Jump ✨"
             try:
@@ -3203,6 +3210,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     announce_channel_id=announce_channel_id,
                     announce_message_id=None,
                 )
+                created_new_session = True
 
                 host_snapshot = await _fetch_and_upsert_host_readiness_snapshot(
                     repo=repo,
@@ -3391,6 +3399,43 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                         ephemeral=True,
                     )
         except Exception as e:
+            if _is_db_unavailable_error(e):
+                log_event(
+                    log,
+                    logging.ERROR,
+                    "jump99k.start.db_unavailable",
+                    guild_id=interaction.guild_id,
+                    user_id=interaction.user.id,
+                    action="jump_start",
+                    result="error",
+                    error_type=type(e).__name__,
+                    hint="check_db_connectivity_or_tls",
+                    exc_info=True,
+                )
+                message = "Database is currently unavailable. The bot cannot start jumps until DB connectivity is restored."
+                if interaction.response.is_done():
+                    await interaction.followup.send(message, ephemeral=True)
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+                return
+
+            if created_new_session and session_id is not None:
+                try:
+                    await repo.update_session_status(int(session_id), "needs_cleanup")
+                    log_event(
+                        log,
+                        logging.WARNING,
+                        "jump99k.start.needs_cleanup",
+                        guild_id=interaction.guild_id,
+                        user_id=interaction.user.id,
+                        session_id=int(session_id),
+                        action="jump_start",
+                        result="partial",
+                        hint="db_session_created_discord_setup_failed",
+                    )
+                except Exception:
+                    log.exception("Failed marking session as needs_cleanup session_id=%s", session_id)
+
             log.exception("99k session modal submit failed: %s", e)
             if isinstance(e, RuntimeError):
                 err = create_error_embed("99k start failed", str(e))

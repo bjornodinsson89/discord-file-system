@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import ssl
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 from typing import Optional
 
 import asyncpg
@@ -15,6 +17,11 @@ log = logging.getLogger("happy_jumper.repositories")
 class RepositoryBase:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[asyncpg.Connection]:
+        async with self.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+            yield conn
 
 
 def pool_is_open(pool: Optional[asyncpg.Pool]) -> bool:
