@@ -19,8 +19,10 @@ class CashoutRequestModal(discord.ui.Modal, title="Request Cashout"):
             qty = int(str(self.amount.value).strip())
             cashout_id = await self.service.request_cashout(interaction, self.guild_id, int(interaction.user.id), qty, str(self.note.value).strip() or None)
             await interaction.response.send_message(f"✅ Cashout request submitted: #{cashout_id}", ephemeral=True)
-        except Exception as exc:
+        except ValueError as exc:
             await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+        except Exception:
+            await interaction.response.send_message("❌ Failed to submit cashout request.", ephemeral=True)
 
 
 class DenyReasonModal(discord.ui.Modal, title="Deny Cashout"):
@@ -50,7 +52,14 @@ class HouseCashoutActionView(discord.ui.View):
 
     @discord.ui.button(label="Verify payout sent", style=discord.ButtonStyle.success)
     async def verify(self, interaction: discord.Interaction, _: discord.ui.Button):
-        ok = await self.service.verify_payout(interaction, self.guild_id, self.cashout_id)
+        try:
+            ok = await self.service.verify_payout(interaction, self.guild_id, self.cashout_id)
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        except Exception:
+            await interaction.response.send_message("❌ Failed to verify payout.", ephemeral=True)
+            return
         if ok:
             self._disable()
             await interaction.response.edit_message(content="✅ Payout verified.", view=self)

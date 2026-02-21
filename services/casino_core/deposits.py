@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 
 import discord
 
@@ -39,6 +40,7 @@ class CasinoDepositService:
 
         credited_total = 0
         credited_count = 0
+        proof_payloads: list[dict] = []
         async with self.repo.acquire() as conn:
             async with conn.transaction():
                 for log in logs:
@@ -88,13 +90,31 @@ class CasinoDepositService:
                     credited_total += qty
                     credited_count += 1
 
-                    house_user = interaction.client.get_user(int(house["house_discord_id"])) or await interaction.client.fetch_user(int(house["house_discord_id"]))
-                    if house_user:
+                    proof_payloads.append(
+                        {
+                            "qty": qty,
+                            "log_id": log_id,
+                            "torn_name": user_row.get("torn_name") or "Unknown",
+                            "torn_user_id": int(user_row.get("torn_user_id") or 0),
+                            "timestamp": int(log.get("timestamp") or int(datetime.now(tz=timezone.utc).timestamp())),
+                            "excerpt": trunc_json(log, 300),
+                        }
+                    )
+
+        if proof_payloads:
+            try:
+                house_user = interaction.client.get_user(int(house["house_discord_id"]))
+                if house_user is None:
+                    house_user = await interaction.client.fetch_user(int(house["house_discord_id"]))
+                if house_user:
+                    for payload in proof_payloads:
                         em = discord.Embed(title="Casino Deposit Credited", color=discord.Color.green())
-                        em.description = f"Player: <@{discord_id}>\nQty: **{qty}**\nLog: `{log_id}`"
-                        em.add_field(name="Player Torn", value=f"{user_row.get('torn_name') or 'Unknown'} ({int(user_row.get('torn_user_id') or 0)})", inline=False)
-                        em.add_field(name="Timestamp", value=f"<t:{int(log.get('timestamp') or int(datetime.now(tz=timezone.utc).timestamp()))}:f>", inline=False)
-                        em.add_field(name="Log Excerpt", value=f"```json\n{trunc_json(log, 300)}\n```", inline=False)
+                        em.description = f"Player: <@{discord_id}>\nQty: **{payload['qty']}**\nLog: `{payload['log_id']}`"
+                        em.add_field(name="Player Torn", value=f"{payload['torn_name']} ({payload['torn_user_id']})", inline=False)
+                        em.add_field(name="Timestamp", value=f"<t:{payload['timestamp']}:f>", inline=False)
+                        em.add_field(name="Log Excerpt", value=f"```json\n{payload['excerpt']}\n```", inline=False)
                         await house_user.send(embed=em)
+            except Exception as exc:
+                logging.warning("Casino deposit credited but house DM failed for guild_id=%s discord_id=%s: %s", guild_id, discord_id, exc)
 
         return {"credited_total": credited_total, "count": credited_count, "new_balance": int(wallet.get("balance_tokens") or 0)}

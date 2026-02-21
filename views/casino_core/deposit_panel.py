@@ -21,8 +21,10 @@ class DepositPanelView(discord.ui.View):
                 f"✅ Credited {summary['credited_total']} token(s) across {summary['count']} deposit(s). Balance: {summary['new_balance']}",
                 ephemeral=True,
             )
-        except Exception as exc:
+        except ValueError as exc:
             await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+        except Exception:
+            await interaction.response.send_message("❌ Failed to verify deposit.", ephemeral=True)
 
 
 async def deposit_panel_embed(guild_id: int) -> discord.Embed:
