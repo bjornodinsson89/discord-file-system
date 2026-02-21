@@ -331,3 +331,74 @@ class ApplicationsRepository(RepositoryBase):
                 user_id,
             )
             return bool(val)
+
+    async def list_approved_insurers_for_browser(
+        self,
+        *,
+        guild_id: int,
+        active_only: bool = True,
+        coverage_type: str | None = None,
+        jump_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        search_terms: list[str] = []
+        if coverage_type:
+            search_terms.append(coverage_type.strip().lower())
+        if jump_type:
+            normalized_jump = jump_type.strip().lower()
+            search_terms.append(normalized_jump)
+            if normalized_jump == "99k":
+                search_terms.append("happy jump")
+
+        params: list[Any] = [guild_id]
+        conditions = [
+            "a.guild_id = $1",
+            "a.app_type = 'insurer'",
+            "a.status = 'approved'",
+        ]
+        if active_only:
+            conditions.append("p.user_id IS NOT NULL")
+
+        if search_terms:
+            searchable = "LOWER(COALESCE(p.coverage_summary, '') || ' ' || COALESCE(p.pricing_text, '') || ' ' || COALESCE(p.rules_exclusions, '') || ' ' || COALESCE(p.contact_notes, ''))"
+            term_clauses: list[str] = []
+            for term in search_terms:
+                params.append(f"%{term}%")
+                term_clauses.append(f"{searchable} LIKE ${len(params)}")
+            combined = "(" + " OR ".join(term_clauses) + ")"
+            if active_only:
+                conditions.append(combined)
+            else:
+                # Keep approved insurers visible even if their profile row is missing.
+                conditions.append(f"(p.user_id IS NULL OR {combined})")
+
+        where_sql = " AND ".join(conditions)
+        query = f"""
+            SELECT
+                a.user_id,
+                a.user_id AS discord_id,
+                a.guild_id,
+                a.id AS application_id,
+                a.created_at AS application_created_at,
+                a.updated_at AS application_updated_at,
+                p.display_name,
+                p.coverage_summary,
+                p.pricing_text,
+                p.rules_exclusions,
+                p.response_time_text,
+                p.contact_notes,
+                p.image_url,
+                p.activation_delay_minutes,
+                p.coverage_duration_minutes,
+                p.created_at AS profile_created_at,
+                p.updated_at AS profile_updated_at
+            FROM applications a
+            LEFT JOIN insurer_profiles p
+              ON p.guild_id = a.guild_id
+             AND p.user_id = a.user_id
+            WHERE {where_sql}
+            ORDER BY COALESCE(p.updated_at, a.updated_at) DESC, a.user_id ASC
+        """
+
+        async with self.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+            return [self._coerce_answers(dict(r)) for r in rows]
