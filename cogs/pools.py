@@ -4,6 +4,7 @@ import logging
 import random
 from datetime import datetime, timedelta, timezone
 
+import config
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -264,7 +265,9 @@ class PoolVerifyPaymentView(discord.ui.View):
 
         try:
             api_key = get_security_manager().decrypt(buyer_key["encrypted_key"])
-            logs = await get_torn_api().get_user_log(api_key, limit=10)
+            logs = await get_torn_api().get_item_send_receive_logs(
+                api_key, limit=config.PAYMENT_VERIFICATION_LOG_LIMIT
+            )
         except TornAPIRateLimitError:
             await interaction.followup.send("❌ Torn API is rate-limited. Try again in a moment.", ephemeral=True)
             return
