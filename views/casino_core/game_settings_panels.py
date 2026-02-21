@@ -6,6 +6,7 @@ import discord
 
 from services.casino_core.settings import ensure_game_defaults, get_game_config, save_game_config
 from utils import GuildSettingsRepository, get_database
+from views.casino_core.permissions import ensure_casino_admin
 
 
 class _ConfigModal(discord.ui.Modal):
@@ -21,6 +22,8 @@ class _ConfigModal(discord.ui.Modal):
         self.game_key = game_key
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
         settings = await GuildSettingsRepository(get_database()).get_or_create(self.guild_id)
         base = ensure_game_defaults(None, get_game_config(settings, self.game_key))
         base["enabled"] = str(self.enabled.value).strip().lower() in {"true", "1", "yes", "on"}
@@ -50,8 +53,13 @@ class _BaseSettingsView(discord.ui.View):
         super().__init__(timeout=180)
         self.guild_id = guild_id
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await ensure_casino_admin(interaction, self.guild_id)
+
     @discord.ui.button(label="Open Settings Modal", style=discord.ButtonStyle.primary)
     async def open_modal(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
         await interaction.response.send_modal(_ConfigModal(self.guild_id, self.game_key))
 
 

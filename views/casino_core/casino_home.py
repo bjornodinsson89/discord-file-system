@@ -6,7 +6,7 @@ from repositories.casino_core import CasinoCoreRepository
 from services.casino_core.registry import get_game_registry
 from views.casino_core.cashout_panel import CashoutRequestModal
 from views.casino_core.deposit_panel import DepositPanelView, deposit_panel_embed
-from views.casino_core.ledger_panel import AdminLedgerView
+from views.casino_core.ledger_panel import send_admin_ledger_panel
 
 from utils.database import get_pool
 
@@ -18,7 +18,16 @@ class GameSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         key = self.values[0]
-        await interaction.response.send_message(f"{get_game_registry()[key].display_name} coming soon.", ephemeral=True, view=get_game_registry()[key].build_play_view(interaction, {}))
+        if key == "slots":
+            from cogs.casino import open_slots_panel
+
+            await open_slots_panel(interaction)
+            return
+        await interaction.response.send_message(
+            f"{get_game_registry()[key].display_name} coming soon.",
+            ephemeral=True,
+            view=get_game_registry()[key].build_play_view(interaction, {}),
+        )
 
 
 class CasinoHomeView(discord.ui.View):
@@ -38,14 +47,11 @@ class CasinoHomeView(discord.ui.View):
 
     @discord.ui.button(label="Ledger", style=discord.ButtonStyle.secondary)
     async def ledger(self, interaction: discord.Interaction, _: discord.ui.Button):
-        v = AdminLedgerView(self.guild_id)
-        await interaction.response.send_message("Casino ledger", view=v, ephemeral=True)
-        await v.render(interaction)
+        await send_admin_ledger_panel(interaction, self.guild_id)
 
     @discord.ui.button(label="Game Settings", style=discord.ButtonStyle.secondary)
     async def game_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
-        msg = "Choose game settings command: /jump casino_slots_settings, /jump casino_roulette_settings, /jump casino_wheel_settings, /jump casino_dice_settings"
-        await interaction.response.send_message(msg, ephemeral=True)
+        await interaction.response.send_message("Use /back_of_house", ephemeral=True)
 
 
 async def casino_home_embed(guild_id: int, discord_id: int) -> discord.Embed:

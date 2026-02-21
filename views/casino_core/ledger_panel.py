@@ -4,7 +4,16 @@ import discord
 
 from repositories.casino_core import CasinoCoreRepository
 from services.casino_core.ledger import ledger_line
+from views.casino_core.permissions import ensure_casino_admin
 from utils.database import get_pool
+
+
+async def send_admin_ledger_panel(interaction: discord.Interaction, guild_id: int) -> None:
+    if not await ensure_casino_admin(interaction, guild_id):
+        return
+    view = AdminLedgerView(guild_id)
+    await interaction.response.send_message("Casino ledger", view=view, ephemeral=True)
+    await view.render(interaction)
 
 
 class FilterModal(discord.ui.Modal, title="Ledger Filters"):
@@ -16,6 +25,8 @@ class FilterModal(discord.ui.Modal, title="Ledger Filters"):
         self.v = view
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not await ensure_casino_admin(interaction, self.v.guild_id):
+            return
         self.v.wallet_filter = int(self.user.value) if str(self.user.value).strip().isdigit() else None
         self.v.entry_filter = str(self.entry_type.value).strip() or None
         await self.v.render(interaction)
@@ -30,6 +41,9 @@ class AdminLedgerView(discord.ui.View):
         self.mode = "token"
         self.wallet_filter = None
         self.entry_filter = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await ensure_casino_admin(interaction, self.guild_id)
 
     async def render(self, interaction: discord.Interaction):
         limit = 10
@@ -58,26 +72,36 @@ class AdminLedgerView(discord.ui.View):
 
     @discord.ui.button(label="Token Ledger", style=discord.ButtonStyle.primary)
     async def token(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
         self.mode = "token"
         self.page = 0
         await self.render(interaction)
 
     @discord.ui.button(label="House Ledger", style=discord.ButtonStyle.primary)
     async def house(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
         self.mode = "house"
         self.page = 0
         await self.render(interaction)
 
     @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
     async def prev(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
         self.page = max(self.page - 1, 0)
         await self.render(interaction)
 
     @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
     async def next(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
         self.page += 1
         await self.render(interaction)
 
     @discord.ui.button(label="Filters", style=discord.ButtonStyle.secondary)
     async def filters(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
         await interaction.response.send_modal(FilterModal(self))
