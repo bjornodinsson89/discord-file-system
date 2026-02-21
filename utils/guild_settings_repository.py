@@ -152,7 +152,7 @@ class GuildSettingsRepository:
         if admin_role_ids in ("", []):
             return []
 
-        if isinstance(admin_role_ids, (int, str)):
+        if isinstance(admin_role_ids, int | str):
             stripped = admin_role_ids.strip() if isinstance(admin_role_ids, str) else admin_role_ids
             if isinstance(stripped, str) and "," in stripped:
                 candidate_values = [part.strip() for part in stripped.split(",")]
@@ -218,7 +218,7 @@ class GuildSettingsRepository:
         if role_ids in ("", []):
             return []
 
-        if isinstance(role_ids, (int, str)):
+        if isinstance(role_ids, int | str):
             stripped = role_ids.strip() if isinstance(role_ids, str) else role_ids
             if isinstance(stripped, str) and "," in stripped:
                 candidate_values = [part.strip() for part in stripped.split(",")]
