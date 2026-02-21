@@ -20,7 +20,12 @@ class RepositoryBase:
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[asyncpg.Connection]:
-        async with self.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+        try:
+            ctx = self.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT)
+        except TypeError:
+            ctx = self.pool.acquire()
+
+        async with ctx as conn:
             yield conn
 
 
