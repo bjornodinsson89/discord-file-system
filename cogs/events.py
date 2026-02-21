@@ -2497,14 +2497,14 @@ class Jump99kManualAddPickerView(discord.ui.View):
                 if private_channel:
                     try:
                         await private_channel.send(
-                            f"{selected.mention} please run /set_api_key (or your existing API key command) so the bot can poll your energy/cooldowns for readiness."
+                            f"{selected.mention} please run /set_api_key so the bot can poll your energy/cooldowns for readiness."
                         )
                     except Exception:
                         log.exception("Manual add API key reminder failed in private channel session_id=%s user_id=%s", self.session_id, selected.id)
 
                 try:
                     await selected.send(
-                        "You were manually added to a 99k session. Please run /set_api_key (or your existing API key command) so the bot can poll your energy/cooldowns for readiness."
+                        "You were manually added to a 99k session. Please run /set_api_key so the bot can poll your energy/cooldowns for readiness."
                     )
                 except discord.Forbidden:
                     log.debug("Manual add API key reminder DM blocked session_id=%s user_id=%s", self.session_id, selected.id)
