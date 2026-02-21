@@ -5,9 +5,6 @@ from discord import app_commands
 from discord.ext import commands
 
 from services.casino_core.registry import get_game_registry
-from services.casino_games.slots import CasinoSlotsService, SlotsError
-from utils import GuildSettingsRepository, get_database
-from utils.database import get_pool
 from views.casino_core import (
     CasinoHomeView,
     CashoutRequestModal,
@@ -18,51 +15,6 @@ from views.casino_core import (
 from views.casino_core.back_of_house import BackOfHouseView, back_of_house_embed
 from views.casino_core.ledger_panel import send_admin_ledger_panel
 from views.casino_core.permissions import ensure_casino_admin
-from views.casino_core.shared import ComingSoonView
-
-
-async def open_slots_panel(interaction: discord.Interaction) -> None:
-    if not interaction.guild_id:
-        await interaction.response.send_message("Guild only command.", ephemeral=True)
-        return
-    settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
-    if not settings.get("casino_enabled"):
-        await interaction.response.send_message(
-            "Casino is disabled. Ask admins to run /back_of_house and enable casino.",
-            ephemeral=True,
-        )
-        return
-    try:
-        from views.casino_games.slots_play import SlotsPlayView
-    except Exception:
-        await interaction.response.send_message(
-            "Slots module not installed yet.",
-            ephemeral=True,
-            view=ComingSoonView("Slots module not installed yet."),
-        )
-        return
-
-    service = CasinoSlotsService(get_pool())
-    cfg = await service.ensure_slots_config(interaction.guild_id)
-    if not cfg.get("enabled", True):
-        await interaction.response.send_message("Slots is disabled in this server.", ephemeral=True)
-        return
-    try:
-        snapshot = await service.get_balance_and_pool(interaction.guild_id, interaction.user.id)
-    except SlotsError as exc:
-        await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
-        return
-
-    view = SlotsPlayView(
-        guild_id=interaction.guild_id,
-        discord_id=interaction.user.id,
-        service=service,
-        config=snapshot["config"],
-        balance=int(snapshot["balance"]),
-        pool_tokens=int(snapshot["pool_tokens"]),
-        pool_millis=int(snapshot["pool_millis"]),
-    )
-    await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
 
 class CasinoCog(commands.Cog):
@@ -155,11 +107,6 @@ class CasinoCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="jumper_slots", description="Open Slots")
-    @app_commands.guild_only()
-    async def jumper_slots(self, interaction: discord.Interaction):
-        await open_slots_panel(interaction)
-
     @jump.command(name="casino_play", description="Choose casino game")
     async def casino_play(self, interaction: discord.Interaction):
         labels = ", ".join(v.display_name for v in get_game_registry().values())
@@ -175,10 +122,6 @@ async def setup(bot: commands.Bot):
     await bot.add_cog(cog)
     try:
         bot.tree.add_command(cog.jump)
-    except Exception:
-        pass
-    try:
-        bot.tree.add_command(cog.jumper_slots)
     except Exception:
         pass
     try:
