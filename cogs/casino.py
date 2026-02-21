@@ -13,7 +13,6 @@ from views.casino_core import (
     deposit_panel_embed,
 )
 from views.casino_core.back_of_house import BackOfHouseView, back_of_house_embed
-from views.casino_core.ledger_panel import send_admin_ledger_panel
 from views.casino_core.permissions import ensure_casino_admin
 
 
@@ -45,56 +44,6 @@ class CasinoCog(commands.Cog):
     @jump.command(name="casino_cashout", description="Request casino cashout")
     async def casino_cashout(self, interaction: discord.Interaction):
         await interaction.response.send_modal(CashoutRequestModal(interaction.guild_id))
-
-    @jump.command(name="casino_ledger", description="Open casino ledger")
-    async def casino_ledger(self, interaction: discord.Interaction):
-        if not await ensure_casino_admin(interaction, interaction.guild_id):
-            return
-        await send_admin_ledger_panel(interaction, interaction.guild_id)
-
-    @jump.command(name="casino_admin_credit", description="Open casino admin credit")
-    async def casino_admin_credit(self, interaction: discord.Interaction):
-        if not await ensure_casino_admin(interaction, interaction.guild_id):
-            return
-        from views.casino_core.admin_credit import AdminCreditModal
-
-        await interaction.response.send_modal(AdminCreditModal(interaction.guild_id))
-
-    @jump.command(name="house_settings", description="Deprecated: use /back_of_house")
-    async def house_settings(self, interaction: discord.Interaction):
-        if not await ensure_casino_admin(interaction, interaction.guild_id):
-            return
-        await interaction.response.send_message("Use /back_of_house", ephemeral=True)
-
-    @jump.command(name="casino_game_settings", description="Deprecated: use /back_of_house")
-    async def casino_game_settings(self, interaction: discord.Interaction):
-        if not await ensure_casino_admin(interaction, interaction.guild_id):
-            return
-        await interaction.response.send_message("Use /back_of_house", ephemeral=True)
-
-    @jump.command(name="casino_slots_settings", description="Deprecated: use /back_of_house")
-    async def casino_slots_settings(self, interaction: discord.Interaction):
-        if not await ensure_casino_admin(interaction, interaction.guild_id):
-            return
-        await interaction.response.send_message("Use /back_of_house", ephemeral=True)
-
-    @jump.command(name="casino_roulette_settings", description="Deprecated: use /back_of_house")
-    async def casino_roulette_settings(self, interaction: discord.Interaction):
-        if not await ensure_casino_admin(interaction, interaction.guild_id):
-            return
-        await interaction.response.send_message("Use /back_of_house", ephemeral=True)
-
-    @jump.command(name="casino_wheel_settings", description="Deprecated: use /back_of_house")
-    async def casino_wheel_settings(self, interaction: discord.Interaction):
-        if not await ensure_casino_admin(interaction, interaction.guild_id):
-            return
-        await interaction.response.send_message("Use /back_of_house", ephemeral=True)
-
-    @jump.command(name="casino_dice_settings", description="Deprecated: use /back_of_house")
-    async def casino_dice_settings(self, interaction: discord.Interaction):
-        if not await ensure_casino_admin(interaction, interaction.guild_id):
-            return
-        await interaction.response.send_message("Use /back_of_house", ephemeral=True)
 
     @app_commands.command(name="back_of_house", description="Casino back of house")
     @app_commands.guild_only()
