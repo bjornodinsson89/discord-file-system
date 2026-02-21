@@ -14,7 +14,7 @@ _SECRET_ENV_KEYS = (
 )
 
 
-def redact_text(value: str | None) -> str:
+def redact(value: str | None) -> str:
     text = str(value or "")
     for key in _SECRET_ENV_KEYS:
         text = re.sub(rf"({key}\s*[=:]\s*)([^\s,;]+)", rf"\1{_REDACTED}", text, flags=re.IGNORECASE)
@@ -24,7 +24,7 @@ def redact_text(value: str | None) -> str:
     return text
 
 
-def redact_mapping(payload: dict[str, Any]) -> dict[str, Any]:
+def redact_dict(payload: dict[str, Any]) -> dict[str, Any]:
     clean: dict[str, Any] = {}
     for key, value in payload.items():
         upper_key = str(key).upper()
@@ -32,7 +32,12 @@ def redact_mapping(payload: dict[str, Any]) -> dict[str, Any]:
             clean[key] = _REDACTED
             continue
         if isinstance(value, str):
-            clean[key] = redact_text(value)
+            clean[key] = redact(value)
         else:
             clean[key] = value
     return clean
+
+
+# Backward-compatible aliases.
+redact_text = redact
+redact_mapping = redact_dict

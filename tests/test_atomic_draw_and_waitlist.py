@@ -49,7 +49,9 @@ class _RaffleConn:
                 "tickets_available": raffle["tickets_available"],
                 "winner_discord_id": raffle["winner_discord_id"],
                 "winner_torn_id": raffle["winner_torn_id"],
-                "verified_total": sum(e["num_tickets"] for e in self.state["entries"] if e["payment_verified"]),
+                "verified_total": sum(
+                    e["num_tickets"] for e in self.state["entries"] if e["payment_verified"]
+                ),
             }
         raise AssertionError(query)
 
@@ -105,7 +107,11 @@ class _JumpConn:
             return "SELECT 1"
         if "DELETE FROM happy_jump_waitlist" in query:
             session_id, discord_id = args
-            self.state["waitlist"] = [w for w in self.state["waitlist"] if not (w["session_id"] == session_id and w["discord_id"] == discord_id)]
+            self.state["waitlist"] = [
+                w
+                for w in self.state["waitlist"]
+                if not (w["session_id"] == session_id and w["discord_id"] == discord_id)
+            ]
             return "DELETE 1"
         if "UPDATE happy_jump_waitlist" in query and "position = position - 1" in query:
             session_id, pos = args
@@ -115,7 +121,14 @@ class _JumpConn:
             return "UPDATE 0"
         if "INSERT INTO happy_jump_signups" in query:
             session_id, discord_id, torn_user_id, _mins = args
-            existing = next((s for s in self.state["signups"] if s["session_id"] == session_id and s["discord_id"] == discord_id), None)
+            existing = next(
+                (
+                    s
+                    for s in self.state["signups"]
+                    if s["session_id"] == session_id and s["discord_id"] == discord_id
+                ),
+                None,
+            )
             if existing is None:
                 self.state["signups"].append(
                     {
@@ -149,7 +162,14 @@ class _JumpConn:
     async def fetch(self, query, *args):
         if "DELETE FROM happy_jump_signups" in query and "RETURNING discord_id" in query:
             session_id = args[0]
-            expired = [s for s in self.state["signups"] if s["session_id"] == session_id and s["status"] == "reserved" and not s["payment_verified"] and s.get("expired")]
+            expired = [
+                s
+                for s in self.state["signups"]
+                if s["session_id"] == session_id
+                and s["status"] == "reserved"
+                and not s["payment_verified"]
+                and s.get("expired")
+            ]
             self.state["signups"] = [s for s in self.state["signups"] if s not in expired]
             return [{"discord_id": s["discord_id"]} for s in expired]
         raise AssertionError(query)
@@ -160,7 +180,8 @@ class _JumpConn:
             return sum(
                 1
                 for s in self.state["signups"]
-                if s["session_id"] == session_id and s["status"] in {"reserved", "paid", "completed", "not_completed"}
+                if s["session_id"] == session_id
+                and s["status"] in {"reserved", "paid", "completed", "not_completed"}
             )
         raise AssertionError(query)
 
@@ -184,7 +205,9 @@ def test_draw_raffle_winner_atomic_prevents_double_draws():
             "winner_discord_id": None,
             "winner_torn_id": None,
         },
-        "entries": [{"discord_id": 111, "torn_user_id": 222, "num_tickets": 1, "payment_verified": True}],
+        "entries": [
+            {"discord_id": 111, "torn_user_id": 222, "num_tickets": 1, "payment_verified": True}
+        ],
     }
     repo = RafflesRepository(_RafflePool(state))
 
@@ -209,7 +232,13 @@ def test_expire_and_promote_waitlist_atomic_prevents_duplicate_promotion():
         "lock": asyncio.Lock(),
         "sessions": {1: {"id": 1, "max_spots": 1, "status": "open"}},
         "signups": [
-            {"session_id": 1, "discord_id": 10, "status": "reserved", "payment_verified": False, "expired": True},
+            {
+                "session_id": 1,
+                "discord_id": 10,
+                "status": "reserved",
+                "payment_verified": False,
+                "expired": True,
+            },
         ],
         "waitlist": [{"session_id": 1, "discord_id": 20, "torn_user_id": 200, "position": 1}],
     }

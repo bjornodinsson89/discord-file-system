@@ -18,7 +18,8 @@ def test_jump_monitor_emits_heartbeat_logs(caplog):
     async def _run() -> None:
         await monitor._poll_loop(42)
 
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.INFO):
         asyncio.run(_run())
 
-    assert "jump_monitor heartbeat jump_id=42" in caplog.text
+    assert "worker_heartbeat" in caplog.text
+    assert monitor.get_worker_status()[0]["name"] == "jump_monitor:42"

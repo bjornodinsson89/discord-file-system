@@ -62,3 +62,39 @@ def test_database_acquire_releases_connection_on_success():
     asyncio.run(_run())
 
     assert pool.release_calls == 1
+
+
+class _ConnWithExecute:
+    def __init__(self):
+        self.executed: list[str] = []
+
+    async def execute(self, sql: str):
+        self.executed.append(sql)
+
+
+class _PoolWithConn:
+    def __init__(self, conn):
+        self.conn = conn
+        self.release_calls = 0
+
+    async def acquire(self):
+        return self.conn
+
+    async def release(self, _conn):
+        self.release_calls += 1
+
+
+def test_database_acquire_applies_statement_timeout(monkeypatch):
+    conn = _ConnWithExecute()
+    pool = _PoolWithConn(conn)
+    db = Database(pool=pool)
+    monkeypatch.setattr(db_module.config, "DB_STATEMENT_TIMEOUT_MS", 2345)
+
+    async def _run():
+        async with db.acquire(timeout=0.5, operation="unit_test_statement_timeout"):
+            pass
+
+    asyncio.run(_run())
+
+    assert "SET statement_timeout = '2345ms'" in conn.executed
+    assert pool.release_calls == 1

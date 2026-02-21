@@ -1,11 +1,11 @@
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-include = ["config.py", "utils/**/*.py"]
+include = ["config.py", "utils/**/*.py", "tests/**/*.py"]
 
 [tool.ruff.lint]
-# Conservative linting focused on clear correctness issues.
-select = ["E9", "F"]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "I001", "UP006", "UP017", "UP035", "UP037", "UP041", "UP045", "B904"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -15,7 +15,6 @@ warn_unused_configs = true
 files = ["config.py", "utils"]
 ignore_missing_imports = true
 follow_imports = "skip"
-
 
 [tool.ruff.format]
 quote-style = "double"
