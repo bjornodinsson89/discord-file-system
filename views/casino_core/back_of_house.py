@@ -3,16 +3,6 @@ from __future__ import annotations
 import discord
 
 from utils import GuildSettingsRepository, get_database
-from views.casino_core.admin_credit import AdminCreditView
-from views.casino_core.game_settings_panels import (
-    DiceSettingsView,
-    RouletteSettingsView,
-    SlotsSettingsView,
-    WheelSettingsView,
-    build_game_settings_embed,
-)
-from views.casino_core.house_settings import HouseSettingsView, house_settings_embed
-from views.casino_core.ledger_panel import send_admin_ledger_panel
 from views.casino_core.permissions import ensure_casino_admin
 
 
@@ -70,6 +60,8 @@ class BackOfHouseView(discord.ui.View):
     async def house_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
+        from views.casino_core.house_settings import HouseSettingsView, house_settings_embed
+
         await interaction.response.edit_message(
             embed=await house_settings_embed(self.guild_id),
             view=HouseSettingsView(self.guild_id),
@@ -88,6 +80,8 @@ class BackOfHouseView(discord.ui.View):
     async def slots_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
+        from views.casino_core.game_settings_panels import SlotsSettingsView, build_game_settings_embed
+
         await interaction.response.send_message(
             embed=await build_game_settings_embed(self.guild_id, "slots"),
             view=SlotsSettingsView(self.guild_id),
@@ -98,6 +92,8 @@ class BackOfHouseView(discord.ui.View):
     async def roulette_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
+        from views.casino_core.game_settings_panels import RouletteSettingsView, build_game_settings_embed
+
         await interaction.response.send_message(
             embed=await build_game_settings_embed(self.guild_id, "roulette"),
             view=RouletteSettingsView(self.guild_id),
@@ -108,6 +104,8 @@ class BackOfHouseView(discord.ui.View):
     async def wheel_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
+        from views.casino_core.game_settings_panels import WheelSettingsView, build_game_settings_embed
+
         await interaction.response.send_message(
             embed=await build_game_settings_embed(self.guild_id, "wheel"),
             view=WheelSettingsView(self.guild_id),
@@ -118,6 +116,8 @@ class BackOfHouseView(discord.ui.View):
     async def dice_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
+        from views.casino_core.game_settings_panels import DiceSettingsView, build_game_settings_embed
+
         await interaction.response.send_message(
             embed=await build_game_settings_embed(self.guild_id, "dice"),
             view=DiceSettingsView(self.guild_id),
@@ -128,12 +128,16 @@ class BackOfHouseView(discord.ui.View):
     async def ledger(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
+        from views.casino_core.ledger_panel import send_admin_ledger_panel
+
         await send_admin_ledger_panel(interaction, self.guild_id)
 
     @discord.ui.button(label="Admin Credit", style=discord.ButtonStyle.success, row=2)
     async def admin_credit(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
+        from views.casino_core.admin_credit import AdminCreditView
+
         await interaction.response.send_message("Admin Credit", view=AdminCreditView(self.guild_id), ephemeral=True)
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=3)

@@ -2,15 +2,10 @@ from __future__ import annotations
 
 import discord
 
-from repositories.casino_core import CasinoCoreRepository
 from services.casino_core.registry import get_game_registry
 from services.casino_games.slots import CasinoSlotsService, SlotsError
 from services.casino_core.settings import get_house_config
 from utils import GuildSettingsRepository, get_database
-from utils.database import get_pool
-from views.casino_core.cashout_panel import CashoutRequestModal
-from views.casino_core.deposit_panel import DepositPanelView, deposit_panel_embed
-from views.casino_core.ledger_panel import send_admin_ledger_panel
 from views.casino_core.permissions import ensure_casino_admin
 
 
@@ -61,6 +56,8 @@ class GameSelect(discord.ui.Select):
             await interaction.response.send_message("Slots module not installed yet.", ephemeral=True)
             return
 
+        from utils.database import get_pool
+
         service = CasinoSlotsService(get_pool())
         config = await service.ensure_slots_config(interaction.guild_id)
         if not config.get("enabled", True):
@@ -89,21 +86,26 @@ class CasinoHomeView(discord.ui.View):
     def __init__(self, guild_id: int):
         super().__init__(timeout=300)
         self.guild_id = guild_id
-        self.repo = CasinoCoreRepository(get_pool())
         self.add_item(GameSelect())
 
     @discord.ui.button(label="Deposit", style=discord.ButtonStyle.success)
     async def deposit(self, interaction: discord.Interaction, _: discord.ui.Button):
+        from views.casino_core.deposit_panel import DepositPanelView, deposit_panel_embed
+
         await interaction.response.send_message(embed=await deposit_panel_embed(self.guild_id), view=DepositPanelView(self.guild_id), ephemeral=True)
 
     @discord.ui.button(label="Cashout", style=discord.ButtonStyle.primary)
     async def cashout(self, interaction: discord.Interaction, _: discord.ui.Button):
+        from views.casino_core.cashout_panel import CashoutRequestModal
+
         await interaction.response.send_modal(CashoutRequestModal(self.guild_id))
 
     @discord.ui.button(label="Ledger", style=discord.ButtonStyle.secondary)
     async def ledger(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
+        from views.casino_core.ledger_panel import send_admin_ledger_panel
+
         await send_admin_ledger_panel(interaction, self.guild_id)
 
     @discord.ui.button(label="Game Settings", style=discord.ButtonStyle.secondary)
@@ -114,6 +116,9 @@ class CasinoHomeView(discord.ui.View):
 
 
 async def casino_home_embed(guild_id: int, discord_id: int) -> discord.Embed:
+    from repositories.casino_core import CasinoCoreRepository
+    from utils.database import get_pool
+
     wallet = await CasinoCoreRepository(get_pool()).get_wallet(guild_id, discord_id)
     bal = int((wallet or {}).get("balance_tokens") or 0)
     em = discord.Embed(title="Casino", description="Core panel", color=discord.Color.gold())

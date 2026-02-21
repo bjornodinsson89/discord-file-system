@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import discord
 
-from repositories.casino_core import CasinoCoreRepository
 from views.casino_core.permissions import ensure_casino_admin
-from utils.database import get_pool
 
 AMOUNT_OPTIONS = [-100, -50, -25, -10, -5, -1, 1, 5, 10, 25, 50, 100]
 REASON_OPTIONS = ["Testing", "Payment verification failed", "Adjustment", "Refund", "Other"]
@@ -61,7 +59,7 @@ class AdminCreditView(discord.ui.View):
     def __init__(self, guild_id: int):
         super().__init__(timeout=300)
         self.guild_id = guild_id
-        self.repo = CasinoCoreRepository(get_pool())
+        self.repo = None
         self.target_user_id: int | None = None
         self.amount: int | None = None
         self.reason: str = ""
@@ -83,16 +81,22 @@ class AdminCreditView(discord.ui.View):
             await interaction.response.send_message("❌ Pick an amount first.", ephemeral=True)
             return
 
-        wallet = await self.repo.get_or_create_wallet(
+        from repositories.casino_core import CasinoCoreRepository
+        from utils.database import get_pool
+
+        repo = self.repo or CasinoCoreRepository(get_pool())
+        self.repo = repo
+
+        wallet = await repo.get_or_create_wallet(
             guild_id=self.guild_id,
             discord_id=int(self.target_user_id),
             torn_user_id=0,
             torn_name=None,
         )
 
-        async with self.repo.acquire() as conn:
+        async with repo.acquire() as conn:
             async with conn.transaction():
-                wallet = await self.repo.apply_ledger_entry_atomic(
+                wallet = await repo.apply_ledger_entry_atomic(
                     conn,
                     guild_id=int(self.guild_id),
                     wallet_id=int(wallet["id"]),
@@ -107,7 +111,7 @@ class AdminCreditView(discord.ui.View):
                         "reason": self.reason,
                     },
                 )
-                await self.repo.append_house_ledger(
+                await repo.append_house_ledger(
                     conn,
                     guild_id=int(self.guild_id),
                     entry_type="admin_adjust",
