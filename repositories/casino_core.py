@@ -11,6 +11,43 @@ from services.casino_core.locks import advisory_lock_for_wallet
 
 
 class CasinoCoreRepository(RepositoryBase):
+    async def create_round(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        guild_id: int,
+        wallet_id: int,
+        game_key: str,
+        bet_tokens: int,
+        result_json: dict | None = None,
+    ) -> int:
+        round_id = await conn.fetchval(
+            """
+            INSERT INTO casino_game_rounds (guild_id, wallet_id, game_key, bet_tokens, payout_tokens, result)
+            VALUES ($1, $2, $3, $4, 0, $5::jsonb)
+            RETURNING id
+            """,
+            int(guild_id),
+            int(wallet_id),
+            str(game_key),
+            int(bet_tokens),
+            json.dumps(result_json or {}),
+        )
+        return int(round_id)
+
+    async def update_round(self, conn: asyncpg.Connection, *, round_id: int, payout_tokens: int, result_json: dict) -> None:
+        await conn.execute(
+            """
+            UPDATE casino_game_rounds
+            SET payout_tokens = $2,
+                result = $3::jsonb
+            WHERE id = $1
+            """,
+            int(round_id),
+            int(payout_tokens),
+            json.dumps(result_json or {}),
+        )
+
     async def get_or_create_wallet(
         self, guild_id: int, discord_id: int, torn_user_id: int, torn_name: str | None
     ) -> dict:
@@ -281,21 +318,23 @@ class CasinoCoreRepository(RepositoryBase):
         return dict(row)
 
     async def add_to_pool(self, conn: asyncpg.Connection, *, guild_id: int, pool_key: str, add_tokens: int, add_millis: int) -> dict:
+        base_tokens = int(add_tokens) + (int(add_millis) // 1000)
+        base_millis = int(add_millis) % 1000
         row = await conn.fetchrow(
             """
             INSERT INTO casino_pools (guild_id, pool_key, tokens, millis)
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (guild_id, pool_key)
             DO UPDATE SET
-                tokens = casino_pools.tokens + EXCLUDED.tokens,
-                millis = casino_pools.millis + EXCLUDED.millis,
+                tokens = casino_pools.tokens + EXCLUDED.tokens + ((casino_pools.millis + EXCLUDED.millis) / 1000),
+                millis = MOD(casino_pools.millis + EXCLUDED.millis, 1000),
                 updated_at = NOW()
             RETURNING *
             """,
             int(guild_id),
             pool_key,
-            int(add_tokens),
-            int(add_millis),
+            int(base_tokens),
+            int(base_millis),
         )
         return dict(row)
 
@@ -308,12 +347,17 @@ class CasinoCoreRepository(RepositoryBase):
         reset_seed_tokens: int,
         reset_seed_millis: int,
     ) -> tuple[int, int, int, int]:
-        current = await self.get_or_create_pool(
+        await self.get_or_create_pool(
             conn,
             guild_id=int(guild_id),
             pool_key=pool_key,
             seed_tokens=reset_seed_tokens,
             seed_millis=reset_seed_millis,
+        )
+        current = await conn.fetchrow(
+            "SELECT tokens, millis FROM casino_pools WHERE guild_id = $1 AND pool_key = $2 FOR UPDATE",
+            int(guild_id),
+            pool_key,
         )
         claim_tokens = int(current["tokens"])
         claim_millis = int(current["millis"])
