@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import io
+import random
 from pathlib import Path
 
 import aiohttp
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 CACHE_DIR = Path("data/casino_item_cache")
 _MEMORY_CACHE: dict[int, Image.Image] = {}
@@ -54,6 +55,8 @@ async def render_slots_png(
     pool_tokens: int,
     pool_millis: int,
     win_label: str,
+    spin_mask: list[bool] | None = None,
+    spin_symbols: list[list[int]] | None = None,
 ) -> bytes:
     try:
         w, h = 520, 260
@@ -74,6 +77,10 @@ async def render_slots_png(
 
         reel_top, reel_h, reel_w = 78, 96, 140
         start_x = 26
+        spin_mask = list(spin_mask or [False, False, False])[:3]
+        while len(spin_mask) < 3:
+            spin_mask.append(False)
+
         for idx, item_id in enumerate(reels):
             x0 = start_x + idx * (reel_w + 20)
             x1 = x0 + reel_w
@@ -86,12 +93,38 @@ async def render_slots_png(
                 outline=(115, 121, 154, 255),
                 width=2,
             )
-            img = await get_item_image_small(int(item_id))
-            fitted = img.copy()
-            fitted.thumbnail((76, 76))
-            px = x0 + (reel_w - fitted.width) // 2
-            py = y0 + (reel_h - fitted.height) // 2
-            canvas.alpha_composite(fitted, (px, py))
+            if spin_mask[idx]:
+                reel_layer = Image.new("RGBA", (reel_w, reel_h), (0, 0, 0, 0))
+                reel_symbols = [int(item_id)]
+                if spin_symbols and idx < len(spin_symbols):
+                    reel_symbols.extend(int(v) for v in (spin_symbols[idx] or [])[:2])
+                while len(reel_symbols) < 3:
+                    reel_symbols.append(int(item_id))
+
+                offsets = (-10, 0, 10)
+                alphas = (110, 255, 110)
+                for sym_id, offset, alpha in zip(reel_symbols[:3], offsets, alphas, strict=False):
+                    img = await get_item_image_small(sym_id)
+                    fitted = img.copy()
+                    fitted.thumbnail((76, 76))
+                    if alpha < 255:
+                        alpha_channel = fitted.getchannel("A")
+                        alpha_channel = alpha_channel.point(lambda p: (p * alpha) // 255)
+                        fitted.putalpha(alpha_channel)
+                    px = (reel_w - fitted.width) // 2
+                    py = (reel_h - fitted.height) // 2 + offset
+                    reel_layer.alpha_composite(fitted, (px, py))
+
+                if random.random() < 0.65:
+                    reel_layer = reel_layer.filter(ImageFilter.GaussianBlur(radius=1))
+                canvas.alpha_composite(reel_layer, (x0, y0))
+            else:
+                img = await get_item_image_small(int(item_id))
+                fitted = img.copy()
+                fitted.thumbnail((76, 76))
+                px = x0 + (reel_w - fitted.width) // 2
+                py = y0 + (reel_h - fitted.height) // 2
+                canvas.alpha_composite(fitted, (px, py))
 
         pool_value = f"{pool_tokens}.{pool_millis:03d}"
         draw.text((24, 192), f"Bet: {bet}", font=font, fill=(240, 240, 240, 255))
