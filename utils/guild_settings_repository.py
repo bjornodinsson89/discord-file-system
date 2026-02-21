@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 def _jsonb(v: Any) -> Optional[str]:
     if v is None:
         return None
-    if isinstance(v, (list, dict)):
+    if isinstance(v, list | dict):
         return json.dumps(v)
     if isinstance(v, str):
         return v
@@ -192,7 +192,7 @@ class GuildSettingsRepository:
     def _normalize_bool(value: Any) -> bool:
         if isinstance(value, bool):
             return value
-        if isinstance(value, (int, float)):
+        if isinstance(value, int | float):
             return bool(value)
         if isinstance(value, str):
             normalized = value.strip().lower()
