@@ -29,12 +29,6 @@ def get_game_registry() -> dict[str, CasinoGameDefinition]:
     if _GAME_REGISTRY is not None:
         return _GAME_REGISTRY
 
-    from views.casino_core.game_settings_panels import (
-        DiceSettingsView,
-        RouletteSettingsView,
-        SlotsSettingsView,
-        WheelSettingsView,
-    )
     from views.casino_core.shared import ComingSoonView
     import discord
 
@@ -42,10 +36,10 @@ def get_game_registry() -> dict[str, CasinoGameDefinition]:
         return ComingSoonView()
 
     _GAME_REGISTRY = {
-        "slots": CasinoGameDefinition("slots", "Slots", "Classic slots", True, _defaults(True), lambda i, s: SlotsSettingsView(i.guild_id), _coming_soon),
-        "roulette": CasinoGameDefinition("roulette", "Roulette", "Roulette tables", False, _defaults(False), lambda i, s: RouletteSettingsView(i.guild_id), _coming_soon),
-        "wheel": CasinoGameDefinition("wheel", "Wheel", "Lucky wheel", False, _defaults(False), lambda i, s: WheelSettingsView(i.guild_id), _coming_soon),
-        "dice": CasinoGameDefinition("dice", "Dice", "Dice game", False, _defaults(False), lambda i, s: DiceSettingsView(i.guild_id), _coming_soon),
+        "slots": CasinoGameDefinition("slots", "Slots", "Classic slots", True, _defaults(True), _coming_soon, _coming_soon),
+        "roulette": CasinoGameDefinition("roulette", "Roulette", "Roulette tables", False, _defaults(False), _coming_soon, _coming_soon),
+        "wheel": CasinoGameDefinition("wheel", "Wheel", "Lucky wheel", False, _defaults(False), _coming_soon, _coming_soon),
+        "dice": CasinoGameDefinition("dice", "Dice", "Dice game", False, _defaults(False), _coming_soon, _coming_soon),
     }
     return _GAME_REGISTRY
 
