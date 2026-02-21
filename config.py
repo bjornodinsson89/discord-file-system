@@ -88,6 +88,13 @@ DB_SSL_ALLOW_INSECURE_FALLBACK = _env_flag("DB_SSL_ALLOW_INSECURE_FALLBACK", Fal
 FERNET_KEY = os.getenv("FERNET_KEY")
 
 
+DB_ACQUIRE_TIMEOUT = max(safe_int_env("DB_ACQUIRE_TIMEOUT", default=10, allow_blank=True) or 10, 1)
+DB_STATEMENT_TIMEOUT_MS = max(
+    safe_int_env("DB_STATEMENT_TIMEOUT_MS", default=15000, allow_blank=True) or 15000,
+    1,
+)
+
+
 def get_db_ssl_config() -> ssl.SSLContext | None:
     value = (DB_SSL or "").strip().lower()
     if value in {"", "disable", "false", "0", "off", "no"}:

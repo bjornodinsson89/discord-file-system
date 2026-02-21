@@ -13,6 +13,8 @@ Recommended hardening flags:
 - `DB_SSL=require`
 - `DB_SSL_VERIFY=true`
 - `DB_CONNECT_MAX_ATTEMPTS=20`
+- `DB_ACQUIRE_TIMEOUT=10`
+- `DB_STATEMENT_TIMEOUT_MS=15000`
 
 ## 2) Database schema bootstrap / migrations
 
@@ -45,7 +47,7 @@ python bot.py
 
 ## 4) Post-deploy verification
 
-- Confirm Railway health checks are green (`/health` returns `ok`).
+- Confirm Railway health checks are green (`/health` returns JSON with `status=ok` and `db=ok`).
 - Confirm bot presence in Discord and command responsiveness.
 - Check logs for:
   - `Database pool initialized`

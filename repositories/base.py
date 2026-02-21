@@ -54,7 +54,9 @@ async def create_pool() -> asyncpg.Pool:
         bool(db_url),
     )
     if ssl_mode_name not in {"", "disable", "false", "0", "off", "no"} and not verify_enabled:
-        log.warning("DB SSL is enabled while certificate verification is disabled (DB_SSL_VERIFY=false)")
+        log.warning(
+            "DB SSL is enabled while certificate verification is disabled (DB_SSL_VERIFY=false)"
+        )
 
     base_pool_kwargs = {
         "min_size": 2,
@@ -62,8 +64,13 @@ async def create_pool() -> asyncpg.Pool:
         "command_timeout": 60,
     }
 
+    async def _init_connection(conn: asyncpg.Connection) -> None:
+        statement_timeout_ms = int(getattr(config, "DB_STATEMENT_TIMEOUT_MS", 15000) or 15000)
+        await conn.execute(f"SET statement_timeout = '{statement_timeout_ms}ms'")
+
     async def _build_pool(ssl_context) -> asyncpg.Pool:
         pool_kwargs = dict(base_pool_kwargs)
+        pool_kwargs["init"] = _init_connection
         if ssl_context is not None:
             pool_kwargs["ssl"] = ssl_context
         if db_url:

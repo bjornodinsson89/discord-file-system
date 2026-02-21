@@ -1,4 +1,9 @@
-from utils.payouts import parse_payout_string, payout_items_to_human, payout_items_to_string, PayoutParseError
+from utils.payouts import (
+    parse_payout_string,
+    payout_items_to_human,
+    payout_items_to_string,
+    PayoutParseError,
+)
 
 
 def test_parse_merges_alias_duplicates():
@@ -20,7 +25,11 @@ def test_parse_rejects_unknown_item():
 
 
 def test_string_and_human_helpers():
-    items = [{"item": "xanax", "qty": 4}, {"item": "erotic_dvd", "qty": 6}, {"item": "ecstasy", "qty": 1}]
+    items = [
+        {"item": "xanax", "qty": 4},
+        {"item": "erotic_dvd", "qty": 6},
+        {"item": "ecstasy", "qty": 1},
+    ]
     assert payout_items_to_string(items) == "xanax=4, edvd=6, ecstasy=1"
     assert payout_items_to_human(items) == "4x Xanax • 6x eDVD • 1x Ecstasy"
 

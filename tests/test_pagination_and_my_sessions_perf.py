@@ -15,7 +15,9 @@ def test_list_sessions_page_flooring(monkeypatch):
         offsets.append(offset)
         return []
 
-    monkeypatch.setattr(handlers.JumpsRepository, "list_sessions", _fake_list_sessions, raising=False)
+    monkeypatch.setattr(
+        handlers.JumpsRepository, "list_sessions", _fake_list_sessions, raising=False
+    )
     monkeypatch.setattr("utils.get_database", lambda: _DummyDB())
 
     async def _run():
@@ -35,7 +37,9 @@ def test_list_raffles_page_flooring(monkeypatch):
         offsets.append(offset)
         return []
 
-    monkeypatch.setattr(handlers.RafflesRepository, "list_raffles", _fake_list_raffles, raising=False)
+    monkeypatch.setattr(
+        handlers.RafflesRepository, "list_raffles", _fake_list_raffles, raising=False
+    )
     monkeypatch.setattr("utils.get_database", lambda: _DummyDB())
 
     async def _run():
