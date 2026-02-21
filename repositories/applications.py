@@ -4,6 +4,8 @@ import json
 from datetime import datetime
 from typing import Any, Optional
 
+from constants.insurers import normalize_insurer_categories
+
 from .base import RepositoryBase
 
 
@@ -28,7 +30,11 @@ class ApplicationsRepository(RepositoryBase):
                 guild_id,
                 user_id,
             )
-            return self._coerce_answers(dict(row)) if row else None
+            if not row:
+                return None
+            profile = self._coerce_answers(dict(row))
+            profile["categories"] = normalize_insurer_categories(profile.get("categories") or [])
+            return profile
 
     async def get_open_application(self, *, guild_id: int, user_id: Optional[int] = None, user_discord_id: Optional[int] = None, app_type: str) -> Optional[dict[str, Any]]:
         async with self.acquire() as conn:
@@ -223,6 +229,7 @@ class ApplicationsRepository(RepositoryBase):
             )
 
     async def upsert_insurer_profile(self, *, guild_id: int, user_id: int, data: dict[str, Any]) -> dict[str, Any]:
+        categories = normalize_insurer_categories(data.get("categories") or [])
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -238,9 +245,10 @@ class ApplicationsRepository(RepositoryBase):
                     image_url,
                     activation_delay_minutes,
                     coverage_duration_minutes,
+                    categories,
                     updated_at,
                     created_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),NOW())
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::text[],NOW(),NOW())
                 ON CONFLICT (guild_id, user_id)
                 DO UPDATE SET
                     display_name = EXCLUDED.display_name,
@@ -252,6 +260,7 @@ class ApplicationsRepository(RepositoryBase):
                     image_url = EXCLUDED.image_url,
                     activation_delay_minutes = EXCLUDED.activation_delay_minutes,
                     coverage_duration_minutes = EXCLUDED.coverage_duration_minutes,
+                    categories = EXCLUDED.categories,
                     updated_at = NOW()
                 RETURNING *
                 """,
@@ -266,8 +275,11 @@ class ApplicationsRepository(RepositoryBase):
                 data.get("image_url"),
                 data["activation_delay_minutes"],
                 data["coverage_duration_minutes"],
+                categories,
             )
-            return dict(row)
+            saved = dict(row)
+            saved["categories"] = normalize_insurer_categories(saved.get("categories") or [])
+            return saved
 
     async def upsert_wizard_state(self, *, guild_id: int, user_id: int, step: int, draft: dict[str, Any]) -> None:
         async with self.acquire() as conn:
@@ -336,40 +348,17 @@ class ApplicationsRepository(RepositoryBase):
         self,
         *,
         guild_id: int,
-        active_only: bool = True,
-        coverage_type: str | None = None,
-        jump_type: str | None = None,
+        category: str | None,
     ) -> list[dict[str, Any]]:
-        search_terms: list[str] = []
-        if coverage_type:
-            search_terms.append(coverage_type.strip().lower())
-        if jump_type:
-            normalized_jump = jump_type.strip().lower()
-            search_terms.append(normalized_jump)
-            if normalized_jump == "99k":
-                search_terms.append("happy jump")
-
         params: list[Any] = [guild_id]
         conditions = [
             "a.guild_id = $1",
             "a.app_type = 'insurer'",
             "a.status = 'approved'",
         ]
-        if active_only:
-            conditions.append("p.user_id IS NOT NULL")
-
-        if search_terms:
-            searchable = "LOWER(COALESCE(p.coverage_summary, '') || ' ' || COALESCE(p.pricing_text, '') || ' ' || COALESCE(p.rules_exclusions, '') || ' ' || COALESCE(p.contact_notes, ''))"
-            term_clauses: list[str] = []
-            for term in search_terms:
-                params.append(f"%{term}%")
-                term_clauses.append(f"{searchable} LIKE ${len(params)}")
-            combined = "(" + " OR ".join(term_clauses) + ")"
-            if active_only:
-                conditions.append(combined)
-            else:
-                # Keep approved insurers visible even if their profile row is missing.
-                conditions.append(f"(p.user_id IS NULL OR {combined})")
+        if category:
+            params.append(category)
+            conditions.append("$2 = ANY(COALESCE(p.categories, '{}'::text[]))")
 
         where_sql = " AND ".join(conditions)
         query = f"""
@@ -389,6 +378,7 @@ class ApplicationsRepository(RepositoryBase):
                 p.image_url,
                 p.activation_delay_minutes,
                 p.coverage_duration_minutes,
+                p.categories,
                 p.created_at AS profile_created_at,
                 p.updated_at AS profile_updated_at
             FROM applications a
@@ -401,4 +391,9 @@ class ApplicationsRepository(RepositoryBase):
 
         async with self.acquire() as conn:
             rows = await conn.fetch(query, *params)
-            return [self._coerce_answers(dict(r)) for r in rows]
+            insurers: list[dict[str, Any]] = []
+            for row in rows:
+                insurer = self._coerce_answers(dict(row))
+                insurer["categories"] = normalize_insurer_categories(insurer.get("categories") or [])
+                insurers.append(insurer)
+            return insurers

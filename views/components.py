@@ -23,6 +23,7 @@ from repositories.audit import AuditRepository
 from repositories.raffles import RafflesRepository
 from repositories.insurance import InsuranceRepository
 from repositories.applications import ApplicationsRepository
+from constants.insurers import INSURER_CATEGORIES
 from utils.guild_settings_repository import GuildSettingsRepository
 from services.raffle_payment import RafflePaymentService
 import config
@@ -989,9 +990,7 @@ class InsurerProviderSelect(ui.Select):
         card_view = InsurerCardView(
             guild_id=self.browser_view.guild_id,
             insurer_user_id=insurer_user_id,
-            active_only=self.browser_view.active_only,
-            coverage_type=self.browser_view.coverage_type,
-            jump_type=self.browser_view.jump_type,
+            category=self.browser_view.category,
             parent_page=self.browser_view.page,
             timeout=self.browser_view.timeout,
         )
@@ -1003,17 +1002,13 @@ class InsurerBrowserView(ui.View):
     def __init__(
         self,
         guild_id: int,
-        active_only: bool = True,
-        coverage_type: Optional[str] = None,
-        jump_type: str = "99k",
+        category: Optional[str] = None,
         page: int = 0,
         timeout: int = 300,
     ):
         super().__init__(timeout=timeout)
         self.guild_id = guild_id
-        self.active_only = active_only
-        self.coverage_type = coverage_type
-        self.jump_type = jump_type
+        self.category = category if category in INSURER_CATEGORIES else None
         self.page = max(0, page)
         self.providers: List[Dict] = []
 
@@ -1021,9 +1016,7 @@ class InsurerBrowserView(ui.View):
         db = get_database()
         rows = await ApplicationsRepository(db.pool).list_approved_insurers_for_browser(
             guild_id=self.guild_id,
-            active_only=self.active_only,
-            coverage_type=self.coverage_type,
-            jump_type=self.jump_type,
+            category=self.category,
         )
         for row in rows:
             discord_id = int(row.get("user_id") or row.get("discord_id") or 0)
@@ -1057,9 +1050,7 @@ class InsurerBrowserView(ui.View):
         self.page = min(self.page, max_page)
         page_items = self._slice()
 
-        filter_text = f"active_only={self.active_only} • jump_type={self.jump_type or 'none'}"
-        if self.coverage_type:
-            filter_text += f" • coverage={_coverage_label(self.coverage_type)}"
+        filter_text = f"category={self.category or 'All insurers'}"
 
         if not page_items:
             embed = create_info_embed(
@@ -1107,9 +1098,7 @@ class InsurerCardView(ui.View):
         self,
         guild_id: int,
         insurer_user_id: int,
-        active_only: bool = True,
-        coverage_type: Optional[str] = None,
-        jump_type: str = "99k",
+        category: Optional[str] = None,
         parent_page: int = 0,
         policy_page: int = 0,
         timeout: int = 300,
@@ -1117,9 +1106,7 @@ class InsurerCardView(ui.View):
         super().__init__(timeout=timeout)
         self.guild_id = guild_id
         self.insurer_user_id = insurer_user_id
-        self.active_only = active_only
-        self.coverage_type = coverage_type
-        self.jump_type = jump_type
+        self.category = category if category in INSURER_CATEGORIES else None
         self.parent_page = max(0, parent_page)
         self.policy_page = max(0, policy_page)
         self.provider: Optional[Dict] = None
@@ -1129,9 +1116,7 @@ class InsurerCardView(ui.View):
         db = get_database()
         rows = await ApplicationsRepository(db.pool).list_approved_insurers_for_browser(
             guild_id=self.guild_id,
-            active_only=self.active_only,
-            coverage_type=self.coverage_type,
-            jump_type=self.jump_type,
+            category=self.category,
         )
         self.provider = next((dict(r) for r in rows if int(r.get("user_id") or 0) == self.insurer_user_id), None)
         self.policies = []
@@ -1190,6 +1175,9 @@ class InsurerCardView(ui.View):
                 meta_bits.append(f"Coverage duration: {self.provider.get('coverage_duration_minutes')} minutes")
             embed.add_field(name="Timing", value="\n".join(meta_bits), inline=False)
 
+        categories = self.provider.get("categories") or []
+        embed.add_field(name="Categories", value=", ".join(categories) if categories else "None", inline=False)
+
         if self.provider.get("image_url"):
             embed.set_thumbnail(url=self.provider.get("image_url"))
 
@@ -1199,9 +1187,7 @@ class InsurerCardView(ui.View):
     async def back_button(self, interaction: discord.Interaction, button: ui.Button):
         list_view = InsurerBrowserView(
             guild_id=self.guild_id,
-            active_only=self.active_only,
-            coverage_type=self.coverage_type,
-            jump_type=self.jump_type,
+            category=self.category,
             page=self.parent_page,
             timeout=self.timeout,
         )

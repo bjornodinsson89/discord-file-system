@@ -11,7 +11,8 @@ from repositories.audit import AuditRepository
 from utils.database import MissingDatabaseColumnError
 from utils.discord_channels import resolve_guild_channel
 from utils.embeds import create_error_embed, create_info_embed, create_success_embed
-from repositories.jumps import JumpsRepository
+from constants.insurers import INSURER_CATEGORIES, normalize_insurer_categories
+from repositories.applications import ApplicationsRepository
 
 log = logging.getLogger("happy_jumper.setup_panel")
 
@@ -914,10 +915,14 @@ class InsurerProfileModal(discord.ui.Modal):
     policy_summary = discord.ui.TextInput(label="Policy summary", required=True, style=discord.TextStyle.paragraph, max_length=1200)
     contact_instructions = discord.ui.TextInput(label="Contact instructions", required=True, style=discord.TextStyle.paragraph, max_length=1200)
 
-    def __init__(self, panel: "SetupPanelView" | None = None, *, db=None):
+    def __init__(self, panel: "SetupPanelView" | None = None, *, db=None, existing_profile: dict[str, Any] | None = None):
         super().__init__(title="Insurer Profile")
         self.panel = panel
         self.db = db if db is not None else (panel.db if panel is not None else None)
+        existing = existing_profile or {}
+        self.display_name.default = str(existing.get("display_name") or "")[:80]
+        self.policy_summary.default = str(existing.get("coverage_summary") or "")[:1200]
+        self.contact_instructions.default = str(existing.get("pricing_text") or "")[:1200]
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if self.db is None:
@@ -926,16 +931,94 @@ class InsurerProfileModal(discord.ui.Modal):
                 ephemeral=True,
             )
             return
-        repo = JumpsRepository(self.db.pool)
-        await repo.create_insurer_profile(
+        repo = ApplicationsRepository(self.db.pool)
+        existing = await repo.get_insurer_profile(guild_id=interaction.guild_id, user_id=interaction.user.id)
+        profile = await repo.upsert_insurer_profile(
             guild_id=interaction.guild_id,
-            insurer_discord_id=interaction.user.id,
-            display_name=str(self.display_name.value).strip(),
-            policy_summary=str(self.policy_summary.value).strip(),
-            contact_instructions=str(self.contact_instructions.value).strip(),
-            metadata={},
+            user_id=interaction.user.id,
+            data={
+                "display_name": str(self.display_name.value).strip(),
+                "coverage_summary": str(self.policy_summary.value).strip(),
+                "pricing_text": str(self.contact_instructions.value).strip(),
+                "rules_exclusions": str((existing or {}).get("rules_exclusions") or "Not provided.").strip(),
+                "response_time_text": (existing or {}).get("response_time_text"),
+                "contact_notes": (existing or {}).get("contact_notes"),
+                "image_url": (existing or {}).get("image_url"),
+                "activation_delay_minutes": int((existing or {}).get("activation_delay_minutes") or 0),
+                "coverage_duration_minutes": int((existing or {}).get("coverage_duration_minutes") or 120),
+                "categories": (existing or {}).get("categories") or [],
+            },
         )
-        await interaction.response.send_message(embed=create_success_embed("Insurer profile saved", "Your insurer profile was updated."), ephemeral=True)
+        await interaction.response.send_message(
+            embed=create_success_embed("Insurer profile saved", "Now choose your insurer categories."),
+            view=InsurerCategoryPickerView(db=self.db, guild_id=interaction.guild_id, user_id=interaction.user.id, current_categories=profile.get("categories") or []),
+            ephemeral=True,
+        )
+
+
+class InsurerCategoryMultiSelect(discord.ui.Select):
+    def __init__(self, *, current_categories: list[str]):
+        defaults = set(normalize_insurer_categories(current_categories))
+        options = [
+            discord.SelectOption(label=category, value=category, default=(category in defaults))
+            for category in INSURER_CATEGORIES
+        ]
+        super().__init__(
+            placeholder="Select insurer categories",
+            min_values=0,
+            max_values=len(INSURER_CATEGORIES),
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert isinstance(self.view, InsurerCategoryPickerView)
+        self.view.selected_categories = normalize_insurer_categories(self.values)
+        await interaction.response.defer()
+
+
+class InsurerCategoryPickerView(discord.ui.View):
+    def __init__(self, *, db, guild_id: int, user_id: int, current_categories: list[str]):
+        super().__init__(timeout=300)
+        self.db = db
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.selected_categories = normalize_insurer_categories(current_categories)
+        self.add_item(InsurerCategoryMultiSelect(current_categories=self.selected_categories))
+
+    @discord.ui.button(label="Save categories", style=discord.ButtonStyle.success)
+    async def save_categories(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        repo = ApplicationsRepository(self.db.pool)
+        existing = await repo.get_insurer_profile(guild_id=self.guild_id, user_id=self.user_id)
+        if not existing:
+            await interaction.response.send_message(
+                embed=create_error_embed("Profile missing", "Save your insurer profile text first with /insurer_profile."),
+                ephemeral=True,
+            )
+            return
+
+        await repo.upsert_insurer_profile(
+            guild_id=self.guild_id,
+            user_id=self.user_id,
+            data={
+                "display_name": existing.get("display_name") or "Insurer",
+                "coverage_summary": existing.get("coverage_summary") or "Not provided.",
+                "pricing_text": existing.get("pricing_text") or "Not provided.",
+                "rules_exclusions": existing.get("rules_exclusions") or "Not provided.",
+                "response_time_text": existing.get("response_time_text"),
+                "contact_notes": existing.get("contact_notes"),
+                "image_url": existing.get("image_url"),
+                "activation_delay_minutes": int(existing.get("activation_delay_minutes") or 0),
+                "coverage_duration_minutes": int(existing.get("coverage_duration_minutes") or 120),
+                "categories": self.selected_categories,
+            },
+        )
+        await interaction.response.send_message(
+            embed=create_success_embed(
+                "Categories saved",
+                f"Saved categories: {', '.join(self.selected_categories) if self.selected_categories else 'None'}",
+            ),
+            ephemeral=True,
+        )
 class WelcomeView(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
