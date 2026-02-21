@@ -11,7 +11,7 @@ import sys
 import config
 from aiohttp import web
 from cogs.events import bot
-from services.jump_monitor import shutdown_jump_monitor
+from services.jump_monitor import get_jump_monitor, shutdown_jump_monitor
 from utils.database import get_database, is_initialized as db_is_initialized
 from utils.tasks import supervise
 from views.components import shutdown_status_panel_tasks
@@ -44,27 +44,40 @@ async def health_server():
     """HTTP server with DB-aware health checks."""
 
     async def _health(_request: web.Request) -> web.Response:
+        version = os.getenv("RAILWAY_GIT_COMMIT_SHA") or os.getenv("GIT_SHA") or "unknown"
+        db_status = "ok"
+        status_code = 200
         if not db_is_initialized():
-            return web.Response(status=503, text='db_not_initialized')
-        try:
-            db = get_database()
-            async with db.acquire(timeout=5, operation="health_check") as conn:
-                await conn.execute('SELECT 1')
-        except Exception as exc:
-            log.warning("Health check DB probe failed: %s", exc)
-            return web.Response(status=503, text='db_unhealthy')
-        return web.Response(text='ok')
+            db_status = "degraded"
+            status_code = 503
+        else:
+            try:
+                db = get_database()
+                async with db.acquire(timeout=3, operation="health_check") as conn:
+                    await conn.execute("SELECT 1")
+            except Exception as exc:
+                log.warning("Health check DB probe failed: %s", exc)
+                db_status = "degraded"
+                status_code = 503
+
+        payload = {
+            "status": "ok",
+            "version": version,
+            "db": db_status,
+            "worker_status": get_jump_monitor().get_worker_status(),
+        }
+        return web.json_response(payload, status=status_code)
 
     app = web.Application()
-    app.router.add_get('/health', _health)
-    app.router.add_get('/', lambda r: web.Response(text='Happy Jumper Bot Running'))
-    
+    app.router.add_get("/health", _health)
+    app.router.add_get("/", lambda r: web.Response(text="Happy Jumper Bot Running"))
+
     runner = web.AppRunner(app)
     await runner.setup()
-    
+
     # Railway injects PORT, or default to 3000
-    port = _safe_int_env('PORT', 3000)
-    site = web.TCPSite(runner, '0.0.0.0', port)
+    port = _safe_int_env("PORT", 3000)
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     log.info(f"Health check server started on port {port}")
 

@@ -3,7 +3,7 @@
 ## Routine operations
 
 1. Check service health endpoint:
-   - `GET /health` should return `ok`.
+   - `GET /health` should return JSON with `status: ok` and `db: ok`.
 2. Inspect Railway logs for worker errors and restart loops.
 3. Confirm key bot flows in Discord:
    - 99k/Happy Jump signup + start flow
@@ -14,8 +14,7 @@
 
 1. Check Railway deployment status and process restarts.
 2. Check `/health` endpoint:
-   - `db_not_initialized` => DB startup/config issue
-   - `db_unhealthy` => DB connectivity/query issue
+   - `db: degraded` => DB startup/config/query issue (inspect logs for `health_check`/`db_acquire_timeout`).
 3. Validate environment variables are present and non-empty.
 4. Review logs for recent exceptions (secrets are redacted by structured logging).
 
@@ -29,7 +28,7 @@
 ## Incident: background worker instability
 
 1. Look for repeated `Supervised task failed` lines.
-2. Confirm heartbeat logs from monitor tasks (`jump_monitor heartbeat ...`).
+2. Confirm heartbeat logs from workers (`event=worker_heartbeat`).
 3. Restart deployment to rehydrate worker state from DB.
 
 ## Safe restart procedure

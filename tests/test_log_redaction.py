@@ -1,4 +1,4 @@
-from utils.redaction import redact_text
+from utils.redaction import redact
 from utils.structured_log import log_event
 
 
@@ -17,7 +17,7 @@ def test_redact_text_masks_common_secret_patterns():
         "DATABASE_URL=postgresql://user:pass@host/db "
         "token=mfa.abcdefghijklmnopqrstuvwxyz1234567890"
     )
-    redacted = redact_text(text)
+    redacted = redact(text)
     assert "abc123" not in redacted
     assert "postgresql://" not in redacted
     assert "[REDACTED]" in redacted

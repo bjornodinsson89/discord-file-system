@@ -32,7 +32,11 @@ def test_parse_optional_session_start_interprets_naive_date_time_as_utc():
 
 @pytest.mark.parametrize(
     ("value", "min_seconds", "max_seconds"),
-    [("in 90m", 89 * 60, 91 * 60), ("in 2h", 119 * 60, 121 * 60), ("in 1d 3h", 26 * 3600, 28 * 3600)],
+    [
+        ("in 90m", 89 * 60, 91 * 60),
+        ("in 2h", 119 * 60, 121 * 60),
+        ("in 1d 3h", 26 * 3600, 28 * 3600),
+    ],
 )
 def test_parse_optional_session_start_supports_relative_inputs(value, min_seconds, max_seconds):
     before = datetime.now(timezone.utc).timestamp()

@@ -2,7 +2,14 @@ from utils.timezones import REGION_MAP, REGION_LABELS, get_region_timezones
 
 
 def test_timezone_regions_present():
-    assert set(REGION_MAP.keys()) == {"americas", "europe", "africa", "asia", "oceania", "utc_offsets"}
+    assert set(REGION_MAP.keys()) == {
+        "americas",
+        "europe",
+        "africa",
+        "asia",
+        "oceania",
+        "utc_offsets",
+    }
     assert set(REGION_LABELS.keys()) == set(REGION_MAP.keys())
 
 
