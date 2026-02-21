@@ -28,7 +28,7 @@ class TornItemsRepository(RepositoryBase):
         norm_names = [row[2] for row in rows]
         image_urls = [row[3] for row in rows]
 
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO torn_items(item_id, name, norm_name, image_url)
@@ -54,7 +54,7 @@ class TornItemsRepository(RepositoryBase):
         alias_norms = list(aliases.keys())
         item_ids = [aliases[alias] for alias in alias_norms]
 
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO torn_item_aliases(alias_norm, item_id)
@@ -69,7 +69,7 @@ class TornItemsRepository(RepositoryBase):
         return len(aliases)
 
     async def set_last_refresh_iso(self, iso: str) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO torn_items_meta(key, value, updated_at)
@@ -86,7 +86,7 @@ class TornItemsRepository(RepositoryBase):
         if not normalized:
             return 0
 
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             alias_match = await conn.fetchval(
                 """
                 SELECT item_id
@@ -112,7 +112,7 @@ class TornItemsRepository(RepositoryBase):
         return 0
 
     async def get_item_meta(self, item_id: int) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT item_id, name, image_url

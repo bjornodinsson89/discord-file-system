@@ -29,7 +29,7 @@ class OverdoseRepository(RepositoryBase):
         torn_log_id: str,
         meta: dict,
     ) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 result = await conn.execute(
                     """
@@ -54,7 +54,7 @@ class OverdoseRepository(RepositoryBase):
             return str(result).endswith("1")
 
     async def get_latest_for_user(self, *, guild_id: int, discord_id: int) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 row = await conn.fetchrow(
                     """

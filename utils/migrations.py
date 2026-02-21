@@ -6,6 +6,8 @@ from pathlib import Path
 
 import asyncpg
 
+import config
+
 log = logging.getLogger("happy_jumper.migrations")
 
 _MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
@@ -45,7 +47,7 @@ async def run_migrations(pool: asyncpg.Pool) -> None:
         log.info("No migration files found in %s", _MIGRATIONS_DIR)
         return
 
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
         lock_acquired = False
         try:
             await conn.execute("SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY)

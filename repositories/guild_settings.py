@@ -7,7 +7,7 @@ from .base import RepositoryBase
 
 class GuildSettingsRepository(RepositoryBase):
     async def get(self, guild_id: int) -> dict[str, Any] | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM public.guild_settings WHERE guild_id = $1", guild_id)
             return dict(row) if row else None
 
@@ -19,7 +19,7 @@ class GuildSettingsRepository(RepositoryBase):
         host_apps_admin_inbox_channel_id: int | None,
         insurance_apps_admin_inbox_channel_id: int | None,
     ) -> dict[str, Any]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO public.guild_settings (

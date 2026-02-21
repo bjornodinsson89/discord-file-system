@@ -18,7 +18,7 @@ class InsuranceRepository(RepositoryBase):
         forum_url: Optional[str],
         application_data: dict,
     ) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO insurance_providers
@@ -47,7 +47,7 @@ class InsuranceRepository(RepositoryBase):
 
     async def resolve_provider_application(self, application_id: int, decision: str, reviewer_discord_id: int, reason: Optional[str] = None) -> bool:
         status = "approved" if decision == "approve" else "rejected"
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE insurance_providers
@@ -73,7 +73,7 @@ class InsuranceRepository(RepositoryBase):
 
     async def expire_coverage(self) -> int:
         """Expire old coverage and return count of expired records."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.execute(
                 """
                 UPDATE insurance_coverage 
@@ -90,7 +90,7 @@ class InsuranceRepository(RepositoryBase):
 
     async def get_active_coverage(self) -> list[dict[str, Any]]:
         """Get all active coverage records for monitoring."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT c.coverage_id, c.policy_id, c.user_discord_id, c.user_torn_id,
@@ -106,7 +106,7 @@ class InsuranceRepository(RepositoryBase):
 
     async def update_coverage_last_check(self, coverage_id: int, timestamp: int) -> None:
         """Update last log timestamp for coverage."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE insurance_coverage 
@@ -119,7 +119,7 @@ class InsuranceRepository(RepositoryBase):
 
     async def check_existing_claim(self, coverage_id: int, log_id: int) -> bool:
         """Check if claim already exists for this log."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchval(
                 """
                 SELECT 1 FROM insurance_claims 
@@ -146,7 +146,7 @@ class InsuranceRepository(RepositoryBase):
         torn_log_evidence: Optional[str] = None
     ) -> int:
         """Create insurance claim and return claim_id."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO insurance_claims (
@@ -176,7 +176,7 @@ class InsuranceRepository(RepositoryBase):
 
     async def get_policy(self, policy_id: int) -> Optional[dict[str, Any]]:
         """Get policy by ID."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT policy_id, provider_id, guild_id, name, description,
@@ -192,7 +192,7 @@ class InsuranceRepository(RepositoryBase):
 
     async def get_provider_by_id(self, provider_id: int) -> Optional[dict[str, Any]]:
         """Get provider by ID."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT provider_id, discord_id, torn_user_id, company_name, guild_id,
@@ -207,7 +207,7 @@ class InsuranceRepository(RepositoryBase):
 
     async def get_claim(self, claim_id: int) -> Optional[dict[str, Any]]:
         """Get claim by ID."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT claim_id, coverage_id, policy_id, user_discord_id, provider_id,
@@ -224,7 +224,7 @@ class InsuranceRepository(RepositoryBase):
 
     async def list_pending_insurer_applications(self) -> list[dict[str, Any]]:
         """List all pending insurer applications for persistent views."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT provider_id as application_id, guild_id, discord_id, 
@@ -238,17 +238,17 @@ class InsuranceRepository(RepositoryBase):
 
 
     async def get_approved_providers_for_browser(self, guild_id: int) -> list[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM insurance_providers WHERE guild_id = $1 AND approval_status = 'approved'", guild_id)
             return [dict(r) for r in rows]
 
     async def get_provider_policies_for_browser(self, provider_id: int) -> list[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM insurance_policies WHERE provider_id = $1 AND active = TRUE", provider_id)
             return [dict(r) for r in rows]
 
     async def create_coverage(self, *, policy_id: int, user_discord_id: int, user_torn_id: int, xanax_covered: int, premium_paid: int, premium_type: str, payout_amount: int, reserved_until: datetime) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO insurance_coverage (policy_id, user_discord_id, user_torn_id, xanax_covered, premium_paid, premium_type, payout_amount, status, reserved_until, created_at)
@@ -260,22 +260,22 @@ class InsuranceRepository(RepositoryBase):
             return int(row['coverage_id'])
 
     async def get_coverage(self, coverage_id: int) -> Optional[dict[str, Any]]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM insurance_coverage WHERE coverage_id = $1", coverage_id)
             return dict(row) if row else None
 
     async def activate_coverage(self, coverage_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("UPDATE insurance_coverage SET status='active', activated_at = NOW() WHERE coverage_id=$1 RETURNING coverage_id", coverage_id)
             return row is not None
 
     async def set_claim_payout_items(self, claim_id: int, payout_items: list[dict[str, Any]], resolved_by: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("UPDATE insurance_claims SET payout_items=$2::jsonb, resolved_by=$3, resolved_at=NOW() WHERE claim_id=$1 RETURNING claim_id", claim_id, json.dumps(payout_items or [], separators=(",", ":"), ensure_ascii=False), resolved_by)
             return row is not None
 
     async def mark_claim_paid_with_log(self, claim_id: int, resolved_by: int, payout_log_id: int, payout_log_timestamp: int, payout_log_evidence: str) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE insurance_claims
@@ -288,12 +288,12 @@ class InsuranceRepository(RepositoryBase):
             return row is not None
 
     async def reject_claim(self, claim_id: int, resolved_by: int, reason: str) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("UPDATE insurance_claims SET status='rejected', resolved_by=$2, notes=$3, resolved_at=NOW() WHERE claim_id=$1 RETURNING claim_id", claim_id, resolved_by, reason)
             return row is not None
 
     async def add_host_rating(self, host_discord_id: int, rater_discord_id: int, session_id: int, rating: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO host_ratings (host_discord_id, rater_discord_id, session_id, rating, created_at)

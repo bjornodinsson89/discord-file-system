@@ -11,10 +11,15 @@
 Recommended hardening flags:
 
 - `DB_SSL=require`
-- `DB_SSL_VERIFY=true`
+- `DB_SSL_VERIFY=false` (or leave unset)
 - `DB_CONNECT_MAX_ATTEMPTS=20`
 - `DB_ACQUIRE_TIMEOUT=10`
 - `DB_STATEMENT_TIMEOUT_MS=15000`
+
+If you need strict certificate verification, use:
+- `DB_SSL=verify-ca` (CA validation, hostname check off), or
+- `DB_SSL=verify-full` (CA validation + hostname check on),
+and set `DB_SSL_CA_FILE` when your runtime does not already provide a CA bundle.
 
 ## 2) Database schema bootstrap / migrations
 
@@ -59,3 +64,13 @@ python bot.py
 - Re-deploy the previous successful Railway deployment.
 - If rollback includes schema-affecting release, ensure the previous app version is compatible with current schema before rollout.
 - Validate `/health` and a smoke command after rollback.
+
+
+## 6) TLS troubleshooting
+
+Symptom:
+- `ssl.SSLCertVerificationError: self-signed certificate in certificate chain`
+
+Fix options:
+- Railway default: set `DB_SSL=require` and `DB_SSL_VERIFY=false` (or unset `DB_SSL_VERIFY`).
+- Verified TLS: set `DB_SSL=verify-full` and provide `DB_SSL_CA_FILE` (or ensure `certifi` is installed and available).

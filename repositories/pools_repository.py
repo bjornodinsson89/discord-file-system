@@ -14,7 +14,7 @@ class PoolsRepository(RepositoryBase):
         announce_channel_id: int | None,
         panel_channel_id: int | None,
     ) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO xanax_pools (
@@ -40,7 +40,7 @@ class PoolsRepository(RepositoryBase):
         return int(row["id"])
 
     async def get_active_pool(self, guild_id: int) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT *
@@ -55,7 +55,7 @@ class PoolsRepository(RepositoryBase):
         return dict(row) if row else None
 
     async def list_active_pools(self, guild_id: int) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, created_by_discord_id, ticket_price_xanax, tickets_total, max_per_user,
@@ -69,12 +69,12 @@ class PoolsRepository(RepositoryBase):
         return [dict(row) for row in rows]
 
     async def get_pool(self, pool_id: int) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM xanax_pools WHERE id = $1", pool_id)
         return dict(row) if row else None
 
     async def set_panel_ref(self, pool_id: int, panel_channel_id: int, panel_message_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE xanax_pools
@@ -88,7 +88,7 @@ class PoolsRepository(RepositoryBase):
             )
 
     async def end_pool(self, pool_id: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE xanax_pools
@@ -99,7 +99,7 @@ class PoolsRepository(RepositoryBase):
             )
 
     async def add_entry(self, pool_id: int, user_discord_id: int, tickets: int) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO xanax_pool_entries(pool_id, user_discord_id, tickets)
@@ -111,7 +111,7 @@ class PoolsRepository(RepositoryBase):
             )
 
     async def get_user_tickets(self, pool_id: int, user_discord_id: int) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             value = await conn.fetchval(
                 """
                 SELECT COALESCE(SUM(tickets), 0)
@@ -124,7 +124,7 @@ class PoolsRepository(RepositoryBase):
         return int(value or 0)
 
     async def get_total_tickets(self, pool_id: int) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             value = await conn.fetchval(
                 """
                 SELECT COALESCE(SUM(tickets), 0)
@@ -136,7 +136,7 @@ class PoolsRepository(RepositoryBase):
         return int(value or 0)
 
     async def count_entries(self, pool_id: int) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             value = await conn.fetchval(
                 """
                 SELECT COUNT(*)
@@ -148,7 +148,7 @@ class PoolsRepository(RepositoryBase):
         return int(value or 0)
 
     async def list_entries(self, pool_id: int) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT user_discord_id, COALESCE(SUM(tickets), 0) AS tickets
@@ -162,7 +162,7 @@ class PoolsRepository(RepositoryBase):
         return [dict(row) for row in rows]
 
     async def get_active_pools_with_panels(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, panel_channel_id, panel_message_id

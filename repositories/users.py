@@ -11,7 +11,7 @@ log = logging.getLogger("happy_jumper.repositories.users")
 
 class UsersRepository(RepositoryBase):
     async def get_user_api_key(self, discord_id: int):
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM user_api_keys WHERE discord_id = $1",
                 discord_id,
@@ -19,7 +19,7 @@ class UsersRepository(RepositoryBase):
             return dict(row) if row else None
 
     async def list_all_user_api_keys(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT *
@@ -38,7 +38,7 @@ class UsersRepository(RepositoryBase):
         encrypted_key: str,
         timezone_name: str | None = None,
     ) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 await conn.execute(
                     """
@@ -125,7 +125,7 @@ class UsersRepository(RepositoryBase):
                     raise
 
     async def update_timezone(self, discord_id: int, timezone_name: str) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 await conn.execute(
                     """
@@ -143,7 +143,7 @@ class UsersRepository(RepositoryBase):
                 raise RuntimeError("Database migration missing: user_api_keys.timezone_name.") from exc
 
     async def update_torn_identity(self, *, discord_id: int, torn_user_id: int, torn_name: str | None) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             try:
                 await conn.execute(
                     """
@@ -172,7 +172,7 @@ class UsersRepository(RepositoryBase):
                 )
 
     async def delete_user_api_key(self, discord_id: int) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "DELETE FROM user_api_keys WHERE discord_id = $1 RETURNING discord_id",
                 discord_id,
