@@ -12,6 +12,13 @@ import config
 logger = logging.getLogger(__name__)
 
 
+def _acquire_with_optional_timeout(pool):
+    try:
+        return pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT)
+    except TypeError:
+        return pool.acquire()
+
+
 def _jsonb(v: Any) -> Optional[str]:
     if v is None:
         return None
@@ -319,7 +326,7 @@ class GuildSettingsRepository:
     async def _db_insert_or_get_settings(self, guild_id: int) -> Optional[dict[str, Any]]:
         if not hasattr(self._db, "pool"):
             return None
-        async with self._db.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+        async with _acquire_with_optional_timeout(self._db.pool) as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO public.guild_settings (guild_id)
@@ -336,7 +343,7 @@ class GuildSettingsRepository:
     ) -> Optional[dict[str, Any]]:
         if not hasattr(self._db, "pool"):
             return None
-        async with self._db.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+        async with _acquire_with_optional_timeout(self._db.pool) as conn:
             columns = ["guild_id"]
             placeholders = ["$1"]
             values: list[Any] = [guild_id]
@@ -372,7 +379,7 @@ class GuildSettingsRepository:
     ) -> Optional[dict[str, Any]]:
         if not hasattr(self._db, "pool"):
             return None
-        async with self._db.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+        async with _acquire_with_optional_timeout(self._db.pool) as conn:
             sets = []
             values = []
             for i, (key, value) in enumerate(fields.items(), 1):
@@ -458,7 +465,7 @@ class GuildSettingsRepository:
     async def ensure_guild_exists(self, guild_id: int):
         if not hasattr(self._db, "pool"):
             return
-        async with self._db.pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT) as conn:
+        async with _acquire_with_optional_timeout(self._db.pool) as conn:
             existing = await conn.fetchrow(
                 "SELECT guild_id FROM public.guild_settings WHERE guild_id = $1", guild_id
             )
