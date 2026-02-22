@@ -4,45 +4,46 @@ import io
 import random
 from pathlib import Path
 
-import aiohttp
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 CACHE_DIR = Path("data/casino_item_cache")
+BANNER_PATH = (
+    Path(__file__).resolve().parent.parent / "assets" / "banners" / "jump_slots_banner.png"
+)
 _MEMORY_CACHE: dict[int, Image.Image] = {}
+_BANNER_CACHE: Image.Image | None = None
 
 
 class SlotsRenderError(Exception):
     pass
 
 
-async def fetch_item_image(item_id: int) -> bytes:
-    url = f"https://www.torn.com/images/items/{int(item_id)}/small.png"
-    timeout = aiohttp.ClientTimeout(total=8)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                raise SlotsRenderError(f"Failed to fetch item image {item_id}: HTTP {resp.status}")
-            return await resp.read()
+def _get_banner() -> Image.Image | None:
+    global _BANNER_CACHE
+    if _BANNER_CACHE is not None:
+        return _BANNER_CACHE.copy()
+    if not BANNER_PATH.exists():
+        return None
+    img = Image.open(BANNER_PATH).convert("RGBA")
+    _BANNER_CACHE = img
+    return img.copy()
 
 
-async def get_item_image_small(item_id: int) -> Image.Image:
+async def get_item_image_small(item_id: int) -> Image.Image | None:
     item_id = int(item_id)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if item_id in _MEMORY_CACHE:
         return _MEMORY_CACHE[item_id].copy()
 
     disk_path = CACHE_DIR / f"{item_id}_small.png"
-    if disk_path.exists():
-        img = Image.open(disk_path).convert("RGBA")
-        _MEMORY_CACHE[item_id] = img.copy()
-        return img
+    if not disk_path.exists():
+        return None
 
-    content = await fetch_item_image(item_id)
-    disk_path.write_bytes(content)
     try:
-        img = Image.open(io.BytesIO(content)).convert("RGBA")
-    except Exception as exc:
-        raise SlotsRenderError(f"Invalid image content for item {item_id}") from exc
+        img = Image.open(disk_path).convert("RGBA")
+    except Exception:
+        return None
+
     _MEMORY_CACHE[item_id] = img.copy()
     return img
 
@@ -58,76 +59,119 @@ async def render_slots_png(
     spin_mask: list[bool] | None = None,
 ) -> bytes:
     try:
-        w, h = 640, 300
-        canvas = Image.new("RGBA", (w, h), (22, 23, 30, 255))
+        w, h = 820, 420
+        banner_h = 140
+        canvas = Image.new("RGBA", (w, h), (18, 19, 27, 255))
         draw = ImageDraw.Draw(canvas)
         font = ImageFont.load_default()
 
         draw.rounded_rectangle(
-            (10, 10, w - 10, h - 10),
+            (8, 8, w - 8, h - 8),
             radius=18,
-            fill=(36, 38, 50, 255),
+            fill=(31, 34, 46, 255),
             outline=(95, 100, 130, 255),
+            width=2,
+        )
+
+        banner = _get_banner()
+        if banner is not None:
+            ratio = w / banner.width
+            resized_h = max(banner_h, int(banner.height * ratio))
+            banner = banner.resize((w, resized_h), Image.Resampling.LANCZOS)
+            crop_top = max(0, (resized_h - banner_h) // 2)
+            banner = banner.crop((0, crop_top, w, crop_top + banner_h))
+            canvas.alpha_composite(banner, (0, 0))
+        else:
+            draw.rectangle((0, 0, w, banner_h), fill=(34, 36, 52, 255))
+            draw.text((w // 2 - 34, 58), "JUMP SLOTS", font=font, fill=(246, 246, 246, 255))
+
+        reel_top = banner_h + 18
+        reel_h = 170
+        reel_w = w - 80
+        reel_left = 40
+        reel_bottom = reel_top + reel_h
+
+        draw.rounded_rectangle(
+            (reel_left, reel_top, reel_left + reel_w, reel_bottom),
+            radius=16,
+            fill=(16, 17, 24, 255),
+            outline=(125, 132, 160, 255),
             width=3,
         )
 
-        draw.text((24, 20), "🎰 7️⃣7️⃣7️⃣  S L O T S  7️⃣7️⃣7️⃣ 🎰", font=font, fill=(245, 245, 245, 255))
-        draw.text((24, 44), f"Status: {status_text}", font=font, fill=(205, 210, 225, 255))
+        cell_w = reel_w // 3
+        for idx in (1, 2):
+            x = reel_left + idx * cell_w
+            draw.line((x, reel_top + 8, x, reel_bottom - 8), fill=(110, 116, 148, 255), width=2)
 
-        reel_top, reel_h, reel_w = 84, 120, 176
-        start_x = 24
         spin_mask = list(spin_mask or [False, False, False])[:3]
         while len(spin_mask) < 3:
             spin_mask.append(False)
 
-        for idx, item_id in enumerate(reels):
-            x0 = start_x + idx * (reel_w + 32)
-            x1 = x0 + reel_w
-            y0 = reel_top
-            y1 = y0 + reel_h
-            draw.rounded_rectangle(
-                (x0, y0, x1, y1),
-                radius=12,
-                fill=(16, 17, 24, 255),
-                outline=(115, 121, 154, 255),
-                width=2,
-            )
-            if spin_mask[idx]:
-                reel_layer = Image.new("RGBA", (reel_w, reel_h), (0, 0, 0, 0))
-                reel_symbols = [int(item_id), random.choice(reels), random.choice(reels)]
+        for idx, item_id in enumerate(reels[:3]):
+            cell_left = reel_left + idx * cell_w
 
+            base_img = await get_item_image_small(int(item_id))
+
+            if spin_mask[idx]:
+                reel_layer = Image.new("RGBA", (cell_w, reel_h), (0, 0, 0, 0))
+                reel_symbols = [int(item_id), random.choice(reels), random.choice(reels)]
                 offsets = (-26, 0, 26)
                 alphas = (100, 230, 100)
                 for sym_id, offset, alpha in zip(reel_symbols[:3], offsets, alphas, strict=False):
                     img = await get_item_image_small(sym_id)
+                    if img is None:
+                        continue
                     fitted = img.copy()
-                    fitted.thumbnail((88, 88))
+                    fitted.thumbnail((80, 80))
                     if alpha < 255:
                         alpha_channel = fitted.getchannel("A")
                         alpha_channel = alpha_channel.point(lambda p, a=alpha: (p * a) // 255)
                         fitted.putalpha(alpha_channel)
-                    px = (reel_w - fitted.width) // 2
+                    px = (cell_w - fitted.width) // 2
                     py = (reel_h - fitted.height) // 2 + offset
                     reel_layer.alpha_composite(fitted, (px, py))
 
                 reel_layer = reel_layer.filter(ImageFilter.GaussianBlur(radius=1))
-                canvas.alpha_composite(reel_layer, (x0, y0))
+                canvas.alpha_composite(reel_layer, (cell_left, reel_top))
             else:
-                img = await get_item_image_small(int(item_id))
-                fitted = img.copy()
-                fitted.thumbnail((88, 88))
-                px = x0 + (reel_w - fitted.width) // 2
-                py = y0 + (reel_h - fitted.height) // 2
-                canvas.alpha_composite(fitted, (px, py))
+                if base_img is not None:
+                    fitted = base_img.copy()
+                    fitted.thumbnail((80, 80))
+                    px = cell_left + (cell_w - fitted.width) // 2
+                    py = reel_top + (reel_h - fitted.height) // 2
+                    canvas.alpha_composite(fitted, (px, py))
 
+            if base_img is None:
+                ph_w, ph_h = 96, 96
+                ph_x = cell_left + (cell_w - ph_w) // 2
+                ph_y = reel_top + (reel_h - ph_h) // 2
+                draw.rounded_rectangle(
+                    (ph_x, ph_y, ph_x + ph_w, ph_y + ph_h),
+                    radius=12,
+                    fill=(46, 49, 67, 255),
+                    outline=(153, 158, 183, 255),
+                    width=2,
+                )
+                item_label = str(item_id)
+                draw.text((ph_x + 10, ph_y + 42), item_label, font=font, fill=(238, 238, 238, 255))
+
+        footer_top = reel_bottom + 16
         pool_value = f"{pool_tokens}.{pool_millis:03d}"
-        draw.text((24, 228), f"Bet: {bet}", font=font, fill=(240, 240, 240, 255))
-        draw.text((150, 228), f"Payout: {payout}", font=font, fill=(240, 240, 240, 255))
+        net = payout - bet
+        draw.text((40, footer_top), f"Status: {status_text}", font=font, fill=(240, 240, 240, 255))
+        draw.text((40, footer_top + 22), f"Bet: {bet}", font=font, fill=(240, 240, 240, 255))
+        draw.text((180, footer_top + 22), f"Payout: {payout}", font=font, fill=(240, 240, 240, 255))
+        draw.text((340, footer_top + 22), f"Net: {net}", font=font, fill=(240, 240, 240, 255))
         if balance is None:
-            draw.text((300, 228), "Balance: …", font=font, fill=(210, 210, 210, 255))
+            draw.text((460, footer_top + 22), "Balance: ...", font=font, fill=(210, 210, 210, 255))
         else:
-            draw.text((300, 228), f"Balance: {balance}", font=font, fill=(240, 240, 240, 255))
-        draw.text((24, 256), f"Jackpot Pool: {pool_value}", font=font, fill=(248, 214, 102, 255))
+            draw.text(
+                (460, footer_top + 22), f"Balance: {balance}", font=font, fill=(240, 240, 240, 255)
+            )
+        draw.text(
+            (40, footer_top + 44), f"Pool: {pool_value}", font=font, fill=(248, 214, 102, 255)
+        )
 
         out = io.BytesIO()
         canvas.save(out, format="PNG", optimize=True)
