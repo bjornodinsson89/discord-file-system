@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
 from PIL import Image
 
@@ -13,6 +12,19 @@ REEL_PATH = ROOT / "assets" / "slots" / "slot_reel.png"
 
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
+
+# Your reel cycle order (top->bottom in ONE cycle of the strip)
+REEL_CYCLE = [281, 865, 206, 394, 366]  # lion, mistletoe, xanax, cash/brick, edvd
+CYCLE_LEN = len(REEL_CYCLE)
+ITEM_H = 180
+SPEED = 6  # pixels per frame step; ConnorSwis used 6
+FRAME_COUNT = ITEM_H // SPEED  # 30 frames like ConnorSwis
+FRAME_DURATION_MS = 50  # ConnorSwis duration
+
+# Paste positions copied from ConnorSwis:
+# x = 25 + rw*col, y = 100 - (SPEED*i*s)
+X_START = 25
+Y_BASE = 100
 
 
 def _load_face() -> Image.Image:
@@ -29,82 +41,68 @@ def _load_reel() -> Image.Image:
     return _REEL
 
 
-@dataclass(frozen=True)
-class SlotsGeometry:
-    reel_x: Tuple[int, int, int]
-    reel_y_top: int
-    window_y: int
-    window_h: int
-    reel_w: int
-    reel_step: int
-
-
-DEFAULT_GEOM = SlotsGeometry(
-    reel_x=(120, 238, 356),
-    reel_y_top=230,
-    window_y=230,
-    window_h=110,
-    reel_w=96,
-    reel_step=110,
-)
-
-REEL_ORDER = [281, 865, 206, 394, 366]
-
-
-def symbol_index(item_id: int) -> int:
+def _symbol_index(item_id: int) -> int:
     try:
-        return REEL_ORDER.index(item_id)
+        return REEL_CYCLE.index(int(item_id))
     except ValueError:
         return 0
 
 
-def render_slots_gif(
-    final_reels: List[int],
-    *,
-    frames: int = 24,
-    duration_ms: int = 45,
-    geom: SlotsGeometry = DEFAULT_GEOM,
-) -> bytes:
+def _pick_stop_for_symbol(items: int, desired_symbol_index: int) -> int:
+    # Find an s in [1, items-1] such that (1+s)%CYCLE_LEN == desired_symbol_index
+    # Avoid s==items (ConnorSwis avoided last)
+    for s in range(1, items):
+        if (1 + s) % CYCLE_LEN == desired_symbol_index:
+            if s != items:
+                return s
+    return 1
+
+
+def render_slots_gif(final_reels: List[int]) -> bytes:
     face = _load_face()
     reel = _load_reel()
-    width, height = face.size
+    rw, rh = reel.size
 
-    reels = [int(v) for v in final_reels[:3]]
-    while len(reels) < 3:
-        reels.append(REEL_ORDER[0])
+    if rh % ITEM_H != 0:
+        cropped_h = rh - (rh % ITEM_H)
+        if cropped_h < ITEM_H:
+            raise ValueError(f"slot_reel.png height must be at least {ITEM_H}. Got rh={rh}.")
+        reel = reel.crop((0, 0, rw, cropped_h))
+        rh = cropped_h
+    items = rh // ITEM_H
 
-    idx = [symbol_index(reels[0]), symbol_index(reels[1]), symbol_index(reels[2])]
-    spins = 3
-    stop_px = [(i + spins * len(REEL_ORDER)) * geom.reel_step for i in idx]
+    # Determine s1/s2/s3 from backend reels so animation lands on correct final symbols
+    sym_idx = [
+        _symbol_index(final_reels[0]),
+        _symbol_index(final_reels[1]),
+        _symbol_index(final_reels[2]),
+    ]
+    s1 = _pick_stop_for_symbol(items, sym_idx[0])
+    s2 = _pick_stop_for_symbol(items, sym_idx[1])
+    s3 = _pick_stop_for_symbol(items, sym_idx[2])
 
-    imgs: List[Image.Image] = []
-    for frame_idx in range(frames):
-        t = (frame_idx + 1) / frames
-        ease = 1 - (1 - t) * (1 - t)
+    images: list[Image.Image] = []
 
-        bg = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        for col in range(3):
-            y_off = int(stop_px[col] * ease)
-            paste_y = geom.reel_y_top - y_off
-            bg.paste(reel, (geom.reel_x[col], paste_y), reel)
+    # Create frames exactly like ConnorSwis
+    for i in range(1, FRAME_COUNT + 1):
+        bg = Image.new("RGBA", face.size, color=(255, 255, 255, 255))
+        bg.paste(reel, (X_START + rw * 0, Y_BASE - (SPEED * i * s1)), reel)
+        bg.paste(reel, (X_START + rw * 1, Y_BASE - (SPEED * i * s2)), reel)
+        bg.paste(reel, (X_START + rw * 2, Y_BASE - (SPEED * i * s3)), reel)
 
-        window = bg.crop((0, geom.window_y, width, geom.window_y + geom.window_h))
-        bg2 = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        bg2.paste(window, (0, geom.window_y))
+        # Composite the face on top
+        bg.alpha_composite(face)
+        images.append(bg)
 
-        out = Image.alpha_composite(bg2, face)
-        out_p = out.convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
-        imgs.append(out_p)
-
-    buf = BytesIO()
-    imgs[0].save(
-        buf,
+    out = BytesIO()
+    images[0].save(
+        out,
         format="GIF",
         save_all=True,
-        append_images=imgs[1:],
-        duration=duration_ms,
+        append_images=images[1:],
+        duration=FRAME_DURATION_MS,
         loop=0,
         disposal=2,
         optimize=True,
     )
-    return buf.getvalue()
+    return out.getvalue()

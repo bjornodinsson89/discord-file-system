@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import random
 from io import BytesIO
 
 import discord
@@ -10,6 +9,7 @@ from services.casino_games.slots import CasinoSlotsService, SlotsCooldownError, 
 from utils.jump_slots_gif import render_slots_gif
 
 log = logging.getLogger("happy_jumper.casino.slots")
+
 
 class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
     bet = discord.ui.TextInput(label="Bet (tokens)", required=True, max_length=12)
@@ -68,32 +68,6 @@ class SlotsPlayView(discord.ui.View):
             return f"{self.pool_tokens}.{self.pool_millis:03d}"
         return str(self.pool_tokens)
 
-    def _emoji_map(self) -> dict[str, str]:
-        raw = self.config.get("emoji_map") or {}
-        if isinstance(raw, dict):
-            out: dict[str, str] = {}
-            for k, v in raw.items():
-                if k is None or v is None:
-                    continue
-                ks = str(k).strip()
-                vs = str(v).strip()
-                if ks and vs:
-                    out[ks] = vs
-            return out
-        return {}
-
-    def _sym_emoji_only(self, item_id: int) -> str:
-        em = self._emoji_map().get(str(item_id))
-        if em:
-            return em
-        return "❓"
-
-    def _reel_content(self, reels: list[int]) -> str:
-        e1 = self._sym_emoji_only(reels[0])
-        e2 = self._sym_emoji_only(reels[1])
-        e3 = self._sym_emoji_only(reels[2])
-        return f"{e1}     {e2}     {e3}"
-
     def _status_embed(self, jackpot_str: str, status: str, payout: int | None) -> discord.Embed:
         em = discord.Embed(title="🎰 7️⃣7️⃣7️⃣  S L O T S  7️⃣7️⃣7️⃣ 🎰")
         desc = f"**Jackpot:** `{jackpot_str}`\n\n**{status}**"
@@ -102,29 +76,11 @@ class SlotsPlayView(discord.ui.View):
         em.description = desc
         return em
 
-    def cosmetic_pick(self) -> int:
-        symbols = self.config.get("symbols") or []
-        pairs = []
-        for s in symbols:
-            try:
-                item_id = int(s.get("item_id"))
-                weight = int(s.get("weight", 0))
-                if weight > 0:
-                    pairs.append((item_id, weight))
-            except Exception:
-                continue
-        if not pairs:
-            return random.choice([281, 865, 206, 394, 366])
-        item_ids = [p[0] for p in pairs]
-        weights = [p[1] for p in pairs]
-        return random.choices(item_ids, weights=weights, k=1)[0]
-
     def build_embed(self) -> discord.Embed:
         return self._status_embed(self._pool_label(), "R E A D Y", None)
 
     def build_content(self) -> str:
-        reels = [self.cosmetic_pick(), self.cosmetic_pick(), self.cosmetic_pick()]
-        return self._reel_content(reels)
+        return ""
 
     async def refresh_state(self) -> None:
         snapshot = await self.service.get_balance_and_pool(self.guild_id, self.discord_id)
@@ -155,40 +111,45 @@ class SlotsPlayView(discord.ui.View):
 
             final_reels = [int(v) for v in (result.get("reels") or [])][:3]
             while len(final_reels) < 3:
-                final_reels.append(self.cosmetic_pick())
+                final_reels.append(281)
 
             payout = int(result["payout"])
             bet = int(result["bet"])
-            if payout <= 0:
+            win_type = str(result.get("win_type") or "")
+            if win_type == "jackpot":
+                final_status = "J A C K P O T 💰"
+            elif payout <= 0:
                 final_status = "L O S E ☹️"
             elif payout == bet:
                 final_status = "P U S H 😐"
             else:
                 final_status = "W I N ✅"
 
-            gif_bytes = render_slots_gif(final_reels, frames=24, duration_ms=45)
+            gif_bytes = render_slots_gif(final_reels)
+            gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
             result_embed = discord.Embed(
-                title="SLOTS",
+                title="JUMP SLOTS",
                 description=f"**{final_status}**\n**Payout:** `{payout}`",
             )
             result_embed.set_image(url="attachment://slots.gif")
-            gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
             await interaction.followup.send(embed=result_embed, file=gif_file, ephemeral=True)
 
             await interaction.edit_original_response(
-                content=self._reel_content(final_reels),
-                embed=self._status_embed(self._pool_label(), final_status, payout),
+                content="",
+                embed=self._status_embed(self._pool_label(), "R E A D Y", None),
                 view=self,
             )
 
             await self.service.post_jackpot_announce(interaction, result)
         except SlotsCooldownError as exc:
             await interaction.edit_original_response(
+                content="",
                 embed=self._status_embed(self._pool_label(), f"⏳ Wait {exc.remaining_seconds}s", None),
                 view=self,
             )
         except SlotsError as exc:
             await interaction.edit_original_response(
+                content="",
                 embed=self._status_embed(self._pool_label(), f"❌ {exc}", None),
                 view=self,
             )
@@ -203,7 +164,7 @@ class SlotsPlayView(discord.ui.View):
     async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer()
         await self.refresh_state()
-        await interaction.edit_original_response(content=self.build_content(), embed=self.build_embed(), view=self)
+        await interaction.edit_original_response(content="", embed=self.build_embed(), view=self)
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
     async def close(self, interaction: discord.Interaction, _: discord.ui.Button):
