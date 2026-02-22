@@ -127,7 +127,6 @@ class SlotsPlayView(discord.ui.View):
     async def spin(self, interaction: discord.Interaction, button: discord.ui.Button):
         button.disabled = True
         await interaction.response.defer()
-        await interaction.edit_original_response(view=self)
 
         try:
             result = await self.service.spin(self.guild_id, self.discord_id, self.current_bet)
@@ -152,10 +151,27 @@ class SlotsPlayView(discord.ui.View):
             else:
                 final_status = "W I N ✅"
 
+            idle_png = render_idle_png(self._roll_preview_reels())
+            idle_file = discord.File(BytesIO(idle_png), filename="slots.png")
+            await interaction.edit_original_response(
+                content="",
+                embed=self._status_embed(
+                    self._pool_label(),
+                    "S P I N N I N G …",
+                    None,
+                    "slots.png",
+                ),
+                view=self,
+                attachments=[idle_file],
+            )
+
             spin_frames = 84
             spin_duration_ms = 55
-            gif_bytes = render_slots_gif(
-                final_reels, frames=spin_frames, duration_ms=spin_duration_ms
+            gif_bytes = await asyncio.to_thread(
+                render_slots_gif,
+                final_reels,
+                spin_frames,
+                spin_duration_ms,
             )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
 
