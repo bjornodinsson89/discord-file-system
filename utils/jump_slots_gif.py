@@ -72,7 +72,11 @@ def render_slots_gif(final_reels: List[int]) -> bytes:
     items = rh // ITEM_H
 
     # Determine s1/s2/s3 from backend reels so animation lands on correct final symbols
-    sym_idx = [_symbol_index(final_reels[0]), _symbol_index(final_reels[1]), _symbol_index(final_reels[2])]
+    sym_idx = [
+        _symbol_index(final_reels[0]),
+        _symbol_index(final_reels[1]),
+        _symbol_index(final_reels[2]),
+    ]
     s1 = _pick_stop_for_symbol(items, sym_idx[0])
     s2 = _pick_stop_for_symbol(items, sym_idx[1])
     s3 = _pick_stop_for_symbol(items, sym_idx[2])
