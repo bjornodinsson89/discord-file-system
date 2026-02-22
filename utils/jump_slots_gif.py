@@ -199,6 +199,14 @@ def render_idle_png(reels: list[int]) -> bytes:
 def render_slots_gif(
     final_reels: list[int], frames: int = DEFAULT_FRAMES, duration_ms: int = DEFAULT_DURATION_MS
 ) -> bytes:
+    def _to_rgb(im: Image.Image) -> Image.Image:
+        if im.mode == "RGB":
+            return im
+        if im.mode == "RGBA":
+            bg = Image.new("RGBA", im.size, (0, 0, 0, 255))
+            return Image.alpha_composite(bg, im).convert("RGB")
+        return im.convert("RGB")
+
     face, tiled, window_box, cell_h_scaled, col_x = _layout()
     normalized = _normalize_reels(final_reels)
     targets = [_target_px(item, cell_h_scaled) for item in normalized]
@@ -225,10 +233,12 @@ def render_slots_gif(
         rgba_frame = _compose_frame(face, tiled, window_box, col_x, offsets)
         rgba_frames.append(rgba_frame)
 
-    palette_base = rgba_frames[0].convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
+    first_rgb = _to_rgb(rgba_frames[0])
+    palette_base = first_rgb.convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
     images: list[Image.Image] = [palette_base]
     for fr in rgba_frames[1:]:
-        images.append(fr.quantize(palette=palette_base))
+        fr_rgb = _to_rgb(fr)
+        images.append(fr_rgb.quantize(palette=palette_base))
 
     out = BytesIO()
     images[0].save(
