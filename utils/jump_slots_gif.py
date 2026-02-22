@@ -273,8 +273,8 @@ def render_idle_png(reels: list[int], max_w: int = 900) -> bytes:
 
 def render_slots_gif(
     final_reels: list[int],
-    frames: int = DEFAULT_FRAMES,
-    duration_ms: int = DEFAULT_DURATION_MS,
+    frames: int = 40,
+    duration_ms: int = 110,
     max_w: int = 900,
     palette_colors: int = 128,
 ) -> bytes:
@@ -322,7 +322,7 @@ def render_slots_gif(
         rgba_frames.append(_downscale(rgba_frame, max_w=max_w))
 
     first_rgb = _to_rgb(rgba_frames[0])
-    palette_colors_int = max(16, min(256, int(palette_colors)))
+    palette_colors_int = max(32, min(256, int(palette_colors)))
     palette_base = first_rgb.convert("P", palette=Image.Palette.ADAPTIVE, colors=palette_colors_int)
     images: list[Image.Image] = [palette_base]
     for fr in rgba_frames[1:]:
