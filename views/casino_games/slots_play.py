@@ -154,7 +154,9 @@ class SlotsPlayView(discord.ui.View):
 
             spin_frames = 84
             spin_duration_ms = 55
-            gif_bytes = render_slots_gif(final_reels, frames=spin_frames, duration_ms=spin_duration_ms)
+            gif_bytes = render_slots_gif(
+                final_reels, frames=spin_frames, duration_ms=spin_duration_ms
+            )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
 
             spinning_embed = self._status_embed(

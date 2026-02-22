@@ -180,7 +180,9 @@ def _compose_frame(
     return out
 
 
-def _crop_box(face_size: tuple[int, int], window_box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+def _crop_box(
+    face_size: tuple[int, int], window_box: tuple[int, int, int, int]
+) -> tuple[int, int, int, int]:
     face_w, face_h = face_size
     x0, y0, x1, y1 = window_box
     window_w = x1 - x0
@@ -205,7 +207,9 @@ def _crop_and_resize(frame: Image.Image, crop: tuple[int, int, int, int]) -> Ima
     return out
 
 
-def animation_seconds(frames: int = DEFAULT_FRAMES, duration_ms: int = DEFAULT_DURATION_MS) -> float:
+def animation_seconds(
+    frames: int = DEFAULT_FRAMES, duration_ms: int = DEFAULT_DURATION_MS
+) -> float:
     return max(0.25, (max(2, int(frames)) * int(duration_ms)) / 1000.0)
 
 
