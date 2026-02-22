@@ -100,7 +100,7 @@ def detect_cell_height(reel: Image.Image) -> int:
         if y - groups[-1] > 1:
             groups.append(y)
 
-    distances = [b - a for a, b in zip(groups, groups[1:]) if (b - a) > 0]
+    distances = [b - a for a, b in zip(groups, groups[1:], strict=False) if (b - a) > 0]
     if not distances:
         return max(1, h // CYCLE_LEN)
 
@@ -118,7 +118,6 @@ def _layout() -> tuple[Image.Image, Image.Image, tuple[int, int, int, int], int,
 
     x0, y0, x1, y1 = detect_window_box(face)
     window_w = x1 - x0
-    window_h = y1 - y0
 
     padding_x = int(window_w * 0.06)
     gap = int(window_w * 0.03)
