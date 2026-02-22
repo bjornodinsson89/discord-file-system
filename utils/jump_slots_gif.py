@@ -18,8 +18,8 @@ REEL_CYCLE = [394, 707, 281, 197, 366, 865, 206]
 REEL_PATH = ensure_reel_strip(REEL_CYCLE)
 CYCLE_LEN = len(REEL_CYCLE)
 DEFAULT_SPINS = 4
-DEFAULT_FRAMES = 30
-DEFAULT_DURATION_MS = 45
+DEFAULT_FRAMES = 84
+DEFAULT_DURATION_MS = 55
 
 
 def _load_face() -> Image.Image:
@@ -180,11 +180,42 @@ def _compose_frame(
     return out
 
 
+def _crop_box(face_size: tuple[int, int], window_box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    face_w, face_h = face_size
+    x0, y0, x1, y1 = window_box
+    window_w = x1 - x0
+    window_h = y1 - y0
+
+    pad_x = int(window_w * 0.10)
+    pad_top = int(window_h * 0.85)
+    pad_bottom = int(window_h * 0.45)
+    return (
+        max(0, x0 - pad_x),
+        max(0, y0 - pad_top),
+        min(face_w, x1 + pad_x),
+        min(face_h, y1 + pad_bottom),
+    )
+
+
+def _crop_and_resize(frame: Image.Image, crop: tuple[int, int, int, int]) -> Image.Image:
+    out = frame.crop(crop)
+    if out.width > 900:
+        new_h = max(1, round((900 / out.width) * out.height))
+        out = out.resize((900, new_h), Image.Resampling.LANCZOS)
+    return out
+
+
+def animation_seconds(frames: int = DEFAULT_FRAMES, duration_ms: int = DEFAULT_DURATION_MS) -> float:
+    return max(0.25, (max(2, int(frames)) * int(duration_ms)) / 1000.0)
+
+
 def render_idle_png(reels: list[int]) -> bytes:
     face, tiled, window_box, cell_h_scaled, col_x = _layout()
     normalized = _normalize_reels(reels)
     offsets = [_target_px(item, cell_h_scaled) for item in normalized]
     frame = _compose_frame(face, tiled, window_box, col_x, offsets)
+    crop = _crop_box(face.size, window_box)
+    frame = _crop_and_resize(frame, crop)
 
     out = BytesIO()
     frame.save(out, format="PNG")
@@ -197,6 +228,7 @@ def render_slots_gif(
     face, tiled, window_box, cell_h_scaled, col_x = _layout()
     normalized = _normalize_reels(final_reels)
     targets = [_target_px(item, cell_h_scaled) for item in normalized]
+    crop = _crop_box(face.size, window_box)
 
     total_frames = max(2, int(frames))
     stop_left = max(1, int(total_frames * 0.45))
@@ -219,6 +251,7 @@ def render_slots_gif(
             offsets.append(off)
 
         rgba_frame = _compose_frame(face, tiled, window_box, col_x, offsets)
+        rgba_frame = _crop_and_resize(rgba_frame, crop)
         images.append(rgba_frame.convert("P", palette=Image.Palette.ADAPTIVE))
 
     out = BytesIO()
@@ -227,7 +260,7 @@ def render_slots_gif(
         format="GIF",
         save_all=True,
         append_images=images[1:],
-        duration=max(40, min(50, int(duration_ms))),
+        duration=max(40, min(80, int(duration_ms))),
         loop=1,
         disposal=2,
         optimize=False,
