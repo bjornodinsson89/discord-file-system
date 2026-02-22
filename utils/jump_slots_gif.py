@@ -16,9 +16,10 @@ _REEL: Image.Image | None = None
 
 REEL_CYCLE = [394, 707, 281, 197, 366, 865, 206]
 CYCLE_LEN = len(REEL_CYCLE)
-DEFAULT_SPINS = 4
-DEFAULT_FRAMES = 30
-DEFAULT_DURATION_MS = 50
+BASE_SPINS = 2
+EXTRA_SPINS = 6
+DEFAULT_FRAMES = 40
+DEFAULT_DURATION_MS = 110
 
 
 def _load_face() -> Image.Image:
@@ -134,7 +135,7 @@ def _layout() -> tuple[Image.Image, Image.Image, tuple[int, int, int, int], int,
     cell_h = detect_cell_height(reel)
     cell_h_scaled = max(1, round(cell_h * scale))
 
-    repeats = 8
+    repeats = 12
     tiled = Image.new("RGBA", (col_w, reel_scaled.height * repeats), (0, 0, 0, 0))
     for idx in range(repeats):
         tiled.paste(reel_scaled, (0, idx * reel_scaled.height), reel_scaled)
@@ -157,9 +158,24 @@ def symbol_index(item_id: int) -> int:
     return REEL_CYCLE.index(item_id)
 
 
-def _target_px(item_id: int, cell_h_scaled: int, spins: int = DEFAULT_SPINS) -> int:
+def _base_target_px(item_id: int, cell_h_scaled: int) -> int:
     idx = symbol_index(item_id)
-    return (spins * CYCLE_LEN + idx) * cell_h_scaled
+    return (BASE_SPINS * CYCLE_LEN + idx) * cell_h_scaled
+
+
+def _start_target_px(item_id: int, cell_h_scaled: int) -> tuple[int, int]:
+    base = _base_target_px(item_id, cell_h_scaled)
+    extra = (EXTRA_SPINS * CYCLE_LEN) * cell_h_scaled
+    start = base + extra
+    return start, base
+
+
+def _downscale(im: Image.Image, max_w: int = 900) -> Image.Image:
+    if im.width <= max_w:
+        return im
+    ratio = max_w / im.width
+    new_h = max(1, round(im.height * ratio))
+    return im.resize((max_w, new_h), Image.Resampling.LANCZOS)
 
 
 def _compose_frame(
@@ -189,8 +205,9 @@ def animation_seconds(
 def render_idle_png(reels: list[int]) -> bytes:
     face, tiled, window_box, cell_h_scaled, col_x = _layout()
     normalized = _normalize_reels(reels)
-    offsets = [_target_px(item, cell_h_scaled) for item in normalized]
+    offsets = [_base_target_px(item, cell_h_scaled) for item in normalized]
     frame = _compose_frame(face, tiled, window_box, col_x, offsets)
+    frame = _downscale(frame)
     out = BytesIO()
     frame.save(out, format="PNG")
     return out.getvalue()
@@ -209,7 +226,9 @@ def render_slots_gif(
 
     face, tiled, window_box, cell_h_scaled, col_x = _layout()
     normalized = _normalize_reels(final_reels)
-    targets = [_target_px(item, cell_h_scaled) for item in normalized]
+    starts_bases = [_start_target_px(item, cell_h_scaled) for item in normalized]
+    starts = [start for start, _ in starts_bases]
+    bases = [base for _, base in starts_bases]
     total_frames = max(2, int(frames))
     stop_left = max(1, int(total_frames * 0.45))
     stop_mid = max(stop_left + 1, int(total_frames * 0.70))
@@ -221,24 +240,23 @@ def render_slots_gif(
         offsets: list[int] = []
         for reel_idx in range(3):
             stop_f = stops[reel_idx]
-            target_px = targets[reel_idx]
             if f >= stop_f:
-                off = target_px
+                off = bases[reel_idx]
             else:
                 p = f / stop_f
                 ease = 1 - (1 - p) ** 3
-                off = int(target_px * ease)
+                off = int(starts[reel_idx] - (starts[reel_idx] - bases[reel_idx]) * ease)
             offsets.append(off)
 
         rgba_frame = _compose_frame(face, tiled, window_box, col_x, offsets)
-        rgba_frames.append(rgba_frame)
+        rgba_frames.append(_downscale(rgba_frame))
 
     first_rgb = _to_rgb(rgba_frames[0])
-    palette_base = first_rgb.convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
+    palette_base = first_rgb.convert("P", palette=Image.Palette.ADAPTIVE, colors=128)
     images: list[Image.Image] = [palette_base]
     for fr in rgba_frames[1:]:
         fr_rgb = _to_rgb(fr)
-        images.append(fr_rgb.quantize(palette=palette_base))
+        images.append(fr_rgb.quantize(palette=palette_base, dither=Image.Dither.NONE))
 
     out = BytesIO()
     images[0].save(
