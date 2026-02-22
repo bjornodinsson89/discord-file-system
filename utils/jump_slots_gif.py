@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-from typing import List
+from typing import Iterable
 
 from PIL import Image
 
@@ -13,18 +13,13 @@ REEL_PATH = ROOT / "assets" / "slots" / "slot_reel.png"
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
 
-# Your reel cycle order (top->bottom in ONE cycle of the strip)
-REEL_CYCLE = [281, 865, 206, 394, 366]  # lion, mistletoe, xanax, cash/brick, edvd
+REEL_CYCLE = [281, 865, 206, 394, 366]
 CYCLE_LEN = len(REEL_CYCLE)
-ITEM_H = 180
-SPEED = 6  # pixels per frame step; ConnorSwis used 6
-FRAME_COUNT = ITEM_H // SPEED  # 30 frames like ConnorSwis
-FRAME_DURATION_MS = 50  # ConnorSwis duration
-
-# Paste positions copied from ConnorSwis:
-# x = 25 + rw*col, y = 100 - (SPEED*i*s)
-X_START = 25
-Y_BASE = 100
+WINDOW_BOX = (70, 180, 430, 290)  # x0, y0, x1, y1
+COL_GAP = 8
+PADDING_X = 12
+BASE_CELL_HEIGHT = 180
+DEFAULT_SPINS = 3
 
 
 def _load_face() -> Image.Image:
@@ -41,58 +36,91 @@ def _load_reel() -> Image.Image:
     return _REEL
 
 
-def _symbol_index(item_id: int) -> int:
+def symbol_index(item_id: int) -> int:
     try:
         return REEL_CYCLE.index(int(item_id))
     except ValueError:
         return 0
 
 
-def _pick_stop_for_symbol(items: int, desired_symbol_index: int) -> int:
-    # Find an s in [1, items-1] such that (1+s)%CYCLE_LEN == desired_symbol_index
-    # Avoid s==items (ConnorSwis avoided last)
-    for s in range(1, items):
-        if (1 + s) % CYCLE_LEN == desired_symbol_index:
-            if s != items:
-                return s
-    return 1
+def _stop_px(idx: int, cell_h: int, spins: int = DEFAULT_SPINS) -> int:
+    return (int(idx) + spins * CYCLE_LEN) * cell_h
 
 
-def render_slots_gif(final_reels: List[int]) -> bytes:
+def _layout() -> tuple[Image.Image, Image.Image, int, int, int, int, list[int]]:
     face = _load_face()
     reel = _load_reel()
-    rw, rh = reel.size
 
-    if rh % ITEM_H != 0:
-        cropped_h = rh - (rh % ITEM_H)
-        if cropped_h < ITEM_H:
-            raise ValueError(f"slot_reel.png height must be at least {ITEM_H}. Got rh={rh}.")
-        reel = reel.crop((0, 0, rw, cropped_h))
-        rh = cropped_h
-    items = rh // ITEM_H
+    x0, y0, x1, y1 = WINDOW_BOX
+    window_w = x1 - x0
+    col_w = max(1, (window_w - 2 * PADDING_X - 2 * COL_GAP) // 3)
+    scale = col_w / reel.width
+    scaled_h = max(1, int(reel.height * scale))
+    reel_scaled = reel.resize((col_w, scaled_h), Image.Resampling.LANCZOS)
+    cell_h = max(1, int(BASE_CELL_HEIGHT * scale))
 
-    # Determine s1/s2/s3 from backend reels so animation lands on correct final symbols
-    sym_idx = [
-        _symbol_index(final_reels[0]),
-        _symbol_index(final_reels[1]),
-        _symbol_index(final_reels[2]),
-    ]
-    s1 = _pick_stop_for_symbol(items, sym_idx[0])
-    s2 = _pick_stop_for_symbol(items, sym_idx[1])
-    s3 = _pick_stop_for_symbol(items, sym_idx[2])
+    repeats = DEFAULT_SPINS + 3
+    reel_tiled = Image.new("RGBA", (reel_scaled.width, reel_scaled.height * repeats), (0, 0, 0, 0))
+    for i in range(repeats):
+        reel_tiled.paste(reel_scaled, (0, i * reel_scaled.height), reel_scaled)
+
+    items = max(1, reel_scaled.height // cell_h)
+    col_x = [x0 + PADDING_X + i * (col_w + COL_GAP) for i in range(3)]
+    return face, reel_tiled, y0, cell_h, items, y1 - y0, col_x
+
+
+def _clip_to_window(layer: Image.Image) -> Image.Image:
+    clipped = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+    clipped.paste(layer.crop(WINDOW_BOX), WINDOW_BOX)
+    return clipped
+
+
+def _normalize_reels(reels3: Iterable[int]) -> list[int]:
+    out = [int(v) for v in reels3][:3]
+    while len(out) < 3:
+        out.append(REEL_CYCLE[0])
+    return out
+
+
+def render_idle_png(reels3: list[int]) -> bytes:
+    face, reel_scaled, window_y, cell_h, _items, _window_h, col_x = _layout()
+    reels = _normalize_reels(reels3)
+
+    reels_layer = Image.new("RGBA", face.size, (0, 0, 0, 0))
+    for i, symbol in enumerate(reels):
+        idx = symbol_index(symbol)
+        reels_layer.paste(reel_scaled, (col_x[i], window_y - _stop_px(idx, cell_h)), reel_scaled)
+
+    clipped = _clip_to_window(reels_layer)
+    frame = face.copy()
+    frame.alpha_composite(clipped)
+
+    out = BytesIO()
+    frame.save(out, format="PNG")
+    return out.getvalue()
+
+
+def render_slots_gif(final_reels: list[int], frames: int = 24, duration_ms: int = 45) -> bytes:
+    face, reel_scaled, window_y, cell_h, _items, _window_h, col_x = _layout()
+    reels = _normalize_reels(final_reels)
+    targets = [_stop_px(symbol_index(symbol), cell_h) for symbol in reels]
 
     images: list[Image.Image] = []
+    total_frames = max(2, int(frames))
 
-    # Create frames exactly like ConnorSwis
-    for i in range(1, FRAME_COUNT + 1):
-        bg = Image.new("RGBA", face.size, color=(255, 255, 255, 255))
-        bg.paste(reel, (X_START + rw * 0, Y_BASE - (SPEED * i * s1)), reel)
-        bg.paste(reel, (X_START + rw * 1, Y_BASE - (SPEED * i * s2)), reel)
-        bg.paste(reel, (X_START + rw * 2, Y_BASE - (SPEED * i * s3)), reel)
+    for frame_idx in range(total_frames):
+        t = frame_idx / (total_frames - 1)
+        ease = 1 - (1 - t) ** 3
 
-        # Composite the face on top
-        bg.alpha_composite(face)
-        images.append(bg)
+        reels_layer = Image.new("RGBA", face.size, (0, 0, 0, 0))
+        for col in range(3):
+            y_off = int(targets[col] * ease)
+            reels_layer.paste(reel_scaled, (col_x[col], window_y - y_off), reel_scaled)
+
+        clipped = _clip_to_window(reels_layer)
+        frame = face.copy()
+        frame.alpha_composite(clipped)
+        images.append(frame)
 
     out = BytesIO()
     images[0].save(
@@ -100,9 +128,9 @@ def render_slots_gif(final_reels: List[int]) -> bytes:
         format="GIF",
         save_all=True,
         append_images=images[1:],
-        duration=FRAME_DURATION_MS,
-        loop=0,
+        duration=max(1, int(duration_ms)),
+        loop=1,
         disposal=2,
-        optimize=True,
+        optimize=False,
     )
     return out.getvalue()
