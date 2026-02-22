@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 from statistics import median
+import math
 
 from PIL import Image
 
@@ -13,11 +14,23 @@ FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
 
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
+_LAYOUT_CACHE: (
+    tuple[
+        Image.Image,
+        Image.Image,
+        tuple[int, int, int, int],
+        int,
+        int,
+        int,
+        list[int],
+    ]
+    | None
+) = None
 
 REEL_CYCLE = [394, 707, 281, 197, 366, 865, 206]
 CYCLE_LEN = len(REEL_CYCLE)
 BASE_SPINS = 2
-EXTRA_SPINS = 6
+EXTRA_SPINS = 7
 DEFAULT_FRAMES = 40
 DEFAULT_DURATION_MS = 110
 
@@ -115,7 +128,19 @@ def detect_cell_height(reel: Image.Image) -> int:
     return detected
 
 
-def _layout() -> tuple[Image.Image, Image.Image, tuple[int, int, int, int], int, list[int]]:
+def _layout() -> tuple[
+    Image.Image,
+    Image.Image,
+    tuple[int, int, int, int],
+    int,
+    int,
+    int,
+    list[int],
+]:
+    global _LAYOUT_CACHE
+    if _LAYOUT_CACHE is not None:
+        return _LAYOUT_CACHE
+
     face = _load_face()
     reel = _load_reel()
 
@@ -135,14 +160,21 @@ def _layout() -> tuple[Image.Image, Image.Image, tuple[int, int, int, int], int,
     cell_h = detect_cell_height(reel)
     cell_h_scaled = max(1, round(cell_h * scale))
 
-    repeats = 12
+    window_h = y1 - y0
+    max_cells = (BASE_SPINS + EXTRA_SPINS + 2) * CYCLE_LEN
+    max_off = max_cells * cell_h_scaled
+    required_px = max_off + window_h + 4
+    repeats = max(4, math.ceil(required_px / reel_scaled.height))
+
     tiled = Image.new("RGBA", (col_w, reel_scaled.height * repeats), (0, 0, 0, 0))
     for idx in range(repeats):
         tiled.paste(reel_scaled, (0, idx * reel_scaled.height), reel_scaled)
 
     col_x0 = x0 + padding_x
     col_x = [col_x0 + i * (col_w + gap) for i in range(3)]
-    return face, tiled, (x0, y0, x1, y1), cell_h_scaled, col_x
+
+    _LAYOUT_CACHE = (face, tiled, (x0, y0, x1, y1), window_h, col_w, cell_h_scaled, col_x)
+    return _LAYOUT_CACHE
 
 
 def _normalize_reels(reels3: list[int]) -> list[int]:
@@ -178,20 +210,26 @@ def _downscale(im: Image.Image, max_w: int = 900) -> Image.Image:
     return im.resize((max_w, new_h), Image.Resampling.LANCZOS)
 
 
-def _compose_frame(
+def _compose_frame_fast(
     face: Image.Image,
     tiled: Image.Image,
     window_box: tuple[int, int, int, int],
+    window_h: int,
+    col_w: int,
     col_x: list[int],
     offsets: list[int],
 ) -> Image.Image:
-    x0, y0, x1, y1 = window_box
-    reels_layer = Image.new("RGBA", face.size, (0, 0, 0, 0))
-    for i, off in enumerate(offsets):
-        reels_layer.paste(tiled, (col_x[i], y0 - int(off)), tiled)
-
+    _, y0, _, _ = window_box
     reels_canvas = Image.new("RGBA", face.size, (0, 0, 0, 0))
-    reels_canvas.paste(reels_layer.crop((x0, y0, x1, y1)), (x0, y0))
+    max_y = max(0, tiled.height - window_h)
+    for i, off in enumerate(offsets):
+        y = int(off)
+        if y < 0:
+            y = 0
+        if y > max_y:
+            y = max_y
+        seg = tiled.crop((0, y, col_w, y + window_h))
+        reels_canvas.paste(seg, (col_x[i], y0), seg)
     out = Image.alpha_composite(reels_canvas, face)
     return out
 
@@ -203,10 +241,10 @@ def animation_seconds(
 
 
 def render_idle_png(reels: list[int]) -> bytes:
-    face, tiled, window_box, cell_h_scaled, col_x = _layout()
+    face, tiled, window_box, window_h, col_w, cell_h_scaled, col_x = _layout()
     normalized = _normalize_reels(reels)
     offsets = [_base_target_px(item, cell_h_scaled) for item in normalized]
-    frame = _compose_frame(face, tiled, window_box, col_x, offsets)
+    frame = _compose_frame_fast(face, tiled, window_box, window_h, col_w, col_x, offsets)
     frame = _downscale(frame)
     out = BytesIO()
     frame.save(out, format="PNG")
@@ -224,7 +262,7 @@ def render_slots_gif(
             return Image.alpha_composite(bg, im).convert("RGB")
         return im.convert("RGB")
 
-    face, tiled, window_box, cell_h_scaled, col_x = _layout()
+    face, tiled, window_box, window_h, col_w, cell_h_scaled, col_x = _layout()
     normalized = _normalize_reels(final_reels)
     starts_bases = [_start_target_px(item, cell_h_scaled) for item in normalized]
     starts = [start for start, _ in starts_bases]
@@ -248,7 +286,15 @@ def render_slots_gif(
                 off = int(starts[reel_idx] - (starts[reel_idx] - bases[reel_idx]) * ease)
             offsets.append(off)
 
-        rgba_frame = _compose_frame(face, tiled, window_box, col_x, offsets)
+        rgba_frame = _compose_frame_fast(
+            face,
+            tiled,
+            window_box,
+            window_h,
+            col_w,
+            col_x,
+            offsets,
+        )
         rgba_frames.append(_downscale(rgba_frame))
 
     first_rgb = _to_rgb(rgba_frames[0])
