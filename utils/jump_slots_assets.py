@@ -52,7 +52,9 @@ def build_reel_strip(symbol_ids: list[int], *, cell: int = 180, repeats: int = 6
 
 
 def ensure_reel_strip(symbol_ids: list[int] | None = None) -> Path:
-    ids = [394, 707, 281, 197, 366, 865, 206] if symbol_ids is None else [int(v) for v in symbol_ids]
+    ids = (
+        [394, 707, 281, 197, 366, 865, 206] if symbol_ids is None else [int(v) for v in symbol_ids]
+    )
     if GENERATED_REEL_PATH.exists():
         return GENERATED_REEL_PATH
     return build_reel_strip(ids)
