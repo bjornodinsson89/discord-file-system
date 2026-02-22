@@ -17,8 +17,8 @@ _REEL: Image.Image | None = None
 REEL_CYCLE = [394, 707, 281, 197, 366, 865, 206]
 CYCLE_LEN = len(REEL_CYCLE)
 DEFAULT_SPINS = 4
-DEFAULT_FRAMES = 84
-DEFAULT_DURATION_MS = 55
+DEFAULT_FRAMES = 30
+DEFAULT_DURATION_MS = 50
 
 
 def _load_face() -> Image.Image:
@@ -223,7 +223,7 @@ def render_slots_gif(
             offsets.append(off)
 
         rgba_frame = _compose_frame(face, tiled, window_box, col_x, offsets)
-        images.append(rgba_frame.convert("P", palette=Image.Palette.ADAPTIVE))
+        images.append(rgba_frame)
 
     out = BytesIO()
     images[0].save(
