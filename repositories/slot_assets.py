@@ -13,10 +13,7 @@ def normalize_combo(reels: list[int]) -> str:
 async def get_slot_asset_url(combo: str) -> str | None:
     db = get_database()
     async with db.acquire(operation="slot_assets_get_url") as conn:
-        row = await conn.fetchrow(
-            "SELECT url FROM slot_assets WHERE combo = $1",
-            str(combo),
-        )
+        row = await conn.fetchrow("SELECT url FROM slot_assets WHERE combo = $1", str(combo))
     if not row:
         return None
     value = row.get("url")
@@ -27,27 +24,33 @@ async def upsert_slot_asset(
     combo: str,
     url: str,
     message_id: int,
-    frames: int = 40,
-    duration_ms: int = 110,
+    frames: int,
+    duration_ms: int,
+    max_w: int,
+    palette_colors: int,
 ) -> None:
     db = get_database()
     async with db.acquire(operation="slot_assets_upsert") as conn:
         await conn.execute(
             """
-            INSERT INTO slot_assets (combo, url, message_id, frames, duration_ms)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO slot_assets (combo, url, message_id, frames, duration_ms, max_w, palette_colors)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (combo)
             DO UPDATE SET
                 url = EXCLUDED.url,
                 message_id = EXCLUDED.message_id,
                 frames = EXCLUDED.frames,
-                duration_ms = EXCLUDED.duration_ms
+                duration_ms = EXCLUDED.duration_ms,
+                max_w = EXCLUDED.max_w,
+                palette_colors = EXCLUDED.palette_colors
             """,
             str(combo),
             str(url),
             int(message_id),
             int(frames),
             int(duration_ms),
+            int(max_w),
+            int(palette_colors),
         )
 
 
