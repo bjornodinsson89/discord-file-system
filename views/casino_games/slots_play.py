@@ -179,6 +179,7 @@ class SlotsPlayView(discord.ui.View):
 
             await asyncio.sleep(animation_seconds(spin_frames, spin_duration_ms) + 0.15)
 
+            # Keep existing GIF attachment in place; only update status/payout text.
             result_embed = self._status_embed(self._pool_label(), final_status, payout, "slots.gif")
             await interaction.edit_original_response(
                 content="",
