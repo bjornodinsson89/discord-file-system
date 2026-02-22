@@ -208,7 +208,7 @@ def render_slots_gif(
     stop_right = max(stop_mid + 1, int(total_frames * 0.90))
     stops = [stop_left, stop_mid, stop_right]
 
-    images: list[Image.Image] = []
+    rgba_frames: list[Image.Image] = []
     for f in range(1, total_frames + 1):
         offsets: list[int] = []
         for reel_idx in range(3):
@@ -223,7 +223,12 @@ def render_slots_gif(
             offsets.append(off)
 
         rgba_frame = _compose_frame(face, tiled, window_box, col_x, offsets)
-        images.append(rgba_frame)
+        rgba_frames.append(rgba_frame)
+
+    palette_base = rgba_frames[0].convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
+    images: list[Image.Image] = [palette_base]
+    for fr in rgba_frames[1:]:
+        images.append(fr.quantize(palette=palette_base))
 
     out = BytesIO()
     images[0].save(
@@ -231,7 +236,7 @@ def render_slots_gif(
         format="GIF",
         save_all=True,
         append_images=images[1:],
-        duration=max(40, min(80, int(duration_ms))),
+        duration=max(40, min(150, int(duration_ms))),
         disposal=2,
         optimize=False,
     )
