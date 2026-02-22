@@ -188,9 +188,9 @@ def _crop_box(
     window_w = x1 - x0
     window_h = y1 - y0
 
-    pad_x = int(window_w * 0.10)
-    pad_top = int(window_h * 0.85)
-    pad_bottom = int(window_h * 0.45)
+    pad_x = int(window_w * 0.05)
+    pad_top = int(window_h * 0.55)
+    pad_bottom = int(window_h * 0.25)
     return (
         max(0, x0 - pad_x),
         max(0, y0 - pad_top),
@@ -201,9 +201,12 @@ def _crop_box(
 
 def _crop_and_resize(frame: Image.Image, crop: tuple[int, int, int, int]) -> Image.Image:
     out = frame.crop(crop)
-    if out.width > 900:
-        new_h = max(1, round((900 / out.width) * out.height))
-        out = out.resize((900, new_h), Image.Resampling.LANCZOS)
+    if out.width < 1200:
+        new_h = max(1, round((1200 / out.width) * out.height))
+        out = out.resize((1200, new_h), Image.Resampling.LANCZOS)
+    elif out.width > 1600:
+        new_h = max(1, round((1600 / out.width) * out.height))
+        out = out.resize((1600, new_h), Image.Resampling.LANCZOS)
     return out
 
 
@@ -265,7 +268,6 @@ def render_slots_gif(
         save_all=True,
         append_images=images[1:],
         duration=max(40, min(80, int(duration_ms))),
-        loop=1,
         disposal=2,
         optimize=False,
     )
