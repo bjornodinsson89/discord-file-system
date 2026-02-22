@@ -37,6 +37,14 @@ def safe_int_env(name: str, default: int | None = None, *, allow_blank: bool = T
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = safe_int_env("GUILD_ID", default=None, allow_blank=True)
 CLEAN_COMMANDS = _env_flag("CLEAN_COMMANDS", False)
+SLOT_ASSETS_GUILD_ID = safe_int_env("SLOT_ASSETS_GUILD_ID", default=None, allow_blank=True)
+SLOT_ASSETS_CHANNEL_ID = safe_int_env("SLOT_ASSETS_CHANNEL_ID", default=None, allow_blank=True)
+SLOT_ASSETS_ENABLED = _env_flag("SLOT_ASSETS_ENABLED", True)
+
+
+def slot_assets_ready() -> bool:
+    return bool(SLOT_ASSETS_ENABLED and SLOT_ASSETS_GUILD_ID and SLOT_ASSETS_CHANNEL_ID)
+
 
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = safe_int_env("DB_PORT", default=6543, allow_blank=True)

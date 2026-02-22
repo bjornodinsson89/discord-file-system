@@ -7,8 +7,17 @@ from io import BytesIO
 
 import discord
 
+import config
+from repositories.slot_assets import get_slot_asset_url, normalize_combo
 from services.casino_games.slots import CasinoSlotsService, SlotsCooldownError, SlotsError
-from utils.jump_slots_gif import REEL_CYCLE, animation_seconds, render_idle_png, render_slots_gif
+from utils.jump_slots_gif import (
+    REEL_CYCLE,
+    SPIN_DURATION_MS,
+    SPIN_FRAMES,
+    animation_seconds,
+    render_idle_png,
+    render_slots_gif,
+)
 
 log = logging.getLogger("happy_jumper.casino.slots")
 
@@ -93,14 +102,15 @@ class SlotsPlayView(discord.ui.View):
         return discord.File(BytesIO(idle_png), filename="slots.png")
 
     def _status_embed(
-        self, jackpot_str: str, status: str, payout: int | None, image_name: str
+        self, jackpot_str: str, status: str, payout: int | None, image_name: str | None
     ) -> discord.Embed:
         em = discord.Embed(title="🎰 7️⃣7️⃣7️⃣  S L O T S  7️⃣7️⃣7️⃣ 🎰")
         desc = f"**Jackpot:** `{jackpot_str}`\n\n**{status}**"
         if payout is not None:
             desc += f"\n**Payout:** `{payout}`"
         em.description = desc
-        em.set_image(url=f"attachment://{image_name}")
+        if image_name:
+            em.set_image(url=f"attachment://{image_name}")
         return em
 
     def build_embed(self) -> discord.Embed:
@@ -151,6 +161,44 @@ class SlotsPlayView(discord.ui.View):
             else:
                 final_status = "W I N ✅"
 
+            combo = normalize_combo(final_reels)
+            slot_url: str | None = None
+            if config.slot_assets_ready():
+                slot_url = await get_slot_asset_url(combo)
+
+            if slot_url is not None:
+                try:
+                    spinning_embed = self._status_embed(
+                        self._pool_label(), "S P I N N I N G …", None, None
+                    )
+                    spinning_embed.set_image(url=slot_url)
+                    await interaction.edit_original_response(
+                        content="",
+                        embed=spinning_embed,
+                        view=self,
+                    )
+
+                    await asyncio.sleep(animation_seconds(SPIN_FRAMES, SPIN_DURATION_MS) + 0.15)
+
+                    result_embed = self._status_embed(
+                        self._pool_label(), final_status, payout, None
+                    )
+                    result_embed.set_image(url=slot_url)
+                    await interaction.edit_original_response(
+                        content="",
+                        embed=result_embed,
+                        view=self,
+                    )
+
+                    await asyncio.sleep(0.25)
+                    await self.service.post_jackpot_announce(interaction, result)
+                    return
+                except discord.HTTPException:
+                    log.warning("slot_assets_url_failed combo=%s", combo, exc_info=True)
+
+            if config.slot_assets_ready() and slot_url is None:
+                log.warning("slot_assets_cache_miss combo=%s", combo)
+
             spinning_embed = self._status_embed(
                 self._pool_label(), "S P I N N I N G …", None, "slots.png"
             )
@@ -162,11 +210,9 @@ class SlotsPlayView(discord.ui.View):
                 attachments=[idle_file],
             )
 
-            spin_frames = 40
-            spin_duration_ms = 110
             gif_bytes = await asyncio.to_thread(
                 lambda: render_slots_gif(
-                    final_reels, frames=spin_frames, duration_ms=spin_duration_ms
+                    final_reels, frames=SPIN_FRAMES, duration_ms=SPIN_DURATION_MS
                 )
             )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
@@ -181,9 +227,8 @@ class SlotsPlayView(discord.ui.View):
                 attachments=[gif_file],
             )
 
-            await asyncio.sleep(animation_seconds(spin_frames, spin_duration_ms) + 0.15)
+            await asyncio.sleep(animation_seconds(SPIN_FRAMES, SPIN_DURATION_MS) + 0.15)
 
-            # Keep existing GIF attachment in place; only update status/payout text.
             result_embed = self._status_embed(self._pool_label(), final_status, payout, "slots.gif")
             await interaction.edit_original_response(
                 content="",
