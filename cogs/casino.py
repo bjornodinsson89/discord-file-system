@@ -151,21 +151,18 @@ class CasinoCog(commands.Cog):
                 for q in QUALITY_LADDER:
                     try:
                         gif_bytes = await asyncio.to_thread(
-                            lambda: render_slots_gif(
-                                reels,
+                            lambda _reels=reels, _q=q: render_slots_gif(
+                                _reels,
                                 frames=SPIN_FRAMES,
                                 duration_ms=SPIN_DURATION_MS,
-                                max_w=int(q["max_w"]),
-                                palette_colors=int(q["palette"]),
+                                max_w=int(_q["max_w"]),
+                                palette_colors=int(_q["palette"]),
                             )
                         )
 
                         if len(gif_bytes) > MAX_ASSET_UPLOAD_BYTES:
                             raise ValueError(
-                                (
-                                    f"gif_too_large bytes={len(gif_bytes)} "
-                                    f"max={MAX_ASSET_UPLOAD_BYTES}"
-                                )
+                                f"gif_too_large bytes={len(gif_bytes)} max={MAX_ASSET_UPLOAD_BYTES}"
                             )
 
                         file = discord.File(
@@ -188,9 +185,8 @@ class CasinoCog(commands.Cog):
                         break
                     except discord.HTTPException as e:
                         last_err = e
-                        if (
-                            getattr(e, "status", None) == 413
-                            or "Request entity too large" in str(e)
+                        if getattr(e, "status", None) == 413 or "Request entity too large" in str(
+                            e
                         ):
                             continue
                         raise
@@ -217,11 +213,7 @@ class CasinoCog(commands.Cog):
                         f"Progress: processed={processed} uploaded={uploaded} "
                         f"skipped={skipped} failed={len(failed)}"
                     )
-                    + (
-                        f" last_error={first_error_hint[:200]}"
-                        if first_error_hint
-                        else ""
-                    ),
+                    + (f" last_error={first_error_hint[:200]}" if first_error_hint else ""),
                     ephemeral=True,
                 )
 

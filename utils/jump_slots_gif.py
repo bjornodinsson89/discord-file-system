@@ -323,9 +323,7 @@ def render_slots_gif(
 
     first_rgb = _to_rgb(rgba_frames[0])
     palette_colors_int = max(16, min(256, int(palette_colors)))
-    palette_base = first_rgb.convert(
-        "P", palette=Image.Palette.ADAPTIVE, colors=palette_colors_int
-    )
+    palette_base = first_rgb.convert("P", palette=Image.Palette.ADAPTIVE, colors=palette_colors_int)
     images: list[Image.Image] = [palette_base]
     for fr in rgba_frames[1:]:
         fr_rgb = _to_rgb(fr)
