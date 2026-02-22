@@ -23,6 +23,7 @@ _LAYOUT_CACHE: (
         int,
         int,
         list[int],
+        tuple[int, int, int, int],
     ]
     | None
 ) = None
@@ -138,6 +139,7 @@ def _layout() -> tuple[
     int,
     int,
     list[int],
+    tuple[int, int, int, int],
 ]:
     global _LAYOUT_CACHE
     if _LAYOUT_CACHE is not None:
@@ -147,6 +149,10 @@ def _layout() -> tuple[
     reel = _load_reel()
 
     x0, y0, x1, y1 = detect_window_box(face)
+    sample_x = min(face.width - 1, x0 + 10)
+    sample_y = min(face.height - 1, y0 + 10)
+    bg_px = face.getpixel((sample_x, sample_y))
+    bg_rgba = (int(bg_px[0]), int(bg_px[1]), int(bg_px[2]), 255)
     window_w = x1 - x0
 
     # Slightly reduce horizontal padding/gap so reel symbols appear a bit larger.
@@ -176,7 +182,16 @@ def _layout() -> tuple[
     col_x0 = x0 + padding_x
     col_x = [col_x0 + i * (col_w + gap) for i in range(3)]
 
-    _LAYOUT_CACHE = (face, tiled, (x0, y0, x1, y1), window_h, col_w, cell_h_scaled, col_x)
+    _LAYOUT_CACHE = (
+        face,
+        tiled,
+        (x0, y0, x1, y1),
+        window_h,
+        col_w,
+        cell_h_scaled,
+        col_x,
+        bg_rgba,
+    )
     return _LAYOUT_CACHE
 
 
@@ -205,9 +220,10 @@ def _start_target_px(item_id: int, cell_h_scaled: int) -> tuple[int, int]:
     return start, base
 
 
-def _downscale(im: Image.Image, max_w: int = 0) -> Image.Image:
-    # Keep full-resolution frames by default for HQ output.
-    if max_w <= 0 or im.width <= max_w:
+def _downscale(im: Image.Image, max_w: int) -> Image.Image:
+    if max_w <= 0:
+        return im
+    if im.width <= max_w:
         return im
     ratio = max_w / im.width
     new_h = max(1, round(im.height * ratio))
@@ -244,29 +260,33 @@ def animation_seconds(
     return max(0.25, (max(2, int(frames)) * int(duration_ms)) / 1000.0)
 
 
-def render_idle_png(reels: list[int]) -> bytes:
-    face, tiled, window_box, window_h, col_w, cell_h_scaled, col_x = _layout()
+def render_idle_png(reels: list[int], max_w: int = 900) -> bytes:
+    face, tiled, window_box, window_h, col_w, cell_h_scaled, col_x, _ = _layout()
     normalized = _normalize_reels(reels)
     offsets = [_base_target_px(item, cell_h_scaled) for item in normalized]
     frame = _compose_frame_fast(face, tiled, window_box, window_h, col_w, col_x, offsets)
-    frame = _downscale(frame)
+    frame = _downscale(frame, max_w=max_w)
     out = BytesIO()
     frame.save(out, format="PNG")
     return out.getvalue()
 
 
 def render_slots_gif(
-    final_reels: list[int], frames: int = DEFAULT_FRAMES, duration_ms: int = DEFAULT_DURATION_MS
+    final_reels: list[int],
+    frames: int = DEFAULT_FRAMES,
+    duration_ms: int = DEFAULT_DURATION_MS,
+    max_w: int = 900,
+    palette_colors: int = 128,
 ) -> bytes:
     def _to_rgb(im: Image.Image) -> Image.Image:
         if im.mode == "RGB":
             return im
         if im.mode == "RGBA":
-            bg = Image.new("RGBA", im.size, (0, 0, 0, 255))
+            bg = Image.new("RGBA", im.size, bg_rgba)
             return Image.alpha_composite(bg, im).convert("RGB")
         return im.convert("RGB")
 
-    face, tiled, window_box, window_h, col_w, cell_h_scaled, col_x = _layout()
+    face, tiled, window_box, window_h, col_w, cell_h_scaled, col_x, bg_rgba = _layout()
     normalized = _normalize_reels(final_reels)
     starts_bases = [_start_target_px(item, cell_h_scaled) for item in normalized]
     starts = [start for start, _ in starts_bases]
@@ -299,10 +319,13 @@ def render_slots_gif(
             col_x,
             offsets,
         )
-        rgba_frames.append(_downscale(rgba_frame))
+        rgba_frames.append(_downscale(rgba_frame, max_w=max_w))
 
     first_rgb = _to_rgb(rgba_frames[0])
-    palette_base = first_rgb.convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
+    palette_colors_int = max(16, min(256, int(palette_colors)))
+    palette_base = first_rgb.convert(
+        "P", palette=Image.Palette.ADAPTIVE, colors=palette_colors_int
+    )
     images: list[Image.Image] = [palette_base]
     for fr in rgba_frames[1:]:
         fr_rgb = _to_rgb(fr)
