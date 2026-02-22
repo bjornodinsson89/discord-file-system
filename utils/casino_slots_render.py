@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import io
+import logging
 import random
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-CACHE_DIR = Path("data/casino_item_cache")
-BANNER_PATH = (
-    Path(__file__).resolve().parent.parent / "assets" / "banners" / "jump_slots_banner.png"
-)
+ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "casino_items"
+BANNER_PATH = Path(__file__).resolve().parent.parent / "assets" / "banners" / "jump_slots_banner.png"
 _MEMORY_CACHE: dict[int, Image.Image] = {}
 _BANNER_CACHE: Image.Image | None = None
+log = logging.getLogger("happy_jumper.casino.slots.render")
 
 
 class SlotsRenderError(Exception):
@@ -31,16 +31,16 @@ def _get_banner() -> Image.Image | None:
 
 async def get_item_image_small(item_id: int) -> Image.Image | None:
     item_id = int(item_id)
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if item_id in _MEMORY_CACHE:
         return _MEMORY_CACHE[item_id].copy()
 
-    disk_path = CACHE_DIR / f"{item_id}_small.png"
-    if not disk_path.exists():
+    asset_path = ASSET_DIR / f"{item_id}.png"
+    if not asset_path.exists():
+        log.debug("slots.icon_missing item_id=%s path=%s", item_id, asset_path)
         return None
 
     try:
-        img = Image.open(disk_path).convert("RGBA")
+        img = Image.open(asset_path).convert("RGBA")
     except Exception:
         return None
 

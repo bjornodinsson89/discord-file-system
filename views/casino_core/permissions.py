@@ -9,14 +9,19 @@ from utils import GuildSettingsRepository, get_database
 async def is_casino_admin(interaction: discord.Interaction, guild_id: int | None) -> bool:
     if not guild_id:
         return False
+
+    settings = await GuildSettingsRepository(get_database()).get_or_create(guild_id)
+    house = get_house_config(settings)
+    house_discord_id = int(house.get("house_discord_id") or 0)
+    if house_discord_id and int(interaction.user.id) == house_discord_id:
+        return True
+
     member = interaction.user
     if not isinstance(member, discord.Member):
         return False
     if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
         return True
 
-    settings = await GuildSettingsRepository(get_database()).get_or_create(guild_id)
-    house = get_house_config(settings)
     admin_role_id = int(house.get("casino_admin_role_id") or 0)
     if not admin_role_id:
         return False
