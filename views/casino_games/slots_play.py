@@ -152,7 +152,13 @@ class SlotsPlayView(discord.ui.View):
                 final_status = "W I N ✅"
 
             spinning_embed = self._status_embed(self._pool_label(), "S P I N N I N G …", None, "slots.png")
-            await interaction.edit_original_response(content="", embed=spinning_embed, view=self)
+            idle_file = self._idle_file()
+            await interaction.edit_original_response(
+                content="",
+                embed=spinning_embed,
+                view=self,
+                attachments=[idle_file],
+            )
 
             spin_frames = 40
             spin_duration_ms = 110
