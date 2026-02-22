@@ -44,11 +44,11 @@ DEFAULT_SLOTS_CONFIG = {
     "animation_lock_mid": 9,
     "animation_lock_right": 12,
     "symbols": [
-        {"item_id": 281, "name": "Lion Plushie", "weight": 24},
-        {"item_id": 865, "name": "Poison Mistletoe", "weight": 22},
-        {"item_id": 206, "name": "Xanax", "weight": 8},
-        {"item_id": 394, "name": "Brick", "weight": 30},
-        {"item_id": 366, "name": "Erotic DVD", "weight": 16},
+        {"item_id": 366, "name": "Erotic DVD", "weight": 30},
+        {"item_id": 281, "name": "Lion Plushie", "weight": 18},
+        {"item_id": 865, "name": "Poison Mistletoe", "weight": 12},
+        {"item_id": 197, "name": "Ecstasy", "weight": 10},
+        {"item_id": 206, "name": "Xanax", "weight": 6},
     ],
     "payouts": {
         "triple": {"394": 3.0, "707": 3.5, "274": 5.0, "281": 5.0, "197": 7.0, "366": 9.0, "865": 15.0},

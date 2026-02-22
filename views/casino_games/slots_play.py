@@ -34,9 +34,10 @@ class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
             return
 
         self.view.current_bet = value
+        await interaction.response.defer()
         await self.view.refresh_state()
         idle_file = self.view._idle_file()
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content="",
             embed=self.view._status_embed(self.view._pool_label(), "R E A D Y", None, "slots.png"),
             view=self.view,
