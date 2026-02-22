@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 from io import BytesIO
@@ -7,7 +8,7 @@ from io import BytesIO
 import discord
 
 from services.casino_games.slots import CasinoSlotsService, SlotsCooldownError, SlotsError
-from utils.jump_slots_gif import REEL_CYCLE, render_idle_png, render_slots_gif
+from utils.jump_slots_gif import REEL_CYCLE, animation_seconds, render_idle_png, render_slots_gif
 
 log = logging.getLogger("happy_jumper.casino.slots")
 
@@ -151,8 +152,28 @@ class SlotsPlayView(discord.ui.View):
             else:
                 final_status = "W I N ✅"
 
-            gif_bytes = render_slots_gif(final_reels)
+            spin_frames = 84
+            spin_duration_ms = 55
+            gif_bytes = render_slots_gif(
+                final_reels, frames=spin_frames, duration_ms=spin_duration_ms
+            )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
+
+            spinning_embed = self._status_embed(
+                self._pool_label(),
+                "S P I N N I N G …",
+                None,
+                "slots.gif",
+            )
+            await interaction.edit_original_response(
+                content="",
+                embed=spinning_embed,
+                view=self,
+                attachments=[gif_file],
+            )
+
+            await asyncio.sleep(animation_seconds(spin_frames, spin_duration_ms) + 0.15)
+
             result_embed = self._status_embed(
                 self._pool_label(),
                 final_status,
@@ -163,7 +184,6 @@ class SlotsPlayView(discord.ui.View):
                 content="",
                 embed=result_embed,
                 view=self,
-                attachments=[gif_file],
             )
 
             await self.service.post_jackpot_announce(interaction, result)
