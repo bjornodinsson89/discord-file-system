@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import random
+from io import BytesIO
 
 import discord
 
 from services.casino_games.slots import CasinoSlotsService, SlotsCooldownError, SlotsError
+from utils.jump_slots_gif import render_slots_gif
 
 log = logging.getLogger("happy_jumper.casino.slots")
 
@@ -113,7 +114,7 @@ class SlotsPlayView(discord.ui.View):
             except Exception:
                 continue
         if not pairs:
-            return random.choice([206, 366, 197, 865, 394, 707, 274, 281])
+            return random.choice([281, 865, 206, 394, 366])
         item_ids = [p[0] for p in pairs]
         weights = [p[1] for p in pairs]
         return random.choices(item_ids, weights=weights, k=1)[0]
@@ -156,46 +157,27 @@ class SlotsPlayView(discord.ui.View):
             while len(final_reels) < 3:
                 final_reels.append(self.cosmetic_pick())
 
-            total_frames = 8
-            delay_ms = 90
-            lock_left = 3
-            lock_mid = 5
-            lock_right = 7
-
-            if int(result["payout"]) <= 0:
+            payout = int(result["payout"])
+            bet = int(result["bet"])
+            if payout <= 0:
                 final_status = "L O S E ☹️"
-            elif int(result["payout"]) == int(result["bet"]):
+            elif payout == bet:
                 final_status = "P U S H 😐"
             else:
                 final_status = "W I N ✅"
 
-            for i in range(1, total_frames + 1):
-                if i < lock_left:
-                    locked = [False, False, False]
-                elif i < lock_mid:
-                    locked = [True, False, False]
-                elif i < lock_right:
-                    locked = [True, True, False]
-                else:
-                    locked = [True, True, True]
-
-                reels_for_frame = [
-                    final_reels[0] if locked[0] else self.cosmetic_pick(),
-                    final_reels[1] if locked[1] else self.cosmetic_pick(),
-                    final_reels[2] if locked[2] else self.cosmetic_pick(),
-                ]
-
-                embed = self._status_embed(
-                    jackpot_str=self._pool_label(),
-                    status="S P I N N I N G…",
-                    payout=None,
-                )
-                await interaction.edit_original_response(content=self._reel_content(reels_for_frame), embed=embed, view=self)
-                await asyncio.sleep(delay_ms / 1000)
+            gif_bytes = render_slots_gif(final_reels, frames=24, duration_ms=45)
+            result_embed = discord.Embed(
+                title="SLOTS",
+                description=f"**{final_status}**\n**Payout:** `{payout}`",
+            )
+            result_embed.set_image(url="attachment://slots.gif")
+            gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
+            await interaction.followup.send(embed=result_embed, file=gif_file, ephemeral=True)
 
             await interaction.edit_original_response(
                 content=self._reel_content(final_reels),
-                embed=self._status_embed(self._pool_label(), final_status, int(result["payout"])),
+                embed=self._status_embed(self._pool_label(), final_status, payout),
                 view=self,
             )
 
