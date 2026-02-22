@@ -8,7 +8,7 @@ from io import BytesIO
 import discord
 
 from services.casino_games.slots import CasinoSlotsService, SlotsCooldownError, SlotsError
-from utils.jump_slots_gif import REEL_CYCLE, render_idle_png, render_slots_gif
+from utils.jump_slots_gif import REEL_CYCLE, animation_seconds, render_idle_png, render_slots_gif
 
 log = logging.getLogger("happy_jumper.casino.slots")
 
@@ -151,25 +151,36 @@ class SlotsPlayView(discord.ui.View):
             else:
                 final_status = "W I N ✅"
 
-            spin_frames = 30
-            spin_duration_ms = 50
+            spinning_embed = self._status_embed(self._pool_label(), "S P I N N I N G …", None, "slots.png")
+            await interaction.edit_original_response(content="", embed=spinning_embed, view=self)
+
+            spin_frames = 40
+            spin_duration_ms = 110
             gif_bytes = await asyncio.to_thread(
-                lambda: render_slots_gif(
-                    final_reels,
-                    frames=spin_frames,
-                    duration_ms=spin_duration_ms,
-                )
+                lambda: render_slots_gif(final_reels, frames=spin_frames, duration_ms=spin_duration_ms)
             )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
+
+            spinning_embed_gif = self._status_embed(
+                self._pool_label(), "S P I N N I N G …", None, "slots.gif"
+            )
+            await interaction.edit_original_response(
+                content="",
+                embed=spinning_embed_gif,
+                view=self,
+                attachments=[gif_file],
+            )
+
+            await asyncio.sleep(animation_seconds(spin_frames, spin_duration_ms) + 0.15)
 
             result_embed = self._status_embed(self._pool_label(), final_status, payout, "slots.gif")
             await interaction.edit_original_response(
                 content="",
                 embed=result_embed,
                 view=self,
-                attachments=[gif_file],
             )
 
+            await asyncio.sleep(0.35)
             await self.service.post_jackpot_announce(interaction, result)
         except SlotsCooldownError as exc:
             idle_file = self._idle_file()
