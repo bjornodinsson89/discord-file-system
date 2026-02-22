@@ -8,7 +8,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "casino_items"
-BANNER_PATH = Path(__file__).resolve().parent.parent / "assets" / "banners" / "jump_slots_banner.png"
+BANNER_PATH = (
+    Path(__file__).resolve().parent.parent / "assets" / "banners" / "jump_slots_banner.png"
+)
 _MEMORY_CACHE: dict[int, Image.Image] = {}
 _BANNER_CACHE: Image.Image | None = None
 log = logging.getLogger("happy_jumper.casino.slots.render")
