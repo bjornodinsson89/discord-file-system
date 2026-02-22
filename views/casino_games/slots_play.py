@@ -21,13 +21,7 @@ SHORT_LABELS = {
     281: "LION",
 }
 
-BOX = (
-    "```text\n"
-    "┌──────────────────────────┐\n"
-    "│        S L O T S         │\n"
-    "└──────────────────────────┘\n"
-    "```"
-)
+PAD = " "
 
 
 class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
@@ -107,8 +101,14 @@ class SlotsPlayView(discord.ui.View):
             return str(em)
         return SHORT_LABELS.get(int(item_id), str(item_id))
 
-    def _reel_line(self, reels: list[int]) -> str:
-        return f"{self._sym(reels[0])} │ {self._sym(reels[1])} │ {self._sym(reels[2])}"
+    def _reel_line_big(self, reels: list[int]) -> str:
+        e1 = self._sym(reels[0])
+        e2 = self._sym(reels[1])
+        e3 = self._sym(reels[2])
+        return f"{PAD}{e1}        {e2}        {e3}"
+
+    def _reel_frame_line(self) -> str:
+        return "───────────────  S L O T S  ───────────────"
 
     def _animation_int(self, key: str, default: int) -> int:
         try:
@@ -142,31 +142,25 @@ class SlotsPlayView(discord.ui.View):
         final: bool,
         result: dict | None = None,
     ) -> discord.Embed:
-        description = f"{BOX}\n{self._reel_line(reels)}\n{status_line}"
+        description = (
+            f"**Jackpot:** `{self._pool_label()}`\n"
+            f"{self._reel_frame_line()}\n\n"
+            f"{self._reel_line_big(reels)}\n\n"
+            f"**{status_line}**"
+        )
+        if final and result is not None:
+            description = f"{description}\n**Payout:** `{int(result['payout'])}`"
+
         embed = discord.Embed(
             title="🎰 7️⃣7️⃣7️⃣  S L O T S  7️⃣7️⃣7️⃣ 🎰",
             description=description,
             color=discord.Color.purple(),
         )
-        if final and result is not None:
-            embed.add_field(name="Bet", value=f"**{int(result['bet'])}**", inline=True)
-            embed.add_field(name="Payout", value=f"**{int(result['payout'])}**", inline=True)
-            embed.add_field(name="Net", value=f"**{int(result['net']):+d}**", inline=True)
-            embed.add_field(name="Balance", value=f"**{int(result['balance_after'])}**", inline=True)
-            embed.add_field(
-                name="Pool After",
-                value=f"**{int(result['pool_after_tokens'])}.{int(result['pool_after_millis']):03d}**",
-                inline=True,
-            )
         return embed
 
     def build_embed(self) -> discord.Embed:
         reels = [self.cosmetic_pick(), self.cosmetic_pick(), self.cosmetic_pick()]
-        embed = self._frame_embed(reels, "Ready to spin.", final=False)
-        embed.add_field(name="Balance", value=f"**{self.balance}** tokens", inline=True)
-        embed.add_field(name="Current Bet", value=f"**{self.current_bet}** tokens", inline=True)
-        embed.add_field(name="Jackpot Pool", value=f"**{self._pool_label()}**", inline=True)
-        return embed
+        return self._frame_embed(reels, "R E A D Y", final=False)
 
     async def refresh_state(self) -> None:
         snapshot = await self.service.get_balance_and_pool(self.guild_id, self.discord_id)
@@ -201,7 +195,7 @@ class SlotsPlayView(discord.ui.View):
 
             total_frames = max(5, min(30, self._animation_int("animation_total_frames", 15)))
             delay_ms = self._animation_int("animation_delay_ms", 120)
-            delay_ms = max(60, min(delay_ms, 250))
+            delay_ms = max(60, min(delay_ms, 180))
 
             lock_left = self._animation_int("animation_lock_left", 6)
             lock_mid = self._animation_int("animation_lock_mid", 10)
@@ -211,10 +205,9 @@ class SlotsPlayView(discord.ui.View):
             lock_mid = max(lock_left + 1, min(lock_mid, total_frames - 1))
             lock_right = max(lock_mid + 1, min(lock_right, total_frames))
 
-            net = int(result["payout"]) - int(result["bet"])
             if int(result["payout"]) <= 0:
                 final_status = "L O S E ☹️"
-            elif net == 0:
+            elif int(result["payout"]) == int(result["bet"]):
                 final_status = "P U S H 😐"
             else:
                 final_status = "W I N ✅"
