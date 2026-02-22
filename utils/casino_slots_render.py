@@ -7,7 +7,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 CACHE_DIR = Path("data/casino_item_cache")
-BANNER_PATH = Path(__file__).resolve().parent.parent / "assets" / "banners" / "jump_slots_banner.png"
+BANNER_PATH = (
+    Path(__file__).resolve().parent.parent / "assets" / "banners" / "jump_slots_banner.png"
+)
 _MEMORY_CACHE: dict[int, Image.Image] = {}
 _BANNER_CACHE: Image.Image | None = None
 
@@ -164,8 +166,12 @@ async def render_slots_png(
         if balance is None:
             draw.text((460, footer_top + 22), "Balance: ...", font=font, fill=(210, 210, 210, 255))
         else:
-            draw.text((460, footer_top + 22), f"Balance: {balance}", font=font, fill=(240, 240, 240, 255))
-        draw.text((40, footer_top + 44), f"Pool: {pool_value}", font=font, fill=(248, 214, 102, 255))
+            draw.text(
+                (460, footer_top + 22), f"Balance: {balance}", font=font, fill=(240, 240, 240, 255)
+            )
+        draw.text(
+            (40, footer_top + 44), f"Pool: {pool_value}", font=font, fill=(248, 214, 102, 255)
+        )
 
         out = io.BytesIO()
         canvas.save(out, format="PNG", optimize=True)
