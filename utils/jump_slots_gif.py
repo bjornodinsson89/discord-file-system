@@ -6,15 +6,17 @@ from statistics import median
 
 from PIL import Image
 
+from utils.jump_slots_assets import ensure_reel_strip
+
 ROOT = Path(__file__).resolve().parent.parent
 FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
-REEL_PATH = ROOT / "assets" / "slots" / "slot_reel.png"
 
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
 
-REEL_CYCLE = [281, 865, 206, 197, 366]
-CYCLE_LEN = 5
+REEL_CYCLE = [394, 707, 281, 197, 366, 865, 206]
+REEL_PATH = ensure_reel_strip(REEL_CYCLE)
+CYCLE_LEN = len(REEL_CYCLE)
 DEFAULT_SPINS = 4
 DEFAULT_FRAMES = 30
 DEFAULT_DURATION_MS = 45
@@ -149,10 +151,14 @@ def _normalize_reels(reels3: list[int]) -> list[int]:
     return out
 
 
-def _target_px(item_id: int, cell_h_scaled: int, spins: int = DEFAULT_SPINS) -> int:
+def symbol_index(item_id: int) -> int:
     if item_id not in REEL_CYCLE:
         raise ValueError(f"Unsupported reel symbol id: {item_id}")
-    idx = REEL_CYCLE.index(item_id)
+    return REEL_CYCLE.index(item_id)
+
+
+def _target_px(item_id: int, cell_h_scaled: int, spins: int = DEFAULT_SPINS) -> int:
+    idx = symbol_index(item_id)
     return (spins * CYCLE_LEN + idx) * cell_h_scaled
 
 

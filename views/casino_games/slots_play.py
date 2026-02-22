@@ -132,7 +132,7 @@ class SlotsPlayView(discord.ui.View):
 
             final_reels = [int(v) for v in (result.get("reels") or [])][:3]
             while len(final_reels) < 3:
-                final_reels.append(281)
+                final_reels.append(REEL_CYCLE[0])
 
             payout = int(result["payout"])
             bet = int(result["bet"])
