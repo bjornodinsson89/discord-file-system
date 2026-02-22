@@ -10,20 +10,6 @@ from services.casino_games.slots import CasinoSlotsService, SlotsCooldownError, 
 
 log = logging.getLogger("happy_jumper.casino.slots")
 
-SHORT_LABELS = {
-    206: "XANAX",
-    366: "eDVD",
-    197: "E",
-    865: "PM",
-    394: "BRICK",
-    707: "COAL",
-    274: "PANDA",
-    281: "LION",
-}
-
-PAD = " "
-
-
 class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
     bet = discord.ui.TextInput(label="Bet (tokens)", required=True, max_length=12)
 
@@ -48,7 +34,7 @@ class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
 
         self.view.current_bet = value
         await self.view.refresh_state()
-        await interaction.response.edit_message(embed=self.view.build_embed(), view=self.view)
+        await interaction.response.edit_message(content=self.view.build_content(), embed=self.view.build_embed(), view=self.view)
 
 
 class SlotsPlayView(discord.ui.View):
@@ -81,41 +67,39 @@ class SlotsPlayView(discord.ui.View):
             return f"{self.pool_tokens}.{self.pool_millis:03d}"
         return str(self.pool_tokens)
 
-    def _emoji_map(self) -> dict:
-        value = self.config.get("emoji_map")
-        if isinstance(value, dict):
-            normalized = {}
-            for k, v in value.items():
-                if k is None or not v:
+    def _emoji_map(self) -> dict[str, str]:
+        raw = self.config.get("emoji_map") or {}
+        if isinstance(raw, dict):
+            out: dict[str, str] = {}
+            for k, v in raw.items():
+                if k is None or v is None:
                     continue
-                try:
-                    normalized[str(int(k))] = str(v)
-                except (TypeError, ValueError):
-                    continue
-            return normalized
+                ks = str(k).strip()
+                vs = str(v).strip()
+                if ks and vs:
+                    out[ks] = vs
+            return out
         return {}
 
-    def _sym(self, item_id: int) -> str:
-        em = self._emoji_map().get(str(int(item_id)))
+    def _sym_emoji_only(self, item_id: int) -> str:
+        em = self._emoji_map().get(str(item_id))
         if em:
-            return str(em)
-        return SHORT_LABELS.get(int(item_id), str(item_id))
+            return em
+        return "❓"
 
-    def _reel_line_big(self, reels: list[int]) -> str:
-        e1 = self._sym(reels[0])
-        e2 = self._sym(reels[1])
-        e3 = self._sym(reels[2])
-        return f"{PAD}{e1}        {e2}        {e3}"
+    def _reel_content(self, reels: list[int]) -> str:
+        e1 = self._sym_emoji_only(reels[0])
+        e2 = self._sym_emoji_only(reels[1])
+        e3 = self._sym_emoji_only(reels[2])
+        return f"{e1}     {e2}     {e3}"
 
-    def _reel_frame_line(self) -> str:
-        return "───────────────  S L O T S  ───────────────"
-
-    def _animation_int(self, key: str, default: int) -> int:
-        try:
-            value = int(self.config.get(key, default))
-        except (TypeError, ValueError):
-            value = default
-        return value
+    def _status_embed(self, jackpot_str: str, status: str, payout: int | None) -> discord.Embed:
+        em = discord.Embed(title="🎰 7️⃣7️⃣7️⃣  S L O T S  7️⃣7️⃣7️⃣ 🎰")
+        desc = f"**Jackpot:** `{jackpot_str}`\n\n**{status}**"
+        if payout is not None:
+            desc += f"\n**Payout:** `{payout}`"
+        em.description = desc
+        return em
 
     def cosmetic_pick(self) -> int:
         symbols = self.config.get("symbols") or []
@@ -134,33 +118,12 @@ class SlotsPlayView(discord.ui.View):
         weights = [p[1] for p in pairs]
         return random.choices(item_ids, weights=weights, k=1)[0]
 
-    def _frame_embed(
-        self,
-        reels: list[int],
-        status_line: str,
-        *,
-        final: bool,
-        result: dict | None = None,
-    ) -> discord.Embed:
-        description = (
-            f"**Jackpot:** `{self._pool_label()}`\n"
-            f"{self._reel_frame_line()}\n\n"
-            f"{self._reel_line_big(reels)}\n\n"
-            f"**{status_line}**"
-        )
-        if final and result is not None:
-            description = f"{description}\n**Payout:** `{int(result['payout'])}`"
-
-        embed = discord.Embed(
-            title="🎰 7️⃣7️⃣7️⃣  S L O T S  7️⃣7️⃣7️⃣ 🎰",
-            description=description,
-            color=discord.Color.purple(),
-        )
-        return embed
-
     def build_embed(self) -> discord.Embed:
+        return self._status_embed(self._pool_label(), "R E A D Y", None)
+
+    def build_content(self) -> str:
         reels = [self.cosmetic_pick(), self.cosmetic_pick(), self.cosmetic_pick()]
-        return self._frame_embed(reels, "R E A D Y", final=False)
+        return self._reel_content(reels)
 
     async def refresh_state(self) -> None:
         snapshot = await self.service.get_balance_and_pool(self.guild_id, self.discord_id)
@@ -193,17 +156,11 @@ class SlotsPlayView(discord.ui.View):
             while len(final_reels) < 3:
                 final_reels.append(self.cosmetic_pick())
 
-            total_frames = max(5, min(30, self._animation_int("animation_total_frames", 15)))
-            delay_ms = self._animation_int("animation_delay_ms", 120)
-            delay_ms = max(60, min(delay_ms, 180))
-
-            lock_left = self._animation_int("animation_lock_left", 6)
-            lock_mid = self._animation_int("animation_lock_mid", 10)
-            lock_right = self._animation_int("animation_lock_right", 14)
-
-            lock_left = max(1, min(lock_left, total_frames - 2))
-            lock_mid = max(lock_left + 1, min(lock_mid, total_frames - 1))
-            lock_right = max(lock_mid + 1, min(lock_right, total_frames))
+            total_frames = 8
+            delay_ms = 90
+            lock_left = 3
+            lock_mid = 5
+            lock_right = 7
 
             if int(result["payout"]) <= 0:
                 final_status = "L O S E ☹️"
@@ -228,36 +185,34 @@ class SlotsPlayView(discord.ui.View):
                     final_reels[2] if locked[2] else self.cosmetic_pick(),
                 ]
 
-                is_final = i == total_frames
-                if is_final:
-                    reels_for_frame = final_reels
-
-                embed = self._frame_embed(
-                    reels_for_frame,
-                    final_status if is_final else "S P I N N I N G…",
-                    final=is_final,
-                    result=result if is_final else None,
+                embed = self._status_embed(
+                    jackpot_str=self._pool_label(),
+                    status="S P I N N I N G…",
+                    payout=None,
                 )
-                await interaction.edit_original_response(embed=embed, view=self)
+                await interaction.edit_original_response(content=self._reel_content(reels_for_frame), embed=embed, view=self)
                 await asyncio.sleep(delay_ms / 1000)
+
+            await interaction.edit_original_response(
+                content=self._reel_content(final_reels),
+                embed=self._status_embed(self._pool_label(), final_status, int(result["payout"])),
+                view=self,
+            )
 
             await self.service.post_jackpot_announce(interaction, result)
         except SlotsCooldownError as exc:
             await interaction.edit_original_response(
-                embed=discord.Embed(description=f"⏳ Wait {exc.remaining_seconds}s", color=discord.Color.orange()),
+                embed=self._status_embed(self._pool_label(), f"⏳ Wait {exc.remaining_seconds}s", None),
                 view=self,
             )
         except SlotsError as exc:
             await interaction.edit_original_response(
-                embed=discord.Embed(description=f"❌ {exc}", color=discord.Color.red()),
+                embed=self._status_embed(self._pool_label(), f"❌ {exc}", None),
                 view=self,
             )
         except Exception:
             log.exception("slots.spin_failed")
-            await interaction.edit_original_response(
-                embed=discord.Embed(description="❌ Slots error. Check logs.", color=discord.Color.red()),
-                view=self,
-            )
+            await interaction.followup.send("❌ Slots error. Check logs.", ephemeral=True)
         finally:
             button.disabled = False
             await interaction.edit_original_response(view=self)
@@ -266,7 +221,7 @@ class SlotsPlayView(discord.ui.View):
     async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer()
         await self.refresh_state()
-        await interaction.edit_original_response(embed=self.build_embed(), view=self)
+        await interaction.edit_original_response(content=self.build_content(), embed=self.build_embed(), view=self)
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
     async def close(self, interaction: discord.Interaction, _: discord.ui.Button):
