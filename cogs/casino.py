@@ -103,10 +103,16 @@ class CasinoCog(commands.Cog):
                 return
 
         if not isinstance(channel, discord.TextChannel):
-            await interaction.followup.send("❌ Assets channel must be a text channel.", ephemeral=True)
+            await interaction.followup.send(
+                "❌ Assets channel must be a text channel.", ephemeral=True
+            )
             return
 
-        perms = channel.permissions_for(channel.guild.me) if channel.guild and channel.guild.me else None
+        perms = (
+            channel.permissions_for(channel.guild.me)
+            if channel.guild and channel.guild.me
+            else None
+        )
         if perms and not (perms.send_messages and perms.attach_files):
             await interaction.followup.send(
                 "❌ Bot missing Send Messages/Attach Files in assets channel.", ephemeral=True

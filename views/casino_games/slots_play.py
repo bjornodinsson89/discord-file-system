@@ -180,7 +180,9 @@ class SlotsPlayView(discord.ui.View):
 
                     await asyncio.sleep(animation_seconds(SPIN_FRAMES, SPIN_DURATION_MS) + 0.15)
 
-                    result_embed = self._status_embed(self._pool_label(), final_status, payout, None)
+                    result_embed = self._status_embed(
+                        self._pool_label(), final_status, payout, None
+                    )
                     result_embed.set_image(url=slot_url)
                     await interaction.edit_original_response(
                         content="",

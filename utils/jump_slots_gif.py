@@ -149,8 +149,9 @@ def _layout() -> tuple[
     x0, y0, x1, y1 = detect_window_box(face)
     window_w = x1 - x0
 
-    padding_x = int(window_w * 0.06)
-    gap = int(window_w * 0.03)
+    # Slightly reduce horizontal padding/gap so reel symbols appear a bit larger.
+    padding_x = int(window_w * 0.05)
+    gap = int(window_w * 0.025)
     col_w = (window_w - 2 * padding_x - 2 * gap) // 3
     if col_w <= 0:
         raise ValueError("Invalid slots window layout dimensions")
@@ -204,8 +205,9 @@ def _start_target_px(item_id: int, cell_h_scaled: int) -> tuple[int, int]:
     return start, base
 
 
-def _downscale(im: Image.Image, max_w: int = 900) -> Image.Image:
-    if im.width <= max_w:
+def _downscale(im: Image.Image, max_w: int = 0) -> Image.Image:
+    # Keep full-resolution frames by default for HQ output.
+    if max_w <= 0 or im.width <= max_w:
         return im
     ratio = max_w / im.width
     new_h = max(1, round(im.height * ratio))
@@ -300,7 +302,7 @@ def render_slots_gif(
         rgba_frames.append(_downscale(rgba_frame))
 
     first_rgb = _to_rgb(rgba_frames[0])
-    palette_base = first_rgb.convert("P", palette=Image.Palette.ADAPTIVE, colors=128)
+    palette_base = first_rgb.convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
     images: list[Image.Image] = [palette_base]
     for fr in rgba_frames[1:]:
         fr_rgb = _to_rgb(fr)

@@ -45,6 +45,7 @@ SLOT_ASSETS_ENABLED = _env_flag("SLOT_ASSETS_ENABLED", True)
 def slot_assets_ready() -> bool:
     return bool(SLOT_ASSETS_ENABLED and SLOT_ASSETS_GUILD_ID and SLOT_ASSETS_CHANNEL_ID)
 
+
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = safe_int_env("DB_PORT", default=6543, allow_blank=True)
 DB_NAME = os.getenv("DB_NAME")
