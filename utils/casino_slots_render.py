@@ -60,6 +60,31 @@ async def render_slots_png(
     status_text: str,
     spin_mask: list[bool] | None = None,
 ) -> bytes:
+    image = await render_slots_frame_image(
+        reels=reels,
+        bet=bet,
+        payout=payout,
+        balance=balance,
+        pool_tokens=pool_tokens,
+        pool_millis=pool_millis,
+        status_text=status_text,
+        spin_mask=spin_mask,
+    )
+    out = io.BytesIO()
+    image.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+async def render_slots_frame_image(
+    reels: list[int],
+    bet: int,
+    payout: int,
+    balance: int | None,
+    pool_tokens: int,
+    pool_millis: int,
+    status_text: str,
+    spin_mask: list[bool] | None = None,
+) -> Image.Image:
     try:
         w, h = 820, 420
         banner_h = 140
@@ -175,10 +200,48 @@ async def render_slots_png(
             (40, footer_top + 44), f"Pool: {pool_value}", font=font, fill=(248, 214, 102, 255)
         )
 
-        out = io.BytesIO()
-        canvas.save(out, format="PNG", optimize=True)
-        return out.getvalue()
+        return canvas
     except SlotsRenderError:
         raise
     except Exception as exc:
         raise SlotsRenderError("Unable to render slots image") from exc
+
+
+async def render_slots_gif(
+    frames: list[dict],
+    frame_delay_ms: int,
+) -> bytes:
+    if not frames:
+        raise SlotsRenderError("No frames provided for GIF render")
+
+    try:
+        frames_p: list[Image.Image] = []
+        for frame in frames:
+            image = await render_slots_frame_image(
+                reels=frame["reels"],
+                bet=int(frame["bet"]),
+                payout=int(frame["payout"]),
+                balance=(None if frame.get("balance") is None else int(frame["balance"])),
+                pool_tokens=int(frame["pool_tokens"]),
+                pool_millis=int(frame["pool_millis"]),
+                status_text=str(frame["status_text"]),
+                spin_mask=frame.get("spin_mask"),
+            )
+            image = image.convert("RGBA")
+            frame_p = image.convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
+            frames_p.append(frame_p)
+
+        out = io.BytesIO()
+        frames_p[0].save(
+            out,
+            format="GIF",
+            save_all=True,
+            append_images=frames_p[1:],
+            duration=frame_delay_ms,
+            loop=0,
+            disposal=2,
+            optimize=True,
+        )
+        return out.getvalue()
+    except Exception as exc:
+        raise SlotsRenderError("Unable to render slots GIF") from exc
