@@ -176,6 +176,7 @@ class SlotsPlayView(discord.ui.View):
                         content="",
                         embed=spinning_embed,
                         view=self,
+                        attachments=[],
                     )
 
                     await asyncio.sleep(animation_seconds(SPIN_FRAMES, SPIN_DURATION_MS) + 0.15)
@@ -188,6 +189,7 @@ class SlotsPlayView(discord.ui.View):
                         content="",
                         embed=result_embed,
                         view=self,
+                        attachments=[],
                     )
 
                     await asyncio.sleep(0.25)
