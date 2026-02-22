@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+from io import BytesIO
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+import config
+from repositories.slot_assets import has_combo, upsert_slot_asset
+from utils.jump_slots_gif import REEL_CYCLE, SPIN_DURATION_MS, SPIN_FRAMES, render_slots_gif
+from views.casino_core.back_of_house import BackOfHouseView, back_of_house_embed
 from views.casino_core.casino_home import CasinoHomeView, casino_home_embed
 from views.casino_core.cashout_panel import CashoutRequestModal
 from views.casino_core.deposit_panel import DepositPanelView, deposit_panel_embed
-from views.casino_core.back_of_house import BackOfHouseView, back_of_house_embed
 from views.casino_core.permissions import ensure_casino_admin
+
+log = logging.getLogger("happy_jumper.casino")
 
 
 class CasinoCog(commands.Cog):
@@ -51,6 +60,128 @@ class CasinoCog(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(
+        name="seed_slot_assets", description="Seed slot machine GIF assets into the assets channel"
+    )
+    @app_commands.guild_only()
+    async def seed_slot_assets(
+        self,
+        interaction: discord.Interaction,
+        resume_from: int = 0,
+        limit: int = 0,
+        force: bool = False,
+    ):
+        if not await ensure_casino_admin(interaction, interaction.guild_id):
+            return
+        if interaction.guild_id != config.SLOT_ASSETS_GUILD_ID:
+            await interaction.response.send_message(
+                "❌ This command is only allowed in the configured assets guild.", ephemeral=True
+            )
+            return
+        if not config.SLOT_ASSETS_CHANNEL_ID:
+            await interaction.response.send_message(
+                "❌ SLOT_ASSETS_CHANNEL_ID is not configured.", ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message("Seeding started...", ephemeral=True)
+
+        guild = self.bot.get_guild(int(config.SLOT_ASSETS_GUILD_ID))
+        if guild is None:
+            try:
+                guild = await self.bot.fetch_guild(int(config.SLOT_ASSETS_GUILD_ID))
+            except Exception:
+                await interaction.followup.send("❌ Could not load assets guild.", ephemeral=True)
+                return
+
+        channel = guild.get_channel(int(config.SLOT_ASSETS_CHANNEL_ID)) if guild else None
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(config.SLOT_ASSETS_CHANNEL_ID))
+            except Exception:
+                await interaction.followup.send("❌ Could not load assets channel.", ephemeral=True)
+                return
+
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.followup.send("❌ Assets channel must be a text channel.", ephemeral=True)
+            return
+
+        perms = channel.permissions_for(channel.guild.me) if channel.guild and channel.guild.me else None
+        if perms and not (perms.send_messages and perms.attach_files):
+            await interaction.followup.send(
+                "❌ Bot missing Send Messages/Attach Files in assets channel.", ephemeral=True
+            )
+            return
+
+        symbols = list(REEL_CYCLE)
+        combos = [f"{a},{b},{c}" for a in symbols for b in symbols for c in symbols]
+        start_index = max(0, int(resume_from))
+        end_index = len(combos) if int(limit) <= 0 else min(len(combos), start_index + int(limit))
+
+        uploaded = 0
+        skipped = 0
+        failed: list[str] = []
+        processed = 0
+
+        for idx in range(start_index, end_index):
+            combo = combos[idx]
+            processed += 1
+            try:
+                if not force and await has_combo(combo):
+                    skipped += 1
+                    continue
+
+                reels = [int(x) for x in combo.split(",")]
+                gif_bytes = await asyncio.to_thread(
+                    lambda: render_slots_gif(
+                        reels,
+                        frames=SPIN_FRAMES,
+                        duration_ms=SPIN_DURATION_MS,
+                    )
+                )
+
+                file = discord.File(
+                    BytesIO(gif_bytes),
+                    filename=f"slots_{reels[0]}_{reels[1]}_{reels[2]}.gif",
+                )
+                msg = await channel.send(content=f"slot:{combo}", file=file)
+                if not msg.attachments or not msg.attachments[0].url:
+                    raise RuntimeError("Missing attachment URL from sent message")
+
+                await upsert_slot_asset(
+                    combo,
+                    msg.attachments[0].url,
+                    msg.id,
+                    frames=SPIN_FRAMES,
+                    duration_ms=SPIN_DURATION_MS,
+                )
+                uploaded += 1
+            except Exception:
+                failed.append(combo)
+                log.exception("slot_assets_seed_failed combo=%s", combo)
+
+            if processed % 25 == 0:
+                await interaction.followup.send(
+                    (
+                        f"Progress: processed={processed} uploaded={uploaded} "
+                        f"skipped={skipped} failed={len(failed)}"
+                    ),
+                    ephemeral=True,
+                )
+
+            await asyncio.sleep(1.2)
+            if uploaded > 0 and uploaded % 10 == 0:
+                await asyncio.sleep(10)
+
+        await interaction.followup.send(
+            (
+                f"Seeding complete. scanned={processed} uploaded={uploaded} "
+                f"skipped={skipped} failed={len(failed)}"
+                + (f" failed_combos={', '.join(failed[:20])}" if failed else "")
+            ),
+            ephemeral=True,
+        )
+
 
 async def setup(bot: commands.Bot):
     cog = CasinoCog(bot)
@@ -61,5 +192,9 @@ async def setup(bot: commands.Bot):
         pass
     try:
         bot.tree.add_command(cog.back_of_house)
+    except Exception:
+        pass
+    try:
+        bot.tree.add_command(cog.seed_slot_assets)
     except Exception:
         pass
