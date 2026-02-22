@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 CASINO_ITEMS_DIR = ROOT / "assets" / "casino_items"
-GENERATED_REEL_PATH = ROOT / "assets" / "slots" / "slot_reel_generated.png"
+GENERATED_REEL_PATH = ROOT / "assets" / "slots" / "slot_reel_generated_v2.png"
 
 
 def build_reel_strip(symbol_ids: list[int], *, cell: int = 180, repeats: int = 6) -> Path:
@@ -24,8 +24,10 @@ def build_reel_strip(symbol_ids: list[int], *, cell: int = 180, repeats: int = 6
             raise FileNotFoundError(f"Missing casino item icon: {icon_path}")
 
         icon = Image.open(icon_path).convert("RGBA")
-        fitted = icon.copy()
-        fitted.thumbnail((cell, cell), Image.Resampling.LANCZOS)
+        ratio = min(cell / icon.width, cell / icon.height)
+        new_w = max(1, round(icon.width * ratio))
+        new_h = max(1, round(icon.height * ratio))
+        fitted = icon.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
         canvas = Image.new("RGBA", (cell, cell), (0, 0, 0, 0))
         px = (cell - fitted.width) // 2

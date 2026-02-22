@@ -180,36 +180,6 @@ def _compose_frame(
     return out
 
 
-def _crop_box(
-    face_size: tuple[int, int], window_box: tuple[int, int, int, int]
-) -> tuple[int, int, int, int]:
-    face_w, face_h = face_size
-    x0, y0, x1, y1 = window_box
-    window_w = x1 - x0
-    window_h = y1 - y0
-
-    pad_x = int(window_w * 0.05)
-    pad_top = int(window_h * 0.55)
-    pad_bottom = int(window_h * 0.25)
-    return (
-        max(0, x0 - pad_x),
-        max(0, y0 - pad_top),
-        min(face_w, x1 + pad_x),
-        min(face_h, y1 + pad_bottom),
-    )
-
-
-def _crop_and_resize(frame: Image.Image, crop: tuple[int, int, int, int]) -> Image.Image:
-    out = frame.crop(crop)
-    if out.width < 1200:
-        new_h = max(1, round((1200 / out.width) * out.height))
-        out = out.resize((1200, new_h), Image.Resampling.LANCZOS)
-    elif out.width > 1600:
-        new_h = max(1, round((1600 / out.width) * out.height))
-        out = out.resize((1600, new_h), Image.Resampling.LANCZOS)
-    return out
-
-
 def animation_seconds(
     frames: int = DEFAULT_FRAMES, duration_ms: int = DEFAULT_DURATION_MS
 ) -> float:
@@ -221,9 +191,6 @@ def render_idle_png(reels: list[int]) -> bytes:
     normalized = _normalize_reels(reels)
     offsets = [_target_px(item, cell_h_scaled) for item in normalized]
     frame = _compose_frame(face, tiled, window_box, col_x, offsets)
-    crop = _crop_box(face.size, window_box)
-    frame = _crop_and_resize(frame, crop)
-
     out = BytesIO()
     frame.save(out, format="PNG")
     return out.getvalue()
@@ -235,8 +202,6 @@ def render_slots_gif(
     face, tiled, window_box, cell_h_scaled, col_x = _layout()
     normalized = _normalize_reels(final_reels)
     targets = [_target_px(item, cell_h_scaled) for item in normalized]
-    crop = _crop_box(face.size, window_box)
-
     total_frames = max(2, int(frames))
     stop_left = max(1, int(total_frames * 0.45))
     stop_mid = max(stop_left + 1, int(total_frames * 0.70))
@@ -258,7 +223,6 @@ def render_slots_gif(
             offsets.append(off)
 
         rgba_frame = _compose_frame(face, tiled, window_box, col_x, offsets)
-        rgba_frame = _crop_and_resize(rgba_frame, crop)
         images.append(rgba_frame.convert("P", palette=Image.Palette.ADAPTIVE))
 
     out = BytesIO()
