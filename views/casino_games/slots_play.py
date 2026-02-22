@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 from io import BytesIO
+import logging
 import random
 
 import discord
 
 from services.casino_games.slots import CasinoSlotsService, SlotsCooldownError, SlotsError
-from utils.casino_slots_render import render_slots_png
+from utils.casino_slots_render import render_slots_gif
+
+log = logging.getLogger("happy_jumper.casino.slots")
 
 
 class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
@@ -189,6 +191,7 @@ class SlotsPlayView(discord.ui.View):
             else:
                 status_label = "W I N ✅"
 
+            frames: list[dict] = []
             for frame in range(1, frames_total + 1):
                 if frame < lock_left:
                     locked = [False, False, False]
@@ -210,30 +213,35 @@ class SlotsPlayView(discord.ui.View):
                     reels_for_frame = final_reels
                     spin_mask = [False, False, False]
 
-                embed = self._build_frame_embed(reels_for_frame, spin_mask, result, is_final_frame, status_label)
+                frames.append(
+                    {
+                        "reels": reels_for_frame,
+                        "spin_mask": spin_mask,
+                        "status_text": status_label if is_final_frame else "SPINNING",
+                        "bet": int(result["bet"]),
+                        "payout": int(result["payout"]) if is_final_frame else 0,
+                        "balance": int(result["balance_after"]) if is_final_frame else None,
+                        "pool_tokens": int(result["pool_after_tokens"])
+                        if is_final_frame
+                        else int(pool_before_tokens),
+                        "pool_millis": int(result["pool_after_millis"])
+                        if is_final_frame
+                        else int(pool_before_millis),
+                    }
+                )
 
-                try:
-                    png = await render_slots_png(
-                        reels=reels_for_frame,
-                        bet=int(result["bet"]),
-                        payout=int(result["payout"]) if is_final_frame else 0,
-                        balance=int(result["balance_after"]) if is_final_frame else None,
-                        pool_tokens=int(result["pool_after_tokens"]) if is_final_frame else int(pool_before_tokens),
-                        pool_millis=int(result["pool_after_millis"]) if is_final_frame else int(pool_before_millis),
-                        status_text=status_label if is_final_frame else "SPINNING",
-                        spin_mask=spin_mask,
-                    )
-                    embed.set_image(url="attachment://slots.png")
-                    await interaction.edit_original_response(
-                        embed=embed,
-                        view=self,
-                        files=[discord.File(BytesIO(png), filename="slots.png")],
-                    )
-                except Exception:
-                    await interaction.edit_original_response(embed=embed, view=self)
-
-                if frame < frames_total:
-                    await asyncio.sleep(delay_ms / 1000)
+            embed = self._build_frame_embed(final_reels, [False, False, False], result, True, status_label)
+            try:
+                gif_bytes = await render_slots_gif(frames, frame_delay_ms=delay_ms)
+                embed.set_image(url="attachment://slots.gif")
+                await interaction.edit_original_response(
+                    embed=embed,
+                    view=self,
+                    files=[discord.File(BytesIO(gif_bytes), filename="slots.gif")],
+                )
+            except Exception:
+                log.exception("slots.gif_render_or_send_failed")
+                await interaction.followup.send("❌ Slots rendering failed. Check logs.", ephemeral=True)
 
             await self.service.post_jackpot_announce(interaction, result)
         except SlotsCooldownError as exc:
