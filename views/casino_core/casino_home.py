@@ -79,7 +79,12 @@ class GameSelect(discord.ui.Select):
             pool_tokens=int(snapshot["pool_tokens"]),
             pool_millis=int(snapshot["pool_millis"]),
         )
-        await interaction.response.edit_message(content=view.build_content(), embed=view.build_embed(), view=view)
+        await interaction.response.edit_message(
+            content="",
+            embed=view.build_embed(),
+            view=view,
+            attachments=[view._face_file()],
+        )
 
 
 class CasinoHomeView(discord.ui.View):
