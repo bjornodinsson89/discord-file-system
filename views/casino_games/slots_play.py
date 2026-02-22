@@ -8,7 +8,7 @@ from io import BytesIO
 import discord
 
 from services.casino_games.slots import CasinoSlotsService, SlotsCooldownError, SlotsError
-from utils.jump_slots_gif import REEL_CYCLE, animation_seconds, render_idle_png, render_slots_gif
+from utils.jump_slots_gif import REEL_CYCLE, render_idle_png, render_slots_gif
 
 log = logging.getLogger("happy_jumper.casino.slots")
 
@@ -151,55 +151,23 @@ class SlotsPlayView(discord.ui.View):
             else:
                 final_status = "W I N ✅"
 
-            idle_png = render_idle_png(self._roll_preview_reels())
-            idle_file = discord.File(BytesIO(idle_png), filename="slots.png")
-            await interaction.edit_original_response(
-                content="",
-                embed=self._status_embed(
-                    self._pool_label(),
-                    "S P I N N I N G …",
-                    None,
-                    "slots.png",
-                ),
-                view=self,
-                attachments=[idle_file],
-            )
-
-            spin_frames = 84
-            spin_duration_ms = 55
+            spin_frames = 30
+            spin_duration_ms = 50
             gif_bytes = await asyncio.to_thread(
-                render_slots_gif,
-                final_reels,
-                spin_frames,
-                spin_duration_ms,
+                lambda: render_slots_gif(
+                    final_reels,
+                    frames=spin_frames,
+                    duration_ms=spin_duration_ms,
+                )
             )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
 
-            spinning_embed = self._status_embed(
-                self._pool_label(),
-                "S P I N N I N G …",
-                None,
-                "slots.gif",
-            )
-            await interaction.edit_original_response(
-                content="",
-                embed=spinning_embed,
-                view=self,
-                attachments=[gif_file],
-            )
-
-            await asyncio.sleep(animation_seconds(spin_frames, spin_duration_ms) + 0.15)
-
-            result_embed = self._status_embed(
-                self._pool_label(),
-                final_status,
-                payout,
-                "slots.gif",
-            )
+            result_embed = self._status_embed(self._pool_label(), final_status, payout, "slots.gif")
             await interaction.edit_original_response(
                 content="",
                 embed=result_embed,
                 view=self,
+                attachments=[gif_file],
             )
 
             await self.service.post_jackpot_announce(interaction, result)
