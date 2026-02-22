@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import random
 import uuid
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -10,7 +11,7 @@ import discord
 
 from repositories.casino_core import CasinoCoreRepository
 from repositories.users import UsersRepository
-from services.casino_core.settings import _coerce_dict, get_house_config
+from services.casino_core.settings import get_house_config
 from utils import GuildSettingsRepository, get_database
 
 SLOTS_POOL_KEY = "slots_jackpot"
@@ -27,6 +28,12 @@ DEFAULT_SLOTS_CONFIG = {
     "announce_threshold_tokens": 50,
     "animate": True,
     "animation_frames": 6,
+    "emoji_map": {},
+    "animation_total_frames": 15,
+    "animation_delay_ms": 335,
+    "animation_lock_left": 6,
+    "animation_lock_mid": 10,
+    "animation_lock_right": 14,
     "symbols": [
         {"item_id": 394, "name": "Brick", "weight": 21},
         {"item_id": 707, "name": "Lump of Coal", "weight": 17},
@@ -64,8 +71,8 @@ class CasinoSlotsService:
 
     async def ensure_slots_config(self, guild_id: int) -> dict:
         row = await self.settings_repo.get_or_create(int(guild_id))
-        games = _coerce_dict((row or {}).get("casino_games"))
-        current = _coerce_dict(games.get("slots"))
+        games = self._coerce_config_dict((row or {}).get("casino_games"))
+        current = self._coerce_config_dict(games.get("slots"))
         merged = self._merge_defaults(DEFAULT_SLOTS_CONFIG, current)
         if merged != current:
             games["slots"] = merged
@@ -108,8 +115,8 @@ class CasinoSlotsService:
                 if not settings.get("casino_enabled"):
                     raise SlotsError("Casino is disabled. Ask admins to run /back_of_house and enable casino.")
 
-                games = _coerce_dict((settings or {}).get("casino_games"))
-                cfg = self._merge_defaults(DEFAULT_SLOTS_CONFIG, _coerce_dict(games.get("slots")))
+                games = self._coerce_config_dict((settings or {}).get("casino_games"))
+                cfg = self._merge_defaults(DEFAULT_SLOTS_CONFIG, self._coerce_config_dict(games.get("slots")))
                 if not cfg.get("enabled", True):
                     raise SlotsError("Slots is disabled in this server.")
 
@@ -311,3 +318,14 @@ class CasinoSlotsService:
             if key not in out:
                 out[key] = value
         return out
+
+    def _coerce_config_dict(self, value) -> dict:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except Exception:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
