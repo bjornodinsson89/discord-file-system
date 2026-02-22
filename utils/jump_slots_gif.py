@@ -15,7 +15,6 @@ _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
 
 REEL_CYCLE = [394, 707, 281, 197, 366, 865, 206]
-REEL_PATH = ensure_reel_strip(REEL_CYCLE)
 CYCLE_LEN = len(REEL_CYCLE)
 DEFAULT_SPINS = 4
 DEFAULT_FRAMES = 84
@@ -32,7 +31,8 @@ def _load_face() -> Image.Image:
 def _load_reel() -> Image.Image:
     global _REEL
     if _REEL is None:
-        _REEL = Image.open(REEL_PATH).convert("RGBA")
+        path = ensure_reel_strip(REEL_CYCLE)
+        _REEL = Image.open(path).convert("RGBA")
     return _REEL
 
 
