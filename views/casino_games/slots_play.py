@@ -89,13 +89,23 @@ class SlotsPlayView(discord.ui.View):
 
     def _emoji_map(self) -> dict:
         value = self.config.get("emoji_map")
-        return value if isinstance(value, dict) else {}
+        if isinstance(value, dict):
+            normalized = {}
+            for k, v in value.items():
+                if k is None or not v:
+                    continue
+                try:
+                    normalized[str(int(k))] = str(v)
+                except (TypeError, ValueError):
+                    continue
+            return normalized
+        return {}
 
     def _sym(self, item_id: int) -> str:
         em = self._emoji_map().get(str(int(item_id)))
         if em:
             return str(em)
-        return f"`{SHORT_LABELS.get(int(item_id), str(item_id))}`"
+        return SHORT_LABELS.get(int(item_id), str(item_id))
 
     def _reel_line(self, reels: list[int]) -> str:
         return f"{self._sym(reels[0])} │ {self._sym(reels[1])} │ {self._sym(reels[2])}"
@@ -190,8 +200,8 @@ class SlotsPlayView(discord.ui.View):
                 final_reels.append(self.cosmetic_pick())
 
             total_frames = max(5, min(30, self._animation_int("animation_total_frames", 15)))
-            delay_ms = self._animation_int("animation_delay_ms", 335)
-            delay_ms = max(1, delay_ms)
+            delay_ms = self._animation_int("animation_delay_ms", 120)
+            delay_ms = max(60, min(delay_ms, 250))
 
             lock_left = self._animation_int("animation_lock_left", 6)
             lock_mid = self._animation_int("animation_lock_mid", 10)
