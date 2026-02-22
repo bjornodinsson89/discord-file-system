@@ -156,7 +156,13 @@ def _target_px(item_id: int, cell_h_scaled: int, spins: int = DEFAULT_SPINS) -> 
     return (spins * CYCLE_LEN + idx) * cell_h_scaled
 
 
-def _compose_frame(face: Image.Image, tiled: Image.Image, window_box: tuple[int, int, int, int], col_x: list[int], offsets: list[int]) -> Image.Image:
+def _compose_frame(
+    face: Image.Image,
+    tiled: Image.Image,
+    window_box: tuple[int, int, int, int],
+    col_x: list[int],
+    offsets: list[int],
+) -> Image.Image:
     x0, y0, x1, y1 = window_box
     reels_layer = Image.new("RGBA", face.size, (0, 0, 0, 0))
     for i, off in enumerate(offsets):
@@ -179,7 +185,9 @@ def render_idle_png(reels: list[int]) -> bytes:
     return out.getvalue()
 
 
-def render_slots_gif(final_reels: list[int], frames: int = DEFAULT_FRAMES, duration_ms: int = DEFAULT_DURATION_MS) -> bytes:
+def render_slots_gif(
+    final_reels: list[int], frames: int = DEFAULT_FRAMES, duration_ms: int = DEFAULT_DURATION_MS
+) -> bytes:
     face, tiled, window_box, cell_h_scaled, col_x = _layout()
     normalized = _normalize_reels(final_reels)
     targets = [_target_px(item, cell_h_scaled) for item in normalized]
