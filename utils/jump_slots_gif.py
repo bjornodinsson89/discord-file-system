@@ -14,15 +14,18 @@ FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
 
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
-_LAYOUT_CACHE: tuple[
-    Image.Image,
-    Image.Image,
-    tuple[int, int, int, int],
-    int,
-    int,
-    int,
-    list[int],
-] | None = None
+_LAYOUT_CACHE: (
+    tuple[
+        Image.Image,
+        Image.Image,
+        tuple[int, int, int, int],
+        int,
+        int,
+        int,
+        list[int],
+    ]
+    | None
+) = None
 
 REEL_CYCLE = [394, 707, 281, 197, 366, 865, 206]
 CYCLE_LEN = len(REEL_CYCLE)

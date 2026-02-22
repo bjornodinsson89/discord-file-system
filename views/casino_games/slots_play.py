@@ -151,7 +151,9 @@ class SlotsPlayView(discord.ui.View):
             else:
                 final_status = "W I N ✅"
 
-            spinning_embed = self._status_embed(self._pool_label(), "S P I N N I N G …", None, "slots.png")
+            spinning_embed = self._status_embed(
+                self._pool_label(), "S P I N N I N G …", None, "slots.png"
+            )
             idle_file = self._idle_file()
             await interaction.edit_original_response(
                 content="",
@@ -163,7 +165,9 @@ class SlotsPlayView(discord.ui.View):
             spin_frames = 40
             spin_duration_ms = 110
             gif_bytes = await asyncio.to_thread(
-                lambda: render_slots_gif(final_reels, frames=spin_frames, duration_ms=spin_duration_ms)
+                lambda: render_slots_gif(
+                    final_reels, frames=spin_frames, duration_ms=spin_duration_ms
+                )
             )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
 
