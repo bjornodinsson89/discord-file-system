@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 import logging
+import random
 from io import BytesIO
-from pathlib import Path
 
 import discord
 
 from services.casino_games.slots import CasinoSlotsService, SlotsCooldownError, SlotsError
-from utils.jump_slots_gif import render_slots_gif
+from utils.jump_slots_gif import REEL_CYCLE, render_idle_png, render_slots_gif
 
 log = logging.getLogger("happy_jumper.casino.slots")
-
-ROOT = Path(__file__).resolve().parent.parent.parent
-FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
-
 
 class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
     bet = discord.ui.TextInput(label="Bet (tokens)", required=True, max_length=12)
@@ -39,11 +35,12 @@ class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
 
         self.view.current_bet = value
         await self.view.refresh_state()
+        idle_file = self.view._idle_file()
         await interaction.response.edit_message(
             content="",
-            embed=self.view._status_embed(self.view._pool_label(), "R E A D Y", None, "slot_face.png"),
+            embed=self.view._status_embed(self.view._pool_label(), "R E A D Y", None, "slots.png"),
             view=self.view,
-            attachments=[self.view._face_file()],
+            attachments=[idle_file],
         )
 
 
@@ -77,8 +74,18 @@ class SlotsPlayView(discord.ui.View):
             return f"{self.pool_tokens}.{self.pool_millis:03d}"
         return str(self.pool_tokens)
 
-    def _face_file(self) -> discord.File:
-        return discord.File(str(FACE_PATH), filename="slot_face.png")
+    def _roll_preview_reels(self) -> list[int]:
+        symbols = list((self.config or {}).get("symbols") or [])
+        ids = [int(s.get("item_id")) for s in symbols if s.get("item_id") is not None]
+        weights = [max(0, int(s.get("weight") or 0)) for s in symbols if s.get("item_id") is not None]
+        if not ids or sum(weights) <= 0:
+            ids = list(REEL_CYCLE)
+            weights = [1 for _ in ids]
+        return [random.choices(ids, weights=weights, k=1)[0] for _ in range(3)]
+
+    def _idle_file(self) -> discord.File:
+        idle_png = render_idle_png(self._roll_preview_reels())
+        return discord.File(BytesIO(idle_png), filename="slots.png")
 
     def _status_embed(self, jackpot_str: str, status: str, payout: int | None, image_name: str) -> discord.Embed:
         em = discord.Embed(title="🎰 7️⃣7️⃣7️⃣  S L O T S  7️⃣7️⃣7️⃣ 🎰")
@@ -90,7 +97,7 @@ class SlotsPlayView(discord.ui.View):
         return em
 
     def build_embed(self) -> discord.Embed:
-        return self._status_embed(self._pool_label(), "R E A D Y", None, "slot_face.png")
+        return self._status_embed(self._pool_label(), "R E A D Y", None, "slots.png")
 
     def build_content(self) -> str:
         return ""
@@ -155,26 +162,29 @@ class SlotsPlayView(discord.ui.View):
 
             await self.service.post_jackpot_announce(interaction, result)
         except SlotsCooldownError as exc:
+            idle_file = self._idle_file()
             await interaction.edit_original_response(
                 content="",
-                embed=self._status_embed(self._pool_label(), f"⏳ Wait {exc.remaining_seconds}s", None, "slot_face.png"),
+                embed=self._status_embed(self._pool_label(), f"⏳ Wait {exc.remaining_seconds}s", None, "slots.png"),
                 view=self,
-                attachments=[self._face_file()],
+                attachments=[idle_file],
             )
         except SlotsError as exc:
+            idle_file = self._idle_file()
             await interaction.edit_original_response(
                 content="",
-                embed=self._status_embed(self._pool_label(), f"❌ {exc}", None, "slot_face.png"),
+                embed=self._status_embed(self._pool_label(), f"❌ {exc}", None, "slots.png"),
                 view=self,
-                attachments=[self._face_file()],
+                attachments=[idle_file],
             )
         except Exception:
             log.exception("slots.spin_failed")
+            idle_file = self._idle_file()
             await interaction.edit_original_response(
                 content="",
-                embed=self._status_embed(self._pool_label(), "❌ Slots error. Check logs.", None, "slot_face.png"),
+                embed=self._status_embed(self._pool_label(), "❌ Slots error. Check logs.", None, "slots.png"),
                 view=self,
-                attachments=[self._face_file()],
+                attachments=[idle_file],
             )
         finally:
             button.disabled = False
@@ -184,8 +194,8 @@ class SlotsPlayView(discord.ui.View):
     async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer()
         await self.refresh_state()
-        embed = self._status_embed(self._pool_label(), "R E A D Y", None, "slot_face.png")
-        await interaction.edit_original_response(content="", embed=embed, view=self, attachments=[self._face_file()])
+        embed = self._status_embed(self._pool_label(), "R E A D Y", None, "slots.png")
+        await interaction.edit_original_response(content="", embed=embed, view=self, attachments=[self._idle_file()])
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
     async def close(self, interaction: discord.Interaction, _: discord.ui.Button):

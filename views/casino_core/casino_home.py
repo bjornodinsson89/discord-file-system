@@ -83,7 +83,7 @@ class GameSelect(discord.ui.Select):
             content="",
             embed=view.build_embed(),
             view=view,
-            attachments=[view._face_file()],
+            attachments=[view._idle_file()],
         )
 
 
