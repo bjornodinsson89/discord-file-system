@@ -2,19 +2,19 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-from statistics import median
 import math
 
-from PIL import Image, ImageOps
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
-CUSTOM_STRIP_PATH = ROOT / "assets" / "slots" / "slot_reel.webp"
+CUSTOM_STRIP_PATH = ROOT / "assets" / "slots" / "reel_strip.png"
 
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
 _LAYOUT_CACHE: (
     tuple[
+        Image.Image,
         Image.Image,
         Image.Image,
         tuple[int, int, int, int],
@@ -48,7 +48,7 @@ def _load_reel() -> Image.Image:
     global _REEL
     if _REEL is None:
         if not CUSTOM_STRIP_PATH.exists():
-            raise FileNotFoundError(f"Missing custom reel strip at {CUSTOM_STRIP_PATH}")
+            raise RuntimeError(f"Missing custom reel strip: {CUSTOM_STRIP_PATH}")
         _REEL = Image.open(CUSTOM_STRIP_PATH).convert("RGBA")
     return _REEL
 
@@ -98,40 +98,6 @@ def detect_window_box(face: Image.Image) -> tuple[int, int, int, int]:
     return x0, y0, x1, y1
 
 
-def detect_cell_height(reel: Image.Image) -> int:
-    gray = reel.convert("L")
-    w, h = gray.size
-    px = gray.load()
-
-    row_mean: list[float] = []
-    for y in range(h):
-        total = 0
-        for x in range(w):
-            total += px[x, y]
-        row_mean.append(total / w)
-
-    peaks = [idx for idx, v in enumerate(row_mean) if v > 240]
-    if len(peaks) < 2:
-        return max(1, h // CYCLE_LEN)
-
-    groups: list[int] = [peaks[0]]
-    for y in peaks[1:]:
-        if y - groups[-1] > 1:
-            groups.append(y)
-
-    distances = [b - a for a, b in zip(groups, groups[1:], strict=False) if (b - a) > 0]
-    if not distances:
-        return max(1, h // CYCLE_LEN)
-
-    detected = int(median(distances))
-    # Divider detection can pick tiny decorative highlights; clamp to a sane strip cell size.
-    min_reasonable = max(1, h // (CYCLE_LEN * 2))
-    max_reasonable = max(1, h // max(1, CYCLE_LEN - 1))
-    if detected < min_reasonable or detected > max_reasonable:
-        return max(1, h // CYCLE_LEN)
-    return detected
-
-
 def reset_slots_render_cache() -> None:
     global _REEL, _LAYOUT_CACHE
     _REEL = None
@@ -139,6 +105,7 @@ def reset_slots_render_cache() -> None:
 
 
 def _layout() -> tuple[
+    Image.Image,
     Image.Image,
     Image.Image,
     tuple[int, int, int, int],
@@ -178,21 +145,19 @@ def _layout() -> tuple[
         ),
         Image.Resampling.LANCZOS,
     )
-    cell_h_scaled = max(1, reel_scaled.height // CYCLE_LEN)
-    max_cells = (BASE_SPINS + EXTRA_SPINS + 2) * CYCLE_LEN
-    max_off = max_cells * cell_h_scaled
-    required_px = max_off + window_h + 4
-    repeats = max(4, math.ceil(required_px / reel_scaled.height))
+    cell_h_scaled = reel_scaled.height // CYCLE_LEN
+    if cell_h_scaled <= 0:
+        raise ValueError("Invalid scaled cell height")
 
-    tiled = Image.new("RGBA", (col_w, reel_scaled.height * repeats), (0, 0, 0, 0))
-    for idx in range(repeats):
-        tiled.paste(reel_scaled, (0, idx * reel_scaled.height), reel_scaled)
+    # Placeholder tiled image; actual render paths rebuild with required spin height.
+    tiled = reel_scaled
 
     col_x0 = x0 + padding_x
     col_x = [col_x0 + i * (col_w + gap) for i in range(3)]
 
     _LAYOUT_CACHE = (
         face,
+        reel_scaled,
         tiled,
         (x0, y0, x1, y1),
         window_h,
@@ -217,16 +182,24 @@ def symbol_index(item_id: int) -> int:
     return REEL_CYCLE.index(item_id)
 
 
-def _base_offset_centered(item_id: int, cell_h_scaled: int, window_h: int) -> float:
+def _stop_offset_for_symbol(idx: int, cell_h: int, window_h: int) -> float:
+    return idx * cell_h + (cell_h / 2.0) - (window_h / 2.0)
+
+
+def _start_and_stop_for_item(item_id: int, cell_h: int, window_h: int) -> tuple[float, float]:
     idx = symbol_index(item_id)
-    return (BASE_SPINS * CYCLE_LEN + idx) * cell_h_scaled + (cell_h_scaled / 2.0) - (window_h / 2.0)
+    stop = (BASE_SPINS * CYCLE_LEN * cell_h) + _stop_offset_for_symbol(idx, cell_h, window_h)
+    start = stop + (EXTRA_SPINS * CYCLE_LEN * cell_h)
+    return start, stop
 
 
-def _start_and_base(item_id: int, cell_h_scaled: int, window_h: int) -> tuple[float, float]:
-    base = _base_offset_centered(item_id, cell_h_scaled, window_h)
-    extra = (EXTRA_SPINS * CYCLE_LEN) * cell_h_scaled
-    start = base + extra
-    return start, base
+def _build_tiled_strip(reel_scaled: Image.Image, col_w: int, window_h: int, max_start: float) -> Image.Image:
+    required_px = int(math.ceil(max_start + window_h + 2))
+    repeats = max(4, math.ceil(required_px / reel_scaled.height) + 1)
+    tiled = Image.new("RGBA", (col_w, reel_scaled.height * repeats), (0, 0, 0, 0))
+    for idx in range(repeats):
+        tiled.paste(reel_scaled, (0, idx * reel_scaled.height), reel_scaled)
+    return tiled
 
 
 def _downscale(im: Image.Image, max_w: int) -> Image.Image:
@@ -245,23 +218,16 @@ def _compose_frame_fast(
     window_box: tuple[int, int, int, int],
     window_h: int,
     col_w: int,
-    cell_h_scaled: int,
     col_x: list[int],
     offsets: list[float],
 ) -> Image.Image:
     _, y0, _, _ = window_box
     reels_canvas = Image.new("RGBA", face.size, (0, 0, 0, 0))
     for i, off in enumerate(offsets):
-        symbol_row = int(round(off / cell_h_scaled)) % CYCLE_LEN
-        y = symbol_row * cell_h_scaled
-        cell = tiled.crop((0, y, col_w, y + cell_h_scaled))
-        cell_fit = ImageOps.fit(
-            cell,
-            (col_w, window_h),
-            method=Image.Resampling.LANCZOS,
-            centering=(0.5, 0.5),
-        )
-        reels_canvas.paste(cell_fit, (col_x[i], y0), cell_fit)
+        y = int(round(off))
+        y = max(0, min(y, tiled.height - window_h))
+        seg = tiled.crop((0, y, col_w, y + window_h))
+        reels_canvas.paste(seg, (col_x[i], y0), seg)
     out = Image.alpha_composite(reels_canvas, face)
     return out
 
@@ -273,16 +239,21 @@ def animation_seconds(
 
 
 def render_idle_png(reels: list[int], max_w: int = 900) -> bytes:
-    face, tiled, window_box, window_h, col_w, cell_h_scaled, col_x, _ = _layout()
+    face, reel_scaled, _, window_box, window_h, col_w, cell_h_scaled, col_x, _ = _layout()
     normalized = _normalize_reels(reels)
-    offsets = [_base_offset_centered(item, cell_h_scaled, window_h) for item in normalized]
+    offsets = [
+        (BASE_SPINS * CYCLE_LEN * cell_h_scaled)
+        + _stop_offset_for_symbol(symbol_index(item), cell_h_scaled, window_h)
+        for item in normalized
+    ]
+    max_start = max(offsets)
+    tiled = _build_tiled_strip(reel_scaled, col_w, window_h, max_start)
     frame = _compose_frame_fast(
         face,
         tiled,
         window_box,
         window_h,
         col_w,
-        cell_h_scaled,
         col_x,
         offsets,
     )
@@ -307,11 +278,12 @@ def render_slots_gif(
             return Image.alpha_composite(bg, im).convert("RGB")
         return im.convert("RGB")
 
-    face, tiled, window_box, window_h, col_w, cell_h_scaled, col_x, bg_rgba = _layout()
+    face, reel_scaled, _, window_box, window_h, col_w, cell_h_scaled, col_x, bg_rgba = _layout()
     normalized = _normalize_reels(final_reels)
-    starts_bases = [_start_and_base(item, cell_h_scaled, window_h) for item in normalized]
-    starts = [start for start, _ in starts_bases]
-    bases = [base for _, base in starts_bases]
+    starts_stops = [_start_and_stop_for_item(item, cell_h_scaled, window_h) for item in normalized]
+    starts = [start for start, _ in starts_stops]
+    stops_px = [stop for _, stop in starts_stops]
+    tiled = _build_tiled_strip(reel_scaled, col_w, window_h, max(starts))
     total_frames = max(2, int(frames))
     stop_left = max(1, int(total_frames * 0.45))
     stop_mid = max(stop_left + 1, int(total_frames * 0.70))
@@ -324,11 +296,11 @@ def render_slots_gif(
         for reel_idx in range(3):
             stop_f = stops[reel_idx]
             if f >= stop_f:
-                off = bases[reel_idx]
+                off = stops_px[reel_idx]
             else:
                 p = f / stop_f
                 ease = 1 - (1 - p) ** 3
-                off = starts[reel_idx] - (starts[reel_idx] - bases[reel_idx]) * ease
+                off = starts[reel_idx] - (starts[reel_idx] - stops_px[reel_idx]) * ease
             offsets.append(off)
 
         rgba_frame = _compose_frame_fast(
@@ -337,7 +309,6 @@ def render_slots_gif(
             window_box,
             window_h,
             col_w,
-            cell_h_scaled,
             col_x,
             offsets,
         )
