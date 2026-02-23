@@ -114,7 +114,12 @@ class SlotsPlayView(discord.ui.View):
         return [random.choices(ids, weights=weights, k=1)[0] for _ in range(3)]
 
     def _idle_file(self) -> discord.File:
-        idle_png = render_idle_png(self._roll_preview_reels())
+        idle_png = render_idle_png(
+            self._roll_preview_reels(),
+            balance=self.balance,
+            bet=self.current_bet,
+            jackpot_pool=self.pool_tokens,
+        )
         return discord.File(BytesIO(idle_png), filename="slots.png")
 
     def _status_embed(
@@ -237,7 +242,12 @@ class SlotsPlayView(discord.ui.View):
 
             gif_bytes = await asyncio.to_thread(
                 lambda: render_slots_gif(
-                    final_reels, frames=SPIN_FRAMES, duration_ms=SPIN_DURATION_MS
+                    final_reels,
+                    frames=SPIN_FRAMES,
+                    duration_ms=SPIN_DURATION_MS,
+                    balance=self.balance,
+                    bet=bet,
+                    jackpot_pool=self.pool_tokens,
                 )
             )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
