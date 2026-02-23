@@ -156,10 +156,7 @@ def _layout() -> tuple[
 
         col_x0 = x0 + padding_x
         col_x = [col_x0 + i * (col_w + gap) for i in range(3)]
-        reel_boxes = [
-            (col_x[i], y0, col_x[i] + col_w, y0 + window_h)
-            for i in range(3)
-        ]
+        reel_boxes = [(col_x[i], y0, col_x[i] + col_w, y0 + window_h) for i in range(3)]
 
     anchor_x0, anchor_y0, _, _ = reel_boxes[0]
     sample_x = min(face.width - 1, anchor_x0 + 10)
