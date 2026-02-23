@@ -29,7 +29,9 @@ BASE_BALANCE_BOX = (330 - 123, 669, 330, 725)
 BASE_BET_BOX = (695, 669, 695 + 123, 725)
 
 
-def scale_box(box: tuple[int, int, int, int], face_w: int, face_h: int) -> tuple[int, int, int, int]:
+def scale_box(
+    box: tuple[int, int, int, int], face_w: int, face_h: int
+) -> tuple[int, int, int, int]:
     sx = float(face_w) / float(BASE_FACE_W)
     sy = float(face_h) / float(BASE_FACE_H)
     x0, y0, x1, y1 = box

@@ -33,7 +33,9 @@ def _scaled_font_size(face_h: int, base_size: int, min_size: int, max_size: int)
     return _clamp(int(round(base_size * scale)), min_size, max_size)
 
 
-def _clamp_box(box: tuple[int, int, int, int], width: int, height: int) -> tuple[int, int, int, int]:
+def _clamp_box(
+    box: tuple[int, int, int, int], width: int, height: int
+) -> tuple[int, int, int, int]:
     x0, y0, x1, y1 = box
     x0 = _clamp(x0, 0, width)
     y0 = _clamp(y0, 0, height)
