@@ -12,6 +12,7 @@ CUSTOM_STRIP_PATH = ROOT / "assets" / "slots" / "reel_strip.png"
 
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
+_CELL_H_RAW: int | None = None
 _LAYOUT_CACHE: (
     tuple[
         Image.Image,
@@ -45,22 +46,24 @@ def _load_face() -> Image.Image:
 
 
 def _load_reel() -> Image.Image:
-    global _REEL
+    global _REEL, _CELL_H_RAW
     if _REEL is None:
         if not CUSTOM_STRIP_PATH.exists():
             raise RuntimeError(f"Missing custom reel strip: {CUSTOM_STRIP_PATH}")
+
         reel = Image.open(CUSTOM_STRIP_PATH).convert("RGBA")
-        if reel.height % reel.width == 0:
-            cell_h_raw = reel.width
-            total_cells = reel.height // cell_h_raw
-        else:
-            cell_h_raw = reel.height // CYCLE_LEN
-            total_cells = CYCLE_LEN
+        cell_h_raw = reel.width
+        cycle_h = cell_h_raw * CYCLE_LEN
 
-        if total_cells >= CYCLE_LEN and total_cells % CYCLE_LEN == 0 and total_cells != CYCLE_LEN:
-            crop_h = cell_h_raw * CYCLE_LEN
-            reel = reel.crop((0, 0, reel.width, crop_h))
+        if reel.height < cycle_h:
+            raise RuntimeError(
+                f"Custom reel strip too short for one cycle: expected at least {cycle_h}px, got {reel.height}px"
+            )
 
+        if reel.height != cycle_h:
+            reel = reel.crop((0, 0, reel.width, cycle_h))
+
+        _CELL_H_RAW = cell_h_raw
         _REEL = reel
     return _REEL
 
@@ -111,8 +114,9 @@ def detect_window_box(face: Image.Image) -> tuple[int, int, int, int]:
 
 
 def reset_slots_render_cache() -> None:
-    global _REEL, _LAYOUT_CACHE
+    global _REEL, _CELL_H_RAW, _LAYOUT_CACHE
     _REEL = None
+    _CELL_H_RAW = None
     _LAYOUT_CACHE = None
 
 
@@ -149,6 +153,7 @@ def _layout() -> tuple[
     if col_w <= 0:
         raise ValueError("Invalid slots window layout dimensions")
 
+    cell_h_raw = _CELL_H_RAW or reel.width
     scale = col_w / reel.width
     reel_scaled = reel.resize(
         (
@@ -157,7 +162,7 @@ def _layout() -> tuple[
         ),
         Image.Resampling.LANCZOS,
     )
-    cell_h_scaled = reel_scaled.height // CYCLE_LEN
+    cell_h_scaled = max(1, int(round(cell_h_raw * scale)))
     if cell_h_scaled <= 0:
         raise ValueError("Invalid scaled cell height")
 
