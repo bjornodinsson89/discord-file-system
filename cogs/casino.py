@@ -22,10 +22,13 @@ DISCORD_SAFE_LIMIT = 7_800_000
 FRAMES = 40
 DURATION_MS = 110
 QUALITY_LADDER = [
+    {"max_w": 1200, "palette": 192},
+    {"max_w": 1000, "palette": 144},
     {"max_w": 900, "palette": 128},
-    {"max_w": 850, "palette": 112},
-    {"max_w": 800, "palette": 96},
-    {"max_w": 750, "palette": 80},
+    {"max_w": 800, "palette": 112},
+    {"max_w": 700, "palette": 96},
+    {"max_w": 600, "palette": 80},
+    {"max_w": 520, "palette": 64},
 ]
 
 
@@ -132,12 +135,15 @@ class CasinoCog(commands.Cog):
         uploaded = 0
         skipped = 0
         failed: list[str] = []
+        failed_details: list[str] = []
         processed = 0
 
         for idx in range(start_index, end_index):
             combo = combos[idx]
             processed += 1
             smallest_bytes: int | None = None
+            last_exc: Exception | None = None
+            last_rung: str | None = None
 
             try:
                 if not force and await has_combo(combo):
@@ -148,21 +154,34 @@ class CasinoCog(commands.Cog):
                 success = False
 
                 for rung in QUALITY_LADDER:
-                    gif_bytes = await asyncio.to_thread(
-                        render_slots_gif,
-                        reels,
-                        FRAMES,
-                        DURATION_MS,
-                        int(rung["max_w"]),
-                        int(rung["palette"]),
-                    )
+                    last_rung = f"{int(rung['max_w'])}/{int(rung['palette'])}"
+                    try:
+                        gif_bytes = await asyncio.to_thread(
+                            render_slots_gif,
+                            reels,
+                            FRAMES,
+                            DURATION_MS,
+                            int(rung["max_w"]),
+                            int(rung["palette"]),
+                        )
+                    except Exception as err:
+                        last_exc = err
+                        log.info(
+                            "seed combo=%s rung=%s render_failed err=%s",
+                            combo,
+                            rung,
+                            err,
+                        )
+                        continue
 
-                    gif_len = len(gif_bytes)
-                    if smallest_bytes is None or gif_len < smallest_bytes:
-                        smallest_bytes = gif_len
+                    b = len(gif_bytes)
+                    smallest_bytes = b if smallest_bytes is None else min(smallest_bytes, b)
 
-                    if gif_len > DISCORD_SAFE_LIMIT:
-                        log.info("seed combo=%s rung=%s bytes=%d", combo, rung, gif_len)
+                    if b > DISCORD_SAFE_LIMIT:
+                        last_exc = ValueError(
+                            f"gif_too_large bytes={b} limit={DISCORD_SAFE_LIMIT} rung={last_rung}"
+                        )
+                        log.info("seed combo=%s rung=%s bytes=%d", combo, rung, b)
                         continue
 
                     file = discord.File(
@@ -173,8 +192,9 @@ class CasinoCog(commands.Cog):
                     try:
                         msg = await channel.send(content=f"slot:{combo}", file=file)
                     except discord.HTTPException as err:
+                        last_exc = err
                         if getattr(err, "status", None) == 413:
-                            log.info("seed combo=%s rung=%s bytes=%d", combo, rung, gif_len)
+                            log.info("seed combo=%s rung=%s bytes=%d err=%s", combo, rung, b, err)
                             continue
                         raise
 
@@ -204,22 +224,33 @@ class CasinoCog(commands.Cog):
 
                 if not success:
                     failed.append(combo)
-                    log.error(
-                        "seed combo=%s failed_all_rungs smallest_bytes=%s",
-                        combo,
-                        smallest_bytes,
+                    if last_exc is None:
+                        last_exc = RuntimeError("seed_failed_unknown")
+                    failure_line = (
+                        f"{combo} smallest_bytes={smallest_bytes} "
+                        f"last_rung={last_rung} err={type(last_exc).__name__}:{last_exc}"
                     )
+                    failed_details.append(failure_line)
+                    log.error("seed combo=%s failed_all_rungs detail=%s", combo, failure_line)
 
-            except Exception:
+            except Exception as err:
+                last_exc = err
                 failed.append(combo)
+                failure_line = (
+                    f"{combo} smallest_bytes={smallest_bytes} "
+                    f"last_rung={last_rung} err={type(last_exc).__name__}:{last_exc}"
+                )
+                failed_details.append(failure_line)
                 log.exception("slot_assets_seed_failed combo=%s", combo)
 
             await asyncio.sleep(1.2)
 
+        details_preview = "\n".join(failed_details[:5]) if failed_details else ""
         await interaction.followup.send(
             (
                 f"Seeding complete. scanned={processed} uploaded={uploaded} "
                 f"skipped={skipped} failed={len(failed)}"
+                + (f"\nfailed_details:\n{details_preview}" if details_preview else "")
                 + (f" failed_combos={', '.join(failed[:20])}" if failed else "")
             ),
             ephemeral=True,
