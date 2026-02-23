@@ -170,7 +170,6 @@ def _layout() -> tuple[
     if col_w <= 0:
         raise ValueError("Invalid slots window layout dimensions")
 
-    cell_h_raw = max(1, reel.height // CYCLE_LEN)
     scale = col_w / reel.width
     reel_scaled = reel.resize(
         (
