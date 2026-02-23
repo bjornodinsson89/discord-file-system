@@ -204,6 +204,26 @@ def _build_tiled_strip(
     return tiled
 
 
+def _render_centered_cell(
+    reel_scaled: Image.Image,
+    idx: int,
+    cell_h: int,
+    window_h: int,
+    col_w: int,
+) -> Image.Image:
+    y0 = idx * cell_h
+    cell = reel_scaled.crop((0, y0, col_w, y0 + cell_h))
+    tile = Image.new("RGBA", (col_w, window_h), (0, 0, 0, 0))
+    top = (window_h - cell_h) // 2
+    if top >= 0:
+        tile.paste(cell, (0, top), cell)
+        return tile
+    crop_top = (cell_h - window_h) // 2
+    cell = cell.crop((0, crop_top, col_w, crop_top + window_h))
+    tile.paste(cell, (0, 0), cell)
+    return tile
+
+
 def _downscale(im: Image.Image, max_w: int) -> Image.Image:
     if max_w <= 0:
         return im
@@ -216,19 +236,39 @@ def _downscale(im: Image.Image, max_w: int) -> Image.Image:
 
 def _compose_frame_fast(
     face: Image.Image,
+    reel_scaled: Image.Image,
     tiled: Image.Image,
     window_box: tuple[int, int, int, int],
     window_h: int,
     col_w: int,
     col_x: list[int],
     offsets: list[float],
+    stopped: list[bool] | None = None,
+    stop_idxs: list[int] | None = None,
+    cell_h_scaled: int | None = None,
 ) -> Image.Image:
     _, y0, _, _ = window_box
+    stopped = stopped or [False, False, False]
+    if any(stopped):
+        if stop_idxs is None:
+            raise ValueError("stop_idxs must be provided when stopped reels are used")
+        if cell_h_scaled is None:
+            raise ValueError("cell_h_scaled must be provided when stopped reels are used")
+
     reels_canvas = Image.new("RGBA", face.size, (0, 0, 0, 0))
     for i, off in enumerate(offsets):
-        y = int(round(off))
-        y = max(0, min(y, tiled.height - window_h))
-        seg = tiled.crop((0, y, col_w, y + window_h))
+        if stopped[i]:
+            seg = _render_centered_cell(
+                reel_scaled=reel_scaled,
+                idx=stop_idxs[i],
+                cell_h=cell_h_scaled,
+                window_h=window_h,
+                col_w=col_w,
+            )
+        else:
+            y = int(round(off))
+            y = max(0, min(y, tiled.height - window_h))
+            seg = tiled.crop((0, y, col_w, y + window_h))
         reels_canvas.paste(seg, (col_x[i], y0), seg)
     out = Image.alpha_composite(reels_canvas, face)
     return out
@@ -243,21 +283,26 @@ def animation_seconds(
 def render_idle_png(reels: list[int], max_w: int = 900) -> bytes:
     face, reel_scaled, _, window_box, window_h, col_w, cell_h_scaled, col_x, _ = _layout()
     normalized = _normalize_reels(reels)
+    stop_idxs = [symbol_index(item) for item in normalized]
     offsets = [
         (BASE_SPINS * CYCLE_LEN * cell_h_scaled)
-        + _stop_offset_for_symbol(symbol_index(item), cell_h_scaled, window_h)
-        for item in normalized
+        + _stop_offset_for_symbol(stop_idx, cell_h_scaled, window_h)
+        for stop_idx in stop_idxs
     ]
     max_start = max(offsets)
     tiled = _build_tiled_strip(reel_scaled, col_w, window_h, max_start)
     frame = _compose_frame_fast(
-        face,
-        tiled,
-        window_box,
-        window_h,
-        col_w,
-        col_x,
-        offsets,
+        face=face,
+        reel_scaled=reel_scaled,
+        tiled=tiled,
+        window_box=window_box,
+        window_h=window_h,
+        col_w=col_w,
+        col_x=col_x,
+        offsets=[0.0, 0.0, 0.0],
+        stopped=[True, True, True],
+        stop_idxs=stop_idxs,
+        cell_h_scaled=cell_h_scaled,
     )
     frame = _downscale(frame, max_w=max_w)
     out = BytesIO()
@@ -282,6 +327,7 @@ def render_slots_gif(
 
     face, reel_scaled, _, window_box, window_h, col_w, cell_h_scaled, col_x, bg_rgba = _layout()
     normalized = _normalize_reels(final_reels)
+    stop_idxs = [symbol_index(item) for item in normalized]
     starts_stops = [_start_and_stop_for_item(item, cell_h_scaled, window_h) for item in normalized]
     starts = [start for start, _ in starts_stops]
     stops_px = [stop for _, stop in starts_stops]
@@ -305,14 +351,24 @@ def render_slots_gif(
                 off = starts[reel_idx] - (starts[reel_idx] - stops_px[reel_idx]) * ease
             offsets.append(off)
 
+        stopped_mask = [
+            f >= stop_left,
+            f >= stop_mid,
+            f >= stop_right,
+        ]
+
         rgba_frame = _compose_frame_fast(
-            face,
-            tiled,
-            window_box,
-            window_h,
-            col_w,
-            col_x,
-            offsets,
+            face=face,
+            reel_scaled=reel_scaled,
+            tiled=tiled,
+            window_box=window_box,
+            window_h=window_h,
+            col_w=col_w,
+            col_x=col_x,
+            offsets=offsets,
+            stopped=stopped_mask,
+            stop_idxs=stop_idxs,
+            cell_h_scaled=cell_h_scaled,
         )
         rgba_frames.append(_downscale(rgba_frame, max_w=max_w))
 
