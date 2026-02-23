@@ -5,7 +5,7 @@ from pathlib import Path
 from statistics import median
 import math
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
 FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
@@ -170,44 +170,15 @@ def _layout() -> tuple[
     if col_w <= 0:
         raise ValueError("Invalid slots window layout dimensions")
 
-    cell_h_raw = max(1, reel.height // CYCLE_LEN)
-    scale = window_h / cell_h_raw
-    new_w = max(1, round(reel.width * scale))
-    new_h = max(1, round(reel.height * scale))
-    reel_scaled = reel.resize((new_w, new_h), Image.Resampling.LANCZOS)
-    cell_h_scaled = window_h
-
-    if col_w != reel_scaled.width:
-        reel_scaled = reel_scaled.resize(
-            (
-                col_w,
-                max(1, round(reel_scaled.height * (col_w / reel_scaled.width))),
-            ),
-            Image.Resampling.LANCZOS,
-        )
-        cell_h_scaled = max(1, reel_scaled.height // CYCLE_LEN)
-        scale_y = window_h / cell_h_scaled
-        reel_scaled = reel_scaled.resize(
-            (
-                col_w,
-                max(1, round(reel_scaled.height * scale_y)),
-            ),
-            Image.Resampling.LANCZOS,
-        )
-
-        # Guarantee exact per-cell fit to window height after rounding artifacts.
-        exact_total_h = window_h * CYCLE_LEN
-        if reel_scaled.height != exact_total_h:
-            reel_scaled = reel_scaled.resize(
-                (col_w, exact_total_h),
-                Image.Resampling.LANCZOS,
-            )
-
+    scale = col_w / reel.width
+    reel_scaled = reel.resize(
+        (
+            col_w,
+            max(1, round(reel.height * scale)),
+        ),
+        Image.Resampling.LANCZOS,
+    )
     cell_h_scaled = max(1, reel_scaled.height // CYCLE_LEN)
-    if cell_h_scaled != window_h:
-        exact_total_h = window_h * CYCLE_LEN
-        reel_scaled = reel_scaled.resize((col_w, exact_total_h), Image.Resampling.LANCZOS)
-        cell_h_scaled = window_h
     max_cells = (BASE_SPINS + EXTRA_SPINS + 2) * CYCLE_LEN
     max_off = max_cells * cell_h_scaled
     required_px = max_off + window_h + 4
@@ -246,13 +217,13 @@ def symbol_index(item_id: int) -> int:
     return REEL_CYCLE.index(item_id)
 
 
-def _base_target_px(item_id: int, cell_h_scaled: int) -> int:
+def _base_offset_centered(item_id: int, cell_h_scaled: int, window_h: int) -> float:
     idx = symbol_index(item_id)
-    return (BASE_SPINS * CYCLE_LEN + idx) * cell_h_scaled
+    return (BASE_SPINS * CYCLE_LEN + idx) * cell_h_scaled + (cell_h_scaled / 2.0) - (window_h / 2.0)
 
 
-def _start_target_px(item_id: int, cell_h_scaled: int) -> tuple[int, int]:
-    base = _base_target_px(item_id, cell_h_scaled)
+def _start_and_base(item_id: int, cell_h_scaled: int, window_h: int) -> tuple[float, float]:
+    base = _base_offset_centered(item_id, cell_h_scaled, window_h)
     extra = (EXTRA_SPINS * CYCLE_LEN) * cell_h_scaled
     start = base + extra
     return start, base
@@ -274,20 +245,23 @@ def _compose_frame_fast(
     window_box: tuple[int, int, int, int],
     window_h: int,
     col_w: int,
+    cell_h_scaled: int,
     col_x: list[int],
-    offsets: list[int],
+    offsets: list[float],
 ) -> Image.Image:
     _, y0, _, _ = window_box
     reels_canvas = Image.new("RGBA", face.size, (0, 0, 0, 0))
-    max_y = max(0, tiled.height - window_h)
     for i, off in enumerate(offsets):
-        y = int(off)
-        if y < 0:
-            y = 0
-        if y > max_y:
-            y = max_y
-        seg = tiled.crop((0, y, col_w, y + window_h))
-        reels_canvas.paste(seg, (col_x[i], y0), seg)
+        symbol_row = int(round(off / cell_h_scaled)) % CYCLE_LEN
+        y = symbol_row * cell_h_scaled
+        cell = tiled.crop((0, y, col_w, y + cell_h_scaled))
+        cell_fit = ImageOps.fit(
+            cell,
+            (col_w, window_h),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        )
+        reels_canvas.paste(cell_fit, (col_x[i], y0), cell_fit)
     out = Image.alpha_composite(reels_canvas, face)
     return out
 
@@ -301,8 +275,17 @@ def animation_seconds(
 def render_idle_png(reels: list[int], max_w: int = 900) -> bytes:
     face, tiled, window_box, window_h, col_w, cell_h_scaled, col_x, _ = _layout()
     normalized = _normalize_reels(reels)
-    offsets = [_base_target_px(item, cell_h_scaled) for item in normalized]
-    frame = _compose_frame_fast(face, tiled, window_box, window_h, col_w, col_x, offsets)
+    offsets = [_base_offset_centered(item, cell_h_scaled, window_h) for item in normalized]
+    frame = _compose_frame_fast(
+        face,
+        tiled,
+        window_box,
+        window_h,
+        col_w,
+        cell_h_scaled,
+        col_x,
+        offsets,
+    )
     frame = _downscale(frame, max_w=max_w)
     out = BytesIO()
     frame.save(out, format="PNG")
@@ -326,7 +309,7 @@ def render_slots_gif(
 
     face, tiled, window_box, window_h, col_w, cell_h_scaled, col_x, bg_rgba = _layout()
     normalized = _normalize_reels(final_reels)
-    starts_bases = [_start_target_px(item, cell_h_scaled) for item in normalized]
+    starts_bases = [_start_and_base(item, cell_h_scaled, window_h) for item in normalized]
     starts = [start for start, _ in starts_bases]
     bases = [base for _, base in starts_bases]
     total_frames = max(2, int(frames))
@@ -337,7 +320,7 @@ def render_slots_gif(
 
     rgba_frames: list[Image.Image] = []
     for f in range(1, total_frames + 1):
-        offsets: list[int] = []
+        offsets: list[float] = []
         for reel_idx in range(3):
             stop_f = stops[reel_idx]
             if f >= stop_f:
@@ -345,7 +328,7 @@ def render_slots_gif(
             else:
                 p = f / stop_f
                 ease = 1 - (1 - p) ** 3
-                off = int(starts[reel_idx] - (starts[reel_idx] - bases[reel_idx]) * ease)
+                off = starts[reel_idx] - (starts[reel_idx] - bases[reel_idx]) * ease
             offsets.append(off)
 
         rgba_frame = _compose_frame_fast(
@@ -354,6 +337,7 @@ def render_slots_gif(
             window_box,
             window_h,
             col_w,
+            cell_h_scaled,
             col_x,
             offsets,
         )
