@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 import math
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageOps
+
+from utils.slots_paytable_overlay import draw_paytable_on_face
 
 ROOT = Path(__file__).resolve().parent.parent
 FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
@@ -17,31 +19,7 @@ REEL_BOXES = [
     (673, 398, 924, 612),  # Reel 3 (251x214)
 ]
 
-PAY_HDR = [
-    (330, 669, 453, 725),  # "1"
-    (453, 669, 569, 725),  # "2"
-    (569, 669, 695, 725),  # "3"
-]
-
-PAY_CELLS = [
-    [(330, 725, 453, 783), (453, 725, 569, 783), (569, 725, 695, 783)],
-    [(330, 783, 453, 843), (453, 783, 569, 843), (569, 783, 695, 843)],
-    [(330, 843, 453, 903), (453, 843, 569, 903), (569, 843, 695, 903)],
-    [(330, 903, 453, 964), (453, 903, 569, 964), (569, 903, 695, 964)],
-    [(330, 964, 453, 1023), (453, 964, 569, 1023), (569, 964, 695, 1023)],
-    [(330, 1023, 453, 1080), (453, 1023, 569, 1080), (569, 1023, 695, 1080)],
-]
-
-BAL_BOX = (101, 669, 330, 725)
-BET_BOX = (695, 669, 924, 725)
-
-TRIPLE_MULT = {
-    206: 3.0,
-    281: 4.0,
-    197: 6.0,
-    366: 8.0,
-    865: 10.0,
-}
+PAYTABLE_SYMBOL_ORDER = [9090, 206, 281, 865, 197, 366]
 
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
@@ -100,11 +78,6 @@ def _load_reel() -> Image.Image:
             )
 
         reel = reel.crop((0, 0, reel.width, cycle_h))
-
-        target_w = min(reel.width, int(cell_h_raw * 1.2))
-        if reel.width > target_w:
-            left = (reel.width - target_w) // 2
-            reel = reel.crop((left, 0, left + target_w, cycle_h))
 
         _CELL_H_RAW = cell_h_raw
         _REEL = reel
@@ -336,77 +309,6 @@ def maybe_debug_stopped_segments(
     print(f"SLOTS_DEBUG_STOP wrote {out_path}")
 
 
-def _build_paytable_values() -> list[list[str]]:
-    rows: list[list[str]] = []
-    for symbol in REEL_CYCLE:
-        if symbol == 9090:
-            rows.append(["JP", "JP", "JP"])
-            continue
-        mult = float(TRIPLE_MULT.get(symbol, 0.0))
-        rows.append([str(int(math.floor(bet * mult))) for bet in (1, 2, 3)])
-    return rows
-
-
-def _font(size: int) -> ImageFont.ImageFont:
-    for p in (
-        ROOT / "assets" / "fonts" / "DejaVuSans-Bold.ttf",
-        ROOT / "assets" / "DejaVuSans-Bold.ttf",
-    ):
-        if p.exists():
-            return ImageFont.truetype(str(p), size=size)
-    return ImageFont.load_default()
-
-
-def _draw_centered_text(
-    draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text: str, font: ImageFont.ImageFont
-) -> None:
-    x0, y0, x1, y1 = box
-    cx = (x0 + x1) / 2
-    cy = (y0 + y1) / 2
-    draw.text(
-        (cx, cy),
-        text,
-        font=font,
-        fill=(242, 246, 255, 255),
-        anchor="mm",
-        stroke_width=2,
-        stroke_fill=(15, 19, 28, 255),
-    )
-
-
-def _draw_ui_overlay(
-    frame: Image.Image, balance: int | None = None, bet: int | None = None
-) -> Image.Image:
-    draw = ImageDraw.Draw(frame)
-    hdr_font = _font(34)
-    cell_font = _font(30)
-    tiny_font = _font(22)
-
-    for idx, box in enumerate(PAY_HDR, start=1):
-        _draw_centered_text(draw, box, str(idx), hdr_font)
-
-    values = _build_paytable_values()
-    for row_idx, row in enumerate(values):
-        for col_idx, value in enumerate(row):
-            _draw_centered_text(draw, PAY_CELLS[row_idx][col_idx], value, cell_font)
-
-    if balance is not None:
-        bx0, by0, bx1, by1 = BAL_BOX
-        _draw_centered_text(draw, (bx0, by0, bx1, by0 + ((by1 - by0) // 2)), "BAL", tiny_font)
-        _draw_centered_text(
-            draw, (bx0, by0 + ((by1 - by0) // 2), bx1, by1), str(int(balance)), tiny_font
-        )
-
-    if bet is not None:
-        bx0, by0, bx1, by1 = BET_BOX
-        _draw_centered_text(draw, (bx0, by0, bx1, by0 + ((by1 - by0) // 2)), "BET", tiny_font)
-        _draw_centered_text(
-            draw, (bx0, by0 + ((by1 - by0) // 2), bx1, by1), str(int(bet)), tiny_font
-        )
-
-    return frame
-
-
 def _downscale(im: Image.Image, max_w: int) -> Image.Image:
     if max_w <= 0:
         return im
@@ -481,9 +383,13 @@ def _compose_frame_fast(
 
         reels_canvas.paste(seg, (x0, y0), seg)
 
-    out = Image.alpha_composite(reels_canvas, face)
-    out = _draw_ui_overlay(out, balance=balance, bet=bet)
-    return out
+    return Image.alpha_composite(reels_canvas, face)
+
+
+def _triple_multipliers_from_config() -> dict[int, float]:
+    from services.casino_games.slots import SLOT_CONFIG
+
+    return {int(symbol_id): float(mult) for symbol_id, mult in SLOT_CONFIG.payouts.triple.items()}
 
 
 def maybe_save_seed_debug_image() -> None:
@@ -528,12 +434,19 @@ def render_idle_png(
     jackpot_pool: int | None = None,
 ) -> bytes:
     face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, _ = _layout()
+    face_with_overlay = draw_paytable_on_face(
+        face,
+        bet=int(bet or 0),
+        balance=balance,
+        triple_multipliers=_triple_multipliers_from_config(),
+        symbol_order=PAYTABLE_SYMBOL_ORDER,
+    )
     del jackpot_pool
     tiled = _build_tiled_strip(reel_scaled, repeats=4)
     normalized = _normalize_reels(reels)
     stop_idxs = [symbol_index(item) for item in normalized]
     frame = _compose_frame_fast(
-        face=face,
+        face=face_with_overlay,
         strip_source=reel_scaled,
         tiled=tiled,
         reel_boxes=reel_boxes,
@@ -571,6 +484,13 @@ def render_slots_gif(
 
     maybe_save_seed_debug_image()
     face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, bg_rgba = _layout()
+    face_with_overlay = draw_paytable_on_face(
+        face,
+        bet=int(bet or 0),
+        balance=balance,
+        triple_multipliers=_triple_multipliers_from_config(),
+        symbol_order=PAYTABLE_SYMBOL_ORDER,
+    )
     maybe_debug_stopped_segments(face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled)
     normalized = _normalize_reels(final_reels)
     stop_idxs = [symbol_index(item) for item in normalized]
@@ -624,7 +544,7 @@ def render_slots_gif(
             ]
 
             rgba_frame = _compose_frame_fast(
-                face=face,
+                face=face_with_overlay,
                 strip_source=reel_scaled,
                 tiled=tiled,
                 reel_boxes=reel_boxes,
