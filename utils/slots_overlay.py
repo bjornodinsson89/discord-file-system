@@ -34,7 +34,9 @@ def _runs_from_mask(mask: list[bool], min_len: int) -> list[tuple[int, int]]:
     return runs
 
 
-def _edge_projection(gray: Image.Image, roi: tuple[int, int, int, int]) -> tuple[list[int], list[int]]:
+def _edge_projection(
+    gray: Image.Image, roi: tuple[int, int, int, int]
+) -> tuple[list[int], list[int]]:
     x0, y0, x1, y1 = roi
     edge = gray.filter(ImageFilter.FIND_EDGES)
     px = edge.load()
@@ -123,7 +125,9 @@ def _detect_reel_boxes(face_rgba: Image.Image) -> list[tuple[int, int, int, int]
     return boxes
 
 
-def _detect_paytable_layout(face_rgba: Image.Image) -> tuple[
+def _detect_paytable_layout(
+    face_rgba: Image.Image,
+) -> tuple[
     list[tuple[int, int, int, int]],
     list[list[tuple[int, int, int, int]]],
     tuple[int, int, int, int],
@@ -167,10 +171,10 @@ def _detect_paytable_layout(face_rgba: Image.Image) -> tuple[
     left_idx_end = max(1, v_lines[0] - wx0)
     right_idx_start = max(0, v_lines[-1] - wx0)
 
-    left_candidates = sorted(
-        range(left_idx_end), key=lambda i: wide_cols[i], reverse=True
-    )[:10]
-    left_pick = min(left_candidates, key=lambda i: abs((wx0 + i) - v_lines[0])) if left_candidates else 0
+    left_candidates = sorted(range(left_idx_end), key=lambda i: wide_cols[i], reverse=True)[:10]
+    left_pick = (
+        min(left_candidates, key=lambda i: abs((wx0 + i) - v_lines[0])) if left_candidates else 0
+    )
     for i in left_candidates:
         if (v_lines[0] - (wx0 + i)) >= max(12, w // 60):
             left_pick = i
@@ -223,7 +227,9 @@ def _font(size: int, font_path: str | None) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _draw_centered(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text: str, font: ImageFont.ImageFont) -> None:
+def _draw_centered(
+    draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text: str, font: ImageFont.ImageFont
+) -> None:
     x0, y0, x1, y1 = box
     draw.text(
         ((x0 + x1) / 2, (y0 + y1) / 2),
