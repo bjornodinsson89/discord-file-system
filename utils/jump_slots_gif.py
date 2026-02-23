@@ -199,13 +199,6 @@ def _layout() -> tuple[
     win_sizes = [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in reel_boxes]
     reel_offsets = [((w - reel_scaled.width) // 2, (h - cell_h_scaled) // 2) for w, h in win_sizes]
 
-    max_stop_offset = max(
-        _stop_offset_for_symbol(CYCLE_LEN - 1, cell_h_scaled, win_h)
-        for _, win_h in win_sizes
-    )
-    max_start = float((BASE_SPINS + EXTRA_SPINS) * CYCLE_LEN * cell_h_scaled + max_stop_offset)
-    min_repeats = math.ceil((max_start + max_win_h + 2) / reel_scaled.height) + 1
-
     _LAYOUT_CACHE = (
         face,
         reel_scaled,
@@ -287,7 +280,9 @@ def _font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _draw_centered_text(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text: str, font: ImageFont.ImageFont) -> None:
+def _draw_centered_text(
+    draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text: str, font: ImageFont.ImageFont
+) -> None:
     x0, y0, x1, y1 = box
     cx = (x0 + x1) / 2
     cy = (y0 + y1) / 2
@@ -302,7 +297,9 @@ def _draw_centered_text(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int
     )
 
 
-def _draw_ui_overlay(frame: Image.Image, balance: int | None = None, bet: int | None = None) -> Image.Image:
+def _draw_ui_overlay(
+    frame: Image.Image, balance: int | None = None, bet: int | None = None
+) -> Image.Image:
     draw = ImageDraw.Draw(frame)
     hdr_font = _font(34)
     cell_font = _font(30)
@@ -319,12 +316,16 @@ def _draw_ui_overlay(frame: Image.Image, balance: int | None = None, bet: int | 
     if balance is not None:
         bx0, by0, bx1, by1 = BAL_BOX
         _draw_centered_text(draw, (bx0, by0, bx1, by0 + ((by1 - by0) // 2)), "BAL", tiny_font)
-        _draw_centered_text(draw, (bx0, by0 + ((by1 - by0) // 2), bx1, by1), str(int(balance)), tiny_font)
+        _draw_centered_text(
+            draw, (bx0, by0 + ((by1 - by0) // 2), bx1, by1), str(int(balance)), tiny_font
+        )
 
     if bet is not None:
         bx0, by0, bx1, by1 = BET_BOX
         _draw_centered_text(draw, (bx0, by0, bx1, by0 + ((by1 - by0) // 2)), "BET", tiny_font)
-        _draw_centered_text(draw, (bx0, by0 + ((by1 - by0) // 2), bx1, by1), str(int(bet)), tiny_font)
+        _draw_centered_text(
+            draw, (bx0, by0 + ((by1 - by0) // 2), bx1, by1), str(int(bet)), tiny_font
+        )
 
     return frame
 
