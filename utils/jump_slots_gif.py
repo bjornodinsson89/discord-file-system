@@ -161,22 +161,53 @@ def _layout() -> tuple[
     bg_px = face.getpixel((sample_x, sample_y))
     bg_rgba = (int(bg_px[0]), int(bg_px[1]), int(bg_px[2]), 255)
     window_w = x1 - x0
+    window_h = y1 - y0
 
     # Slightly reduce horizontal padding/gap so reel symbols appear a bit larger.
     padding_x = int(window_w * 0.05)
     gap = int(window_w * 0.025)
-    col_w = (window_w - 2 * padding_x - 2 * gap) // 3
+    col_w = int((window_w - padding_x * 2 - gap * 2) / 3)
     if col_w <= 0:
         raise ValueError("Invalid slots window layout dimensions")
 
-    scale = col_w / reel.width
-    reel_scaled_h = max(1, round(reel.height * scale))
-    reel_scaled = reel.resize((col_w, reel_scaled_h), Image.Resampling.LANCZOS)
+    cell_h_raw = max(1, reel.height // CYCLE_LEN)
+    scale = window_h / cell_h_raw
+    new_w = max(1, round(reel.width * scale))
+    new_h = max(1, round(reel.height * scale))
+    reel_scaled = reel.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    cell_h_scaled = window_h
 
-    cell_h = detect_cell_height(reel)
-    cell_h_scaled = max(1, round(cell_h * scale))
+    if col_w != reel_scaled.width:
+        reel_scaled = reel_scaled.resize(
+            (
+                col_w,
+                max(1, round(reel_scaled.height * (col_w / reel_scaled.width))),
+            ),
+            Image.Resampling.LANCZOS,
+        )
+        cell_h_scaled = max(1, reel_scaled.height // CYCLE_LEN)
+        scale_y = window_h / cell_h_scaled
+        reel_scaled = reel_scaled.resize(
+            (
+                col_w,
+                max(1, round(reel_scaled.height * scale_y)),
+            ),
+            Image.Resampling.LANCZOS,
+        )
 
-    window_h = y1 - y0
+        # Guarantee exact per-cell fit to window height after rounding artifacts.
+        exact_total_h = window_h * CYCLE_LEN
+        if reel_scaled.height != exact_total_h:
+            reel_scaled = reel_scaled.resize(
+                (col_w, exact_total_h),
+                Image.Resampling.LANCZOS,
+            )
+
+    cell_h_scaled = max(1, reel_scaled.height // CYCLE_LEN)
+    if cell_h_scaled != window_h:
+        exact_total_h = window_h * CYCLE_LEN
+        reel_scaled = reel_scaled.resize((col_w, exact_total_h), Image.Resampling.LANCZOS)
+        cell_h_scaled = window_h
     max_cells = (BASE_SPINS + EXTRA_SPINS + 2) * CYCLE_LEN
     max_off = max_cells * cell_h_scaled
     required_px = max_off + window_h + 4
