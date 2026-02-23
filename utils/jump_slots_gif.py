@@ -82,16 +82,19 @@ def _load_reel() -> Image.Image:
             raise RuntimeError(f"Missing custom reel strip: {CUSTOM_STRIP_PATH}")
 
         reel = Image.open(CUSTOM_STRIP_PATH).convert("RGBA")
-        cell_h_raw = reel.width
-        cycle_h = cell_h_raw * CYCLE_LEN
+        if reel.height % CYCLE_LEN == 0:
+            cell_h_raw = reel.height // CYCLE_LEN
+            cycle_h = cell_h_raw * CYCLE_LEN
+        else:
+            cell_h_raw = reel.width
+            cycle_h = cell_h_raw * CYCLE_LEN
+            if reel.height < cycle_h:
+                raise RuntimeError(
+                    "Custom reel strip too short for one cycle (square-cell mode): "
+                    f"expected at least {cycle_h}px, got {reel.height}px"
+                )
 
-        if reel.height < cycle_h:
-            raise RuntimeError(
-                f"Custom reel strip too short for one cycle: expected at least {cycle_h}px, got {reel.height}px"
-            )
-
-        if reel.height != cycle_h:
-            reel = reel.crop((0, 0, reel.width, cycle_h))
+        reel = reel.crop((0, 0, reel.width, cycle_h))
 
         _CELL_H_RAW = cell_h_raw
         _REEL = reel
@@ -178,8 +181,7 @@ def _layout() -> tuple[
     if any((x1 - x0) <= 0 or (y1 - y0) <= 0 for x0, y0, x1, y1 in reel_boxes):
         raise ValueError("Invalid reel boxes layout")
 
-    cell_h_raw = reel.width
-    reel = reel.crop((0, 0, reel.width, cell_h_raw * CYCLE_LEN))
+    cell_h_raw = _CELL_H_RAW if _CELL_H_RAW is not None else reel.width
     max_win_h = max(y1 - y0 for _, y0, _, y1 in reel_boxes)
     max_win_w = max(x1 - x0 for x0, _, x1, _ in reel_boxes)
     scale = min(max_win_w / reel.width, max_win_h / cell_h_raw)
@@ -458,8 +460,9 @@ def render_slots_gif(
     starts = [start for start, _ in starts_stops]
     stops_px = [stop for _, stop in starts_stops]
     max_window_h = max(h for _, h in win_sizes)
-    needed = int(math.ceil(max(starts) + max_window_h + 2))
-    repeats = max(4, math.ceil(needed / reel_scaled.height) + 1)
+    max_start_offset = max(starts)
+    needed_h = int(math.ceil(max_start_offset + max_window_h + cell_h_scaled))
+    repeats = max(4, math.ceil(needed_h / reel_scaled.height) + 1)
     tiled = _build_tiled_strip(reel_scaled, repeats=repeats)
 
     total_frames = max(2, int(frames))
