@@ -164,9 +164,12 @@ def _layout() -> tuple[
     bg_px = face.getpixel((sample_x, sample_y))
     bg_rgba = (int(bg_px[0]), int(bg_px[1]), int(bg_px[2]), 255)
     widths = [x1 - x0 for x0, _, x1, _ in reel_boxes]
-    if len(reel_boxes) != 3 or any(w <= 0 for w in widths):
+    heights = [y1 - y0 for _, y0, _, y1 in reel_boxes]
+    if len(reel_boxes) != 3 or any(w <= 0 for w in widths) or any(h <= 0 for h in heights):
         raise ValueError("Invalid reel boxes layout")
-    target_w = min(widths)
+    # The reel strip is composed of square cells. Scale by the smallest reel window side so
+    # symbols fit fully inside each viewport instead of being vertically cropped.
+    target_w = min(min(widths), min(heights))
 
     cell_h_raw = _CELL_H_RAW or reel.width
     scale = target_w / reel.width
