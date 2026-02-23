@@ -7,10 +7,9 @@ import math
 
 from PIL import Image
 
-from utils.jump_slots_assets import ensure_reel_strip
-
 ROOT = Path(__file__).resolve().parent.parent
 FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
+CUSTOM_STRIP_PATH = ROOT / "assets" / "slots" / "slot_reel.webp"
 
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
@@ -28,7 +27,7 @@ _LAYOUT_CACHE: (
     | None
 ) = None
 
-REEL_CYCLE = [394, 707, 281, 197, 366, 865, 206]
+REEL_CYCLE = [281, 865, 206, 197, 366]
 CYCLE_LEN = len(REEL_CYCLE)
 BASE_SPINS = 2
 EXTRA_SPINS = 7
@@ -48,8 +47,9 @@ def _load_face() -> Image.Image:
 def _load_reel() -> Image.Image:
     global _REEL
     if _REEL is None:
-        path = ensure_reel_strip(REEL_CYCLE)
-        _REEL = Image.open(path).convert("RGBA")
+        if not CUSTOM_STRIP_PATH.exists():
+            raise FileNotFoundError(f"Missing custom reel strip at {CUSTOM_STRIP_PATH}")
+        _REEL = Image.open(CUSTOM_STRIP_PATH).convert("RGBA")
     return _REEL
 
 
@@ -126,9 +126,16 @@ def detect_cell_height(reel: Image.Image) -> int:
     detected = int(median(distances))
     # Divider detection can pick tiny decorative highlights; clamp to a sane strip cell size.
     min_reasonable = max(1, h // (CYCLE_LEN * 2))
-    if detected < min_reasonable:
+    max_reasonable = max(1, h // max(1, CYCLE_LEN - 1))
+    if detected < min_reasonable or detected > max_reasonable:
         return max(1, h // CYCLE_LEN)
     return detected
+
+
+def reset_slots_render_cache() -> None:
+    global _REEL, _LAYOUT_CACHE
+    _REEL = None
+    _LAYOUT_CACHE = None
 
 
 def _layout() -> tuple[
