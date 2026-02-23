@@ -350,10 +350,7 @@ def render_slots_gif(
     face, reel_scaled, _, reel_boxes, win_w, win_h, cell_h_scaled, bg_rgba = _layout()
     normalized = _normalize_reels(final_reels)
     stop_idxs = [symbol_index(item) for item in normalized]
-    starts_stops = [
-        _start_and_stop_for_item(item, cell_h_scaled, win_h)
-        for item in normalized
-    ]
+    starts_stops = [_start_and_stop_for_item(item, cell_h_scaled, win_h) for item in normalized]
     starts = [start for start, _ in starts_stops]
     stops_px = [stop for _, stop in starts_stops]
     tiled = _build_tiled_strip(reel_scaled, win_w, win_h, max(starts))
