@@ -178,7 +178,8 @@ def _layout() -> tuple[
     if cell_h_scaled <= 0:
         raise ValueError("Invalid scaled cell height")
 
-    max_start = float(EXTRA_SPINS * CYCLE_LEN * cell_h_scaled)
+    max_stop_offset = _stop_offset_for_symbol(CYCLE_LEN - 1, cell_h_scaled, win_h)
+    max_start = float((BASE_SPINS + EXTRA_SPINS) * CYCLE_LEN * cell_h_scaled + max_stop_offset)
     tiled = _build_tiled_strip(reel_scaled, win_w, win_h, max_start)
 
     _LAYOUT_CACHE = (
