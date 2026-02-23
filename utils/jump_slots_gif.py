@@ -66,6 +66,16 @@ SPIN_FRAMES = 40
 SPIN_DURATION_MS = 110
 DEFAULT_FRAMES = SPIN_FRAMES
 DEFAULT_DURATION_MS = SPIN_DURATION_MS
+GIF_BYTE_LIMIT = 7_800_000
+
+ENCODE_ATTEMPTS: list[tuple[float, int, int]] = [
+    (1.00, 128, 64),
+    (0.92, 128, 64),
+    (0.88, 128, 64),
+    (0.88, 96, 64),
+    (0.85, 96, 56),
+    (0.82, 96, 48),
+]
 
 
 def _load_face() -> Image.Image:
@@ -342,6 +352,29 @@ def _downscale(im: Image.Image, max_w: int) -> Image.Image:
     return im.resize((max_w, new_h), Image.Resampling.LANCZOS)
 
 
+def _apply_scale(im: Image.Image, scale: float) -> Image.Image:
+    if scale >= 0.999:
+        return im
+    new_w = max(1, int(im.width * scale))
+    new_h = max(1, int(im.height * scale))
+    return im.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+
+def _quantize_with_shared_palette(frames: list[Image.Image], colors: int) -> list[Image.Image]:
+    palette_base = frames[0].convert("P", palette=Image.Palette.ADAPTIVE, colors=colors)
+    output: list[Image.Image] = [palette_base]
+
+    for fr in frames[1:]:
+        try:
+            fr_p = fr.convert("RGBA").convert(
+                "P", palette=palette_base.palette, dither=Image.Dither.NONE
+            )
+        except Exception:
+            fr_p = fr.convert("RGBA").quantize(palette=palette_base, dither=Image.Dither.NONE)
+        output.append(fr_p)
+    return output
+
+
 def _compose_frame_fast(
     face: Image.Image,
     strip_source: Image.Image,
@@ -465,63 +498,81 @@ def render_slots_gif(
     repeats = max(4, math.ceil(needed_h / reel_scaled.height) + 1)
     tiled = _build_tiled_strip(reel_scaled, repeats=repeats)
 
-    total_frames = max(2, int(frames))
-    stop_left = max(1, int(total_frames * 0.45))
-    stop_mid = max(stop_left + 1, int(total_frames * 0.70))
-    stop_right = max(stop_mid + 1, int(total_frames * 0.90))
-    stops = [stop_left, stop_mid, stop_right]
+    total_ms = max(2, int(frames)) * max(40, min(150, int(duration_ms)))
+    fallback_colors = max(32, min(256, int(palette_colors)))
+    attempts = ENCODE_ATTEMPTS or [(1.0, fallback_colors, max(2, int(frames)))]
 
-    rgba_frames: list[Image.Image] = []
-    for f in range(1, total_frames + 1):
-        offsets: list[float] = []
-        for reel_idx in range(3):
-            stop_f = stops[reel_idx]
-            if f >= stop_f:
-                off = stops_px[reel_idx]
-            else:
-                p = f / stop_f
-                ease = 1 - (1 - p) ** 3
-                off = starts[reel_idx] - (starts[reel_idx] - stops_px[reel_idx]) * ease
-            offsets.append(off)
+    best_bytes = 2**31 - 1
+    best_attempt: tuple[float, int, int] | None = None
 
-        stopped_mask = [
-            f >= stop_left,
-            f >= stop_mid,
-            f >= stop_right,
-        ]
+    for scale, colors, attempt_frames in attempts:
+        total_frames = max(2, int(attempt_frames))
+        stop_left = max(1, int(total_frames * 0.45))
+        stop_mid = max(stop_left + 1, int(total_frames * 0.70))
+        stop_right = max(stop_mid + 1, int(total_frames * 0.90))
+        stops = [stop_left, stop_mid, stop_right]
 
-        rgba_frame = _compose_frame_fast(
-            face=face,
-            strip_source=reel_scaled,
-            tiled=tiled,
-            reel_boxes=reel_boxes,
-            win_sizes=win_sizes,
-            reel_offsets=reel_offsets,
-            offsets=offsets,
-            stopped=stopped_mask,
-            stop_idxs=stop_idxs,
-            cell_h_scaled=cell_h_scaled,
-            balance=balance,
-            bet=bet,
+        rgba_frames: list[Image.Image] = []
+        for f in range(1, total_frames + 1):
+            offsets: list[float] = []
+            for reel_idx in range(3):
+                stop_f = stops[reel_idx]
+                if f >= stop_f:
+                    off = stops_px[reel_idx]
+                else:
+                    p = f / stop_f
+                    ease = 1 - (1 - p) ** 3
+                    off = starts[reel_idx] - (starts[reel_idx] - stops_px[reel_idx]) * ease
+                offsets.append(off)
+
+            stopped_mask = [
+                f >= stop_left,
+                f >= stop_mid,
+                f >= stop_right,
+            ]
+
+            rgba_frame = _compose_frame_fast(
+                face=face,
+                strip_source=reel_scaled,
+                tiled=tiled,
+                reel_boxes=reel_boxes,
+                win_sizes=win_sizes,
+                reel_offsets=reel_offsets,
+                offsets=offsets,
+                stopped=stopped_mask,
+                stop_idxs=stop_idxs,
+                cell_h_scaled=cell_h_scaled,
+                balance=balance,
+                bet=bet,
+            )
+            rgba_frame = _downscale(rgba_frame, max_w=max_w)
+            rgba_frames.append(_apply_scale(rgba_frame, scale))
+
+        rgb_frames = [_to_rgb(fr) for fr in rgba_frames]
+        images = _quantize_with_shared_palette(rgb_frames, colors=colors)
+
+        per_frame_duration = max(1, round(total_ms / total_frames))
+        out = BytesIO()
+        images[0].save(
+            out,
+            format="GIF",
+            save_all=True,
+            append_images=images[1:],
+            duration=per_frame_duration,
+            disposal=2,
+            loop=0,
+            optimize=True,
         )
-        rgba_frames.append(_downscale(rgba_frame, max_w=max_w))
+        gif_bytes = out.getvalue()
+        gif_len = len(gif_bytes)
+        if gif_len < best_bytes:
+            best_bytes = gif_len
+            best_attempt = (scale, colors, total_frames)
+        if gif_len <= GIF_BYTE_LIMIT:
+            return gif_bytes
 
-    first_rgb = _to_rgb(rgba_frames[0])
-    palette_colors_int = max(32, min(256, int(palette_colors)))
-    palette_base = first_rgb.convert("P", palette=Image.Palette.ADAPTIVE, colors=palette_colors_int)
-    images: list[Image.Image] = [palette_base]
-    for fr in rgba_frames[1:]:
-        fr_rgb = _to_rgb(fr)
-        images.append(fr_rgb.quantize(palette=palette_base, dither=Image.Dither.NONE))
-
-    out = BytesIO()
-    images[0].save(
-        out,
-        format="GIF",
-        save_all=True,
-        append_images=images[1:],
-        duration=max(40, min(150, int(duration_ms))),
-        disposal=2,
-        optimize=False,
+    raise ValueError(
+        "gif_too_large "
+        f"bytes={best_bytes} limit={GIF_BYTE_LIMIT} "
+        f"attempt=scale:{best_attempt[0]:.2f},colors:{best_attempt[1]},frames:{best_attempt[2]}"
     )
-    return out.getvalue()
