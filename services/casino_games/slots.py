@@ -305,7 +305,10 @@ class CasinoSlotsService:
         pair_item = next((k for k, v in counts.items() if v == 2), None)
         if pair_item is not None:
             mult = float(pair.get(str(pair_item), 0))
-            return int(math.floor(bet * mult)), "pair", pair_item
+            payout = int(math.floor(bet * mult))
+            if bet > 0 and payout <= 0:
+                payout = 1
+            return payout, "pair", pair_item
 
         if 206 in reels:
             return int(math.floor(bet * xanax_tease)), "xanax_tease", 206

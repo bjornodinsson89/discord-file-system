@@ -54,6 +54,11 @@ class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
             view=self.view,
             attachments=[idle_file],
         )
+        if getattr(self.view, "message", None) is None:
+            try:
+                self.view.message = await interaction.original_response()
+            except Exception:
+                pass
 
 
 class SlotsPlayView(discord.ui.View):
@@ -67,7 +72,7 @@ class SlotsPlayView(discord.ui.View):
         pool_tokens: int,
         pool_millis: int,
     ):
-        super().__init__(timeout=300)
+        super().__init__(timeout=3600)
         self.guild_id = int(guild_id)
         self.discord_id = int(discord_id)
         self.service = service
@@ -80,6 +85,17 @@ class SlotsPlayView(discord.ui.View):
         self.balance = int(balance)
         self.pool_tokens = int(pool_tokens)
         self.pool_millis = int(pool_millis)
+        self.message: discord.Message | None = None
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+        try:
+            if getattr(self, "message", None) is not None:
+                await self.message.edit(view=self)
+        except Exception:
+            pass
 
     def _pool_label(self) -> str:
         if self.pool_millis > 0:
@@ -178,18 +194,20 @@ class SlotsPlayView(discord.ui.View):
                         view=self,
                         attachments=[],
                     )
+                    if getattr(self, "message", None) is None:
+                        try:
+                            self.message = await interaction.original_response()
+                        except Exception:
+                            pass
 
                     await asyncio.sleep(animation_seconds(SPIN_FRAMES, SPIN_DURATION_MS) + 0.15)
 
-                    result_embed = self._status_embed(
-                        self._pool_label(), final_status, payout, None
-                    )
-                    result_embed.set_image(url=slot_url)
+                    tmp = self._status_embed(self._pool_label(), final_status, payout, None)
+                    spinning_embed.description = tmp.description
                     await interaction.edit_original_response(
                         content="",
-                        embed=result_embed,
+                        embed=spinning_embed,
                         view=self,
-                        attachments=[],
                     )
 
                     await asyncio.sleep(0.25)
@@ -211,6 +229,11 @@ class SlotsPlayView(discord.ui.View):
                 view=self,
                 attachments=[idle_file],
             )
+            if getattr(self, "message", None) is None:
+                try:
+                    self.message = await interaction.original_response()
+                except Exception:
+                    pass
 
             gif_bytes = await asyncio.to_thread(
                 lambda: render_slots_gif(
@@ -228,6 +251,11 @@ class SlotsPlayView(discord.ui.View):
                 view=self,
                 attachments=[gif_file],
             )
+            if getattr(self, "message", None) is None:
+                try:
+                    self.message = await interaction.original_response()
+                except Exception:
+                    pass
 
             await asyncio.sleep(animation_seconds(SPIN_FRAMES, SPIN_DURATION_MS) + 0.15)
 
@@ -237,6 +265,11 @@ class SlotsPlayView(discord.ui.View):
                 embed=result_embed,
                 view=self,
             )
+            if getattr(self, "message", None) is None:
+                try:
+                    self.message = await interaction.original_response()
+                except Exception:
+                    pass
 
             await asyncio.sleep(0.35)
             await self.service.post_jackpot_announce(interaction, result)
@@ -250,6 +283,11 @@ class SlotsPlayView(discord.ui.View):
                 view=self,
                 attachments=[idle_file],
             )
+            if getattr(self, "message", None) is None:
+                try:
+                    self.message = await interaction.original_response()
+                except Exception:
+                    pass
         except SlotsError as exc:
             idle_file = self._idle_file()
             await interaction.edit_original_response(
@@ -258,6 +296,11 @@ class SlotsPlayView(discord.ui.View):
                 view=self,
                 attachments=[idle_file],
             )
+            if getattr(self, "message", None) is None:
+                try:
+                    self.message = await interaction.original_response()
+                except Exception:
+                    pass
         except Exception:
             log.exception("slots.spin_failed")
             idle_file = self._idle_file()
@@ -269,9 +312,19 @@ class SlotsPlayView(discord.ui.View):
                 view=self,
                 attachments=[idle_file],
             )
+            if getattr(self, "message", None) is None:
+                try:
+                    self.message = await interaction.original_response()
+                except Exception:
+                    pass
         finally:
             button.disabled = False
             await interaction.edit_original_response(view=self)
+            if getattr(self, "message", None) is None:
+                try:
+                    self.message = await interaction.original_response()
+                except Exception:
+                    pass
 
     @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary)
     async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -281,9 +334,19 @@ class SlotsPlayView(discord.ui.View):
         await interaction.edit_original_response(
             content="", embed=embed, view=self, attachments=[self._idle_file()]
         )
+        if getattr(self, "message", None) is None:
+            try:
+                self.message = await interaction.original_response()
+            except Exception:
+                pass
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
     async def close(self, interaction: discord.Interaction, _: discord.ui.Button):
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(view=self)
+        if getattr(self, "message", None) is None:
+            try:
+                self.message = await interaction.original_response()
+            except Exception:
+                pass
