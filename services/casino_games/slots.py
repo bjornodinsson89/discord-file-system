@@ -52,11 +52,31 @@ DEFAULT_SLOTS_CONFIG = {
         {"item_id": 206, "name": "Xanax", "weight": 6},
     ],
     "payouts": {
-        "triple": {"9090": 0.0, "206": 3.0, "281": 4.0, "197": 6.0, "366": 8.0, "865": 10.0},
+        "triple": {"9090": 1.0, "206": 3.0, "281": 4.0, "197": 6.0, "366": 8.0, "865": 10.0},
         "pair": {"394": 0.2, "707": 0.25, "274": 0.35, "281": 0.35, "197": 0.5, "366": 0.75, "865": 1.5, "206": 2.0},
         "xanax_tease": 0.1,
     },
 }
+
+
+@dataclass(frozen=True)
+class SlotsPayoutConfig:
+    triple: dict[int, float]
+
+
+@dataclass(frozen=True)
+class SlotsDisplayConfig:
+    payouts: SlotsPayoutConfig
+
+
+SLOT_CONFIG = SlotsDisplayConfig(
+    payouts=SlotsPayoutConfig(
+        triple={
+            int(symbol_id): float(multiplier)
+            for symbol_id, multiplier in (DEFAULT_SLOTS_CONFIG.get("payouts") or {}).get("triple", {}).items()
+        }
+    )
+)
 
 
 class SlotsError(Exception):
