@@ -5,10 +5,9 @@ import os
 from pathlib import Path
 import math
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw
 
-from utils.slots_layout import get_scaled_layout
-from utils.slots_paytable_overlay import draw_paytable
+from utils.slots_overlay import _layout_for_face, draw_overlay
 
 ROOT = Path(__file__).resolve().parent.parent
 FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
@@ -82,11 +81,7 @@ def _load_reel() -> Image.Image:
                 "Custom reel strip too short for one cycle: "
                 f"expected at least {cycle_h}px, got {reel.height}px"
             )
-        if reel.height % CYCLE_LEN != 0:
-            reel = reel.crop((0, 0, reel.width, cycle_h))
-
-        if reel.height != cycle_h:
-            reel = reel.crop((0, 0, reel.width, cycle_h))
+        reel = reel.crop((0, 0, reel.width, cycle_h))
 
         _CELL_H_RAW = cell_h_raw
         _REEL = reel
@@ -159,9 +154,7 @@ def _layout() -> tuple[
 
     face = _load_face()
     reel = _load_reel()
-
-    layout = get_scaled_layout(face.width, face.height)
-    reel_boxes = layout["reel_boxes"]
+    reel_boxes = _layout_for_face(face).reel_boxes
 
     anchor_x0, anchor_y0, _, _ = reel_boxes[0]
     sample_x = min(face.width - 1, anchor_x0 + 10)
@@ -176,54 +169,14 @@ def _layout() -> tuple[
     if _CELL_H_RAW is None:
         raise ValueError("Reel cell height metadata missing")
     cell_h_raw = _CELL_H_RAW
-    max_win_h = max(y1 - y0 for _, y0, _, y1 in reel_boxes)
-    max_win_w = max(x1 - x0 for x0, _, x1, _ in reel_boxes)
-    reel_scaled = Image.new("RGBA", (max_win_w, max_win_h * CYCLE_LEN), (0, 0, 0, 0))
-    for idx in range(CYCLE_LEN):
-        y0 = idx * cell_h_raw
-        y1 = min(reel.height, y0 + cell_h_raw)
-        cell = reel.crop((0, y0, reel.width, y1))
-        if cell.height != cell_h_raw:
-            padded = Image.new("RGBA", (reel.width, cell_h_raw), (0, 0, 0, 0))
-            padded.paste(cell, (0, 0), cell)
-            cell = padded
-
-        cell_rgb = cell.convert("RGB")
-        content_mask = cell_rgb.convert("L").point(lambda px: 255 if px > 10 else 0)
-        content_bbox = content_mask.getbbox()
-        if content_bbox is not None:
-            pad = 6
-            cx0, cy0, cx1, cy1 = content_bbox
-            cx0 = max(0, cx0 - pad)
-            cy0 = max(0, cy0 - pad)
-            cx1 = min(cell.width, cx1 + pad)
-            cy1 = min(cell.height, cy1 + pad)
-            if cx1 > cx0 and cy1 > cy0:
-                cell = cell.crop((cx0, cy0, cx1, cy1))
-
-        height_scale = max_win_h / max(1, cell.height)
-        resized_w = max(1, int(round(cell.width * height_scale)))
-        resized_cell = cell.resize((resized_w, max_win_h), Image.Resampling.LANCZOS)
-
-        if resized_cell.width > max_win_w:
-            left = (resized_cell.width - max_win_w) // 2
-            cell_fit = resized_cell.crop((left, 0, left + max_win_w, max_win_h))
-        elif resized_cell.width < max_win_w:
-            cell_fit = Image.new("RGBA", (max_win_w, max_win_h), (0, 0, 0, 0))
-            left = (max_win_w - resized_cell.width) // 2
-            cell_fit.paste(resized_cell, (left, 0), resized_cell)
-        else:
-            cell_fit = resized_cell
-        reel_scaled.paste(cell_fit, (0, idx * max_win_h), cell_fit)
-    cell_h_scaled = max_win_h
 
     win_sizes = [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in reel_boxes]
     _LAYOUT_CACHE = (
         face,
-        reel_scaled,
+        reel,
         reel_boxes,
         win_sizes,
-        cell_h_scaled,
+        cell_h_raw,
         bg_rgba,
     )
     return _LAYOUT_CACHE
@@ -253,13 +206,6 @@ def _start_and_stop_for_item(item_id: int, cell_h: int, window_h: int) -> tuple[
     return start, stop
 
 
-def _build_tiled_strip(reel_scaled: Image.Image, repeats: int) -> Image.Image:
-    tiled = Image.new("RGBA", (reel_scaled.width, reel_scaled.height * repeats), (0, 0, 0, 0))
-    for idx in range(repeats):
-        tiled.paste(reel_scaled, (0, idx * reel_scaled.height), reel_scaled)
-    return tiled
-
-
 def _render_centered_cell_from_strip(
     strip_source: Image.Image,
     idx: int,
@@ -270,26 +216,43 @@ def _render_centered_cell_from_strip(
     cell_w = strip_source.width
     y0 = idx * cell_h
     cell = strip_source.crop((0, y0, cell_w, y0 + cell_h))
+    target_h = max(1, int(round(win_h * 0.90)))
+    scale = target_h / max(1, cell.height)
+    scaled_w = max(1, int(round(cell.width * scale)))
+    scaled = cell.resize((scaled_w, target_h), Image.Resampling.LANCZOS)
 
-    if cell.height != win_h:
-        cell = ImageOps.fit(
-            cell,
-            (cell.width, win_h),
-            method=Image.Resampling.LANCZOS,
-            centering=(0.5, 0.5),
-        )
+    if scaled.width > win_w:
+        crop_l = (scaled.width - win_w) // 2
+        scaled = scaled.crop((crop_l, 0, crop_l + win_w, scaled.height))
 
-    if cell.width > win_w:
-        left = (cell.width - win_w) // 2
-        return cell.crop((left, 0, left + win_w, win_h))
+    seg = Image.new("RGBA", (win_w, win_h), (0, 0, 0, 0))
+    left = (win_w - scaled.width) // 2
+    top = (win_h - scaled.height) // 2
+    seg.paste(scaled, (left, top), scaled)
+    return seg
 
-    if cell.width < win_w:
-        seg = Image.new("RGBA", (win_w, win_h), (0, 0, 0, 0))
-        left = (win_w - cell.width) // 2
-        seg.paste(cell, (left, 0), cell)
-        return seg
 
-    return cell
+def _render_window_from_offset(
+    strip_source: Image.Image,
+    offset: float,
+    cell_h: int,
+    win_w: int,
+    win_h: int,
+) -> Image.Image:
+    step = max(1, int(cell_h))
+    whole = math.floor(offset / step)
+    top_idx = int(whole) % CYCLE_LEN
+    frac = float(offset - (whole * step))
+    shift = int(round((frac / step) * win_h))
+
+    top_cell = _render_centered_cell_from_strip(strip_source, top_idx, cell_h, win_w, win_h)
+    next_cell = _render_centered_cell_from_strip(
+        strip_source, (top_idx + 1) % CYCLE_LEN, cell_h, win_w, win_h
+    )
+    canvas = Image.new("RGBA", (win_w, win_h), (0, 0, 0, 0))
+    canvas.paste(top_cell, (0, -shift), top_cell)
+    canvas.paste(next_cell, (0, win_h - shift), next_cell)
+    return canvas
 
 
 def maybe_debug_stopped_segments(
@@ -354,7 +317,6 @@ def _quantize_with_shared_palette(frames: list[Image.Image], colors: int) -> lis
 def _compose_frame_fast(
     face: Image.Image,
     strip_source: Image.Image,
-    tiled: Image.Image,
     reel_boxes: list[tuple[int, int, int, int]],
     win_sizes: list[tuple[int, int]],
     offsets: list[float],
@@ -385,18 +347,7 @@ def _compose_frame_fast(
                 win_h=win_h,
             )
         else:
-            y = int(round(off))
-            y = max(0, min(y, tiled.height - win_h))
-            strip_seg = tiled.crop((0, y, strip_source.width, y + win_h))
-            if strip_seg.width == win_w:
-                seg = strip_seg
-            elif strip_seg.width > win_w:
-                left = (strip_seg.width - win_w) // 2
-                seg = strip_seg.crop((left, 0, left + win_w, win_h))
-            else:
-                seg = Image.new("RGBA", (win_w, win_h), (0, 0, 0, 0))
-                left = (win_w - strip_seg.width) // 2
-                seg.paste(strip_seg, (left, 0), strip_seg)
+            seg = _render_window_from_offset(strip_source, off, cell_h_scaled, win_w, win_h)
 
         reels_canvas.paste(seg, (x0, y0), seg)
 
@@ -470,20 +421,18 @@ def render_idle_png(
 ) -> bytes:
     face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, _ = _layout()
     triple_multipliers = _triple_multipliers_from_config()
-    face_with_overlay = draw_paytable(
+    face_with_overlay = draw_overlay(
         face,
         payouts=_build_payout_matrix(int(bet or 0), triple_multipliers),
         balance_text=_format_balance(balance),
         bet_text=_format_bet(bet),
     )
     del jackpot_pool
-    tiled = _build_tiled_strip(reel_scaled, repeats=4)
     normalized = _normalize_reels(reels)
     stop_idxs = [symbol_index(item) for item in normalized]
     frame = _compose_frame_fast(
         face=face_with_overlay,
         strip_source=reel_scaled,
-        tiled=tiled,
         reel_boxes=reel_boxes,
         win_sizes=win_sizes,
         offsets=[0.0, 0.0, 0.0],
@@ -520,7 +469,7 @@ def render_slots_gif(
     maybe_save_seed_debug_image()
     face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, bg_rgba = _layout()
     triple_multipliers = _triple_multipliers_from_config()
-    face_with_overlay = draw_paytable(
+    face_with_overlay = draw_overlay(
         face,
         payouts=_build_payout_matrix(int(bet or 0), triple_multipliers),
         balance_text=_format_balance(balance),
@@ -536,12 +485,6 @@ def render_slots_gif(
     ]
     starts = [start for start, _ in starts_stops]
     stops_px = [stop for _, stop in starts_stops]
-    max_window_h = max(h for _, h in win_sizes)
-    max_start_offset = max(starts)
-    needed_h = int(math.ceil(max_start_offset + max_window_h + cell_h_scaled))
-    repeats = max(4, math.ceil(needed_h / reel_scaled.height) + 1)
-    tiled = _build_tiled_strip(reel_scaled, repeats=repeats)
-
     total_ms = max(2, int(frames)) * max(40, min(150, int(duration_ms)))
     fallback_max_w = max(1, int(max_w))
     fallback_frames = max(2, int(frames))
@@ -581,7 +524,6 @@ def render_slots_gif(
             rgba_frame = _compose_frame_fast(
                 face=face_with_overlay,
                 strip_source=reel_scaled,
-                tiled=tiled,
                 reel_boxes=reel_boxes,
                 win_sizes=win_sizes,
                 offsets=offsets,

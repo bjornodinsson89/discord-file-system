@@ -19,16 +19,10 @@ from views.casino_core.permissions import ensure_casino_admin
 
 log = logging.getLogger("happy_jumper.casino")
 DISCORD_SAFE_LIMIT = 7_800_000
-FRAMES = 40
+FRAMES = 32
 DURATION_MS = 110
 QUALITY_LADDER = [
-    {"max_w": 1200, "palette": 192},
-    {"max_w": 1000, "palette": 144},
-    {"max_w": 900, "palette": 128},
-    {"max_w": 800, "palette": 112},
-    {"max_w": 700, "palette": 96},
-    {"max_w": 600, "palette": 80},
-    {"max_w": 520, "palette": 64},
+    {"max_w": 800, "palette": 96},
 ]
 
 
