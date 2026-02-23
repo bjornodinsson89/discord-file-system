@@ -91,19 +91,20 @@ def _load_reel() -> Image.Image:
             raise RuntimeError(f"Missing custom reel strip: {CUSTOM_STRIP_PATH}")
 
         reel = Image.open(CUSTOM_STRIP_PATH).convert("RGBA")
-        if reel.height % CYCLE_LEN == 0:
-            cell_h_raw = reel.height // CYCLE_LEN
-            cycle_h = cell_h_raw * CYCLE_LEN
-        else:
-            cell_h_raw = reel.width
-            cycle_h = cell_h_raw * CYCLE_LEN
-            if reel.height < cycle_h:
-                raise RuntimeError(
-                    "Custom reel strip too short for one cycle (square-cell mode): "
-                    f"expected at least {cycle_h}px, got {reel.height}px"
-                )
+        cell_h_raw = reel.height // CYCLE_LEN
+        cycle_h = cell_h_raw * CYCLE_LEN
+        if cell_h_raw <= 0 or reel.height < cycle_h:
+            raise RuntimeError(
+                "Custom reel strip too short for one cycle: "
+                f"expected at least {cycle_h}px, got {reel.height}px"
+            )
 
         reel = reel.crop((0, 0, reel.width, cycle_h))
+
+        target_w = min(reel.width, int(cell_h_raw * 1.2))
+        if reel.width > target_w:
+            left = (reel.width - target_w) // 2
+            reel = reel.crop((left, 0, left + target_w, cycle_h))
 
         _CELL_H_RAW = cell_h_raw
         _REEL = reel
@@ -203,6 +204,20 @@ def _layout() -> tuple[
             padded = Image.new("RGBA", (reel.width, cell_h_raw), (0, 0, 0, 0))
             padded.paste(cell, (0, 0), cell)
             cell = padded
+
+        cell_rgb = cell.convert("RGB")
+        content_mask = cell_rgb.convert("L").point(lambda px: 255 if px > 10 else 0)
+        content_bbox = content_mask.getbbox()
+        if content_bbox is not None:
+            pad = 6
+            cx0, cy0, cx1, cy1 = content_bbox
+            cx0 = max(0, cx0 - pad)
+            cy0 = max(0, cy0 - pad)
+            cx1 = min(cell.width, cx1 + pad)
+            cy1 = min(cell.height, cy1 + pad)
+            if cx1 > cx0 and cy1 > cy0:
+                cell = cell.crop((cx0, cy0, cx1, cy1))
+
         cell_fit = ImageOps.fit(
             cell,
             (max_win_w, max_win_h),
