@@ -280,12 +280,60 @@ def _render_centered_cell_from_strip(
     cell_w = strip_source.width
     y0 = idx * cell_h
     cell = strip_source.crop((0, y0, cell_w, y0 + cell_h))
-    return ImageOps.fit(
-        cell,
-        (win_w, win_h),
-        method=Image.Resampling.LANCZOS,
-        centering=(0.5, 0.5),
-    )
+
+    if cell.height != win_h:
+        cell = ImageOps.fit(
+            cell,
+            (cell.width, win_h),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        )
+
+    if cell.width > win_w:
+        left = (cell.width - win_w) // 2
+        return cell.crop((left, 0, left + win_w, win_h))
+
+    if cell.width < win_w:
+        seg = Image.new("RGBA", (win_w, win_h), (0, 0, 0, 0))
+        left = (win_w - cell.width) // 2
+        seg.paste(cell, (left, 0), cell)
+        return seg
+
+    return cell
+
+
+def maybe_debug_stopped_segments(
+    face: Image.Image,
+    reel_scaled: Image.Image,
+    reel_boxes: list[tuple[int, int, int, int]],
+    win_sizes: list[tuple[int, int]],
+    cell_h_scaled: int,
+) -> None:
+    if os.getenv("SLOTS_DEBUG_STOP") != "1":
+        return
+
+    debug = face.copy()
+    draw = ImageDraw.Draw(debug)
+    for box in reel_boxes:
+        draw.rectangle(box, outline=(0, 255, 0, 255), width=3)
+
+    for i, (x0, y0, _, _) in enumerate(reel_boxes):
+        win_w, win_h = win_sizes[i]
+        symbol_idx = i % CYCLE_LEN
+        seg = _render_centered_cell_from_strip(
+            strip_source=reel_scaled,
+            idx=symbol_idx,
+            cell_h=cell_h_scaled,
+            win_w=win_w,
+            win_h=win_h,
+        )
+        print(f"SLOTS_DEBUG_STOP reel={i} win_size=({win_w}, {win_h}) seg_size={seg.size}")
+        debug.paste(seg, (x0, y0), seg)
+
+    out_path = ROOT / "tmp" / "slots_debug_stopped_segments.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    debug.save(out_path, format="PNG")
+    print(f"SLOTS_DEBUG_STOP wrote {out_path}")
 
 
 def _build_paytable_values() -> list[list[str]]:
@@ -523,6 +571,7 @@ def render_slots_gif(
 
     maybe_save_seed_debug_image()
     face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, bg_rgba = _layout()
+    maybe_debug_stopped_segments(face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled)
     normalized = _normalize_reels(final_reels)
     stop_idxs = [symbol_index(item) for item in normalized]
     del jackpot_pool
