@@ -7,18 +7,12 @@ import math
 
 from PIL import Image, ImageDraw, ImageOps
 
-from utils.slots_paytable_overlay import draw_paytable_on_face
+from utils.slots_layout import get_scaled_layout
+from utils.slots_paytable_overlay import draw_paytable
 
 ROOT = Path(__file__).resolve().parent.parent
 FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
 CUSTOM_STRIP_PATH = ROOT / "assets" / "slots" / "reel_strip.png"
-FACE_SIZE = (1024, 1536)
-REEL_BOXES = [
-    (101, 398, 349, 612),  # Reel 1 (248x214)
-    (392, 398, 630, 612),  # Reel 2 (238x214)
-    (673, 398, 924, 612),  # Reel 3 (251x214)
-]
-
 PAYTABLE_SYMBOL_ORDER = [9090, 206, 281, 865, 197, 366]
 
 _FACE: Image.Image | None = None
@@ -69,15 +63,30 @@ def _load_reel() -> Image.Image:
             raise RuntimeError(f"Missing custom reel strip: {CUSTOM_STRIP_PATH}")
 
         reel = Image.open(CUSTOM_STRIP_PATH).convert("RGBA")
+        if reel.height < CYCLE_LEN:
+            raise RuntimeError(
+                "Custom reel strip too short for one cycle: "
+                f"need at least {CYCLE_LEN}px, got {reel.height}px"
+            )
+
         cell_h_raw = reel.height // CYCLE_LEN
+        if cell_h_raw <= 0:
+            raise RuntimeError(
+                "Custom reel strip has invalid cell height: "
+                f"reel.height={reel.height}, cycle_len={CYCLE_LEN}"
+            )
+
         cycle_h = cell_h_raw * CYCLE_LEN
-        if cell_h_raw <= 0 or reel.height < cycle_h:
+        if reel.height < cycle_h:
             raise RuntimeError(
                 "Custom reel strip too short for one cycle: "
                 f"expected at least {cycle_h}px, got {reel.height}px"
             )
+        if reel.height % CYCLE_LEN != 0:
+            reel = reel.crop((0, 0, reel.width, cycle_h))
 
-        reel = reel.crop((0, 0, reel.width, cycle_h))
+        if reel.height != cycle_h:
+            reel = reel.crop((0, 0, reel.width, cycle_h))
 
         _CELL_H_RAW = cell_h_raw
         _REEL = reel
@@ -151,7 +160,8 @@ def _layout() -> tuple[
     face = _load_face()
     reel = _load_reel()
 
-    reel_boxes = REEL_BOXES
+    layout = get_scaled_layout(face.width, face.height)
+    reel_boxes = layout["reel_boxes"]
 
     anchor_x0, anchor_y0, _, _ = reel_boxes[0]
     sample_x = min(face.width - 1, anchor_x0 + 10)
@@ -191,12 +201,19 @@ def _layout() -> tuple[
             if cx1 > cx0 and cy1 > cy0:
                 cell = cell.crop((cx0, cy0, cx1, cy1))
 
-        cell_fit = ImageOps.fit(
-            cell,
-            (max_win_w, max_win_h),
-            method=Image.Resampling.LANCZOS,
-            centering=(0.5, 0.5),
-        )
+        height_scale = max_win_h / max(1, cell.height)
+        resized_w = max(1, int(round(cell.width * height_scale)))
+        resized_cell = cell.resize((resized_w, max_win_h), Image.Resampling.LANCZOS)
+
+        if resized_cell.width > max_win_w:
+            left = (resized_cell.width - max_win_w) // 2
+            cell_fit = resized_cell.crop((left, 0, left + max_win_w, max_win_h))
+        elif resized_cell.width < max_win_w:
+            cell_fit = Image.new("RGBA", (max_win_w, max_win_h), (0, 0, 0, 0))
+            left = (max_win_w - resized_cell.width) // 2
+            cell_fit.paste(resized_cell, (left, 0), resized_cell)
+        else:
+            cell_fit = resized_cell
         reel_scaled.paste(cell_fit, (0, idx * max_win_h), cell_fit)
     cell_h_scaled = max_win_h
 
@@ -392,6 +409,24 @@ def _triple_multipliers_from_config() -> dict[int, float]:
     return {int(symbol_id): float(mult) for symbol_id, mult in SLOT_CONFIG.payouts.triple.items()}
 
 
+def _build_payout_matrix(bet: int, triple_multipliers: dict[int, float]) -> list[list[int]]:
+    rows: list[list[int]] = []
+    for symbol_id in PAYTABLE_SYMBOL_ORDER:
+        mult = float(triple_multipliers.get(int(symbol_id), 0.0))
+        rows.append([int(round(bet * col * mult)) for col in (1, 2, 3)])
+    return rows
+
+
+def _format_balance(balance: int | None) -> str:
+    if balance is None:
+        return "..."
+    return f"${int(balance):,}"
+
+
+def _format_bet(bet: int | None) -> str:
+    return f"x{max(0, int(bet or 0))}"
+
+
 def maybe_save_seed_debug_image() -> None:
     if not os.getenv("SEED_DEBUG"):
         return
@@ -434,12 +469,12 @@ def render_idle_png(
     jackpot_pool: int | None = None,
 ) -> bytes:
     face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, _ = _layout()
-    face_with_overlay = draw_paytable_on_face(
+    triple_multipliers = _triple_multipliers_from_config()
+    face_with_overlay = draw_paytable(
         face,
-        bet=int(bet or 0),
-        balance=balance,
-        triple_multipliers=_triple_multipliers_from_config(),
-        symbol_order=PAYTABLE_SYMBOL_ORDER,
+        payouts=_build_payout_matrix(int(bet or 0), triple_multipliers),
+        balance_text=_format_balance(balance),
+        bet_text=_format_bet(bet),
     )
     del jackpot_pool
     tiled = _build_tiled_strip(reel_scaled, repeats=4)
@@ -484,12 +519,12 @@ def render_slots_gif(
 
     maybe_save_seed_debug_image()
     face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, bg_rgba = _layout()
-    face_with_overlay = draw_paytable_on_face(
+    triple_multipliers = _triple_multipliers_from_config()
+    face_with_overlay = draw_paytable(
         face,
-        bet=int(bet or 0),
-        balance=balance,
-        triple_multipliers=_triple_multipliers_from_config(),
-        symbol_order=PAYTABLE_SYMBOL_ORDER,
+        payouts=_build_payout_matrix(int(bet or 0), triple_multipliers),
+        balance_text=_format_balance(balance),
+        bet_text=_format_bet(bet),
     )
     maybe_debug_stopped_segments(face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled)
     normalized = _normalize_reels(final_reels)
