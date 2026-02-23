@@ -47,6 +47,78 @@ def _payment_text(payment_type: str, amount: int) -> str:
     return f"{amount} {payment_type}"
 
 
+def _compute_panel_tickets_value(raffle: dict) -> str:
+    tickets_available = int(raffle.get("tickets_available") or 0)
+    tickets_sold = int(raffle.get("tickets_sold") or 0)
+    if tickets_available <= 0:
+        return f"Tickets Sold: {tickets_sold}/Unlimited"
+    if tickets_sold < 0:
+        tickets_sold = 0
+    if tickets_sold > tickets_available:
+        tickets_sold = tickets_available
+    return f"Tickets Sold: {tickets_sold}/{tickets_available}"
+
+
+async def _update_raffle_purchase_panel_counts(
+    bot: "discord.Client",
+    repo: "RafflesRepository",
+    raffle_id: int,
+) -> None:
+    try:
+        raffle = await repo.get_raffle(int(raffle_id))
+        if not raffle:
+            return
+        ref = await repo.get_purchase_panel_ref(int(raffle_id))
+        if not ref:
+            return
+        channel_id = ref.get("purchase_panel_channel_id")
+        message_id = ref.get("purchase_panel_message_id")
+        if not channel_id or not message_id:
+            return
+
+        channel = bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(int(channel_id))
+            except Exception:
+                channel = None
+        if channel is None or not hasattr(channel, "fetch_message"):
+            return
+
+        try:
+            msg = await channel.fetch_message(int(message_id))
+        except Exception:
+            return
+
+        tickets_value = _compute_panel_tickets_value(raffle)
+        if msg.embeds:
+            embed = msg.embeds[0].copy()
+        else:
+            embed = discord.Embed(
+                title=f"🎟️ Raffle #{raffle_id}",
+                color=discord.Color.blurple(),
+            )
+
+        fields: list[tuple[str, str, bool]] = []
+        updated = False
+        for field in embed.fields:
+            if str(field.name).strip() == "Tickets":
+                fields.append(("Tickets", tickets_value, field.inline))
+                updated = True
+            else:
+                fields.append((str(field.name), str(field.value), field.inline))
+
+        embed.clear_fields()
+        for name, value, inline in fields:
+            embed.add_field(name=name, value=value, inline=inline)
+        if not updated:
+            embed.add_field(name="Tickets", value=tickets_value, inline=True)
+
+        await msg.edit(embed=embed, view=RafflePurchasePanelView(raffle_id=int(raffle_id)))
+    except Exception:
+        log.exception("Failed to update raffle purchase panel counts raffle_id=%s", raffle_id)
+
+
 
 _FALLBACK_ITEM_NAMES = {206: "Xanax", 366: "Erotic DVD"}
 
@@ -1069,6 +1141,7 @@ class PaymentVerificationView(discord.ui.View):
                 await interaction.followup.send(
                     "✅ Payment verified! Your tickets are confirmed.", ephemeral=True
                 )
+            await _update_raffle_purchase_panel_counts(interaction.client, self.repo, self.raffle_id)
             self.stop()
         except Exception as e:
             log.error(f"Payment verification error: {e}")
@@ -2015,6 +2088,7 @@ class RafflesCog(commands.Cog):
                             )
                         except:
                             pass
+                        await _update_raffle_purchase_panel_counts(self.bot, repo, int(entry["raffle_id"]))
                         if sold_out_id:
                             raffle = await repo.get_raffle(sold_out_id)
                             guild = self.bot.get_guild(raffle["guild_id"])
@@ -2029,6 +2103,7 @@ class RafflesCog(commands.Cog):
                     elif error and "expired" in error.lower():
                         await repo.cancel_expired_reservation(entry["entry_id"])
                         log.info(f"Cancelled expired reservation {entry['entry_id']}")
+                        await _update_raffle_purchase_panel_counts(self.bot, repo, int(entry["raffle_id"]))
                 except Exception as e:
                     log.error(f"Auto-verify error for entry {entry['entry_id']}: {e}")
         except Exception as e:
