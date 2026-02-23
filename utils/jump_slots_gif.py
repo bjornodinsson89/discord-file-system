@@ -193,7 +193,9 @@ def _start_and_stop_for_item(item_id: int, cell_h: int, window_h: int) -> tuple[
     return start, stop
 
 
-def _build_tiled_strip(reel_scaled: Image.Image, col_w: int, window_h: int, max_start: float) -> Image.Image:
+def _build_tiled_strip(
+    reel_scaled: Image.Image, col_w: int, window_h: int, max_start: float
+) -> Image.Image:
     required_px = int(math.ceil(max_start + window_h + 2))
     repeats = max(4, math.ceil(required_px / reel_scaled.height) + 1)
     tiled = Image.new("RGBA", (col_w, reel_scaled.height * repeats), (0, 0, 0, 0))
