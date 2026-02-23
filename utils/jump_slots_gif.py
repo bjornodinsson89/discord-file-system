@@ -49,7 +49,19 @@ def _load_reel() -> Image.Image:
     if _REEL is None:
         if not CUSTOM_STRIP_PATH.exists():
             raise RuntimeError(f"Missing custom reel strip: {CUSTOM_STRIP_PATH}")
-        _REEL = Image.open(CUSTOM_STRIP_PATH).convert("RGBA")
+        reel = Image.open(CUSTOM_STRIP_PATH).convert("RGBA")
+        if reel.height % reel.width == 0:
+            cell_h_raw = reel.width
+            total_cells = reel.height // cell_h_raw
+        else:
+            cell_h_raw = reel.height // CYCLE_LEN
+            total_cells = CYCLE_LEN
+
+        if total_cells >= CYCLE_LEN and total_cells % CYCLE_LEN == 0 and total_cells != CYCLE_LEN:
+            crop_h = cell_h_raw * CYCLE_LEN
+            reel = reel.crop((0, 0, reel.width, crop_h))
+
+        _REEL = reel
     return _REEL
 
 
