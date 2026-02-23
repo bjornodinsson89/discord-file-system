@@ -44,6 +44,7 @@ DEFAULT_SLOTS_CONFIG = {
     "animation_lock_mid": 9,
     "animation_lock_right": 12,
     "symbols": [
+        {"item_id": 9090, "name": "Happy Jumper Bot", "weight": 2},
         {"item_id": 366, "name": "Erotic DVD", "weight": 30},
         {"item_id": 281, "name": "Lion Plushie", "weight": 18},
         {"item_id": 865, "name": "Poison Mistletoe", "weight": 12},
@@ -51,7 +52,7 @@ DEFAULT_SLOTS_CONFIG = {
         {"item_id": 206, "name": "Xanax", "weight": 6},
     ],
     "payouts": {
-        "triple": {"394": 3.0, "707": 3.5, "274": 5.0, "281": 5.0, "197": 7.0, "366": 9.0, "865": 15.0},
+        "triple": {"9090": 0.0, "206": 3.0, "281": 4.0, "197": 6.0, "366": 8.0, "865": 10.0},
         "pair": {"394": 0.2, "707": 0.25, "274": 0.35, "281": 0.35, "197": 0.5, "366": 0.75, "865": 1.5, "206": 2.0},
         "xanax_tease": 0.1,
     },
@@ -292,8 +293,8 @@ class CasinoSlotsService:
         pair = dict(payouts.get("pair") or {})
         xanax_tease = float(payouts.get("xanax_tease") or 0)
 
-        if reels[0] == reels[1] == reels[2] == 206:
-            return 0, "jackpot", 206
+        if reels[0] == reels[1] == reels[2] == 9090:
+            return 0, "jackpot", 9090
         if reels[0] == reels[1] == reels[2]:
             item = reels[0]
             mult = float(triple.get(str(item), 0))
