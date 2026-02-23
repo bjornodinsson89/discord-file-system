@@ -9,6 +9,12 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
 CUSTOM_STRIP_PATH = ROOT / "assets" / "slots" / "reel_strip.png"
+FACE_SIZE = (1024, 1536)
+REEL_BOXES_OVERRIDE = [
+    (127, 493, 345, 650),  # left
+    (409, 493, 617, 650),  # middle
+    (679, 492, 896, 650),  # right
+]
 
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
@@ -18,9 +24,7 @@ _LAYOUT_CACHE: (
         Image.Image,
         Image.Image,
         Image.Image,
-        tuple[int, int, int, int],
-        int,
-        int,
+        list[tuple[int, int, int, int]],
         int,
         list[int],
         tuple[int, int, int, int],
@@ -124,9 +128,7 @@ def _layout() -> tuple[
     Image.Image,
     Image.Image,
     Image.Image,
-    tuple[int, int, int, int],
-    int,
-    int,
+    list[tuple[int, int, int, int]],
     int,
     list[int],
     tuple[int, int, int, int],
@@ -138,26 +140,42 @@ def _layout() -> tuple[
     face = _load_face()
     reel = _load_reel()
 
-    x0, y0, x1, y1 = detect_window_box(face)
-    sample_x = min(face.width - 1, x0 + 10)
-    sample_y = min(face.height - 1, y0 + 10)
+    if face.size == FACE_SIZE:
+        reel_boxes = REEL_BOXES_OVERRIDE
+    else:
+        x0, y0, x1, y1 = detect_window_box(face)
+        window_w = x1 - x0
+        window_h = y1 - y0
+
+        # Slightly reduce horizontal padding/gap so reel symbols appear a bit larger.
+        padding_x = int(window_w * 0.05)
+        gap = int(window_w * 0.025)
+        col_w = int((window_w - padding_x * 2 - gap * 2) / 3)
+        if col_w <= 0:
+            raise ValueError("Invalid slots window layout dimensions")
+
+        col_x0 = x0 + padding_x
+        col_x = [col_x0 + i * (col_w + gap) for i in range(3)]
+        reel_boxes = [
+            (col_x[i], y0, col_x[i] + col_w, y0 + window_h)
+            for i in range(3)
+        ]
+
+    anchor_x0, anchor_y0, _, _ = reel_boxes[0]
+    sample_x = min(face.width - 1, anchor_x0 + 10)
+    sample_y = min(face.height - 1, anchor_y0 + 10)
     bg_px = face.getpixel((sample_x, sample_y))
     bg_rgba = (int(bg_px[0]), int(bg_px[1]), int(bg_px[2]), 255)
-    window_w = x1 - x0
-    window_h = y1 - y0
-
-    # Slightly reduce horizontal padding/gap so reel symbols appear a bit larger.
-    padding_x = int(window_w * 0.05)
-    gap = int(window_w * 0.025)
-    col_w = int((window_w - padding_x * 2 - gap * 2) / 3)
-    if col_w <= 0:
-        raise ValueError("Invalid slots window layout dimensions")
+    widths = [x1 - x0 for x0, _, x1, _ in reel_boxes]
+    if len(reel_boxes) != 3 or any(w <= 0 for w in widths):
+        raise ValueError("Invalid reel boxes layout")
+    target_w = min(widths)
 
     cell_h_raw = _CELL_H_RAW or reel.width
-    scale = col_w / reel.width
+    scale = target_w / reel.width
     reel_scaled = reel.resize(
         (
-            col_w,
+            target_w,
             max(1, round(reel.height * scale)),
         ),
         Image.Resampling.LANCZOS,
@@ -169,18 +187,13 @@ def _layout() -> tuple[
     # Placeholder tiled image; actual render paths rebuild with required spin height.
     tiled = reel_scaled
 
-    col_x0 = x0 + padding_x
-    col_x = [col_x0 + i * (col_w + gap) for i in range(3)]
-
     _LAYOUT_CACHE = (
         face,
         reel_scaled,
         tiled,
-        (x0, y0, x1, y1),
-        window_h,
-        col_w,
+        reel_boxes,
         cell_h_scaled,
-        col_x,
+        widths,
         bg_rgba,
     )
     return _LAYOUT_CACHE
@@ -211,11 +224,11 @@ def _start_and_stop_for_item(item_id: int, cell_h: int, window_h: int) -> tuple[
 
 
 def _build_tiled_strip(
-    reel_scaled: Image.Image, col_w: int, window_h: int, max_start: float
+    reel_scaled: Image.Image, target_w: int, max_window_h: int, max_start: float
 ) -> Image.Image:
-    required_px = int(math.ceil(max_start + window_h + 2))
+    required_px = int(math.ceil(max_start + max_window_h + 2))
     repeats = max(4, math.ceil(required_px / reel_scaled.height) + 1)
-    tiled = Image.new("RGBA", (col_w, reel_scaled.height * repeats), (0, 0, 0, 0))
+    tiled = Image.new("RGBA", (target_w, reel_scaled.height * repeats), (0, 0, 0, 0))
     for idx in range(repeats):
         tiled.paste(reel_scaled, (0, idx * reel_scaled.height), reel_scaled)
     return tiled
@@ -226,18 +239,20 @@ def _render_centered_cell(
     idx: int,
     cell_h: int,
     window_h: int,
-    col_w: int,
+    window_w: int,
 ) -> Image.Image:
+    target_w = reel_scaled.width
     y0 = idx * cell_h
-    cell = reel_scaled.crop((0, y0, col_w, y0 + cell_h))
-    tile = Image.new("RGBA", (col_w, window_h), (0, 0, 0, 0))
+    cell = reel_scaled.crop((0, y0, target_w, y0 + cell_h))
+    tile = Image.new("RGBA", (window_w, window_h), (0, 0, 0, 0))
+    x = (window_w - target_w) // 2
     top = (window_h - cell_h) // 2
     if top >= 0:
-        tile.paste(cell, (0, top), cell)
+        tile.paste(cell, (x, top), cell)
         return tile
     crop_top = (cell_h - window_h) // 2
-    cell = cell.crop((0, crop_top, col_w, crop_top + window_h))
-    tile.paste(cell, (0, 0), cell)
+    cell = cell.crop((0, crop_top, target_w, crop_top + window_h))
+    tile.paste(cell, (x, 0), cell)
     return tile
 
 
@@ -255,16 +270,12 @@ def _compose_frame_fast(
     face: Image.Image,
     reel_scaled: Image.Image,
     tiled: Image.Image,
-    window_box: tuple[int, int, int, int],
-    window_h: int,
-    col_w: int,
-    col_x: list[int],
+    reel_boxes: list[tuple[int, int, int, int]],
     offsets: list[float],
     stopped: list[bool] | None = None,
     stop_idxs: list[int] | None = None,
     cell_h_scaled: int | None = None,
 ) -> Image.Image:
-    _, y0, _, _ = window_box
     stopped = stopped or [False, False, False]
     if any(stopped):
         if stop_idxs is None:
@@ -274,19 +285,28 @@ def _compose_frame_fast(
 
     reels_canvas = Image.new("RGBA", face.size, (0, 0, 0, 0))
     for i, off in enumerate(offsets):
+        x0, y0, x1, y1 = reel_boxes[i]
+        window_w = x1 - x0
+        window_h = y1 - y0
+        target_w = reel_scaled.width
+        seg_x = (window_w - target_w) // 2
         if stopped[i]:
             seg = _render_centered_cell(
                 reel_scaled=reel_scaled,
                 idx=stop_idxs[i],
                 cell_h=cell_h_scaled,
                 window_h=window_h,
-                col_w=col_w,
+                window_w=window_w,
             )
         else:
             y = int(round(off))
             y = max(0, min(y, tiled.height - window_h))
-            seg = tiled.crop((0, y, col_w, y + window_h))
-        reels_canvas.paste(seg, (col_x[i], y0), seg)
+            seg = tiled.crop((0, y, target_w, y + window_h))
+            if seg_x != 0:
+                seg_tile = Image.new("RGBA", (window_w, window_h), (0, 0, 0, 0))
+                seg_tile.paste(seg, (seg_x, 0), seg)
+                seg = seg_tile
+        reels_canvas.paste(seg, (x0, y0), seg)
     out = Image.alpha_composite(reels_canvas, face)
     return out
 
@@ -298,24 +318,22 @@ def animation_seconds(
 
 
 def render_idle_png(reels: list[int], max_w: int = 900) -> bytes:
-    face, reel_scaled, _, window_box, window_h, col_w, cell_h_scaled, col_x, _ = _layout()
+    face, reel_scaled, _, reel_boxes, cell_h_scaled, _, _ = _layout()
     normalized = _normalize_reels(reels)
     stop_idxs = [symbol_index(item) for item in normalized]
+    window_heights = [y1 - y0 for _, y0, _, y1 in reel_boxes]
     offsets = [
         (BASE_SPINS * CYCLE_LEN * cell_h_scaled)
-        + _stop_offset_for_symbol(stop_idx, cell_h_scaled, window_h)
-        for stop_idx in stop_idxs
+        + _stop_offset_for_symbol(stop_idx, cell_h_scaled, window_heights[i])
+        for i, stop_idx in enumerate(stop_idxs)
     ]
     max_start = max(offsets)
-    tiled = _build_tiled_strip(reel_scaled, col_w, window_h, max_start)
+    tiled = _build_tiled_strip(reel_scaled, reel_scaled.width, max(window_heights), max_start)
     frame = _compose_frame_fast(
         face=face,
         reel_scaled=reel_scaled,
         tiled=tiled,
-        window_box=window_box,
-        window_h=window_h,
-        col_w=col_w,
-        col_x=col_x,
+        reel_boxes=reel_boxes,
         offsets=[0.0, 0.0, 0.0],
         stopped=[True, True, True],
         stop_idxs=stop_idxs,
@@ -342,13 +360,17 @@ def render_slots_gif(
             return Image.alpha_composite(bg, im).convert("RGB")
         return im.convert("RGB")
 
-    face, reel_scaled, _, window_box, window_h, col_w, cell_h_scaled, col_x, bg_rgba = _layout()
+    face, reel_scaled, _, reel_boxes, cell_h_scaled, _, bg_rgba = _layout()
     normalized = _normalize_reels(final_reels)
     stop_idxs = [symbol_index(item) for item in normalized]
-    starts_stops = [_start_and_stop_for_item(item, cell_h_scaled, window_h) for item in normalized]
+    window_heights = [y1 - y0 for _, y0, _, y1 in reel_boxes]
+    starts_stops = [
+        _start_and_stop_for_item(item, cell_h_scaled, window_heights[i])
+        for i, item in enumerate(normalized)
+    ]
     starts = [start for start, _ in starts_stops]
     stops_px = [stop for _, stop in starts_stops]
-    tiled = _build_tiled_strip(reel_scaled, col_w, window_h, max(starts))
+    tiled = _build_tiled_strip(reel_scaled, reel_scaled.width, max(window_heights), max(starts))
     total_frames = max(2, int(frames))
     stop_left = max(1, int(total_frames * 0.45))
     stop_mid = max(stop_left + 1, int(total_frames * 0.70))
@@ -378,10 +400,7 @@ def render_slots_gif(
             face=face,
             reel_scaled=reel_scaled,
             tiled=tiled,
-            window_box=window_box,
-            window_h=window_h,
-            col_w=col_w,
-            col_x=col_x,
+            reel_boxes=reel_boxes,
             offsets=offsets,
             stopped=stopped_mask,
             stop_idxs=stop_idxs,
