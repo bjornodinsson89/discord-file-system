@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from io import BytesIO
+import os
 from pathlib import Path
 import math
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
 FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
@@ -51,7 +52,6 @@ _LAYOUT_CACHE: (
         Image.Image,
         list[tuple[int, int, int, int]],
         list[tuple[int, int]],
-        list[tuple[int, int]],
         int,
         tuple[int, int, int, int],
     ]
@@ -68,13 +68,12 @@ DEFAULT_FRAMES = SPIN_FRAMES
 DEFAULT_DURATION_MS = SPIN_DURATION_MS
 GIF_BYTE_LIMIT = 7_800_000
 
-ENCODE_ATTEMPTS: list[tuple[float, int, int]] = [
-    (1.00, 128, 64),
-    (0.92, 128, 64),
-    (0.88, 128, 64),
-    (0.88, 96, 64),
-    (0.85, 96, 56),
-    (0.82, 96, 48),
+ENCODE_ATTEMPTS: list[tuple[int, int, int]] = [
+    (900, 40, 128),
+    (850, 36, 112),
+    (800, 32, 96),
+    (760, 28, 80),
+    (720, 24, 72),
 ]
 
 
@@ -168,7 +167,6 @@ def _layout() -> tuple[
     Image.Image,
     list[tuple[int, int, int, int]],
     list[tuple[int, int]],
-    list[tuple[int, int]],
     int,
     tuple[int, int, int, int],
 ]:
@@ -191,32 +189,35 @@ def _layout() -> tuple[
     if any((x1 - x0) <= 0 or (y1 - y0) <= 0 for x0, y0, x1, y1 in reel_boxes):
         raise ValueError("Invalid reel boxes layout")
 
-    cell_h_raw = _CELL_H_RAW if _CELL_H_RAW is not None else reel.width
+    if _CELL_H_RAW is None:
+        raise ValueError("Reel cell height metadata missing")
+    cell_h_raw = _CELL_H_RAW
     max_win_h = max(y1 - y0 for _, y0, _, y1 in reel_boxes)
     max_win_w = max(x1 - x0 for x0, _, x1, _ in reel_boxes)
-    scale = min(max_win_w / reel.width, max_win_h / cell_h_raw)
-    if scale <= 0:
-        raise ValueError("Invalid reel scaling")
-
-    scaled_w = max(1, round(reel.width * scale))
-    scaled_h = max(1, round(reel.height * scale))
-    reel_scaled = reel.resize(
-        (scaled_w, scaled_h),
-        Image.Resampling.LANCZOS,
-    )
-    cell_h_scaled = max(1, int(round(cell_h_raw * scale)))
-    if cell_h_scaled <= 0:
-        raise ValueError("Invalid scaled cell height")
+    reel_scaled = Image.new("RGBA", (max_win_w, max_win_h * CYCLE_LEN), (0, 0, 0, 0))
+    for idx in range(CYCLE_LEN):
+        y0 = idx * cell_h_raw
+        y1 = min(reel.height, y0 + cell_h_raw)
+        cell = reel.crop((0, y0, reel.width, y1))
+        if cell.height != cell_h_raw:
+            padded = Image.new("RGBA", (reel.width, cell_h_raw), (0, 0, 0, 0))
+            padded.paste(cell, (0, 0), cell)
+            cell = padded
+        cell_fit = ImageOps.fit(
+            cell,
+            (max_win_w, max_win_h),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        )
+        reel_scaled.paste(cell_fit, (0, idx * max_win_h), cell_fit)
+    cell_h_scaled = max_win_h
 
     win_sizes = [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in reel_boxes]
-    reel_offsets = [((w - reel_scaled.width) // 2, (h - cell_h_scaled) // 2) for w, h in win_sizes]
-
     _LAYOUT_CACHE = (
         face,
         reel_scaled,
         reel_boxes,
         win_sizes,
-        reel_offsets,
         cell_h_scaled,
         bg_rgba,
     )
@@ -260,15 +261,16 @@ def _render_centered_cell_from_strip(
     cell_h: int,
     win_w: int,
     win_h: int,
-    x_off: int,
-    y_off: int,
 ) -> Image.Image:
     cell_w = strip_source.width
     y0 = idx * cell_h
     cell = strip_source.crop((0, y0, cell_w, y0 + cell_h))
-    tile = Image.new("RGBA", (win_w, win_h), (0, 0, 0, 0))
-    tile.paste(cell, (x_off, y_off), cell)
-    return tile
+    return ImageOps.fit(
+        cell,
+        (win_w, win_h),
+        method=Image.Resampling.LANCZOS,
+        centering=(0.5, 0.5),
+    )
 
 
 def _build_paytable_values() -> list[list[str]]:
@@ -352,14 +354,6 @@ def _downscale(im: Image.Image, max_w: int) -> Image.Image:
     return im.resize((max_w, new_h), Image.Resampling.LANCZOS)
 
 
-def _apply_scale(im: Image.Image, scale: float) -> Image.Image:
-    if scale >= 0.999:
-        return im
-    new_w = max(1, int(im.width * scale))
-    new_h = max(1, int(im.height * scale))
-    return im.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-
 def _quantize_with_shared_palette(frames: list[Image.Image], colors: int) -> list[Image.Image]:
     palette_base = frames[0].convert("P", palette=Image.Palette.ADAPTIVE, colors=colors)
     output: list[Image.Image] = [palette_base]
@@ -381,7 +375,6 @@ def _compose_frame_fast(
     tiled: Image.Image,
     reel_boxes: list[tuple[int, int, int, int]],
     win_sizes: list[tuple[int, int]],
-    reel_offsets: list[tuple[int, int]],
     offsets: list[float],
     stopped: list[bool] | None = None,
     stop_idxs: list[int] | None = None,
@@ -400,7 +393,6 @@ def _compose_frame_fast(
     for i, off in enumerate(offsets):
         x0, y0, x1, y1 = reel_boxes[i]
         win_w, win_h = win_sizes[i]
-        reel_x, reel_y = reel_offsets[i]
 
         if stopped[i]:
             seg = _render_centered_cell_from_strip(
@@ -409,21 +401,54 @@ def _compose_frame_fast(
                 cell_h=cell_h_scaled,
                 win_w=win_w,
                 win_h=win_h,
-                x_off=reel_x,
-                y_off=reel_y,
             )
         else:
             y = int(round(off))
             y = max(0, min(y, tiled.height - win_h))
             strip_seg = tiled.crop((0, y, strip_source.width, y + win_h))
-            seg = Image.new("RGBA", (win_w, win_h), (0, 0, 0, 0))
-            seg.paste(strip_seg, (reel_x, 0), strip_seg)
+            if strip_seg.width == win_w:
+                seg = strip_seg
+            elif strip_seg.width > win_w:
+                left = (strip_seg.width - win_w) // 2
+                seg = strip_seg.crop((left, 0, left + win_w, win_h))
+            else:
+                seg = Image.new("RGBA", (win_w, win_h), (0, 0, 0, 0))
+                left = (win_w - strip_seg.width) // 2
+                seg.paste(strip_seg, (left, 0), strip_seg)
 
         reels_canvas.paste(seg, (x0, y0), seg)
 
     out = Image.alpha_composite(reels_canvas, face)
     out = _draw_ui_overlay(out, balance=balance, bet=bet)
     return out
+
+
+def maybe_save_seed_debug_image() -> None:
+    if not os.getenv("SEED_DEBUG"):
+        return
+
+    face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, _ = _layout()
+    debug = face.copy()
+    draw = ImageDraw.Draw(debug)
+
+    for box in reel_boxes:
+        draw.rectangle(box, outline=(255, 0, 0, 255), width=4)
+
+    for i, (x0, y0, _, _) in enumerate(reel_boxes):
+        win_w, win_h = win_sizes[i]
+        symbol_idx = i % CYCLE_LEN
+        seg = _render_centered_cell_from_strip(
+            strip_source=reel_scaled,
+            idx=symbol_idx,
+            cell_h=cell_h_scaled,
+            win_w=win_w,
+            win_h=win_h,
+        )
+        debug.paste(seg, (x0, y0), seg)
+
+    out_path = ROOT / "tmp" / "seed_debug_slots_layout.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    debug.save(out_path, format="PNG")
 
 
 def animation_seconds(
@@ -439,7 +464,7 @@ def render_idle_png(
     bet: int | None = None,
     jackpot_pool: int | None = None,
 ) -> bytes:
-    face, reel_scaled, reel_boxes, win_sizes, reel_offsets, cell_h_scaled, _ = _layout()
+    face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, _ = _layout()
     del jackpot_pool
     tiled = _build_tiled_strip(reel_scaled, repeats=4)
     normalized = _normalize_reels(reels)
@@ -450,7 +475,6 @@ def render_idle_png(
         tiled=tiled,
         reel_boxes=reel_boxes,
         win_sizes=win_sizes,
-        reel_offsets=reel_offsets,
         offsets=[0.0, 0.0, 0.0],
         stopped=[True, True, True],
         stop_idxs=stop_idxs,
@@ -482,7 +506,8 @@ def render_slots_gif(
             return Image.alpha_composite(bg, im).convert("RGB")
         return im.convert("RGB")
 
-    face, reel_scaled, reel_boxes, win_sizes, reel_offsets, cell_h_scaled, bg_rgba = _layout()
+    maybe_save_seed_debug_image()
+    face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, bg_rgba = _layout()
     normalized = _normalize_reels(final_reels)
     stop_idxs = [symbol_index(item) for item in normalized]
     del jackpot_pool
@@ -499,14 +524,17 @@ def render_slots_gif(
     tiled = _build_tiled_strip(reel_scaled, repeats=repeats)
 
     total_ms = max(2, int(frames)) * max(40, min(150, int(duration_ms)))
+    fallback_max_w = max(1, int(max_w))
+    fallback_frames = max(2, int(frames))
     fallback_colors = max(32, min(256, int(palette_colors)))
-    attempts = ENCODE_ATTEMPTS or [(1.0, fallback_colors, max(2, int(frames)))]
+    attempts = ENCODE_ATTEMPTS or [(fallback_max_w, fallback_frames, fallback_colors)]
 
     best_bytes = 2**31 - 1
-    best_attempt: tuple[float, int, int] | None = None
+    best_attempt: tuple[int, int, int] | None = None
 
-    for scale, colors, attempt_frames in attempts:
+    for attempt_max_w, attempt_frames, attempt_colors in attempts:
         total_frames = max(2, int(attempt_frames))
+        colors = max(32, min(256, int(attempt_colors)))
         stop_left = max(1, int(total_frames * 0.45))
         stop_mid = max(stop_left + 1, int(total_frames * 0.70))
         stop_right = max(stop_mid + 1, int(total_frames * 0.90))
@@ -537,7 +565,6 @@ def render_slots_gif(
                 tiled=tiled,
                 reel_boxes=reel_boxes,
                 win_sizes=win_sizes,
-                reel_offsets=reel_offsets,
                 offsets=offsets,
                 stopped=stopped_mask,
                 stop_idxs=stop_idxs,
@@ -545,8 +572,8 @@ def render_slots_gif(
                 balance=balance,
                 bet=bet,
             )
-            rgba_frame = _downscale(rgba_frame, max_w=max_w)
-            rgba_frames.append(_apply_scale(rgba_frame, scale))
+            rgba_frame = _downscale(rgba_frame, max_w=attempt_max_w)
+            rgba_frames.append(rgba_frame)
 
         rgb_frames = [_to_rgb(fr) for fr in rgba_frames]
         images = _quantize_with_shared_palette(rgb_frames, colors=colors)
@@ -567,12 +594,16 @@ def render_slots_gif(
         gif_len = len(gif_bytes)
         if gif_len < best_bytes:
             best_bytes = gif_len
-            best_attempt = (scale, colors, total_frames)
+            best_attempt = (attempt_max_w, total_frames, colors)
         if gif_len <= GIF_BYTE_LIMIT:
+            print(
+                f"render_slots_gif attempt ok max_w={attempt_max_w} frames={total_frames} "
+                f"colors={colors} bytes={gif_len}"
+            )
             return gif_bytes
 
     raise ValueError(
         "gif_too_large "
-        f"bytes={best_bytes} limit={GIF_BYTE_LIMIT} "
-        f"attempt=scale:{best_attempt[0]:.2f},colors:{best_attempt[1]},frames:{best_attempt[2]}"
+        f"smallest_bytes={best_bytes} limit={GIF_BYTE_LIMIT} "
+        f"last_attempt=max_w:{best_attempt[0]},frames:{best_attempt[1]},colors:{best_attempt[2]}"
     )
