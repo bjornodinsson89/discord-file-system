@@ -7,13 +7,11 @@ import math
 
 from PIL import Image, ImageDraw
 
-from utils.slots_overlay import _layout_for_face, draw_overlay
+from utils.slots_layout import get_scaled_reel_boxes
 
 ROOT = Path(__file__).resolve().parent.parent
 FACE_PATH = ROOT / "assets" / "slots" / "slot_face.png"
 CUSTOM_STRIP_PATH = ROOT / "assets" / "slots" / "reel_strip.png"
-PAYTABLE_SYMBOL_ORDER = [9090, 206, 281, 865, 197, 366]
-
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
 _CELL_H_RAW: int | None = None
@@ -25,6 +23,7 @@ _LAYOUT_CACHE: (
         list[tuple[int, int]],
         int,
         tuple[int, int, int, int],
+        bool,
     ]
     | None
 ) = None
@@ -147,6 +146,7 @@ def _layout() -> tuple[
     list[tuple[int, int]],
     int,
     tuple[int, int, int, int],
+    bool,
 ]:
     global _LAYOUT_CACHE
     if _LAYOUT_CACHE is not None:
@@ -154,7 +154,7 @@ def _layout() -> tuple[
 
     face = _load_face()
     reel = _load_reel()
-    reel_boxes = _layout_for_face(face).reel_boxes
+    reel_boxes = _detect_reel_boxes(face)
 
     anchor_x0, anchor_y0, _, _ = reel_boxes[0]
     sample_x = min(face.width - 1, anchor_x0 + 10)
@@ -178,8 +178,94 @@ def _layout() -> tuple[
         win_sizes,
         cell_h_raw,
         bg_rgba,
+        _has_transparent_windows(face, reel_boxes),
     )
     return _LAYOUT_CACHE
+
+
+def _has_transparent_windows(
+    face: Image.Image, reel_boxes: list[tuple[int, int, int, int]]
+) -> bool:
+    alpha = face.getchannel("A")
+    px = alpha.load()
+    for x0, y0, x1, y1 in reel_boxes:
+        transparent = 0
+        total = 0
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                total += 1
+                if px[x, y] < 10:
+                    transparent += 1
+        if total > 0 and (transparent / total) >= 0.40:
+            return True
+    return False
+
+
+def _detect_reel_boxes(face: Image.Image) -> list[tuple[int, int, int, int]]:
+    alpha = face.getchannel("A")
+    px = alpha.load()
+    w, h = face.size
+
+    y0 = int(h * 0.20)
+    y1 = int(h * 0.55)
+    x0 = int(w * 0.05)
+    x1 = int(w * 0.95)
+    roi_h = max(1, y1 - y0)
+
+    col_transparent: list[int] = []
+    for x in range(x0, x1):
+        c = 0
+        for y in range(y0, y1):
+            if px[x, y] < 10:
+                c += 1
+        col_transparent.append(c)
+
+    col_mask = [c >= int(roi_h * 0.45) for c in col_transparent]
+    runs: list[tuple[int, int]] = []
+    run_start: int | None = None
+    for i, ok in enumerate(col_mask):
+        if ok and run_start is None:
+            run_start = i
+        elif not ok and run_start is not None:
+            if (i - run_start) >= max(8, w // 40):
+                runs.append((run_start, i))
+            run_start = None
+    if run_start is not None:
+        runs.append((run_start, len(col_mask)))
+
+    if len(runs) >= 3:
+        runs = sorted(runs, key=lambda r: r[1] - r[0], reverse=True)[:3]
+        runs = sorted(runs, key=lambda r: r[0])
+        boxes: list[tuple[int, int, int, int]] = []
+        for rx0, rx1 in runs:
+            wx0, wx1 = x0 + rx0, x0 + rx1
+            run_w = max(1, wx1 - wx0)
+            row_transparent: list[int] = []
+            for y in range(y0, y1):
+                c = 0
+                for x in range(wx0, wx1):
+                    if px[x, y] < 10:
+                        c += 1
+                row_transparent.append(c)
+            row_mask = [c >= int(run_w * 0.55) for c in row_transparent]
+            row_start: int | None = None
+            row_runs: list[tuple[int, int]] = []
+            for i, ok in enumerate(row_mask):
+                if ok and row_start is None:
+                    row_start = i
+                elif not ok and row_start is not None:
+                    if (i - row_start) >= max(8, h // 30):
+                        row_runs.append((row_start, i))
+                    row_start = None
+            if row_start is not None:
+                row_runs.append((row_start, len(row_mask)))
+            if row_runs:
+                ry0, ry1 = max(row_runs, key=lambda r: r[1] - r[0])
+                boxes.append((wx0, y0 + ry0, wx1, y0 + ry1))
+        if len(boxes) == 3:
+            return boxes
+
+    return get_scaled_reel_boxes(face.width, face.height)
 
 
 def _normalize_reels(reels3: list[int]) -> list[int]:
@@ -323,8 +409,7 @@ def _compose_frame_fast(
     stopped: list[bool] | None = None,
     stop_idxs: list[int] | None = None,
     cell_h_scaled: int | None = None,
-    balance: int | None = None,
-    bet: int | None = None,
+    reels_behind_face: bool = True,
 ) -> Image.Image:
     stopped = stopped or [False, False, False]
     if any(stopped):
@@ -351,38 +436,16 @@ def _compose_frame_fast(
 
         reels_canvas.paste(seg, (x0, y0), seg)
 
-    return Image.alpha_composite(reels_canvas, face)
-
-
-def _triple_multipliers_from_config() -> dict[int, float]:
-    from services.casino_games.slots import SLOT_CONFIG
-
-    return {int(symbol_id): float(mult) for symbol_id, mult in SLOT_CONFIG.payouts.triple.items()}
-
-
-def _build_payout_matrix(bet: int, triple_multipliers: dict[int, float]) -> list[list[int]]:
-    rows: list[list[int]] = []
-    for symbol_id in PAYTABLE_SYMBOL_ORDER:
-        mult = float(triple_multipliers.get(int(symbol_id), 0.0))
-        rows.append([int(round(bet * col * mult)) for col in (1, 2, 3)])
-    return rows
-
-
-def _format_balance(balance: int | None) -> str:
-    if balance is None:
-        return "..."
-    return f"${int(balance):,}"
-
-
-def _format_bet(bet: int | None) -> str:
-    return f"x{max(0, int(bet or 0))}"
+    if reels_behind_face:
+        return Image.alpha_composite(reels_canvas, face)
+    return Image.alpha_composite(face, reels_canvas)
 
 
 def maybe_save_seed_debug_image() -> None:
     if not os.getenv("SEED_DEBUG"):
         return
 
-    face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, _ = _layout()
+    face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, _, _ = _layout()
     debug = face.copy()
     draw = ImageDraw.Draw(debug)
 
@@ -419,19 +482,12 @@ def render_idle_png(
     bet: int | None = None,
     jackpot_pool: int | None = None,
 ) -> bytes:
-    face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, _ = _layout()
-    triple_multipliers = _triple_multipliers_from_config()
-    face_with_overlay = draw_overlay(
-        face,
-        payouts=_build_payout_matrix(int(bet or 0), triple_multipliers),
-        balance_text=_format_balance(balance),
-        bet_text=_format_bet(bet),
-    )
-    del jackpot_pool
+    face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, _, reels_behind_face = _layout()
+    del jackpot_pool, balance, bet
     normalized = _normalize_reels(reels)
     stop_idxs = [symbol_index(item) for item in normalized]
     frame = _compose_frame_fast(
-        face=face_with_overlay,
+        face=face,
         strip_source=reel_scaled,
         reel_boxes=reel_boxes,
         win_sizes=win_sizes,
@@ -439,8 +495,7 @@ def render_idle_png(
         stopped=[True, True, True],
         stop_idxs=stop_idxs,
         cell_h_scaled=cell_h_scaled,
-        balance=balance,
-        bet=bet,
+        reels_behind_face=reels_behind_face,
     )
     frame = _downscale(frame, max_w=max_w)
     out = BytesIO()
@@ -467,18 +522,11 @@ def render_slots_gif(
         return im.convert("RGB")
 
     maybe_save_seed_debug_image()
-    face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, bg_rgba = _layout()
-    triple_multipliers = _triple_multipliers_from_config()
-    face_with_overlay = draw_overlay(
-        face,
-        payouts=_build_payout_matrix(int(bet or 0), triple_multipliers),
-        balance_text=_format_balance(balance),
-        bet_text=_format_bet(bet),
-    )
+    face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, bg_rgba, reels_behind_face = _layout()
     maybe_debug_stopped_segments(face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled)
     normalized = _normalize_reels(final_reels)
     stop_idxs = [symbol_index(item) for item in normalized]
-    del jackpot_pool
+    del jackpot_pool, balance, bet
     starts_stops = [
         _start_and_stop_for_item(item, cell_h_scaled, win_sizes[idx][1])
         for idx, item in enumerate(normalized)
@@ -522,7 +570,7 @@ def render_slots_gif(
             ]
 
             rgba_frame = _compose_frame_fast(
-                face=face_with_overlay,
+                face=face,
                 strip_source=reel_scaled,
                 reel_boxes=reel_boxes,
                 win_sizes=win_sizes,
@@ -530,8 +578,7 @@ def render_slots_gif(
                 stopped=stopped_mask,
                 stop_idxs=stop_idxs,
                 cell_h_scaled=cell_h_scaled,
-                balance=balance,
-                bet=bet,
+                reels_behind_face=reels_behind_face,
             )
             rgba_frame = _downscale(rgba_frame, max_w=attempt_max_w)
             rgba_frames.append(rgba_frame)
