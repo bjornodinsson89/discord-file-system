@@ -182,6 +182,15 @@ async def _resolve_torn_identity(discord_id: int) -> tuple[str, int, bool]:
     return torn_name, torn_id, bool(torn_id)
 
 
+async def _is_raffle_admin(interaction: discord.Interaction) -> bool:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return False
+    settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild.id)
+    admin_roles = set(GuildSettingsRepository.resolve_admin_role_ids(settings))
+    member_roles = {r.id for r in interaction.user.roles}
+    return interaction.user.guild_permissions.administrator or bool(member_roles & admin_roles)
+
+
 def _resolve_purchase_panel_channel_id(settings: dict, *, is_giveaway: bool) -> tuple[int | None, str | None, str | None]:
     if is_giveaway:
         giveaway_channel_id = _safe_int(settings.get("raffle_giveaway_purchase_channel_id"))
@@ -1013,8 +1022,14 @@ class RafflePurchasePanelView(discord.ui.View):
             style=discord.ButtonStyle.secondary,
             custom_id=f"raffle:my:{raffle_id}",
         ))
+        self.add_item(discord.ui.Button(
+            label="Manage",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"raffle:manage:{raffle_id}",
+        ))
         self.children[0].callback = self.buy_tickets
         self.children[1].callback = self.my_tickets
+        self.children[2].callback = self.manage
     async def buy_tickets(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
@@ -1091,6 +1106,113 @@ class RafflePurchasePanelView(discord.ui.View):
                 "❌ Something went wrong fetching your tickets. Please try again.",
                 ephemeral=True,
             )
+
+    async def manage(self, interaction: discord.Interaction):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            if not await _is_raffle_admin(interaction):
+                await interaction.followup.send("You don’t have permission to manage this raffle.", ephemeral=True)
+                return
+            manage_view = RaffleManageView(self.raffle_id)
+            message = await interaction.followup.send(
+                "Raffle management controls:",
+                view=manage_view,
+                ephemeral=True,
+                wait=True,
+            )
+            manage_view.message = message
+        except Exception:
+            log.exception("Raffle manage panel failed raffle_id=%s", self.raffle_id)
+            if interaction.response.is_done():
+                await interaction.followup.send("Something went wrong opening raffle management.", ephemeral=True)
+            else:
+                await interaction.response.send_message("Something went wrong opening raffle management.", ephemeral=True)
+
+
+class RaffleManageView(discord.ui.View):
+    def __init__(self, raffle_id: int):
+        super().__init__(timeout=300)
+        self.raffle_id = int(raffle_id)
+        self.message: discord.Message | None = None
+
+    async def _ensure_admin(self, interaction: discord.Interaction) -> bool:
+        if not await _is_raffle_admin(interaction):
+            await interaction.followup.send("You don’t have permission to manage this raffle.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Draw", style=discord.ButtonStyle.success)
+    async def draw(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            if not await self._ensure_admin(interaction):
+                return
+            repo = RafflesRepository(get_pool())
+            result = await repo.draw_raffle_winner(self.raffle_id)
+            if not result:
+                await interaction.followup.send("❌ No entries or raffle not found", ephemeral=True)
+                return
+            raffle = await repo.get_raffle(self.raffle_id)
+            cog = interaction.client.get_cog("RafflesCog") if interaction.client else None
+            if raffle and cog:
+                await cog._disable_raffle_panels(raffle, status_text="Raffle completed.")
+                await cog._send_prize_delivery_dm(raffle)
+                await cog._send_admin_winner_announcement(raffle, result)
+            await interaction.followup.send(f"✅ Raffle #{self.raffle_id} drawn.", ephemeral=True)
+        except Exception:
+            log.exception("Raffle draw manage callback failed raffle_id=%s", self.raffle_id)
+            await interaction.followup.send("Unable to draw raffle right now.", ephemeral=True)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            if not await self._ensure_admin(interaction):
+                return
+            repo = RafflesRepository(get_pool())
+            raffle_before = await repo.get_raffle(self.raffle_id)
+            cancelled = await repo.cancel_active_raffle(self.raffle_id)
+            if not cancelled:
+                await interaction.followup.send("❌ Raffle not found or already completed/cancelled", ephemeral=True)
+                return
+            raffle = await repo.get_raffle(self.raffle_id) or raffle_before
+            cog = interaction.client.get_cog("RafflesCog") if interaction.client else None
+            if raffle and cog:
+                await cog._disable_raffle_panels(raffle, status_text="Raffle cancelled.")
+                await cog._disable_prize_dm_confirm(raffle)
+                await repo.mark_cleaned(self.raffle_id)
+            await interaction.followup.send(f"✅ Raffle #{self.raffle_id} has been cancelled.", ephemeral=True)
+        except Exception:
+            log.exception("Raffle cancel manage callback failed raffle_id=%s", self.raffle_id)
+            await interaction.followup.send("Unable to cancel raffle right now.", ephemeral=True)
+
+    @discord.ui.button(label="Verify Prize", style=discord.ButtonStyle.primary)
+    async def verify_prize(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            if not await self._ensure_admin(interaction):
+                return
+            cog = interaction.client.get_cog("RafflesCog") if interaction.client else None
+            if cog is None:
+                await interaction.followup.send("Raffle system unavailable.", ephemeral=True)
+                return
+            await cog.handle_admin_prize_verification(interaction, self.raffle_id, AdminPrizeVerificationView(self.raffle_id))
+        except Exception:
+            log.exception("Raffle verify prize manage callback failed raffle_id=%s", self.raffle_id)
+            await interaction.followup.send("Unable to verify prize right now.", ephemeral=True)
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
 class PaymentVerificationView(discord.ui.View):
     """View for manually verifying raffle payment."""
     def __init__(self, raffle_id: int, entry_id: int, repo: RafflesRepository, manual: bool = True):
@@ -2040,9 +2162,9 @@ class RafflesCog(commands.Cog):
             f"✅ Raffle #{raffle_id} has been cancelled.", ephemeral=True
         )
     @app_commands.command(name="raffle_list", description="📋 List raffles (Admin only)")
-    @app_commands.checks.has_permissions(administrator=True)
     async def raffle_list(self, interaction: discord.Interaction):
-        """📋 List all active raffles - Admin only."""
+        """📋 List all active raffles."""
+        is_admin = await _is_raffle_admin(interaction)
         repo = RafflesRepository(get_pool())
         raffles = await repo.get_active_raffles(interaction.guild_id)
         if not raffles:
@@ -2065,7 +2187,7 @@ class RafflesCog(commands.Cog):
                 value += "\n⏰ Draw occurs 30 seconds after sellout."
             else:
                 value += "\n⏰ Draw occurs at end time (or manual draw)."
-            if raffle.get("admin_comments"):
+            if is_admin and raffle.get("admin_comments"):
                 value += f"\n📌 Notes: {str(raffle['admin_comments'])[:200]}"
             embed.add_field(
                 name=f"#{raffle['raffle_id']}: {raffle['prize'][:50]}",

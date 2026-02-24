@@ -91,6 +91,7 @@ class CasinoHomeView(discord.ui.View):
     def __init__(self, guild_id: int):
         super().__init__(timeout=300)
         self.guild_id = guild_id
+        self.message: discord.Message | None = None
         self.add_item(GameSelect())
 
     @discord.ui.button(label="Deposit", style=discord.ButtonStyle.success)
@@ -105,19 +106,37 @@ class CasinoHomeView(discord.ui.View):
 
         await interaction.response.send_modal(CashoutRequestModal(self.guild_id))
 
-    @discord.ui.button(label="Ledger", style=discord.ButtonStyle.secondary)
-    async def ledger(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if not await ensure_casino_admin(interaction, self.guild_id):
-            return
-        from views.casino_core.ledger_panel import send_admin_ledger_panel
+    @discord.ui.button(label="Manage", style=discord.ButtonStyle.secondary)
+    async def manage(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            if not await ensure_casino_admin(interaction, self.guild_id):
+                await interaction.followup.send("You don’t have permission to manage this casino.", ephemeral=True)
+                return
+            from views.casino_core.back_of_house import BackOfHouseView, back_of_house_embed
 
-        await send_admin_ledger_panel(interaction, self.guild_id)
+            view = BackOfHouseView(self.guild_id)
+            await interaction.followup.send(
+                embed=await back_of_house_embed(self.guild_id),
+                view=view,
+                ephemeral=True,
+            )
+            view.message = await interaction.original_response()
+        except Exception:
+            if interaction.response.is_done():
+                await interaction.followup.send("Could not open casino management right now.", ephemeral=True)
+            else:
+                await interaction.response.send_message("Could not open casino management right now.", ephemeral=True)
 
-    @discord.ui.button(label="Game Settings", style=discord.ButtonStyle.secondary)
-    async def game_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if not await ensure_casino_admin(interaction, self.guild_id):
-            return
-        await interaction.response.send_message("Use /back_of_house", ephemeral=True)
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
 
 
 async def casino_home_embed(guild_id: int, discord_id: int) -> discord.Embed:
