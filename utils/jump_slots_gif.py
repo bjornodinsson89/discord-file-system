@@ -206,17 +206,26 @@ def _layout() -> tuple[
     if any((x1 - x0) <= 0 or (y1 - y0) <= 0 for x0, y0, x1, y1 in reel_boxes):
         raise ValueError("Invalid reel boxes layout")
 
-    if _CELL_H_RAW is None:
-        raise ValueError("Reel cell height metadata missing")
-    cell_h_raw = _CELL_H_RAW
-
     win_sizes = [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in reel_boxes]
+    max_win_w = max(w for w, _ in win_sizes)
+    max_win_h = max(h for _, h in win_sizes)
+
+    cell_h_scaled = max(1, int(round(max_win_h / 1.0)))
+    reel_scaled_height = cell_h_scaled * CYCLE_LEN
+    reel_scaled = reel.resize((max_win_w, reel_scaled_height), Image.Resampling.LANCZOS)
+    cell_h_scaled = reel_scaled.height // CYCLE_LEN
+    if reel_scaled.height != cell_h_scaled * CYCLE_LEN:
+        raise ValueError(
+            "Scaled reel strip has invalid cycle height: "
+            f"height={reel_scaled.height} cell_h_scaled={cell_h_scaled} cycle_len={CYCLE_LEN}"
+        )
+
     _LAYOUT_CACHE = (
         face,
-        reel,
+        reel_scaled,
         reel_boxes,
         win_sizes,
-        cell_h_raw,
+        cell_h_scaled,
         bg_rgba,
         _has_transparent_windows(face, reel_boxes),
     )
@@ -321,13 +330,10 @@ def symbol_index(item_id: int) -> int:
     return REEL_CYCLE.index(item_id)
 
 
-def _stop_offset_for_symbol(idx: int, cell_h: int, window_h: int) -> float:
-    return idx * cell_h + (cell_h / 2.0) - (window_h / 2.0)
-
-
-def _start_and_stop_for_item(item_id: int, cell_h: int, window_h: int) -> tuple[float, float]:
+def _start_and_stop_for_item(item_id: int, cell_h: int) -> tuple[float, float]:
     idx = symbol_index(item_id)
-    stop = (BASE_SPINS * CYCLE_LEN * cell_h) + _stop_offset_for_symbol(idx, cell_h, window_h)
+    stop_offset_px = idx * cell_h
+    stop = (BASE_SPINS * CYCLE_LEN * cell_h) + stop_offset_px
     start = stop + (EXTRA_SPINS * CYCLE_LEN * cell_h)
     return start, stop
 
@@ -368,17 +374,21 @@ def _render_window_from_offset(
     key = (id(strip_source), cell_h, win_w, win_h)
     stacked = _STACKED_REEL_CACHE.get(key)
     if stacked is None:
-        stacked = Image.new("RGBA", (win_w, win_h * (CYCLE_LEN + 1)), (0, 0, 0, 0))
-        for idx in range(CYCLE_LEN):
-            cell_img = _render_centered_cell_from_strip(strip_source, idx, cell_h, win_w, win_h)
-            stacked.paste(cell_img, (0, idx * win_h), cell_img)
-        first_cell = _render_centered_cell_from_strip(strip_source, 0, cell_h, win_w, win_h)
-        stacked.paste(first_cell, (0, CYCLE_LEN * win_h), first_cell)
+        cycle_h = cell_h * CYCLE_LEN
+        scaled_strip = strip_source.resize((win_w, cycle_h), Image.Resampling.LANCZOS)
+        stacked_h = max(cycle_h * 2, win_h + cell_h + 2)
+        stacked = Image.new("RGBA", (win_w, stacked_h), (0, 0, 0, 0))
+        y = 0
+        while y < stacked_h:
+            stacked.paste(scaled_strip, (0, y), scaled_strip)
+            y += cycle_h
         _STACKED_REEL_CACHE[key] = stacked
 
-    cycle_px = win_h * CYCLE_LEN
-    pos_px = int(round((offset / float(cell_h)) * win_h)) % cycle_px
-    return stacked.crop((0, pos_px, win_w, pos_px + win_h))
+    y0 = int(round(offset)) % cell_h
+    top = max(0, y0 - 1)
+    bottom = min(stacked.height, y0 + win_h + 1)
+    seg = stacked.crop((0, top, stacked.width, bottom))
+    return seg.resize((win_w, win_h), Image.Resampling.LANCZOS)
 
 
 def maybe_debug_stopped_segments(
@@ -447,14 +457,14 @@ def _compose_frame_fast(
     win_sizes: list[tuple[int, int]],
     offsets: list[float],
     stopped: list[bool] | None = None,
-    stop_idxs: list[int] | None = None,
+    stop_offsets_px: list[float] | None = None,
     cell_h_scaled: int | None = None,
     reels_behind_face: bool = True,
 ) -> Image.Image:
     stopped = stopped or [False, False, False]
     if any(stopped):
-        if stop_idxs is None:
-            raise ValueError("stop_idxs must be provided when stopped reels are used")
+        if stop_offsets_px is None:
+            raise ValueError("stop_offsets_px must be provided when stopped reels are used")
         if cell_h_scaled is None:
             raise ValueError("cell_h_scaled must be provided when stopped reels are used")
 
@@ -463,16 +473,8 @@ def _compose_frame_fast(
         x0, y0, x1, y1 = reel_boxes[i]
         win_w, win_h = win_sizes[i]
 
-        if stopped[i]:
-            seg = _render_centered_cell_from_strip(
-                strip_source=strip_source,
-                idx=stop_idxs[i],
-                cell_h=cell_h_scaled,
-                win_w=win_w,
-                win_h=win_h,
-            )
-        else:
-            seg = _render_window_from_offset(strip_source, off, cell_h_scaled, win_w, win_h)
+        off_px = stop_offsets_px[i] if stopped[i] else off
+        seg = _render_window_from_offset(strip_source, off_px, cell_h_scaled, win_w, win_h)
 
         reels_canvas.paste(seg, (x0, y0), seg)
 
@@ -525,7 +527,7 @@ def render_idle_png(
     face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, _, reels_behind_face = _layout()
     del jackpot_pool, balance, bet
     normalized = _normalize_reels(reels)
-    stop_idxs = [symbol_index(item) for item in normalized]
+    stop_offsets_px = [symbol_index(item) * cell_h_scaled for item in normalized]
     frame = _compose_frame_fast(
         face=face,
         strip_source=reel_scaled,
@@ -533,7 +535,7 @@ def render_idle_png(
         win_sizes=win_sizes,
         offsets=[0.0, 0.0, 0.0],
         stopped=[True, True, True],
-        stop_idxs=stop_idxs,
+        stop_offsets_px=stop_offsets_px,
         cell_h_scaled=cell_h_scaled,
         reels_behind_face=reels_behind_face,
     )
@@ -565,12 +567,9 @@ def render_slots_gif(
     face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled, bg_rgba, reels_behind_face = _layout()
     maybe_debug_stopped_segments(face, reel_scaled, reel_boxes, win_sizes, cell_h_scaled)
     normalized = _normalize_reels(final_reels)
-    stop_idxs = [symbol_index(item) for item in normalized]
+    stop_offsets_px = [symbol_index(item) * cell_h_scaled for item in normalized]
     del jackpot_pool, balance, bet
-    starts_stops = [
-        _start_and_stop_for_item(item, cell_h_scaled, win_sizes[idx][1])
-        for idx, item in enumerate(normalized)
-    ]
+    starts_stops = [_start_and_stop_for_item(item, cell_h_scaled) for item in normalized]
     starts = [start for start, _ in starts_stops]
     stops_px = [stop for _, stop in starts_stops]
     total_ms = max(2, int(frames)) * max(40, min(150, int(duration_ms)))
@@ -616,7 +615,7 @@ def render_slots_gif(
                 win_sizes=win_sizes,
                 offsets=offsets,
                 stopped=stopped_mask,
-                stop_idxs=stop_idxs,
+                stop_offsets_px=stop_offsets_px,
                 cell_h_scaled=cell_h_scaled,
                 reels_behind_face=reels_behind_face,
             )
