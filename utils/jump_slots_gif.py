@@ -569,10 +569,7 @@ def render_slots_gif(
     normalized = _normalize_reels(final_reels)
     stop_offsets_px = [symbol_index(item) * cell_h_scaled for item in normalized]
     del jackpot_pool, balance, bet
-    starts_stops = [
-        _start_and_stop_for_item(item, cell_h_scaled)
-        for item in normalized
-    ]
+    starts_stops = [_start_and_stop_for_item(item, cell_h_scaled) for item in normalized]
     starts = [start for start, _ in starts_stops]
     stops_px = [stop for _, stop in starts_stops]
     total_ms = max(2, int(frames)) * max(40, min(150, int(duration_ms)))
