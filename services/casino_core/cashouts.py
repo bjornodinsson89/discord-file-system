@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import datetime, timezone
 import logging
 
 import discord
@@ -56,24 +56,27 @@ class CasinoCashoutService:
         em.description = f"Cashout #{cashout['id']}\nPlayer: <@{discord_id}>\nQty: **{qty_tokens}**"
         view = HouseCashoutActionView(int(guild_id), int(cashout["id"]))
 
+        requested_at = datetime.now(tz=timezone.utc).isoformat()
+        em.description = (
+            f"Cashout #{cashout['id']}\n"
+            f"Player: <@{discord_id}>\n"
+            f"Qty: **{qty_tokens}**\n"
+            f"Guild: `{guild_id}`\n"
+            f"Requested: `{requested_at}`"
+        )
         try:
-            house_user = interaction.client.get_user(int(house["house_discord_id"]))
+            house_user_id = int(house["house_discord_id"])
+            house_member = interaction.guild.get_member(house_user_id) if interaction.guild else None
+            house_user = house_member or interaction.client.get_user(house_user_id)
             if house_user is None:
-                house_user = await interaction.client.fetch_user(int(house["house_discord_id"]))
-            if house_user:
-                await house_user.send(embed=em, view=view)
+                house_user = await interaction.client.fetch_user(house_user_id)
+            await house_user.send(embed=em, view=view)
+        except discord.Forbidden as exc:
+            logging.warning("Cashout request DM forbidden for guild_id=%s cashout_id=%s: %s", guild_id, int(cashout["id"]), exc)
+            raise ValueError("House DMs are closed; your cashout request could not be delivered.") from exc
         except Exception as exc:
             logging.warning("Cashout request DM failed for guild_id=%s cashout_id=%s: %s", guild_id, int(cashout["id"]), exc)
-
-        if house.get("cashout_inbox_channel_id"):
-            try:
-                channel = interaction.guild.get_channel(int(house["cashout_inbox_channel_id"])) if interaction.guild else None
-                if channel is None:
-                    channel = await interaction.client.fetch_channel(int(house["cashout_inbox_channel_id"]))
-                if isinstance(channel, discord.abc.Messageable):
-                    await channel.send(embed=em, view=view)
-            except Exception as exc:
-                logging.warning("Cashout request inbox post failed for guild_id=%s cashout_id=%s: %s", guild_id, int(cashout["id"]), exc)
+            raise ValueError("Cashout request could not be delivered to house via DM.") from exc
 
         return int(cashout["id"])
 

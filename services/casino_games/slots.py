@@ -4,6 +4,7 @@ import math
 import random
 import uuid
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -15,6 +16,22 @@ from services.casino_core.settings import get_house_config
 from utils import GuildSettingsRepository, get_database
 
 SLOTS_POOL_KEY = "slots_jackpot"
+JACKPOT_SYMBOL_ID = 9090
+
+ODDS_PUSH = 0.45
+ODDS_SMALL = 0.10
+ODDS_TRIPLE = 0.02
+ODDS_JACKPOT = 0.005
+ODDS_DOUBLE_JP = 0.02
+ODDS_LOSS = 1.0 - (ODDS_PUSH + ODDS_SMALL + ODDS_TRIPLE + ODDS_JACKPOT + ODDS_DOUBLE_JP)
+
+TRIPLE_TIER_WEIGHTS = [0.525, 0.275, 0.125, 0.05, 0.025]
+
+if ODDS_LOSS < 0.3:
+    raise ValueError("Slots odds configuration is invalid: ODDS_LOSS must be at least 0.3.")
+
+
+log = logging.getLogger(__name__)
 
 DEFAULT_SLOTS_CONFIG = {
     "enabled": True,
@@ -209,8 +226,15 @@ class CasinoSlotsService:
                     add_millis=contrib_millis,
                 )
 
-                reels = self._roll_reels(cfg)
-                payout, win_type, pair_item = self._calculate_payout(cfg, bet, reels)
+                outcome_bucket = self._choose_outcome_bucket()
+                reels = self._roll_reels(cfg, outcome_bucket)
+                payout, win_type, pair_item = self._calculate_payout(
+                    cfg,
+                    bet,
+                    reels,
+                    outcome_bucket,
+                    pool_tokens=int(pool_after_contrib["tokens"]),
+                )
                 final_pool_tokens = int(pool_after_contrib["tokens"])
                 final_pool_millis = int(pool_after_contrib["millis"])
 
@@ -225,6 +249,39 @@ class CasinoSlotsService:
                     payout = int(claim_tokens)
                     final_pool_tokens = int(reset_tokens)
                     final_pool_millis = int(reset_millis)
+
+                if win_type == "double_jp" and payout > 0:
+                    pool_after_double = await self.casino_repo.add_to_pool(
+                        conn,
+                        guild_id=int(guild_id),
+                        pool_key=SLOTS_POOL_KEY,
+                        add_tokens=-int(payout),
+                        add_millis=0,
+                    )
+                    final_pool_tokens = int(pool_after_double["tokens"])
+                    final_pool_millis = int(pool_after_double["millis"])
+                    log.info(
+                        "slots_result guild_id=%s discord_id=%s result_type=double_jp bet=%s reels=%s payout=%s pool_before=%s pool_after=%s",
+                        int(guild_id),
+                        int(discord_id),
+                        int(bet),
+                        reels,
+                        int(payout),
+                        int(pool_before["tokens"]),
+                        int(final_pool_tokens),
+                    )
+
+                if win_type == "jackpot":
+                    log.info(
+                        "slots_result guild_id=%s discord_id=%s result_type=jackpot bet=%s reels=%s payout=%s pool_before=%s pool_after=%s",
+                        int(guild_id),
+                        int(discord_id),
+                        int(bet),
+                        reels,
+                        int(payout),
+                        int(pool_before["tokens"]),
+                        int(final_pool_tokens),
+                    )
 
                 if payout > 0:
                     wallet = await self.casino_repo.apply_ledger_entry_atomic(
@@ -253,6 +310,7 @@ class CasinoSlotsService:
                     "timestamp": now.isoformat(),
                     "reels": reels,
                     "win_type": win_type,
+                    "outcome_bucket": outcome_bucket,
                     "bet": bet,
                     "payout": payout,
                     "pool_before": {"tokens": int(pool_before["tokens"]), "millis": int(pool_before["millis"])},
@@ -299,22 +357,115 @@ class CasinoSlotsService:
         if channel:
             await channel.send(f"🎰 JACKPOT! <@{announce['discord_id']}> won **{announce['payout']}** tokens in Slots!")
 
-    def _roll_reels(self, config: dict) -> list[int]:
-        symbols = list(config.get("symbols") or [])
-        ids = [int(s.get("item_id")) for s in symbols]
-        weights = [max(0, int(s.get("weight") or 0)) for s in symbols]
-        if not ids or sum(weights) <= 0:
+    def _roll_reels(self, config: dict, outcome_bucket: str) -> list[int]:
+        all_symbols = self._get_symbol_ids(config)
+        if not all_symbols:
             raise SlotsError("Slots symbol configuration is invalid.")
-        return [random.choices(ids, weights=weights, k=1)[0] for _ in range(3)]
 
-    def _calculate_payout(self, config: dict, bet: int, reels: list[int]) -> tuple[int, str, int | None]:
+        non_jackpot_symbols = [item_id for item_id in all_symbols if item_id != JACKPOT_SYMBOL_ID]
+        if len(non_jackpot_symbols) < 3:
+            raise SlotsError("Slots symbol configuration requires at least three non-jackpot symbols.")
+
+        if outcome_bucket == "jackpot":
+            return [JACKPOT_SYMBOL_ID, JACKPOT_SYMBOL_ID, JACKPOT_SYMBOL_ID]
+        if outcome_bucket == "double_jp":
+            replacement = random.choice(non_jackpot_symbols)
+            reels = [JACKPOT_SYMBOL_ID, JACKPOT_SYMBOL_ID, JACKPOT_SYMBOL_ID]
+            reels[random.randrange(3)] = replacement
+            return reels
+        if outcome_bucket == "triple":
+            symbol = self._choose_non_jackpot_triple_symbol(config)
+            return [symbol, symbol, symbol]
+        if outcome_bucket == "small":
+            pair_symbol = self._choose_small_pair_symbol(config)
+            alternatives = [symbol for symbol in non_jackpot_symbols if symbol != pair_symbol]
+            odd_symbol = random.choice(alternatives)
+            reels = [pair_symbol, pair_symbol, pair_symbol]
+            reels[random.randrange(3)] = odd_symbol
+            return reels
+        if outcome_bucket in {"push", "loss"}:
+            reels = random.sample(non_jackpot_symbols, 3)
+            random.shuffle(reels)
+            return reels
+        raise SlotsError(f"Unknown slots outcome bucket: {outcome_bucket}")
+
+    def _choose_outcome_bucket(self) -> str:
+        r = random.random()
+        if r < ODDS_JACKPOT:
+            return "jackpot"
+        if r < ODDS_JACKPOT + ODDS_DOUBLE_JP:
+            return "double_jp"
+        if r < ODDS_JACKPOT + ODDS_DOUBLE_JP + ODDS_TRIPLE:
+            return "triple"
+        if r < ODDS_JACKPOT + ODDS_DOUBLE_JP + ODDS_TRIPLE + ODDS_SMALL:
+            return "small"
+        if r < ODDS_JACKPOT + ODDS_DOUBLE_JP + ODDS_TRIPLE + ODDS_SMALL + ODDS_PUSH:
+            return "push"
+        return "loss"
+
+    def _get_symbol_ids(self, config: dict) -> list[int]:
+        return [int(s.get("item_id")) for s in list(config.get("symbols") or []) if s.get("item_id") is not None]
+
+    def _choose_small_pair_symbol(self, config: dict) -> int:
+        payouts = dict(config.get("payouts") or {})
+        pair = dict(payouts.get("pair") or {})
+        symbols = self._get_symbol_ids(config)
+        eligible = [item_id for item_id in symbols if item_id != JACKPOT_SYMBOL_ID and str(item_id) in pair]
+        if not eligible:
+            raise SlotsError("No eligible symbols for small win pair payout.")
+        return random.choice(eligible)
+
+    def _choose_non_jackpot_triple_symbol(self, config: dict) -> int:
+        payouts = dict(config.get("payouts") or {})
+        triple = dict(payouts.get("triple") or {})
+        ranked = sorted(
+            (
+                (int(symbol_id), float(multiplier))
+                for symbol_id, multiplier in triple.items()
+                if int(symbol_id) != JACKPOT_SYMBOL_ID
+            ),
+            key=lambda kv: kv[1],
+        )
+        if len(ranked) < 1:
+            raise SlotsError("No non-jackpot triple payout symbols configured.")
+
+        by_tier: list[list[int]] = [[symbol] for symbol, _ in ranked]
+        while len(by_tier) < len(TRIPLE_TIER_WEIGHTS):
+            by_tier.append(by_tier[-1])
+
+        roll = random.random()
+        cumulative = 0.0
+        for index, weight in enumerate(TRIPLE_TIER_WEIGHTS):
+            cumulative += weight
+            if roll <= cumulative:
+                return random.choice(by_tier[index])
+        return random.choice(by_tier[-1])
+
+    def _calculate_payout(
+        self,
+        config: dict,
+        bet: int,
+        reels: list[int],
+        outcome_bucket: str,
+        pool_tokens: int,
+    ) -> tuple[int, str, int | None]:
         payouts = dict(config.get("payouts") or {})
         triple = dict(payouts.get("triple") or {})
         pair = dict(payouts.get("pair") or {})
         xanax_tease = float(payouts.get("xanax_tease") or 0)
 
-        if reels[0] == reels[1] == reels[2] == 9090:
-            return 0, "jackpot", 9090
+        if outcome_bucket == "push":
+            return int(bet), "push", None
+        if outcome_bucket == "double_jp":
+            if int(pool_tokens) < 2:
+                return int(bet), "push", None
+            payout = int(math.floor(int(pool_tokens) * 0.10))
+            payout = max(1, payout)
+            payout = min(payout, int(pool_tokens) - 1)
+            return payout, "double_jp", JACKPOT_SYMBOL_ID
+
+        if reels[0] == reels[1] == reels[2] == JACKPOT_SYMBOL_ID:
+            return 0, "jackpot", JACKPOT_SYMBOL_ID
         if reels[0] == reels[1] == reels[2]:
             item = reels[0]
             mult = float(triple.get(str(item), 0))
@@ -359,3 +510,15 @@ class CasinoSlotsService:
                 return {}
             return parsed if isinstance(parsed, dict) else {}
         return {}
+
+
+if __name__ == "__main__":
+    service = CasinoSlotsService.__new__(CasinoSlotsService)
+    spins = 100000
+    counts: dict[str, int] = {"jackpot": 0, "double_jp": 0, "triple": 0, "small": 0, "push": 0, "loss": 0}
+    for _ in range(spins):
+        bucket = service._choose_outcome_bucket()
+        counts[bucket] = counts.get(bucket, 0) + 1
+    for name in ["push", "small", "triple", "jackpot", "double_jp", "loss"]:
+        pct = (counts.get(name, 0) / spins) * 100
+        print(f"{name}: {pct:.3f}%")
