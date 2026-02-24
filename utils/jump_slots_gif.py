@@ -82,6 +82,13 @@ def _load_reel() -> Image.Image:
             )
         reel = reel.crop((0, 0, reel.width, cycle_h))
 
+        # Center-crop width to remove artwork seams/dividers and keep cells square-ish
+        # so later scaling/cropping remains consistent across symbols.
+        target_w = min(reel.width, cell_h_raw)
+        if reel.width > target_w:
+            left = (reel.width - target_w) // 2
+            reel = reel.crop((left, 0, left + target_w, reel.height))
+
         _CELL_H_RAW = cell_h_raw
         _REEL = reel
     return _REEL
