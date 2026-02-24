@@ -24,10 +24,10 @@ class _HouseUserSelect(discord.ui.UserSelect):
         await interaction.response.edit_message(embed=await house_settings_embed(view.guild_id), view=view)
 
 
-class _PayoutsChannelSelect(discord.ui.ChannelSelect):
+class _PayoutProofChannelSelect(discord.ui.ChannelSelect):
     def __init__(self):
         super().__init__(
-            placeholder="Select payouts channel",
+            placeholder="Select payout proof channel (optional)",
             min_values=1,
             max_values=1,
             channel_types=[discord.ChannelType.text],
@@ -40,14 +40,14 @@ class _PayoutsChannelSelect(discord.ui.ChannelSelect):
         if not await ensure_casino_admin(interaction, view.guild_id):
             return
         channel_id = int(self.values[0].id)
-        await update_house_config(view.guild_id, {"payouts_channel_id": channel_id})
+        await update_house_config(view.guild_id, {"payout_proof_channel_id": channel_id})
         await interaction.response.edit_message(embed=await house_settings_embed(view.guild_id), view=view)
 
 
-class _CashoutInboxChannelSelect(discord.ui.ChannelSelect):
+class _BigWinsChannelSelect(discord.ui.ChannelSelect):
     def __init__(self):
         super().__init__(
-            placeholder="Select cashout inbox channel",
+            placeholder="Select big wins channel (optional)",
             min_values=1,
             max_values=1,
             channel_types=[discord.ChannelType.text],
@@ -60,7 +60,7 @@ class _CashoutInboxChannelSelect(discord.ui.ChannelSelect):
         if not await ensure_casino_admin(interaction, view.guild_id):
             return
         channel_id = int(self.values[0].id)
-        await update_house_config(view.guild_id, {"cashout_inbox_channel_id": channel_id})
+        await update_house_config(view.guild_id, {"big_wins_channel_id": channel_id})
         await interaction.response.edit_message(embed=await house_settings_embed(view.guild_id), view=view)
 
 
@@ -85,8 +85,8 @@ class HouseSettingsView(discord.ui.View):
         self.guild_id = guild_id
         self.users_repo = UsersRepository(get_pool())
         self.add_item(_HouseUserSelect())
-        self.add_item(_PayoutsChannelSelect())
-        self.add_item(_CashoutInboxChannelSelect())
+        self.add_item(_PayoutProofChannelSelect())
+        self.add_item(_BigWinsChannelSelect())
         self.add_item(_AdminRoleSelect())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -125,9 +125,9 @@ async def house_settings_embed(guild_id: int) -> discord.Embed:
     cfg = get_house_config(settings)
     em = discord.Embed(title="Casino House Settings", color=discord.Color.blurple())
     em.add_field(name="Enabled", value="Yes" if settings.get("casino_enabled") else "No")
-    em.add_field(name="House Discord", value=f"<@{cfg.get('house_discord_id')}>" if cfg.get("house_discord_id") else "Not set")
+    em.add_field(name="House User", value=f"<@{cfg.get('house_discord_id')}>" if cfg.get("house_discord_id") else "Not set")
     em.add_field(name="House Torn ID", value=str(cfg.get("house_torn_id") or "Not set"))
-    em.add_field(name="Payouts Channel", value=f"<#{cfg.get('payouts_channel_id')}>" if cfg.get("payouts_channel_id") else "Not set", inline=False)
-    em.add_field(name="Cashout Inbox", value=f"<#{cfg.get('cashout_inbox_channel_id')}>" if cfg.get("cashout_inbox_channel_id") else "Not set")
+    em.add_field(name="Payout Proof Channel (optional)", value=f"<#{cfg.get('payout_proof_channel_id')}>" if cfg.get("payout_proof_channel_id") else "Not set", inline=False)
+    em.add_field(name="Big Wins Channel (optional)", value=f"<#{cfg.get('big_wins_channel_id')}>" if cfg.get("big_wins_channel_id") else "Not set")
     em.add_field(name="Casino Admin Role", value=f"<@&{cfg.get('casino_admin_role_id')}>" if cfg.get("casino_admin_role_id") else "Not set")
     return em

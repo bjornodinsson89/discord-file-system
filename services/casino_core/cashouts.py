@@ -21,7 +21,7 @@ class CasinoCashoutService:
     async def request_cashout(self, interaction: discord.Interaction, guild_id: int, discord_id: int, qty_tokens: int, note: str | None) -> int:
         settings = await GuildSettingsRepository(get_database()).get_or_create(guild_id)
         house = get_house_config(settings)
-        required = ("house_discord_id", "house_torn_id", "payouts_channel_id")
+        required = ("house_discord_id", "house_torn_id")
         if not settings.get("casino_enabled") or any(not house.get(k) for k in required):
             raise ValueError("Casino house settings incomplete.")
 
@@ -97,9 +97,16 @@ class CasinoCashoutService:
                 if not cashout or cashout.get("status") != "requested":
                     return False
                 wallet = await self.repo.get_wallet_by_id(int(cashout["wallet_id"]))
-                logs = await get_torn_api().get_item_send_receive_logs(house_api, limit=200)
-                match = None
                 requested_at_ts = int(cashout["requested_at"].astimezone(timezone.utc).timestamp())
+                logs = []
+                log_fetch_failed = False
+                try:
+                    logs = await get_torn_api().get_item_send_receive_logs(house_api, limit=200)
+                except Exception as exc:
+                    log_fetch_failed = True
+                    logging.warning("Payout log fetch failed for guild_id=%s cashout_id=%s: %s", guild_id, cashout_id, exc)
+
+                match = None
                 for log in logs:
                     data = log.get("data") or {}
                     details = log.get("details") or {}
@@ -116,22 +123,42 @@ class CasinoCashoutService:
                         match = log
                         break
                 if not match:
+                    proof_channel_id = int(house.get("payout_proof_channel_id") or 0)
+                    if proof_channel_id and log_fetch_failed:
+                        try:
+                            payouts_channel = interaction.guild.get_channel(proof_channel_id) if interaction.guild else None
+                            if payouts_channel is None:
+                                payouts_channel = await interaction.client.fetch_channel(proof_channel_id)
+                            if isinstance(payouts_channel, discord.abc.Messageable):
+                                await payouts_channel.send(
+                                    f"⚠️ Payout proof for request #{cashout_id}: log fetch failed."
+                                )
+                        except Exception as exc:
+                            logging.warning("Payout proof failure notice post failed for guild_id=%s cashout_id=%s: %s", guild_id, cashout_id, exc)
                     return False
 
                 log_id = str(match.get("id") or match.get("log_id") or match.get("log"))
                 payouts_message_id = None
-                proof_embed = discord.Embed(title="Casino Payout Verified", color=discord.Color.green())
-                proof_embed.description = f"Cashout #{cashout['id']} | <@{wallet['discord_id']}>\nQty: **{cashout['qty_tokens']}**\nLog: `{log_id}`"
-                proof_embed.add_field(name="Log excerpt", value=f"```json\n{trunc_json(match, 500)}\n```", inline=False)
-                try:
-                    payouts_channel = interaction.guild.get_channel(int(house["payouts_channel_id"])) if interaction.guild else None
-                    if payouts_channel is None:
-                        payouts_channel = await interaction.client.fetch_channel(int(house["payouts_channel_id"]))
-                    if isinstance(payouts_channel, discord.abc.Messageable):
-                        msg = await payouts_channel.send(embed=proof_embed)
-                        payouts_message_id = int(msg.id)
-                except Exception as exc:
-                    logging.warning("Payout proof post failed for guild_id=%s cashout_id=%s: %s", guild_id, cashout_id, exc)
+                proof_channel_id = int(house.get("payout_proof_channel_id") or 0)
+                if proof_channel_id:
+                    proof_embed = discord.Embed(title="Casino Payout Verified", color=discord.Color.green())
+                    proof_embed.description = (
+                        f"Requester: <@{wallet['discord_id']}>\n"
+                        f"Amount: **{cashout['qty_tokens']}**\n"
+                        f"Request ID: **#{cashout['id']}**\n"
+                        f"Timestamp: <t:{requested_at_ts}:f>\n"
+                        f"House Torn send-log: `{log_id}`"
+                    )
+                    proof_embed.add_field(name="Log excerpt", value=f"```json\n{trunc_json(match, 500)}\n```", inline=False)
+                    try:
+                        payouts_channel = interaction.guild.get_channel(proof_channel_id) if interaction.guild else None
+                        if payouts_channel is None:
+                            payouts_channel = await interaction.client.fetch_channel(proof_channel_id)
+                        if isinstance(payouts_channel, discord.abc.Messageable):
+                            msg = await payouts_channel.send(embed=proof_embed)
+                            payouts_message_id = int(msg.id)
+                    except Exception as exc:
+                        logging.warning("Payout proof post failed for guild_id=%s cashout_id=%s: %s", guild_id, cashout_id, exc)
 
                 await self.repo.mark_cashout_verified_sent(
                     conn,
