@@ -128,7 +128,17 @@ async def _resolve_pool_purchase_channel(
         return fallback_channel, None
 
     me = guild.me or guild.get_member(interaction.client.user.id)
-    configured_id = settings.get("pool_channel_id")
+    configured_id = settings.get("pools_post_channel_id")
+    source = "pools_post_channel_id"
+    if not configured_id:
+        configured_id = settings.get("pool_channel_id")
+        source = "pool_channel_id" if configured_id else "none"
+    log.info(
+        "pools.purchase_channel.resolve guild=%s source=%s channel_id=%s",
+        guild.id,
+        source,
+        configured_id,
+    )
     if not configured_id:
         return None, "❌ Configure **Pools PURCHASE channel** in `/setup` first."
 
