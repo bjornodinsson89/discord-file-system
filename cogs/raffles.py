@@ -1988,11 +1988,19 @@ class RafflesCog(commands.Cog):
     @app_commands.describe(raffle_id="🎟️ ID of the raffle to draw")
     async def raffle_draw(self, interaction: discord.Interaction, raffle_id: int):
         """🎲 Manually trigger a raffle draw - Admin only."""
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         repo = RafflesRepository(get_pool())
-        result = await repo.draw_raffle_winner(raffle_id)
+        try:
+            result = await repo.draw_raffle_winner(raffle_id)
+        except Exception:
+            log.exception("Manual raffle draw failed for raffle_id=%s", raffle_id)
+            await interaction.followup.send(
+                f"❌ Draw failed for raffle #{raffle_id} due to backend validation. Please try again shortly or contact support.",
+                ephemeral=True,
+            )
+            return
         if not result:
-            await interaction.followup.send("❌ No entries or raffle not found")
+            await interaction.followup.send("❌ No entries or raffle not found", ephemeral=True)
             return
         raffle = await repo.get_raffle(raffle_id)
         if raffle:

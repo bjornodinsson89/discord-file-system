@@ -586,7 +586,7 @@ class RafflesRepository(RepositoryBase):
                     return {"state": "not_found", "winner": None}
 
                 status = str(raffle["status"] or "").lower()
-                if status in {"drawing", "drawn", "completed"}:
+                if status in {"completed", "cancelled"}:
                     winner = None
                     if raffle.get("winner_discord_id") is not None:
                         winner = {
@@ -600,11 +600,6 @@ class RafflesRepository(RepositoryBase):
 
                 if int(raffle["tickets_available"] or 0) > 0 and int(raffle["verified_total"] or 0) < int(raffle["tickets_available"] or 0):
                     return {"state": "not_ready", "winner": None}
-
-                await conn.execute(
-                    "UPDATE raffles SET status = 'drawing' WHERE raffle_id = $1 AND status = 'active'",
-                    raffle_id,
-                )
 
                 entries = await conn.fetch(
                     """
