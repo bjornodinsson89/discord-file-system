@@ -7,8 +7,8 @@ from utils import GuildSettingsRepository, get_database
 HOUSE_DEFAULTS = {
     "house_discord_id": None,
     "house_torn_id": None,
-    "payouts_channel_id": None,
-    "cashout_inbox_channel_id": None,
+    "payout_proof_channel_id": None,
+    "big_wins_channel_id": None,
     "casino_admin_role_id": None,
 }
 GAME_DEFAULTS = {"enabled": True, "min_bet": 1, "max_bet": 10, "cooldown_seconds": 2}

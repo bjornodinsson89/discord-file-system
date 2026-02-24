@@ -216,7 +216,7 @@ class SlotsPlayView(discord.ui.View):
                     )
 
                     await asyncio.sleep(0.25)
-                    await self.service.post_jackpot_announce(interaction, result)
+                    await self.service.post_big_win_announce(interaction, result)
                     return
                 except discord.HTTPException:
                     log.warning("slot_assets_url_failed combo=%s", combo, exc_info=True)
@@ -282,7 +282,7 @@ class SlotsPlayView(discord.ui.View):
                     pass
 
             await asyncio.sleep(0.35)
-            await self.service.post_jackpot_announce(interaction, result)
+            await self.service.post_big_win_announce(interaction, result)
         except SlotsCooldownError as exc:
             idle_file = self._idle_file()
             await interaction.edit_original_response(

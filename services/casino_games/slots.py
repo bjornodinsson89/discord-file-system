@@ -335,27 +335,46 @@ class CasinoSlotsService:
                     "config": cfg,
                 }
 
-                if cfg.get("announce_jackpot") and win_type == "jackpot":
+                big_wins_channel_id = int((house or {}).get("big_wins_channel_id") or 0)
+                if big_wins_channel_id and win_type in {"jackpot", "double_jp", "triple"}:
                     announce_payload = {
-                        "channel_id": int((house or {}).get("announce_channel_id") or 0),
+                        "channel_id": big_wins_channel_id,
                         "payout": int(payout),
                         "discord_id": int(discord_id),
+                        "win_type": str(win_type),
+                        "reels": list(reels),
+                        "round_id": int(round_id),
                     }
-
         if announce_payload and announce_payload.get("channel_id"):
             spin_result["announce"] = announce_payload
         return spin_result
 
-    async def post_jackpot_announce(self, interaction: discord.Interaction, result: dict) -> None:
+    async def post_big_win_announce(self, interaction: discord.Interaction, result: dict) -> None:
         announce = result.get("announce") or {}
         channel_id = int(announce.get("channel_id") or 0)
         if not channel_id:
             return
-        channel = interaction.client.get_channel(channel_id)
-        if not channel:
-            channel = await interaction.client.fetch_channel(channel_id)
-        if channel:
-            await channel.send(f"🎰 JACKPOT! <@{announce['discord_id']}> won **{announce['payout']}** tokens in Slots!")
+        try:
+            channel = interaction.client.get_channel(channel_id)
+            if not channel:
+                channel = await interaction.client.fetch_channel(channel_id)
+            if not channel:
+                return
+            win_type = str(announce.get("win_type") or "")
+            label = "BIG WIN"
+            if win_type == "jackpot":
+                label = "JACKPOT (9090×3)"
+            elif win_type == "double_jp":
+                label = "MINI JACKPOT / DOUBLE ROBOT"
+            elif win_type == "triple":
+                label = "TRIPLE"
+            reels = announce.get("reels") or []
+            await channel.send(
+                f"🎰 {label}! <@{announce['discord_id']}> won **{announce['payout']}** tokens "
+                f"(round #{announce.get('round_id')}, reels: {reels})."
+            )
+        except Exception as exc:
+            log.warning("Big win announcement failed channel_id=%s round_id=%s: %s", channel_id, announce.get("round_id"), exc)
 
     def _roll_reels(self, config: dict, outcome_bucket: str) -> list[int]:
         all_symbols = self._get_symbol_ids(config)
