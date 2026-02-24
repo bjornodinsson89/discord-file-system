@@ -25,6 +25,11 @@ ODDS_JACKPOT = 0.005
 ODDS_DOUBLE_JP = 0.02
 ODDS_LOSS = 1.0 - (ODDS_PUSH + ODDS_SMALL + ODDS_TRIPLE + ODDS_JACKPOT + ODDS_DOUBLE_JP)
 
+RETENTION_GAME_KEY = "slots"
+FIRST_FIVE_PLAYS_DOUBLE_BOOST = 0.06
+LOSS_STREAK_PUSH_THRESHOLD = 3
+MIN_POOL_FOR_DOUBLE = 10
+
 TRIPLE_TIER_WEIGHTS = [0.525, 0.275, 0.125, 0.05, 0.025]
 
 if ODDS_LOSS < 0.3:
@@ -194,6 +199,23 @@ class CasinoSlotsService:
                     seed_tokens=int(cfg.get("jackpot_seed_tokens") or 0),
                     seed_millis=int(cfg.get("jackpot_seed_millis") or 0),
                 )
+                retention_state = await self.casino_repo.get_or_create_retention_state(
+                    guild_id=int(guild_id),
+                    discord_id=int(discord_id),
+                    game=RETENTION_GAME_KEY,
+                    for_update=True,
+                    conn=conn,
+                )
+                plays = int(retention_state.get("plays") or 0)
+                loss_streak = int(retention_state.get("loss_streak") or 0)
+
+                forced_outcome: str | None = None
+                forced_by_loss_streak = False
+                if plays == 0:
+                    forced_outcome = "small_win"
+                elif loss_streak >= LOSS_STREAK_PUSH_THRESHOLD:
+                    forced_outcome = "push"
+                    forced_by_loss_streak = True
 
                 nonce = str(uuid.uuid4())
                 round_id = await self.casino_repo.create_round(
@@ -226,7 +248,15 @@ class CasinoSlotsService:
                     add_millis=contrib_millis,
                 )
 
-                outcome_bucket = self._choose_outcome_bucket()
+                if forced_outcome == "small_win":
+                    outcome_bucket = "small"
+                elif forced_outcome == "push":
+                    outcome_bucket = "push"
+                else:
+                    outcome_bucket = self._choose_outcome_bucket(
+                        plays=plays,
+                        pool_tokens=int(pool_after_contrib["tokens"]),
+                    )
                 reels = self._roll_reels(cfg, outcome_bucket)
                 payout, win_type, pair_item = self._calculate_payout(
                     cfg,
@@ -296,6 +326,21 @@ class CasinoSlotsService:
                         metadata={"game": "slots", "win_type": win_type, "pair_item": pair_item},
                     )
 
+                next_plays = plays + 1
+                next_loss_streak = 0
+                if forced_by_loss_streak:
+                    next_loss_streak = 0
+                elif win_type == "loss":
+                    next_loss_streak = loss_streak + 1
+                await self.casino_repo.update_retention_state(
+                    guild_id=int(guild_id),
+                    discord_id=int(discord_id),
+                    game=RETENTION_GAME_KEY,
+                    plays=next_plays,
+                    loss_streak=next_loss_streak,
+                    conn=conn,
+                )
+
                 cooldown_seconds = max(0, int(cfg.get("cooldown_seconds") or 0))
                 await self.casino_repo.set_cooldown(
                     conn,
@@ -311,6 +356,7 @@ class CasinoSlotsService:
                     "reels": reels,
                     "win_type": win_type,
                     "outcome_bucket": outcome_bucket,
+                    "forced_outcome": forced_outcome,
                     "bet": bet,
                     "payout": payout,
                     "pool_before": {"tokens": int(pool_before["tokens"]), "millis": int(pool_before["millis"])},
@@ -408,17 +454,29 @@ class CasinoSlotsService:
             return reels
         raise SlotsError(f"Unknown slots outcome bucket: {outcome_bucket}")
 
-    def _choose_outcome_bucket(self) -> str:
+    def _choose_outcome_bucket(self, *, plays: int, pool_tokens: int) -> str:
+        odds_jackpot = ODDS_JACKPOT
+        odds_double_jp = ODDS_DOUBLE_JP
+        odds_triple = ODDS_TRIPLE
+        odds_small = ODDS_SMALL
+        odds_push = ODDS_PUSH
+        odds_loss = ODDS_LOSS
+
+        if int(plays) < 5 and int(pool_tokens) >= MIN_POOL_FOR_DOUBLE:
+            boost = min(FIRST_FIVE_PLAYS_DOUBLE_BOOST, odds_loss)
+            odds_double_jp += boost
+            odds_loss -= boost
+
         r = random.random()
-        if r < ODDS_JACKPOT:
+        if r < odds_jackpot:
             return "jackpot"
-        if r < ODDS_JACKPOT + ODDS_DOUBLE_JP:
+        if r < odds_jackpot + odds_double_jp:
             return "double_jp"
-        if r < ODDS_JACKPOT + ODDS_DOUBLE_JP + ODDS_TRIPLE:
+        if r < odds_jackpot + odds_double_jp + odds_triple:
             return "triple"
-        if r < ODDS_JACKPOT + ODDS_DOUBLE_JP + ODDS_TRIPLE + ODDS_SMALL:
+        if r < odds_jackpot + odds_double_jp + odds_triple + odds_small:
             return "small"
-        if r < ODDS_JACKPOT + ODDS_DOUBLE_JP + ODDS_TRIPLE + ODDS_SMALL + ODDS_PUSH:
+        if r < odds_jackpot + odds_double_jp + odds_triple + odds_small + odds_push:
             return "push"
         return "loss"
 
