@@ -372,9 +372,9 @@ def _render_window_from_offset(
     win_h: int,
 ) -> Image.Image:
     key = (id(strip_source), cell_h, win_w, win_h)
+    cycle_h = cell_h * CYCLE_LEN
     stacked = _STACKED_REEL_CACHE.get(key)
     if stacked is None:
-        cycle_h = cell_h * CYCLE_LEN
         scaled_strip = strip_source.resize((win_w, cycle_h), Image.Resampling.LANCZOS)
         stacked_h = max(cycle_h * 2, win_h + cell_h + 2)
         stacked = Image.new("RGBA", (win_w, stacked_h), (0, 0, 0, 0))
@@ -384,9 +384,9 @@ def _render_window_from_offset(
             y += cycle_h
         _STACKED_REEL_CACHE[key] = stacked
 
-    y0 = int(round(offset)) % cell_h
-    top = max(0, y0 - 1)
-    bottom = min(stacked.height, y0 + win_h + 1)
+    y0 = int(round(offset)) % cycle_h
+    top = y0
+    bottom = min(stacked.height, y0 + win_h)
     seg = stacked.crop((0, top, stacked.width, bottom))
     return seg.resize((win_w, win_h), Image.Resampling.LANCZOS)
 
