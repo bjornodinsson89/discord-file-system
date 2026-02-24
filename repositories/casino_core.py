@@ -11,6 +11,94 @@ from services.casino_core.locks import advisory_lock_for_wallet
 
 
 class CasinoCoreRepository(RepositoryBase):
+    async def get_or_create_retention_state(
+        self,
+        guild_id: int,
+        discord_id: int,
+        game: str,
+        *,
+        for_update: bool = False,
+        conn: asyncpg.Connection | None = None,
+    ) -> dict:
+        async def _run(db: asyncpg.Connection) -> dict:
+            lock_clause = " FOR UPDATE" if for_update else ""
+            row = await db.fetchrow(
+                f"""
+                SELECT *
+                FROM casino_player_retention
+                WHERE guild_id = $1 AND discord_id = $2 AND game = $3
+                {lock_clause}
+                """,
+                int(guild_id),
+                int(discord_id),
+                str(game),
+            )
+            if row:
+                return dict(row)
+
+            row = await db.fetchrow(
+                """
+                INSERT INTO casino_player_retention (guild_id, discord_id, game, plays, loss_streak)
+                VALUES ($1, $2, $3, 0, 0)
+                ON CONFLICT (guild_id, discord_id, game)
+                DO UPDATE SET updated_at = NOW()
+                RETURNING *
+                """,
+                int(guild_id),
+                int(discord_id),
+                str(game),
+            )
+            if for_update:
+                row = await db.fetchrow(
+                    """
+                    SELECT *
+                    FROM casino_player_retention
+                    WHERE guild_id = $1 AND discord_id = $2 AND game = $3
+                    FOR UPDATE
+                    """,
+                    int(guild_id),
+                    int(discord_id),
+                    str(game),
+                )
+            return dict(row)
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.acquire() as db:
+            return await _run(db)
+
+    async def update_retention_state(
+        self,
+        guild_id: int,
+        discord_id: int,
+        game: str,
+        plays: int,
+        loss_streak: int,
+        *,
+        conn: asyncpg.Connection | None = None,
+    ) -> None:
+        async def _run(db: asyncpg.Connection) -> None:
+            await db.execute(
+                """
+                UPDATE casino_player_retention
+                SET plays = $4,
+                    loss_streak = $5,
+                    updated_at = NOW()
+                WHERE guild_id = $1 AND discord_id = $2 AND game = $3
+                """,
+                int(guild_id),
+                int(discord_id),
+                str(game),
+                int(plays),
+                int(loss_streak),
+            )
+
+        if conn is not None:
+            await _run(conn)
+            return
+        async with self.acquire() as db:
+            await _run(db)
+
     async def create_round(
         self,
         conn: asyncpg.Connection,
