@@ -3,7 +3,6 @@ from __future__ import annotations
 from io import BytesIO
 import os
 from pathlib import Path
-import math
 
 from PIL import Image, ImageDraw
 
@@ -15,6 +14,7 @@ CUSTOM_STRIP_PATH = ROOT / "assets" / "slots" / "reel_strip.png"
 _FACE: Image.Image | None = None
 _REEL: Image.Image | None = None
 _CELL_H_RAW: int | None = None
+_STACKED_REEL_CACHE: dict[tuple[int, int, int, int], Image.Image] = {}
 _LAYOUT_CACHE: (
     tuple[
         Image.Image,
@@ -44,6 +44,13 @@ ENCODE_ATTEMPTS: list[tuple[int, int, int]] = [
     (800, 32, 96),
     (760, 28, 80),
     (720, 24, 72),
+]
+
+BASE_FACE_SIZE = (1438, 1988)
+BASE_REEL_BOXES = [
+    (128, 563, 472, 896),
+    (548, 563, 892, 896),
+    (958, 563, 1302, 896),
 ]
 
 
@@ -140,10 +147,36 @@ def detect_window_box(face: Image.Image) -> tuple[int, int, int, int]:
 
 
 def reset_slots_render_cache() -> None:
-    global _REEL, _CELL_H_RAW, _LAYOUT_CACHE
+    global _REEL, _CELL_H_RAW, _LAYOUT_CACHE, _STACKED_REEL_CACHE
     _REEL = None
     _CELL_H_RAW = None
     _LAYOUT_CACHE = None
+    _STACKED_REEL_CACHE = {}
+
+
+def _get_reel_boxes_for_face(face: Image.Image) -> list[tuple[int, int, int, int]]:
+    base_w, base_h = BASE_FACE_SIZE
+    face_w, face_h = face.size
+    sx = face_w / float(base_w)
+    sy = face_h / float(base_h)
+
+    scaled_boxes: list[tuple[int, int, int, int]] = []
+    for x0, y0, x1, y1 in BASE_REEL_BOXES:
+        bx0 = int(round(x0 * sx))
+        by0 = int(round(y0 * sy))
+        bx1 = int(round(x1 * sx))
+        by1 = int(round(y1 * sy))
+        scaled_boxes.append((bx0, by0, bx1, by1))
+
+    valid = True
+    for x0, y0, x1, y1 in scaled_boxes:
+        if x0 < 0 or y0 < 0 or x1 > face_w or y1 > face_h or x1 <= x0 or y1 <= y0:
+            valid = False
+            break
+
+    if valid:
+        return scaled_boxes
+    return _detect_reel_boxes(face)
 
 
 def _layout() -> tuple[
@@ -161,7 +194,7 @@ def _layout() -> tuple[
 
     face = _load_face()
     reel = _load_reel()
-    reel_boxes = _detect_reel_boxes(face)
+    reel_boxes = _get_reel_boxes_for_face(face)
 
     anchor_x0, anchor_y0, _, _ = reel_boxes[0]
     sample_x = min(face.width - 1, anchor_x0 + 10)
@@ -332,20 +365,20 @@ def _render_window_from_offset(
     win_w: int,
     win_h: int,
 ) -> Image.Image:
-    step = max(1, int(cell_h))
-    whole = math.floor(offset / step)
-    top_idx = int(whole) % CYCLE_LEN
-    frac = float(offset - (whole * step))
-    shift = int(round((frac / step) * win_h))
+    key = (id(strip_source), cell_h, win_w, win_h)
+    stacked = _STACKED_REEL_CACHE.get(key)
+    if stacked is None:
+        stacked = Image.new("RGBA", (win_w, win_h * (CYCLE_LEN + 1)), (0, 0, 0, 0))
+        for idx in range(CYCLE_LEN):
+            cell_img = _render_centered_cell_from_strip(strip_source, idx, cell_h, win_w, win_h)
+            stacked.paste(cell_img, (0, idx * win_h), cell_img)
+        first_cell = _render_centered_cell_from_strip(strip_source, 0, cell_h, win_w, win_h)
+        stacked.paste(first_cell, (0, CYCLE_LEN * win_h), first_cell)
+        _STACKED_REEL_CACHE[key] = stacked
 
-    top_cell = _render_centered_cell_from_strip(strip_source, top_idx, cell_h, win_w, win_h)
-    next_cell = _render_centered_cell_from_strip(
-        strip_source, (top_idx + 1) % CYCLE_LEN, cell_h, win_w, win_h
-    )
-    canvas = Image.new("RGBA", (win_w, win_h), (0, 0, 0, 0))
-    canvas.paste(top_cell, (0, -shift), top_cell)
-    canvas.paste(next_cell, (0, win_h - shift), next_cell)
-    return canvas
+    cycle_px = win_h * CYCLE_LEN
+    pos_px = int(round((offset / float(cell_h)) * win_h)) % cycle_px
+    return stacked.crop((0, pos_px, win_w, pos_px + win_h))
 
 
 def maybe_debug_stopped_segments(
