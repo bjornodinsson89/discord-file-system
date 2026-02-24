@@ -183,12 +183,12 @@ def _layout() -> tuple[
     return _LAYOUT_CACHE
 
 
-def _has_transparent_windows(face: Image.Image, reel_boxes: list[tuple[int, int, int, int]]) -> bool:
+def _has_transparent_windows(
+    face: Image.Image, reel_boxes: list[tuple[int, int, int, int]]
+) -> bool:
     alpha = face.getchannel("A")
     px = alpha.load()
     for x0, y0, x1, y1 in reel_boxes:
-        w = max(1, x1 - x0)
-        h = max(1, y1 - y0)
         transparent = 0
         total = 0
         for y in range(y0, y1):
