@@ -3722,7 +3722,7 @@ async def jump99k_edit(interaction: discord.Interaction, jump_id: int):
     await interaction.response.send_modal(Jump99kSessionModal(settings, session=session))
 
 
-@jump99k_group.command(name="list", description="List 99k sessions and readiness")
+@jump99k_group.command(name="list", description="List open 99k sessions")
 async def jump99k_list(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
@@ -3733,9 +3733,6 @@ async def jump99k_list(interaction: discord.Interaction):
         return
 
     summary_lines = []
-    host_viewable = False
-    if interaction.guild and isinstance(interaction.user, discord.Member):
-        host_viewable = await can_manage_99k_session(interaction, None)
     for session in sessions[:10]:
         signup_count = await repo.signup_count(int(session["id"]))
         scheduled = _format_session_start_ts(session, "F")
@@ -3749,27 +3746,11 @@ async def jump99k_list(interaction: discord.Interaction):
             f"Price: {price_amount} {price_item} • {join_help}"
         )
 
-    newest = sessions[0]
-    readiness_lines = []
-    if host_viewable:
-        readiness_rows = await repo.list_signups_with_readiness(int(newest["id"]))
-        for row in readiness_rows[:25]:
-            ready = int(row.get("energy") or 0) == 1000 and int(row.get("drug_cooldown") or 0) == 0
-            marker = "🟢" if ready else "🔴"
-            if row.get("overdose_flag"):
-                marker = f"{marker}🟠"
-            readiness_lines.append(
-                f"{marker} <@{row['discord_id']}> • E {row.get('energy') or 0}/{row.get('energy_max') or 0} • "
-                f"CD {row.get('drug_cooldown') or 0}s • {row.get('status_text') or 'unknown'}"
-            )
-
     description = "\n".join(summary_lines)
     if len(sessions) > 10:
         description += f"\n…and {len(sessions) - 10} more open session(s)."
 
     embed = create_info_embed("99k open sessions", description)
-    readiness_value = "\n".join(readiness_lines) if readiness_lines else ("No signups yet." if host_viewable else "Host-only readiness details.")
-    embed.add_field(name=f"Newest session readiness (#{newest['id']})", value=readiness_value, inline=False)
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
