@@ -39,6 +39,20 @@ class ApiAuditRepository(RepositoryBase):
         redacted = _KEY_PARAM_RE.sub("key=[REDACTED]", str(error_message))
         return redacted[:300]
 
+    @staticmethod
+    def _coerce_query_meta(value: Any) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
     async def insert_event(
         self,
         *,
@@ -129,7 +143,7 @@ class ApiAuditRepository(RepositoryBase):
                 context=str(row["context"]),
                 endpoint=str(row["endpoint"]),
                 selections=str(row["selections"]) if row["selections"] is not None else None,
-                query_meta=dict(row["query_meta"] or {}),
+                query_meta=self._coerce_query_meta(row["query_meta"]),
                 status=str(row["status"]),
                 http_status=int(row["http_status"]) if row["http_status"] is not None else None,
                 duration_ms=int(row["duration_ms"]) if row["duration_ms"] is not None else None,
@@ -139,4 +153,3 @@ class ApiAuditRepository(RepositoryBase):
             )
             for row in rows
         ]
-
