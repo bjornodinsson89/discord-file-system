@@ -22,23 +22,17 @@ def test_has_role_matches_member_roles() -> None:
 
 def test_can_manage_paid_raffles_allows_discord_admin() -> None:
     member = _Member([], administrator=True)
-    settings = {"admin_role_ids": [], "paid_raffle_admin_role_id": None}
+    settings = {"raffle_host_role_id": None}
     assert can_manage_paid_raffles(member, settings)
 
 
-def test_can_manage_paid_raffles_allows_configured_admin_role() -> None:
-    member = _Member([7001])
-    settings = {"admin_role_ids": [7001], "paid_raffle_admin_role_id": None}
-    assert can_manage_paid_raffles(member, settings)
-
-
-def test_can_manage_paid_raffles_allows_secondary_paid_raffle_role() -> None:
+def test_can_manage_paid_raffles_allows_configured_raffle_host_role() -> None:
     member = _Member([8002])
-    settings = {"admin_role_ids": [7001], "paid_raffle_admin_role_id": 8002}
+    settings = {"raffle_host_role_id": 8002}
     assert can_manage_paid_raffles(member, settings)
 
 
-def test_can_manage_paid_raffles_denies_member_with_neither_role() -> None:
+def test_can_manage_paid_raffles_denies_member_without_admin_or_host_role() -> None:
     member = _Member([9003])
-    settings = {"admin_role_ids": [7001], "paid_raffle_admin_role_id": 8002}
+    settings = {"raffle_host_role_id": 8002}
     assert not can_manage_paid_raffles(member, settings)
