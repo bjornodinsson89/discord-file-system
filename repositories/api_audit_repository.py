@@ -46,9 +46,12 @@ class ApiAuditRepository(RepositoryBase):
         if isinstance(value, dict):
             return value
         if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
             try:
-                parsed = json.loads(value)
-            except json.JSONDecodeError:
+                parsed = json.loads(stripped)
+            except Exception:
                 return {}
             return parsed if isinstance(parsed, dict) else {}
         return {}
