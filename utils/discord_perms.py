@@ -5,7 +5,6 @@ from typing import Any, Optional
 import discord
 
 
-
 GuildSettings = dict[str, Any]
 
 
@@ -32,9 +31,7 @@ def can_manage_paid_raffles(member: discord.Member, settings: GuildSettings) -> 
     raffle_host_role_id: Optional[int]
     try:
         raffle_host_role_id = (
-            int(raffle_host_role_id_raw)
-            if raffle_host_role_id_raw not in (None, "")
-            else None
+            int(raffle_host_role_id_raw) if raffle_host_role_id_raw not in (None, "") else None
         )
     except (TypeError, ValueError):
         raffle_host_role_id = None

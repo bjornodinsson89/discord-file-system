@@ -12,6 +12,6 @@ def test_coerce_query_meta_with_json_object_string() -> None:
 
 def test_coerce_query_meta_with_none_and_invalid_shapes() -> None:
     assert ApiAuditRepository._coerce_query_meta(None) == {}
-    assert ApiAuditRepository._coerce_query_meta('[1,2,3]') == {}
-    assert ApiAuditRepository._coerce_query_meta('not-json') == {}
+    assert ApiAuditRepository._coerce_query_meta("[1,2,3]") == {}
+    assert ApiAuditRepository._coerce_query_meta("not-json") == {}
     assert ApiAuditRepository._coerce_query_meta(("k", "v")) == {}
