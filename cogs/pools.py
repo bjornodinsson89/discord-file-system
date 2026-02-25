@@ -106,7 +106,12 @@ async def _build_pool_panel_embed(pool: dict, sold: int) -> discord.Embed:
     max_pool_total_display = "Unlimited" if is_unlimited else f"💊 {max_pool_total} Xanax ({tickets_total} tickets)"
     embed.add_field(name="Max Pool Total", value=max_pool_total_display, inline=True)
     if pool.get("end_draw_at"):
-        embed.add_field(name="Auto End", value=f"<t:{int(pool['end_draw_at'].timestamp())}:F>", inline=True)
+        try:
+            end_draw_at = pool["end_draw_at"]
+            unix_ts = int(end_draw_at.timestamp()) if isinstance(end_draw_at, datetime) else int(datetime.fromisoformat(str(end_draw_at)).timestamp())
+            embed.add_field(name="Auto End", value=f"<t:{unix_ts}:F>", inline=True)
+        except Exception:
+            embed.add_field(name="Auto End", value=str(pool.get("end_draw_at")), inline=True)
     embed.set_thumbnail(url=await _xanax_thumbnail_url())
     return embed
 
@@ -259,6 +264,185 @@ async def _resolve_pool_purchase_channel(
             )
 
     return target, None
+
+
+class PoolCreateModal(discord.ui.Modal):
+    ticket_price = discord.ui.TextInput(
+        label="Ticket price (Xanax)",
+        placeholder="5",
+        required=True,
+        max_length=6,
+    )
+    tickets_total = discord.ui.TextInput(
+        label="Tickets total (number OR UNLIMITED)",
+        placeholder="50  (or type UNLIMITED)",
+        required=True,
+        max_length=20,
+    )
+    max_per_user = discord.ui.TextInput(
+        label="Max per user (0 = unlimited)",
+        placeholder="1",
+        required=True,
+        max_length=4,
+    )
+    end_date = discord.ui.TextInput(
+        label="Auto End Date (optional MM/DD)",
+        placeholder="04/26",
+        required=False,
+        max_length=10,
+    )
+
+    def __init__(self, bot: commands.Bot):
+        super().__init__(title="💊 Create Xanax Pool")
+        self.bot = bot
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+            return
+
+        try:
+            raw_price = str(self.ticket_price.value or "").strip()
+            ticket_price = int(raw_price)
+        except Exception:
+            await interaction.response.send_message(
+                embed=create_error_embed("Invalid ticket price", "Ticket price must be a whole number (e.g. 5)."),
+                ephemeral=True,
+            )
+            return
+
+        if ticket_price < 1:
+            await interaction.response.send_message(
+                embed=create_error_embed("Invalid ticket price", "Ticket price must be 1 or greater."),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            raw_max = str(self.max_per_user.value or "").strip()
+            max_per_user = int(raw_max)
+        except Exception:
+            await interaction.response.send_message(
+                embed=create_error_embed("Invalid max per user", "Max per user must be a whole number (0 = unlimited)."),
+                ephemeral=True,
+            )
+            return
+
+        if max_per_user < 0:
+            await interaction.response.send_message(
+                embed=create_error_embed("Invalid max per user", "Max per user must be 0 or greater."),
+                ephemeral=True,
+            )
+            return
+
+        tickets_raw = str(self.tickets_total.value or "").strip()
+        tickets_norm = tickets_raw.lower().strip()
+        unlimited_tickets = False
+        tickets_total: int | None = None
+        if tickets_norm in {"unlimited", "inf", "infinite"}:
+            unlimited_tickets = True
+            tickets_total = None
+        else:
+            try:
+                tickets_val = int(tickets_raw)
+            except Exception:
+                await interaction.response.send_message(
+                    embed=create_error_embed(
+                        "Invalid tickets total",
+                        "Tickets total must be a number like `50` or the word `UNLIMITED` (no cap).",
+                    ),
+                    ephemeral=True,
+                )
+                return
+            if tickets_val < 1:
+                await interaction.response.send_message(
+                    embed=create_error_embed(
+                        "Invalid tickets total",
+                        "Tickets total must be 1 or greater, or type `UNLIMITED` for no cap.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+            unlimited_tickets = False
+            tickets_total = tickets_val
+
+        parsed_end_draw_at = None
+        end_date_raw = str(self.end_date.value or "").strip()
+        if end_date_raw:
+            try:
+                parsed_end_draw_at = _parse_mmdd_end_draw_at(end_date_raw)
+            except Exception:
+                await interaction.response.send_message(
+                    embed=create_error_embed("Invalid end date", "Use MM/DD (example: 04/26). Leave blank for no auto-end."),
+                    ephemeral=True,
+                )
+                return
+
+        repo = PoolsRepository(get_pool())
+        active = await repo.get_active_pool(interaction.guild_id)
+        if active:
+            await interaction.response.send_message("❌ There is already an active pool in this server.", ephemeral=True)
+            return
+
+        settings = await GuildSettingsRepository(get_database()).get_or_create(int(interaction.guild_id))
+        purchase_channel, purchase_channel_error = await _resolve_pool_purchase_channel(interaction, settings)
+        if purchase_channel is None or not hasattr(purchase_channel, "send"):
+            await interaction.response.send_message(purchase_channel_error or "❌ Unable to resolve Pools PURCHASE channel.", ephemeral=True)
+            return
+
+        announce_channel_id = settings.get("pools_post_channel_id") or settings.get("pool_channel_id")
+        guild = interaction.guild
+        announce_channel = guild.get_channel(int(announce_channel_id)) if (guild and announce_channel_id) else None
+        if announce_channel is None and guild and announce_channel_id:
+            try:
+                announce_channel = await guild.fetch_channel(int(announce_channel_id))
+            except Exception:
+                announce_channel = None
+
+        pool_id = await repo.create_pool(
+            guild_id=interaction.guild_id,
+            created_by_discord_id=interaction.user.id,
+            ticket_price_xanax=ticket_price,
+            tickets_total=tickets_total,
+            max_per_user=max_per_user,
+            announce_channel_id=int(announce_channel_id) if announce_channel_id else None,
+            panel_channel_id=int(purchase_channel.id),
+            unlimited_tickets=unlimited_tickets,
+            end_draw_at=parsed_end_draw_at,
+        )
+        pool = await repo.get_pool(pool_id)
+        panel_embed = await _build_pool_panel_embed(pool, sold=0)
+        panel_msg = await purchase_channel.send(embed=panel_embed, view=PoolPurchasePanelView(pool_id=pool_id))
+        await repo.set_panel_ref(pool_id, purchase_channel.id, panel_msg.id)
+
+        if bool(settings.get("raffle_announce_enabled", True)):
+            tickets_available_display = "Unlimited" if unlimited_tickets else str(tickets_total or 0)
+            if unlimited_tickets:
+                max_pool_total_display = "Unlimited"
+            else:
+                max_pool_total = int(ticket_price) * int(tickets_total or 0)
+                max_pool_total_display = f"💊 {max_pool_total} Xanax ({int(tickets_total or 0)} tickets)"
+            description = (
+                f"Price per ticket: **💊 {ticket_price} Xanax**\n"
+                f"Tickets available: **{tickets_available_display}**\n"
+                f"Max per user: **{'Unlimited' if max_per_user == 0 else max_per_user}**\n"
+                f"Max Pool Total: **{max_pool_total_display}**"
+            )
+            if parsed_end_draw_at is not None:
+                description += f"\nAuto End: **<t:{int(parsed_end_draw_at.timestamp())}:F>**"
+            announce_embed = discord.Embed(
+                title="💊 Xanax Pool Started",
+                description=description,
+                color=discord.Color.green(),
+            )
+            announce_embed.add_field(name="", value=f"👉 Purchase tickets in <#{int(purchase_channel.id)}>", inline=False)
+            if announce_channel is not None and hasattr(announce_channel, "send"):
+                await announce_channel.send(embed=announce_embed)
+
+        msg = f"✅ Xanax Pool purchase panel created in {purchase_channel.mention}.\n{panel_msg.jump_url}"
+        if purchase_channel_error:
+            msg = f"{msg}\n\n{purchase_channel_error}"
+        await interaction.response.send_message(msg, ephemeral=True)
 
 
 class PoolCustomQuantityModal(discord.ui.Modal):
@@ -581,92 +765,8 @@ class PoolsCog(commands.Cog):
 
     @app_commands.command(name="pool", description="Start a Xanax Pool (Admin only)")
     @app_commands.checks.has_permissions(administrator=True)
-    async def pool(
-        self,
-        interaction: discord.Interaction,
-        ticket_price: int,
-        tickets_total: int,
-        max_per_user: int,
-        unlimited_tickets: bool = False,
-        end_date: str = "",
-    ):
-        if ticket_price < 1 or max_per_user < 0:
-            await interaction.response.send_message("❌ Invalid values. ticket_price must be >=1 and max_per_user >=0.", ephemeral=True)
-            return
-        if not unlimited_tickets and tickets_total < 1:
-            await interaction.response.send_message("❌ Invalid values. tickets_total must be >=1 unless unlimited_tickets is enabled.", ephemeral=True)
-            return
-
-        parsed_end_draw_at = None
-        if end_date.strip():
-            try:
-                parsed_end_draw_at = _parse_mmdd_end_draw_at(end_date)
-            except ValueError:
-                await interaction.response.send_message("Invalid end_date. Use MM/DD (example: 3/15).", ephemeral=True)
-                return
-
-        repo = PoolsRepository(get_pool())
-        active = await repo.get_active_pool(interaction.guild_id)
-        if active:
-            await interaction.response.send_message("❌ There is already an active pool in this server.", ephemeral=True)
-            return
-
-        settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild_id)
-        purchase_channel, purchase_channel_error = await _resolve_pool_purchase_channel(interaction, settings)
-        if purchase_channel is None or not hasattr(purchase_channel, "send"):
-            await interaction.response.send_message(purchase_channel_error or "❌ Unable to resolve Pools PURCHASE channel.", ephemeral=True)
-            return
-
-        announce_channel_id = settings.get("pools_post_channel_id") or settings.get("pool_channel_id")
-        guild = interaction.guild
-        announce_channel = guild.get_channel(int(announce_channel_id)) if (guild and announce_channel_id) else None
-        if announce_channel is None and guild and announce_channel_id:
-            try:
-                announce_channel = await guild.fetch_channel(int(announce_channel_id))
-            except Exception:
-                announce_channel = None
-
-        pool_id = await repo.create_pool(
-            guild_id=interaction.guild_id,
-            created_by_discord_id=interaction.user.id,
-            ticket_price_xanax=ticket_price,
-            tickets_total=None if unlimited_tickets else tickets_total,
-            max_per_user=max_per_user,
-            announce_channel_id=int(announce_channel_id) if announce_channel_id else None,
-            panel_channel_id=int(purchase_channel.id),
-            unlimited_tickets=unlimited_tickets,
-            end_draw_at=parsed_end_draw_at,
-        )
-        pool = await repo.get_pool(pool_id)
-        panel_embed = await _build_pool_panel_embed(pool, sold=0)
-        panel_msg = await purchase_channel.send(embed=panel_embed, view=PoolPurchasePanelView(pool_id=pool_id))
-        await repo.set_panel_ref(pool_id, purchase_channel.id, panel_msg.id)
-
-        if bool(settings.get("raffle_announce_enabled", True)):
-            max_pool_total = int(ticket_price) * int(tickets_total)
-            tickets_available_display = "Unlimited" if unlimited_tickets else str(tickets_total)
-            max_pool_total_display = "Unlimited" if unlimited_tickets else f"💊 {max_pool_total} Xanax ({tickets_total} tickets)"
-            description = (
-                f"Price per ticket: **💊 {ticket_price} Xanax**\n"
-                f"Tickets available: **{tickets_available_display}**\n"
-                f"Max per user: **{'Unlimited' if max_per_user == 0 else max_per_user}**\n"
-                f"Max Pool Total: **{max_pool_total_display}**"
-            )
-            if parsed_end_draw_at is not None:
-                description += f"\nAuto End: **<t:{int(parsed_end_draw_at.timestamp())}:F>**"
-            announce_embed = discord.Embed(
-                title="💊 Xanax Pool Started",
-                description=description,
-                color=discord.Color.green(),
-            )
-            announce_embed.add_field(name="", value=f"👉 Purchase tickets in <#{int(purchase_channel.id)}>", inline=False)
-            if announce_channel is not None and hasattr(announce_channel, "send"):
-                await announce_channel.send(embed=announce_embed)
-
-        result_message = f"✅ Xanax Pool purchase panel created in {purchase_channel.mention}.\n{panel_msg.jump_url}"
-        if purchase_channel_error:
-            result_message = f"{result_message}\n\n{purchase_channel_error}"
-        await interaction.response.send_message(result_message, ephemeral=True)
+    async def pool(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(PoolCreateModal(self.bot))
 
     @app_commands.command(name="pool_list", description="List active Xanax Pools")
     async def pool_list(self, interaction: discord.Interaction):
