@@ -45,9 +45,6 @@ class CasinoDepositService:
             async with conn.transaction():
                 for log in logs:
                     data = log.get("data") or {}
-                    details = log.get("details") or {}
-                    if int(details.get("id") or 0) != 4102:
-                        continue
                     if int(data.get("receiver") or 0) != int(house["house_torn_id"]):
                         continue
                     qty = sum(int(it.get("qty") or 0) for it in (data.get("items") or []) if int(it.get("id") or 0) == 206)

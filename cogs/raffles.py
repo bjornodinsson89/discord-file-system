@@ -354,9 +354,6 @@ class RafflePrizeConfirmDMView(discord.ui.View):
         expected_map = {int(i["item_id"]): int(i["qty"]) for i in expected_items}
         matched = None
         for entry in logs:
-            details_id = _safe_int((entry.get("details") or {}).get("id"))
-            if details_id != 4102:
-                continue
             timestamp = _safe_int(entry.get("timestamp")) or 0
             if since_timestamp and timestamp < since_timestamp:
                 continue
@@ -1721,9 +1718,6 @@ class RafflesCog(commands.Cog):
 
         candidates = []
         for entry in logs:
-            details_id = _safe_int((entry.get("details") or {}).get("id"))
-            if details_id != 4102:
-                continue
             data = entry.get("data") or {}
             ts = _safe_int(entry.get("timestamp")) or 0
             if since_ts and ts < since_ts:

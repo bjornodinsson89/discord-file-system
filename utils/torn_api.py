@@ -231,10 +231,6 @@ class TornAPIClient:
         if payment_type != "item" or item_id is None:
             return False
 
-        details_id = (entry.get("details") or {}).get("id")
-        if details_id != 4102:
-            return False
-
         data = entry.get("data") or {}
         if int(data.get("receiver") or 0) != int(recipient_id):
             return False
@@ -354,14 +350,11 @@ class TornAPIClient:
                 continue
 
             data = entry.get("data") or {}
-            details = entry.get("details") or {}
             receiver = int(data.get("receiver") or 0)
             if receiver != int(recipient_torn_id):
                 continue
 
             if tax_type == "item":
-                if int(details.get("id") or 0) != 4102:
-                    continue
                 wanted_item = int(item_id or 0)
                 wanted_qty = int(quantity or 0)
                 if wanted_item not in (206, 366) or wanted_qty < 1:
@@ -371,7 +364,7 @@ class TornAPIClient:
                     for it in (data.get("items") or [])
                     if int(it.get("id") or 0) == wanted_item
                 )
-                if qty == wanted_qty:
+                if qty >= wanted_qty:
                     return entry
 
             if tax_type == "cash":
