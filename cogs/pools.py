@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 from datetime import datetime, timedelta, timezone
 
 import config
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from repositories.pools_repository import PoolsRepository
 from repositories.users import UsersRepository
@@ -24,7 +25,28 @@ XANAX_FALLBACK_ICON_URL = "https://www.torn.com/images/items/206/large.png"
 
 
 def _pool_remaining_tickets(pool: dict, sold: int) -> int:
-    return max(0, int(pool["tickets_total"]) - int(sold))
+    if bool(pool.get("unlimited_tickets")):
+        return 10**9
+    return max(0, int(pool.get("tickets_total") or 0) - int(sold))
+
+
+def _parse_mmdd_end_draw_at(mmdd: str) -> datetime:
+    match = re.fullmatch(r"\s*(\d{1,2})\s*/\s*(\d{1,2})\s*", mmdd or "")
+    if not match:
+        raise ValueError("Invalid MM/DD")
+
+    month = int(match.group(1))
+    day = int(match.group(2))
+    now = datetime.now(timezone.utc)
+
+    try:
+        candidate = datetime(now.year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise ValueError("Invalid MM/DD") from exc
+
+    if candidate <= now:
+        candidate = datetime(now.year + 1, month, day, 23, 59, 59, tzinfo=timezone.utc)
+    return candidate
 
 
 def _pool_max_buy_now(pool: dict, sold: int, user_tickets: int) -> int:
@@ -64,7 +86,8 @@ async def _resolve_torn_identity(discord_id: int) -> tuple[str, int, bool]:
 
 async def _build_pool_panel_embed(pool: dict, sold: int) -> discord.Embed:
     ticket_price = int(pool["ticket_price_xanax"])
-    tickets_total = int(pool["tickets_total"])
+    is_unlimited = bool(pool.get("unlimited_tickets"))
+    tickets_total = int(pool.get("tickets_total") or 0) if not is_unlimited else 0
     current_pool_total = int(sold) * ticket_price
     max_pool_total = ticket_price * tickets_total
     embed = discord.Embed(
@@ -73,10 +96,17 @@ async def _build_pool_panel_embed(pool: dict, sold: int) -> discord.Embed:
         color=discord.Color.blurple(),
     )
     embed.add_field(name="Price per ticket", value=f"💊 {ticket_price} Xanax", inline=True)
-    embed.add_field(name="Tickets available", value=str(max(0, int(pool["tickets_total"]) - int(sold))), inline=True)
+    embed.add_field(
+        name="Tickets available",
+        value="Unlimited" if is_unlimited else str(_pool_remaining_tickets(pool, sold)),
+        inline=True,
+    )
     embed.add_field(name="Max per user", value="Unlimited" if int(pool["max_per_user"]) == 0 else str(pool["max_per_user"]), inline=True)
     embed.add_field(name="Current Pool Total", value=f"💊 {current_pool_total} Xanax", inline=True)
-    embed.add_field(name="Max Pool Total", value=f"💊 {max_pool_total} Xanax ({tickets_total} tickets)", inline=True)
+    max_pool_total_display = "Unlimited" if is_unlimited else f"💊 {max_pool_total} Xanax ({tickets_total} tickets)"
+    embed.add_field(name="Max Pool Total", value=max_pool_total_display, inline=True)
+    if pool.get("end_draw_at"):
+        embed.add_field(name="Auto End", value=f"<t:{int(pool['end_draw_at'].timestamp())}:F>", inline=True)
     embed.set_thumbnail(url=await _xanax_thumbnail_url())
     return embed
 
@@ -104,6 +134,73 @@ async def _refresh_pool_panel_message(bot: commands.Bot, pool_id: int) -> None:
     sold = await repo.get_total_tickets(pool_id)
     embed = await _build_pool_panel_embed(pool, sold)
     await message.edit(embed=embed, view=PoolPurchasePanelView(pool_id=pool_id, disabled=(pool.get("status") != "active")))
+
+
+async def _end_pool_and_draw(bot: commands.Bot, guild_id: int, pool_id: int) -> bool:
+    repo = PoolsRepository(get_pool())
+    pool = await repo.get_pool(pool_id)
+    if not pool or pool.get("status") != "active":
+        return False
+
+    await repo.end_pool(pool_id)
+    ended_pool = await repo.get_pool(pool_id)
+
+    channel_id = (ended_pool or pool).get("panel_channel_id")
+    message_id = (ended_pool or pool).get("panel_message_id")
+    if channel_id and message_id:
+        channel = bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(int(channel_id))
+            except Exception:
+                channel = None
+        if channel is not None:
+            try:
+                message = await channel.fetch_message(int(message_id))
+                sold = await repo.get_total_tickets(pool_id)
+                embed = await _build_pool_panel_embed((ended_pool or pool), sold)
+                await message.edit(embed=embed, view=PoolPurchasePanelView(pool_id=pool_id, disabled=True))
+            except Exception:
+                log.warning("Failed disabling pool panel guild=%s pool_id=%s", guild_id, pool_id)
+
+    entries = await repo.list_entries(pool_id)
+    winner_id = None
+    total_tickets = 0
+    if entries:
+        total_tickets = sum(int(e.get("tickets", 0)) for e in entries)
+        if total_tickets > 0:
+            pick = random.randint(1, total_tickets)
+            cursor = 0
+            for entry in entries:
+                cursor += int(entry.get("tickets", 0))
+                if pick <= cursor:
+                    winner_id = int(entry["user_discord_id"])
+                    break
+
+    announce_channel = None
+    announce_channel_id = (ended_pool or pool).get("announce_channel_id")
+    if announce_channel_id:
+        guild = bot.get_guild(int(guild_id))
+        if guild is not None:
+            announce_channel = guild.get_channel(int(announce_channel_id))
+            if announce_channel is None:
+                try:
+                    announce_channel = await guild.fetch_channel(int(announce_channel_id))
+                except Exception:
+                    announce_channel = None
+
+    if announce_channel is not None:
+        if winner_id:
+            embed = discord.Embed(
+                title="💊 Xanax Pool Ended",
+                description=f"🏆 Winner: <@{winner_id}>\n🎟️ Total tickets: **{total_tickets}**",
+                color=discord.Color.gold(),
+            )
+        else:
+            embed = create_error_embed("Xanax Pool Ended", "No valid entries were found, so no winner was drawn.")
+        await announce_channel.send(embed=embed)
+
+    return True
 
 
 def _pool_channel_missing_permissions(channel: discord.abc.GuildChannel, me: discord.Member) -> list[str]:
@@ -364,7 +461,8 @@ async def _start_pool_purchase(
         quantity = max_buy
 
     ticket_price = int(pool["ticket_price_xanax"])
-    tickets_total = int(pool["tickets_total"])
+    is_unlimited = bool(pool.get("unlimited_tickets"))
+    tickets_total = int(pool.get("tickets_total") or 0) if not is_unlimited else 0
     max_pool_total = ticket_price * tickets_total
     total_cost = quantity * ticket_price
     try:
@@ -379,12 +477,13 @@ async def _start_pool_purchase(
             f"Send 💊 {total_cost} Xanax to {creator_name} [{creator_torn_id}] in Torn, then click **Verify Payment**."
         )
 
+    max_pool_total_display = "Unlimited" if is_unlimited else f"💊 {max_pool_total} Xanax ({tickets_total} tickets)"
     embed = discord.Embed(
         title="💊 Pool Tickets Reserved",
         description=(
             f"🎟️ **Tickets:** {quantity}\n"
             f"💰 **Total:** 💊 {total_cost} Xanax\n"
-            f"🏦 **Max Pool Total:** 💊 {max_pool_total} Xanax ({tickets_total} tickets)\n\n"
+            f"🏦 **Max Pool Total:** {max_pool_total_display}\n\n"
             + payment_line
         ),
         color=discord.Color.blue(),
@@ -455,16 +554,56 @@ class PoolPurchasePanelView(discord.ui.View):
 class PoolsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.pool_end_draw_worker.start()
 
     async def cog_load(self):
         return
 
+    def cog_unload(self):
+        self.pool_end_draw_worker.cancel()
+
+    @tasks.loop(seconds=30)
+    async def pool_end_draw_worker(self):
+        try:
+            repo = PoolsRepository(get_pool())
+            due_pools = await repo.list_due_pools()
+            for pool in due_pools:
+                try:
+                    await _end_pool_and_draw(self.bot, int(pool["guild_id"]), int(pool["id"]))
+                except Exception:
+                    log.exception("Failed auto-ending Xanax pool guild=%s pool_id=%s", pool.get("guild_id"), pool.get("id"))
+        except Exception:
+            log.exception("Failed polling due Xanax pools")
+
+    @pool_end_draw_worker.before_loop
+    async def before_pool_end_draw_worker(self):
+        await self.bot.wait_until_ready()
+
     @app_commands.command(name="pool", description="Start a Xanax Pool (Admin only)")
     @app_commands.checks.has_permissions(administrator=True)
-    async def pool(self, interaction: discord.Interaction, ticket_price: int, tickets_total: int, max_per_user: int):
-        if ticket_price < 1 or tickets_total < 1 or max_per_user < 0:
-            await interaction.response.send_message("❌ Invalid values. ticket_price/tickets_total must be >=1, max_per_user >=0.", ephemeral=True)
+    async def pool(
+        self,
+        interaction: discord.Interaction,
+        ticket_price: int,
+        tickets_total: int,
+        max_per_user: int,
+        unlimited_tickets: bool = False,
+        end_date: str = "",
+    ):
+        if ticket_price < 1 or max_per_user < 0:
+            await interaction.response.send_message("❌ Invalid values. ticket_price must be >=1 and max_per_user >=0.", ephemeral=True)
             return
+        if not unlimited_tickets and tickets_total < 1:
+            await interaction.response.send_message("❌ Invalid values. tickets_total must be >=1 unless unlimited_tickets is enabled.", ephemeral=True)
+            return
+
+        parsed_end_draw_at = None
+        if end_date.strip():
+            try:
+                parsed_end_draw_at = _parse_mmdd_end_draw_at(end_date)
+            except ValueError:
+                await interaction.response.send_message("Invalid end_date. Use MM/DD (example: 3/15).", ephemeral=True)
+                return
 
         repo = PoolsRepository(get_pool())
         active = await repo.get_active_pool(interaction.guild_id)
@@ -491,10 +630,12 @@ class PoolsCog(commands.Cog):
             guild_id=interaction.guild_id,
             created_by_discord_id=interaction.user.id,
             ticket_price_xanax=ticket_price,
-            tickets_total=tickets_total,
+            tickets_total=None if unlimited_tickets else tickets_total,
             max_per_user=max_per_user,
-            announce_channel_id=int(announce_channel_id),
+            announce_channel_id=int(announce_channel_id) if announce_channel_id else None,
             panel_channel_id=int(purchase_channel.id),
+            unlimited_tickets=unlimited_tickets,
+            end_draw_at=parsed_end_draw_at,
         )
         pool = await repo.get_pool(pool_id)
         panel_embed = await _build_pool_panel_embed(pool, sold=0)
@@ -503,14 +644,19 @@ class PoolsCog(commands.Cog):
 
         if bool(settings.get("raffle_announce_enabled", True)):
             max_pool_total = int(ticket_price) * int(tickets_total)
+            tickets_available_display = "Unlimited" if unlimited_tickets else str(tickets_total)
+            max_pool_total_display = "Unlimited" if unlimited_tickets else f"💊 {max_pool_total} Xanax ({tickets_total} tickets)"
+            description = (
+                f"Price per ticket: **💊 {ticket_price} Xanax**\n"
+                f"Tickets available: **{tickets_available_display}**\n"
+                f"Max per user: **{'Unlimited' if max_per_user == 0 else max_per_user}**\n"
+                f"Max Pool Total: **{max_pool_total_display}**"
+            )
+            if parsed_end_draw_at is not None:
+                description += f"\nAuto End: **<t:{int(parsed_end_draw_at.timestamp())}:F>**"
             announce_embed = discord.Embed(
                 title="💊 Xanax Pool Started",
-                description=(
-                    f"Price per ticket: **💊 {ticket_price} Xanax**\n"
-                    f"Tickets available: **{tickets_total}**\n"
-                    f"Max per user: **{'Unlimited' if max_per_user == 0 else max_per_user}**\n"
-                    f"Max Pool Total: **💊 {max_pool_total} Xanax ({tickets_total} tickets)**"
-                ),
+                description=description,
                 color=discord.Color.green(),
             )
             announce_embed.add_field(name="", value=f"👉 Purchase tickets in <#{int(purchase_channel.id)}>", inline=False)
@@ -521,7 +667,6 @@ class PoolsCog(commands.Cog):
         if purchase_channel_error:
             result_message = f"{result_message}\n\n{purchase_channel_error}"
         await interaction.response.send_message(result_message, ephemeral=True)
-
 
     @app_commands.command(name="pool_list", description="List active Xanax Pools")
     async def pool_list(self, interaction: discord.Interaction):
@@ -545,9 +690,9 @@ class PoolsCog(commands.Cog):
         for pool in pools:
             pool_id = int(pool["id"])
             sold = await repo.get_total_tickets(pool_id)
-            tickets_total = int(pool["tickets_total"])
+            is_unlimited = bool(pool.get("unlimited_tickets"))
+            tickets_total = int(pool.get("tickets_total") or 0) if not is_unlimited else 0
             ticket_price_xanax = int(pool["ticket_price_xanax"])
-            remaining = max(0, tickets_total - sold)
             total_xanax = sold * ticket_price_xanax
             max_per_user = int(pool.get("max_per_user") or 0)
             max_per_user_display = "Unlimited" if max_per_user == 0 else str(max_per_user)
@@ -562,13 +707,20 @@ class PoolsCog(commands.Cog):
             else:
                 panel_display = "Not posted"
 
+            sold_total_display = f"{sold}/Unlimited" if is_unlimited else f"{sold}/{tickets_total}"
+            remaining_display = "Unlimited" if is_unlimited else str(_pool_remaining_tickets(pool, sold))
+            auto_end_display = (
+                f"<t:{int(pool['end_draw_at'].timestamp())}:F>" if pool.get("end_draw_at") else "Not set"
+            )
+
             embed.add_field(
                 name=f"Pool #{pool_id}",
                 value=(
                     f"Price: 💊 {ticket_price_xanax} Xanax\n"
-                    f"Sold/Total: {sold}/{tickets_total} (Remaining: {remaining})\n"
+                    f"Sold/Total: {sold_total_display} (Remaining: {remaining_display})\n"
                     f"Pool Total: {total_xanax} Xanax\n"
                     f"Max per user: {max_per_user_display}\n"
+                    f"Auto End: {auto_end_display}\n"
                     f"Panel: {panel_display}"
                 ),
                 inline=False,
@@ -585,62 +737,7 @@ class PoolsCog(commands.Cog):
             await interaction.response.send_message("❌ No active pool found.", ephemeral=True)
             return
 
-        await repo.end_pool(int(pool["id"]))
-
-        channel_id = pool.get("panel_channel_id")
-        message_id = pool.get("panel_message_id")
-        if channel_id and message_id:
-            channel = interaction.guild.get_channel(int(channel_id)) if interaction.guild else None
-            if channel is None and interaction.guild:
-                try:
-                    channel = await interaction.guild.fetch_channel(int(channel_id))
-                except Exception:
-                    channel = None
-            if channel is not None:
-                try:
-                    message = await channel.fetch_message(int(message_id))
-                    sold = await repo.get_total_tickets(int(pool["id"]))
-                    ended_pool = await repo.get_pool(int(pool["id"]))
-                    embed = await _build_pool_panel_embed(ended_pool, sold)
-                    await message.edit(embed=embed, view=PoolPurchasePanelView(pool_id=int(pool["id"]), disabled=True))
-                except Exception:
-                    log.warning("Failed disabling pool panel guild=%s pool_id=%s", interaction.guild_id, pool["id"])
-
-        entries = await repo.list_entries(int(pool["id"]))
-        winner_id = None
-        total_tickets = 0
-        if entries:
-            total_tickets = sum(int(e.get("tickets", 0)) for e in entries)
-            if total_tickets > 0:
-                pick = random.randint(1, total_tickets)
-                cursor = 0
-                for entry in entries:
-                    cursor += int(entry.get("tickets", 0))
-                    if pick <= cursor:
-                        winner_id = int(entry["user_discord_id"])
-                        break
-
-        announce_channel = None
-        announce_channel_id = pool.get("announce_channel_id")
-        if announce_channel_id and interaction.guild:
-            announce_channel = interaction.guild.get_channel(int(announce_channel_id))
-            if announce_channel is None:
-                try:
-                    announce_channel = await interaction.guild.fetch_channel(int(announce_channel_id))
-                except Exception:
-                    announce_channel = None
-
-        if announce_channel is not None:
-            if winner_id:
-                embed = discord.Embed(
-                    title="💊 Xanax Pool Ended",
-                    description=f"🏆 Winner: <@{winner_id}>\n🎟️ Total tickets: **{total_tickets}**",
-                    color=discord.Color.gold(),
-                )
-            else:
-                embed = create_error_embed("Xanax Pool Ended", "No valid entries were found, so no winner was drawn.")
-            await announce_channel.send(embed=embed)
-
+        await _end_pool_and_draw(self.bot, int(interaction.guild_id), int(pool["id"]))
         await interaction.response.send_message("✅ Active pool ended.", ephemeral=True)
 
 

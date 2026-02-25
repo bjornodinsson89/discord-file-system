@@ -9,10 +9,12 @@ class PoolsRepository(RepositoryBase):
         guild_id: int,
         created_by_discord_id: int,
         ticket_price_xanax: int,
-        tickets_total: int,
+        tickets_total: int | None,
         max_per_user: int,
         announce_channel_id: int | None,
         panel_channel_id: int | None,
+        unlimited_tickets: bool = False,
+        end_draw_at=None,
     ) -> int:
         async with self.acquire() as conn:
             row = await conn.fetchrow(
@@ -25,8 +27,10 @@ class PoolsRepository(RepositoryBase):
                     tickets_total,
                     max_per_user,
                     announce_channel_id,
-                    panel_channel_id
-                ) VALUES ($1, $2, 'active', $3, $4, $5, $6, $7)
+                    panel_channel_id,
+                    unlimited_tickets,
+                    end_draw_at
+                ) VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, $9)
                 RETURNING id
                 """,
                 guild_id,
@@ -36,6 +40,8 @@ class PoolsRepository(RepositoryBase):
                 max_per_user,
                 announce_channel_id,
                 panel_channel_id,
+                unlimited_tickets,
+                end_draw_at,
             )
         return int(row["id"])
 
@@ -59,12 +65,26 @@ class PoolsRepository(RepositoryBase):
             rows = await conn.fetch(
                 """
                 SELECT id, created_by_discord_id, ticket_price_xanax, tickets_total, max_per_user,
-                       panel_channel_id, panel_message_id, created_at
+                       panel_channel_id, panel_message_id, created_at, unlimited_tickets, end_draw_at
                 FROM xanax_pools
                 WHERE guild_id = $1 AND status = 'active'
                 ORDER BY created_at DESC
                 """,
                 guild_id,
+            )
+        return [dict(row) for row in rows]
+
+    async def list_due_pools(self) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM xanax_pools
+                WHERE status = 'active'
+                  AND end_draw_at IS NOT NULL
+                  AND end_draw_at <= NOW()
+                ORDER BY end_draw_at ASC, id ASC
+                """
             )
         return [dict(row) for row in rows]
 
