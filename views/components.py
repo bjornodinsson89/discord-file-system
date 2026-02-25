@@ -78,7 +78,11 @@ class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
             api_key = self.api_key.value.strip()
 
             torn_api = get_torn_api()
-            discord_id_api, torn_id, torn_name, _perms = await torn_api.validate_api_key(api_key)
+            discord_id_api, torn_id, torn_name, _perms = await torn_api.validate_api_key(
+                api_key,
+                audit_discord_id=int(interaction.user.id),
+                audit_context="api_key_check",
+            )
 
             if discord_id_api != interaction.user.id:
                 await interaction.followup.send(embed=create_error_embed(
@@ -1425,7 +1429,12 @@ class ClaimManageView(ui.View):
             torn_api = get_torn_api()
 
             candidate_logs = await torn_api.get_item_send_receive_logs(
-                api_key, limit=config.PAYMENT_VERIFICATION_LOG_LIMIT
+                api_key,
+                limit=config.PAYMENT_VERIFICATION_LOG_LIMIT,
+                audit_discord_id=int(interaction.user.id),
+                audit_torn_id=int(key_data.get("torn_user_id") or 0) or None,
+                audit_context="payment_verify_logs",
+                audit_query_meta={"cat": 85, "limit": int(config.PAYMENT_VERIFICATION_LOG_LIMIT)},
             )
 
             resolver = ItemResolver(db.pool)
@@ -2032,7 +2041,13 @@ async def refresh_session_readiness(session_id: int):
                 api_key = security.decrypt(key_data['encrypted_key'])
                 torn_api = get_torn_api()
                 
-                user_data = await torn_api.get_user_data(api_key)
+                user_data = await torn_api.get_user_data(
+                    api_key,
+                    audit_discord_id=int(signup["discord_id"]),
+                    audit_torn_id=int(key_data.get("torn_user_id") or 0) or None,
+                    audit_context="jump_readiness",
+                    audit_query_meta={},
+                )
                 energy_current = int(user_data.get('bars', {}).get('energy', {}).get('current', 0) or 0)
                 energy_max = int(user_data.get('bars', {}).get('energy', {}).get('maximum', 0) or 0)
                 drug_cd = int(user_data.get('cooldowns', {}).get('drug', 0) or 0)
