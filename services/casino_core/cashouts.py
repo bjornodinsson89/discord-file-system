@@ -109,9 +109,6 @@ class CasinoCashoutService:
                 match = None
                 for log in logs:
                     data = log.get("data") or {}
-                    details = log.get("details") or {}
-                    if int(details.get("id") or 0) != 4102:
-                        continue
                     if int(data.get("sender") or data.get("user") or 0) != int(house["house_torn_id"]):
                         continue
                     if int(data.get("receiver") or 0) != int(wallet.get("torn_user_id") or 0):

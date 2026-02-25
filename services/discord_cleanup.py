@@ -13,6 +13,16 @@ def _missing_perms(perms: list[str]) -> str:
     return f"missing_perms:{'/'.join(perms)}" if perms else "missing_perms"
 
 
+async def _delete_compat(obj: object, *, reason: str) -> None:
+    delete = getattr(obj, "delete", None)
+    if not callable(delete):
+        raise TypeError(f"Object {type(obj).__name__} has no callable delete()")
+    try:
+        await delete(reason=reason)
+    except TypeError:
+        await delete()
+
+
 async def _resolve_channel(guild: discord.Guild, channel_id: int):
     channel = guild.get_channel(int(channel_id))
     if channel is not None:
@@ -65,7 +75,7 @@ async def delete_message_safe(guild: discord.Guild, channel_id: int | None, mess
                 return False, status
 
         msg = await fetch_message(int(message_id))
-        await msg.delete(reason=reason)
+        await _delete_compat(msg, reason=reason)
         log_event(log, logging.INFO, "cleanup.delete_message", result="ok", channel_id=channel_id, message_id=message_id, **fields)
         return True, "ok"
     except discord.NotFound:
@@ -107,7 +117,7 @@ async def delete_channel_safe(guild: discord.Guild, channel_id: int | None, reas
                 status = _missing_perms(missing)
                 log_event(log, logging.WARNING, "cleanup.delete_channel", result=status, channel_id=channel_id, **fields)
                 return False, status
-        await channel.delete(reason=reason)
+        await _delete_compat(channel, reason=reason)
         log_event(log, logging.INFO, "cleanup.delete_channel", result="ok", channel_id=channel_id, **fields)
         return True, "ok"
     except discord.NotFound:

@@ -932,6 +932,14 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     if isinstance(root_error, CommandAccessError):
         await _send_interaction_error(interaction, root_error.user_message)
         return
+    if isinstance(root_error, app_commands.MissingPermissions):
+        missing = ", ".join(root_error.missing_permissions) if root_error.missing_permissions else "required permissions"
+        await _send_interaction_error(interaction, f"You are missing permissions to use this command: {missing}.")
+        return
+    if isinstance(root_error, app_commands.BotMissingPermissions):
+        missing = ", ".join(root_error.missing_permissions) if root_error.missing_permissions else "required permissions"
+        await _send_interaction_error(interaction, f"I am missing permissions to complete this command: {missing}.")
+        return
     if isinstance(root_error, DatabaseAcquireTimeoutError):
         log_event(
             log,

@@ -91,13 +91,21 @@ class RafflePaymentService:
             return False, None, "Invalid payment type configured for this raffle."
 
         created_at = entry.get("created_at")
-        since_dt = (created_at - timedelta(seconds=30)) if created_at else datetime.utcnow() - timedelta(minutes=10)
+        if created_at:
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            since_dt = created_at - timedelta(minutes=3)
+        else:
+            since_dt = datetime.utcnow() - timedelta(minutes=10)
         since_ts = int(since_dt.replace(tzinfo=timezone.utc).timestamp())
 
         # Soft window to avoid matching historical sends.
         until_ts = None
         if reserved_until:
-            until_ts = int((reserved_until + timedelta(minutes=2)).replace(tzinfo=timezone.utc).timestamp())
+            if reserved_until.tzinfo is None:
+                reserved_until = reserved_until.replace(tzinfo=timezone.utc)
+            until_dt = reserved_until + timedelta(minutes=2)
+            until_ts = int(until_dt.replace(tzinfo=timezone.utc).timestamp())
 
         match = self._find_matching_payment(
             logs=logs,
@@ -151,14 +159,14 @@ class RafflePaymentService:
         _ = sender_torn_id
 
         for entry in logs:
-            ts = int(entry.get("timestamp") or 0)
+            raw_ts = entry.get("timestamp")
+            try:
+                ts = int(raw_ts or 0)
+            except (TypeError, ValueError):
+                continue
             if ts < since_ts:
                 continue
             if until_ts is not None and ts > until_ts:
-                continue
-
-            details_id = (entry.get("details") or {}).get("id")
-            if details_id != 4102:
                 continue
 
             data = entry.get("data") or {}

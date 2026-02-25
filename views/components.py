@@ -936,14 +936,11 @@ def _extract_log_id(log_entry: Dict) -> Optional[int]:
 
 
 def _extract_counterparty_torn_id(log_entry: Dict) -> Optional[int]:
-    details_id = (log_entry.get("details") or {}).get("id")
     data = log_entry.get("data") or {}
-    if details_id == 4102:
-        value = data.get("receiver")
-        return int(value) if isinstance(value, (int, str)) and str(value).isdigit() else None
-    if details_id == 4103:
-        value = data.get("sender")
-        return int(value) if isinstance(value, (int, str)) and str(value).isdigit() else None
+    for key in ("receiver", "sender"):
+        value = data.get(key)
+        if isinstance(value, (int, str)) and str(value).isdigit():
+            return int(value)
     return None
 
 
@@ -1452,10 +1449,6 @@ class ClaimManageView(ui.View):
             recipient_torn_id = int(claim['user_torn_id'])
             matched_log = None
             for entry in candidate_logs:
-                details_id = (entry.get("details") or {}).get("id")
-                if details_id != 4102:
-                    continue
-
                 counterparty = _extract_counterparty_torn_id(entry)
                 if counterparty != recipient_torn_id:
                     continue
