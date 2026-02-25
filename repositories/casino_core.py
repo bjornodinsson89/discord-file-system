@@ -172,6 +172,15 @@ class CasinoCoreRepository(RepositoryBase):
             row = await conn.fetchrow("SELECT * FROM casino_wallets WHERE id = $1", int(wallet_id))
             return dict(row) if row else None
 
+    async def get_wallet_by_id_for_guild(self, guild_id: int, wallet_id: int) -> dict | None:
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM casino_wallets WHERE id = $1 AND guild_id = $2",
+                int(wallet_id),
+                int(guild_id),
+            )
+            return dict(row) if row else None
+
     async def apply_ledger_entry_atomic(
         self,
         conn: asyncpg.Connection,
@@ -205,11 +214,15 @@ class CasinoCoreRepository(RepositoryBase):
                 SET balance_tokens = $1,
                     updated_at = NOW()
                 WHERE id = $2
+                  AND guild_id = $3
                 RETURNING *
                 """,
                 next_balance,
                 int(wallet_id),
+                int(guild_id),
             )
+            if not updated_wallet:
+                raise ValueError("Wallet update failed (guild mismatch)")
             await conn.execute(
                 """
                 INSERT INTO casino_ledger (
@@ -229,7 +242,11 @@ class CasinoCoreRepository(RepositoryBase):
             )
             return dict(updated_wallet)
         except asyncpg.UniqueViolationError:
-            unchanged = await conn.fetchrow("SELECT * FROM casino_wallets WHERE id = $1", int(wallet_id))
+            unchanged = await conn.fetchrow(
+                "SELECT * FROM casino_wallets WHERE id = $1 AND guild_id = $2",
+                int(wallet_id),
+                int(guild_id),
+            )
             return dict(unchanged)
 
     async def insert_deposit_if_new(
@@ -511,7 +528,7 @@ class CasinoCoreRepository(RepositoryBase):
                 f"""
                 SELECT l.*, w.discord_id, w.torn_user_id, w.torn_name
                 FROM casino_ledger l
-                JOIN casino_wallets w ON w.id = l.wallet_id
+                JOIN casino_wallets w ON w.id = l.wallet_id AND w.guild_id = l.guild_id
                 WHERE {' AND '.join(clauses)}
                 ORDER BY l.created_at DESC
                 LIMIT ${n} OFFSET ${n+1}

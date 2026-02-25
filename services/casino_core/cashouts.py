@@ -96,7 +96,9 @@ class CasinoCashoutService:
                 cashout = await self.repo.fetch_cashout(conn, guild_id=guild_id, cashout_id=cashout_id)
                 if not cashout or cashout.get("status") != "requested":
                     return False
-                wallet = await self.repo.get_wallet_by_id(int(cashout["wallet_id"]))
+                wallet = await self.repo.get_wallet_by_id_for_guild(int(guild_id), int(cashout["wallet_id"]))
+                if not wallet:
+                    raise ValueError("Cashout wallet not found for guild")
                 requested_at_ts = int(cashout["requested_at"].astimezone(timezone.utc).timestamp())
                 logs = []
                 log_fetch_failed = False
