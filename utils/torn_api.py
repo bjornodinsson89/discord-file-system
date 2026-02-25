@@ -6,9 +6,10 @@ import time
 import json
 import logging
 import socket
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from collections import deque
 import config
+from repositories.api_audit_repository import ApiAuditRepository
 
 log = logging.getLogger("happy_jumper.torn_api")
 
@@ -73,7 +74,59 @@ class TornAPIClient:
         if self.session and not self.session.closed:
             await self.session.close()
 
-    async def _request(self, path: str, params: Dict) -> Dict:
+    async def _emit_audit_event(
+        self,
+        *,
+        discord_id: Optional[int],
+        torn_id: Optional[int],
+        context: Optional[str],
+        endpoint: str,
+        selections: Optional[str],
+        query_meta: dict[str, Any],
+        status: str,
+        http_status: Optional[int],
+        duration_ms: int,
+        error_code: Optional[str],
+        error_message: Optional[str],
+    ) -> None:
+        if not context or discord_id is None:
+            return
+        try:
+            from utils.database import get_pool
+
+            await ApiAuditRepository(get_pool()).insert_event(
+                discord_id=int(discord_id),
+                torn_id=torn_id,
+                context=context,
+                endpoint=endpoint,
+                selections=selections,
+                query_meta=query_meta,
+                status="ok" if status == "ok" else "error",
+                http_status=http_status,
+                duration_ms=duration_ms,
+                error_code=error_code,
+                error_message=error_message,
+            )
+        except Exception:
+            log.debug(
+                "API audit side-effect failed discord_id=%s context=%s",
+                discord_id,
+                context,
+                exc_info=True,
+            )
+
+    async def _request(
+        self,
+        path: str,
+        params: Dict,
+        *,
+        audit_discord_id: Optional[int] = None,
+        audit_torn_id: Optional[int] = None,
+        audit_context: Optional[str] = None,
+        audit_endpoint: Optional[str] = None,
+        audit_selections: Optional[str] = None,
+        audit_query_meta: Optional[dict[str, Any]] = None,
+    ) -> Dict:
         if path.startswith("/v1") or "/v1" in path:
             raise TornAPIError("Torn API v1 endpoints are not allowed")
         if path.startswith("/v2"):
@@ -86,6 +139,12 @@ class TornAPIClient:
         timeout = aiohttp.ClientTimeout(total=60, connect=15, sock_connect=15, sock_read=45)
         backoffs = [0.5, 1.0, 2.0]
         attempts = len(backoffs)
+        endpoint = audit_endpoint or path
+        selections = audit_selections
+        if selections is None:
+            raw_sel = params.get("selections")
+            selections = str(raw_sel) if raw_sel not in (None, "") else None
+        query_meta = dict(audit_query_meta or {})
 
         for attempt in range(1, attempts + 1):
             started = time.perf_counter()
@@ -125,10 +184,49 @@ class TornAPIClient:
                             else str(error)
                         )
                         if "rate limit" in msg.lower():
+                            await self._emit_audit_event(
+                                discord_id=audit_discord_id,
+                                torn_id=audit_torn_id,
+                                context=audit_context,
+                                endpoint=endpoint,
+                                selections=selections,
+                                query_meta=query_meta,
+                                status="error",
+                                http_status=resp.status,
+                                duration_ms=max(0, int(round(elapsed * 1000))),
+                                error_code="TornAPIRateLimitError",
+                                error_message=msg,
+                            )
                             raise TornAPIRateLimitError(msg)
                         elif "permission" in msg.lower() or "access" in msg.lower():
+                            await self._emit_audit_event(
+                                discord_id=audit_discord_id,
+                                torn_id=audit_torn_id,
+                                context=audit_context,
+                                endpoint=endpoint,
+                                selections=selections,
+                                query_meta=query_meta,
+                                status="error",
+                                http_status=resp.status,
+                                duration_ms=max(0, int(round(elapsed * 1000))),
+                                error_code="TornAPIPermissionError",
+                                error_message=msg,
+                            )
                             raise TornAPIPermissionError(msg)
                         raise TornAPIError(msg)
+                    await self._emit_audit_event(
+                        discord_id=audit_discord_id,
+                        torn_id=audit_torn_id,
+                        context=audit_context,
+                        endpoint=endpoint,
+                        selections=selections,
+                        query_meta=query_meta,
+                        status="ok",
+                        http_status=resp.status,
+                        duration_ms=max(0, int(round(elapsed * 1000))),
+                        error_code=None,
+                        error_message=None,
+                    )
                     return data
             except TornAPIRateLimitError:
                 raise
@@ -144,6 +242,19 @@ class TornAPIClient:
                     exc,
                 )
                 if attempt == attempts:
+                    await self._emit_audit_event(
+                        discord_id=audit_discord_id,
+                        torn_id=audit_torn_id,
+                        context=audit_context,
+                        endpoint=endpoint,
+                        selections=selections,
+                        query_meta=query_meta,
+                        status="error",
+                        http_status=None,
+                        duration_ms=max(0, int(round(elapsed * 1000))),
+                        error_code=type(exc).__name__,
+                        error_message=str(exc),
+                    )
                     if isinstance(exc, asyncio.TimeoutError):
                         log.exception("Torn API request timed out after retries: path=%s", path)
                         raise TornAPIError("Request timed out")
@@ -152,6 +263,20 @@ class TornAPIClient:
                 await asyncio.sleep(backoffs[attempt - 1])
             except TornAPIError as exc:
                 if attempt == attempts:
+                    duration_ms = max(0, int(round((time.perf_counter() - started) * 1000)))
+                    await self._emit_audit_event(
+                        discord_id=audit_discord_id,
+                        torn_id=audit_torn_id,
+                        context=audit_context,
+                        endpoint=endpoint,
+                        selections=selections,
+                        query_meta=query_meta,
+                        status="error",
+                        http_status=None,
+                        duration_ms=duration_ms,
+                        error_code=type(exc).__name__,
+                        error_message=str(exc),
+                    )
                     log.exception("Torn API request failed after retries: path=%s", path)
                     if "timed out" in str(exc).lower() or "timeout" in str(exc).lower():
                         raise TornAPIError("Request timed out")
@@ -160,9 +285,23 @@ class TornAPIClient:
 
         raise TornAPIError("Request timed out")
 
-    async def validate_api_key(self, api_key: str) -> Tuple[int, int, str, set]:
+    async def validate_api_key(
+        self,
+        api_key: str,
+        *,
+        audit_discord_id: Optional[int] = None,
+        audit_context: Optional[str] = None,
+    ) -> Tuple[int, int, str, set]:
         """Validate API key by fetching user identity from Torn API v2."""
-        user = await self._request("/user", {"selections": "basic,discord", "key": api_key})
+        user = await self._request(
+            "/user",
+            {"selections": "basic,discord", "key": api_key},
+            audit_discord_id=audit_discord_id,
+            audit_context=audit_context,
+            audit_endpoint="/user",
+            audit_selections="basic,discord",
+            audit_query_meta={},
+        )
         discord_raw = (
             (user.get("discord") or {}).get("discord_id") if isinstance(user, dict) else None
         )
@@ -175,9 +314,24 @@ class TornAPIClient:
         torn_name = str((user.get("profile") or {}).get("name") or user.get("name") or "").strip()
         return discord_id, torn_id, torn_name, set()
 
-    async def get_user_data(self, api_key: str) -> Dict:
+    async def get_user_data(
+        self,
+        api_key: str,
+        *,
+        audit_discord_id: Optional[int] = None,
+        audit_torn_id: Optional[int] = None,
+        audit_context: Optional[str] = None,
+        audit_query_meta: Optional[dict[str, Any]] = None,
+    ) -> Dict:
         return await self._request(
-            "/user", {"selections": "basic,discord,bars,cooldowns", "key": api_key}
+            "/user",
+            {"selections": "basic,discord,bars,cooldowns", "key": api_key},
+            audit_discord_id=audit_discord_id,
+            audit_torn_id=audit_torn_id,
+            audit_context=audit_context,
+            audit_endpoint="/user",
+            audit_selections="basic,discord,bars,cooldowns",
+            audit_query_meta=audit_query_meta,
         )
 
     async def get_user_log(self, api_key: str, limit: int = 200) -> List[Dict]:
@@ -410,9 +564,25 @@ class TornAPIClient:
         )
 
     async def get_item_send_receive_logs(
-        self, api_key: str, limit: int = config.PAYMENT_VERIFICATION_LOG_LIMIT
+        self,
+        api_key: str,
+        limit: int = config.PAYMENT_VERIFICATION_LOG_LIMIT,
+        *,
+        audit_discord_id: Optional[int] = None,
+        audit_torn_id: Optional[int] = None,
+        audit_context: Optional[str] = None,
+        audit_query_meta: Optional[dict[str, Any]] = None,
     ) -> List[Dict]:
-        data = await self._request("/user/log", {"cat": 85, "limit": limit, "key": api_key})
+        data = await self._request(
+            "/user/log",
+            {"cat": 85, "limit": limit, "key": api_key},
+            audit_discord_id=audit_discord_id,
+            audit_torn_id=audit_torn_id,
+            audit_context=audit_context,
+            audit_endpoint="/user/log",
+            audit_selections=None,
+            audit_query_meta=audit_query_meta,
+        )
         log_data = data.get("log") if isinstance(data, dict) else None
         if isinstance(log_data, list):
             return log_data[:limit]

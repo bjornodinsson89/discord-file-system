@@ -21,6 +21,7 @@ from utils.item_resolver import ItemResolver
 from utils.payment_normalization import parse_payment_type
 from utils.torn_api import TornAPIError
 from utils.discord_safe_send import safe_send_channel
+from utils.discord_perms import can_manage_paid_raffles
 log = logging.getLogger("happy_jumper.raffles")
 _PACK_WORD_RE = re.compile(r"\bpack\b", re.IGNORECASE)
 _CURLY_QUOTES_RE = re.compile(r"[’‘]")
@@ -186,9 +187,7 @@ async def _is_raffle_admin(interaction: discord.Interaction) -> bool:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return False
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild.id)
-    admin_roles = set(GuildSettingsRepository.resolve_admin_role_ids(settings))
-    member_roles = {r.id for r in interaction.user.roles}
-    return interaction.user.guild_permissions.administrator or bool(member_roles & admin_roles)
+    return can_manage_paid_raffles(interaction.user, settings)
 
 
 def _resolve_purchase_panel_channel_id(settings: dict, *, is_giveaway: bool) -> tuple[int | None, str | None, str | None]:
@@ -297,11 +296,10 @@ class RafflePrizeConfirmDMView(discord.ui.View):
         if not allowed and guild and isinstance(interaction.user, discord.Member):
             db = get_database()
             settings = await GuildSettingsRepository(db).get_or_create(guild.id)
-            admin_roles = set(GuildSettingsRepository.resolve_admin_role_ids(settings))
-            allowed = interaction.user.guild_permissions.administrator or bool({r.id for r in interaction.user.roles} & admin_roles)
+            allowed = can_manage_paid_raffles(interaction.user, settings)
 
         if not allowed:
-            await interaction.followup.send("Only the raffle creator or admins can confirm this.", ephemeral=True)
+            await interaction.followup.send("Only the raffle creator, Admin role, or Paid Raffle Admin role can confirm this.", ephemeral=True)
             return
 
         if raffle.get("prize_sent_at"):
@@ -346,7 +344,14 @@ class RafflePrizeConfirmDMView(discord.ui.View):
 
         api_key = security.decrypt_api_key(encrypted_key)
         try:
-            logs = await torn_api.get_item_send_receive_logs(api_key, limit=50)
+            logs = await torn_api.get_item_send_receive_logs(
+                api_key,
+                limit=50,
+                audit_discord_id=int(interaction.user.id),
+                audit_torn_id=int(creator_torn_id),
+                audit_context="payment_verify_logs",
+                audit_query_meta={"cat": 85, "limit": 50},
+            )
         except TornAPIError as exc:
             await interaction.followup.send(f"Verification failed: {exc}", ephemeral=True)
             return
@@ -1109,7 +1114,8 @@ class RafflePurchasePanelView(discord.ui.View):
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True, thinking=False)
             if not await _is_raffle_admin(interaction):
-                await interaction.followup.send("You don’t have permission to manage this raffle.", ephemeral=True)
+                log.info("Paid raffle manage denied user_id=%s raffle_id=%s", interaction.user.id, self.raffle_id)
+                await interaction.followup.send("You need the Admin role or the Paid Raffle Admin role to use this.", ephemeral=True)
                 return
             manage_view = RaffleManageView(self.raffle_id)
             message = await interaction.followup.send(
@@ -1135,7 +1141,8 @@ class RaffleManageView(discord.ui.View):
 
     async def _ensure_admin(self, interaction: discord.Interaction) -> bool:
         if not await _is_raffle_admin(interaction):
-            await interaction.followup.send("You don’t have permission to manage this raffle.", ephemeral=True)
+            log.info("Paid raffle manage denied in control view user_id=%s raffle_id=%s", interaction.user.id, self.raffle_id)
+            await interaction.followup.send("You need the Admin role or the Paid Raffle Admin role to use this.", ephemeral=True)
             return False
         return True
 
@@ -1667,11 +1674,8 @@ class RafflesCog(commands.Cog):
             return
 
         settings = await GuildSettingsRepository(get_database()).get_or_create(guild.id)
-        admin_roles = set(GuildSettingsRepository.resolve_admin_role_ids(settings))
-        member_roles = {r.id for r in interaction.user.roles}
-        is_admin = interaction.user.guild_permissions.administrator or bool(member_roles & admin_roles)
-        if not is_admin:
-            await interaction.followup.send("Only admins can verify prizes.", ephemeral=True)
+        if not can_manage_paid_raffles(interaction.user, settings):
+            await interaction.followup.send("You need the Admin role or the Paid Raffle Admin role to use this.", ephemeral=True)
             return
 
         if str(raffle.get("prize_verification_status") or "").upper() == "VERIFIED":
@@ -1702,7 +1706,14 @@ class RafflesCog(commands.Cog):
         torn_api = get_torn_api()
         try:
             api_key = security.decrypt_api_key(encrypted_key)
-            logs = await torn_api.get_item_send_receive_logs(api_key, limit=100)
+            logs = await torn_api.get_item_send_receive_logs(
+                api_key,
+                limit=100,
+                audit_discord_id=int(winner_discord_id),
+                audit_torn_id=int((winner_api or {}).get("torn_user_id") or 0) or None,
+                audit_context="payment_verify_logs",
+                audit_query_meta={"cat": 85, "limit": 100},
+            )
         except Exception as exc:
             summary = f"Torn log lookup failed ({type(exc).__name__})."
             await repo.update_prize_verification(int(raffle_id), status="ERROR", checked_at=now)
@@ -2095,16 +2106,24 @@ class RafflesCog(commands.Cog):
 
     # SINGLE ADMIN-ONLY CREATE COMMAND WITH EMOJIS IN CHOICES
     @app_commands.command(name="raffle_create", description="🎉 Create a new raffle (Admin only)")
-    @app_commands.checks.has_permissions(administrator=True)
     async def raffle_create(self, interaction: discord.Interaction):
         """🎉 Create a raffle - Admin only."""
+        settings = await GuildSettingsRepository(get_database()).get_or_create(int(interaction.guild_id or 0))
+        if not isinstance(interaction.user, discord.Member) or not can_manage_paid_raffles(interaction.user, settings):
+            log.info("Paid raffle create denied user_id=%s guild_id=%s", interaction.user.id, interaction.guild_id)
+            await interaction.response.send_message("You need the Admin role or the Paid Raffle Admin role to use this.", ephemeral=True)
+            return
         await interaction.response.send_modal(RaffleCreateModal(self.bot))
     @app_commands.command(name="raffle_draw", description="🎲 Draw a raffle winner (Admin only)")
-    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(raffle_id="🎟️ ID of the raffle to draw")
     async def raffle_draw(self, interaction: discord.Interaction, raffle_id: int):
         """🎲 Manually trigger a raffle draw - Admin only."""
         await interaction.response.defer(ephemeral=True)
+        settings = await GuildSettingsRepository(get_database()).get_or_create(int(interaction.guild_id or 0))
+        if not isinstance(interaction.user, discord.Member) or not can_manage_paid_raffles(interaction.user, settings):
+            log.info("Paid raffle draw denied user_id=%s guild_id=%s raffle_id=%s", interaction.user.id, interaction.guild_id, raffle_id)
+            await interaction.followup.send("You need the Admin role or the Paid Raffle Admin role to use this.", ephemeral=True)
+            return
         repo = RafflesRepository(get_pool())
         try:
             result = await repo.draw_raffle_winner(raffle_id)
@@ -2135,10 +2154,14 @@ class RafflesCog(commands.Cog):
         )
         await interaction.followup.send(embed=embed)
     @app_commands.command(name="raffle_cancel", description="❌ Cancel a raffle (Admin only)")
-    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(raffle_id="🎟️ ID of the raffle to cancel")
     async def raffle_cancel(self, interaction: discord.Interaction, raffle_id: int):
         """❌ Cancel an active raffle - Admin only."""
+        settings = await GuildSettingsRepository(get_database()).get_or_create(int(interaction.guild_id or 0))
+        if not isinstance(interaction.user, discord.Member) or not can_manage_paid_raffles(interaction.user, settings):
+            log.info("Paid raffle cancel denied user_id=%s guild_id=%s raffle_id=%s", interaction.user.id, interaction.guild_id, raffle_id)
+            await interaction.response.send_message("You need the Admin role or the Paid Raffle Admin role to use this.", ephemeral=True)
+            return
         repo = RafflesRepository(get_pool())
         raffle_before = await repo.get_raffle(raffle_id)
         cancelled = await repo.cancel_active_raffle(raffle_id)

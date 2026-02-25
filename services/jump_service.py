@@ -69,7 +69,13 @@ class JumpService:
                 raise BusinessRuleViolation("Session is full; waitlist is not enabled in this schema")
 
             api_key = self.security_manager.decrypt(key_data["encrypted_key"])
-            user_data = await self.torn_api.get_user_data(api_key)
+            user_data = await self.torn_api.get_user_data(
+                api_key,
+                audit_discord_id=int(user_id),
+                audit_torn_id=int(key_data.get("torn_user_id") or 0) or None,
+                audit_context="jump_readiness",
+                audit_query_meta={},
+            )
             drug_cd = int(user_data.get("cooldowns", {}).get("drug", 0) or 0)
             booster_cd = int(user_data.get("cooldowns", {}).get("booster", 0) or 0)
             if drug_cd > 0:

@@ -64,7 +64,12 @@ class RafflePaymentService:
         try:
             api_key = security.decrypt(buyer_key["encrypted_key"])
             logs = await torn_api.get_item_send_receive_logs(
-                api_key, limit=config.PAYMENT_VERIFICATION_LOG_LIMIT
+                api_key,
+                limit=config.PAYMENT_VERIFICATION_LOG_LIMIT,
+                audit_discord_id=int(entry["discord_id"]),
+                audit_torn_id=buyer_torn_id,
+                audit_context="payment_verify_logs",
+                audit_query_meta={"cat": 85, "limit": int(config.PAYMENT_VERIFICATION_LOG_LIMIT)},
             )
         except TornAPIRateLimitError:
             return False, None, "Torn API is rate-limited right now. Please try again in a moment."

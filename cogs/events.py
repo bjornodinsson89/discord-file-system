@@ -75,6 +75,7 @@ from repositories.users import UsersRepository
 from repositories.overdose import OverdoseRepository
 from repositories.torn_items import TornItemsRepository, norm_name
 from repositories.host_tax import HostTaxRepository
+from repositories.api_audit_repository import ApiAuditRepository
 from repositories.applications import ApplicationsRepository
 from services.payment_receipts import PaymentReceiptService
 from services.permissions import validate_99k_permissions
@@ -343,7 +344,13 @@ async def _fetch_and_upsert_user_readiness_snapshot(
 
     try:
         api_key = get_security_manager().decrypt_api_key(encrypted_key)
-        user_data = await get_torn_api().get_user_data(api_key)
+        user_data = await get_torn_api().get_user_data(
+            api_key,
+            audit_discord_id=int(discord_id),
+            audit_torn_id=int((key_row or {}).get("torn_user_id") or 0) or None,
+            audit_context="jump_readiness",
+            audit_query_meta={},
+        )
     except Exception:
         return None
 
@@ -994,6 +1001,45 @@ async def set_timezone(interaction: discord.Interaction):
     await send_timezone_picker(interaction)
 
 
+
+
+@bot.tree.command(name="api_audit", description="View your recent Torn API activity")
+@app_commands.describe(limit="How many recent events to show (1-100)")
+async def api_audit(interaction: discord.Interaction, limit: app_commands.Range[int, 1, 100] = 25):
+    await interaction.response.defer(ephemeral=True)
+
+    rows = await ApiAuditRepository(get_pool()).list_recent(int(interaction.user.id), int(limit))
+    if not rows:
+        await interaction.followup.send("No API activity recorded yet.", ephemeral=True)
+        return
+
+    label_map = {
+        "payment_verify_logs": "Payment verification (logs)",
+        "jump_readiness": "Jump readiness (bars/cooldowns)",
+        "api_key_check": "API key check",
+    }
+
+    embed = discord.Embed(title="Recent Torn API activity", color=discord.Color.blurple())
+    for row in rows:
+        created_unix = int(row.created_at.timestamp())
+        context_label = label_map.get(row.context, row.context)
+        endpoint = row.endpoint
+        if row.selections:
+            endpoint = f"{endpoint} (selections={row.selections})"
+        http_text = str(row.http_status) if row.http_status is not None else "n/a"
+        duration_text = f"{row.duration_ms}ms" if row.duration_ms is not None else "n/a"
+        status_text = f"{row.status.upper()} · HTTP {http_text} · {duration_text}"
+
+        value = (
+            f"**{context_label}**\n"
+            f"`{endpoint}`\n"
+            f"{status_text}\n"
+            f"<t:{created_unix}:R> · <t:{created_unix}:F>"
+        )
+        embed.add_field(name=f"Event #{row.id}", value=value[:1024], inline=False)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
 @bot.tree.command(name="remove_api_key", description="Delete your stored Torn API key")
 async def remove_api_key(interaction: discord.Interaction):
     """Remove user's stored API key."""
@@ -1220,7 +1266,13 @@ async def refresh_api_keys(interaction: discord.Interaction):
             continue
 
         try:
-            data = await torn.get_user_data(api_key)
+            data = await torn.get_user_data(
+                api_key,
+                audit_discord_id=int(discord_id),
+                audit_torn_id=int(row.get("torn_user_id") or 0) or None,
+                audit_context="api_key_check",
+                audit_query_meta={},
+            )
         except TornAPIRateLimitError as exc:
             _record_failure(f"<@{discord_id}>: Torn API rate limited ({exc})")
             continue
@@ -1804,7 +1856,13 @@ async def _get_torn_display_name_for_discord(guild_id: int, discord_id: int) -> 
 
     try:
         api_key = get_security_manager().decrypt_api_key(encrypted_key)
-        data = await get_torn_api().get_user_data(api_key)
+        data = await get_torn_api().get_user_data(
+            api_key,
+            audit_discord_id=int(discord_id),
+            audit_torn_id=int((user_row or {}).get("torn_user_id") or 0) or None,
+            audit_context="api_key_check",
+            audit_query_meta={},
+        )
         name = (data.get("profile", {}) or {}).get("name") or data.get("name")
         if name:
             _TORN_NAME_CACHE[discord_id] = (str(name), now + timedelta(minutes=TORN_NAME_CACHE_TTL_MINUTES))
@@ -4384,7 +4442,13 @@ async def readiness_worker():
                         key_data["encrypted_key"] = key_data["api_key_encrypted"]
 
                     api_key = security.decrypt_api_key(key_data["encrypted_key"])
-                    user_data = await torn_api.get_user_data(api_key)
+                    user_data = await torn_api.get_user_data(
+                        api_key,
+                        audit_discord_id=int(discord_id),
+                        audit_torn_id=int(key_data.get("torn_user_id") or 0) or None,
+                        audit_context="jump_readiness",
+                        audit_query_meta={},
+                    )
 
                     energy = int((user_data or {}).get("bars", {}).get("energy", {}).get("current", 0) or 0)
                     energy_max = int((user_data or {}).get("bars", {}).get("energy", {}).get("maximum", 0) or 0)

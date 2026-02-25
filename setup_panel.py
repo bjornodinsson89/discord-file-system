@@ -298,6 +298,56 @@ class ApplicationsInboxChannelModal(discord.ui.Modal):
             await _respond_callback_error(interaction, error, "setup_applications_inbox_modal_error")
 
 
+class PaidRaffleAdminRoleModal(discord.ui.Modal):
+    def __init__(self, panel: "SetupPanelView"):
+        super().__init__(title="Set Paid Raffle Admin Role")
+        self.panel = panel
+        self.role_input = discord.ui.TextInput(
+            label="Role",
+            placeholder="@Role, role ID, or 'clear'",
+            required=True,
+            max_length=64,
+        )
+        self.add_item(self.role_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            guild = interaction.guild
+            if guild is None:
+                await interaction.response.send_message(
+                    embed=create_error_embed("Invalid context", "This action can only be used in a server."),
+                    ephemeral=True,
+                )
+                return
+
+            raw = str(self.role_input.value).strip()
+            if raw.lower() in {"clear", "none", "null", "remove"}:
+                await self.panel.save_changes(interaction, {"paid_raffle_admin_role_id": None})
+                await interaction.followup.send("Paid Raffle Admin Role cleared.", ephemeral=True)
+                return
+
+            match = re.search(r"(\d{15,25})", raw)
+            if not match:
+                await interaction.response.send_message(
+                    embed=create_error_embed("Invalid role", "Enter a role mention like `@Paid Raffle Admin` or a raw role ID."),
+                    ephemeral=True,
+                )
+                return
+
+            role = guild.get_role(int(match.group(1)))
+            if role is None or role.is_default():
+                await interaction.response.send_message(
+                    embed=create_error_embed("Invalid role", "That role must exist in this server and cannot be @everyone."),
+                    ephemeral=True,
+                )
+                return
+
+            await self.panel.save_changes(interaction, {"paid_raffle_admin_role_id": int(role.id)})
+            await interaction.followup.send(f"Paid Raffle Admin Role set to {role.mention}", ephemeral=True)
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+
 class SetupPanelView(OwnerView):
     @staticmethod
     def _resolve_bot_member(interaction: discord.Interaction) -> discord.Member | None:
@@ -346,6 +396,7 @@ class SetupPanelView(OwnerView):
             f"Admin roles: {', '.join(admin_mentions) if admin_mentions else 'Not set'}\n"
             f"99k_Jump_Host role: {role_name(s.get('host99k_role_id'))}\n"
             f"HJ_Insureance_provider role: {role_name(s.get('insurer_role_id'))}\n"
+            f"Paid Raffle Admin Role: {role_name(s.get('paid_raffle_admin_role_id'))}\n"
             f"Jump ping roles: {', '.join(jump_ping_mentions) if jump_ping_mentions else 'None selected'}"
         ), inline=False)
         host_tax_type = str(s.get('host_tax_type') or '').strip().lower()
@@ -829,6 +880,26 @@ class AdminRoleSelect(discord.ui.RoleSelect):
             await _respond_callback_error(interaction, error)
 
 
+
+
+class PaidRaffleAdminRoleSelect(discord.ui.RoleSelect):
+    def __init__(self, panel: SetupPanelView, *, row: int | None = None):
+        super().__init__(placeholder="Set Paid Raffle Admin Role (optional)", min_values=0, max_values=1, row=row)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            selected = [role for role in self.values if not role.is_default()]
+            role_id = int(selected[0].id) if selected else None
+            await self.panel.save_changes(interaction, {"paid_raffle_admin_role_id": role_id})
+            if role_id is None:
+                await interaction.followup.send("Paid Raffle Admin Role cleared.", ephemeral=True)
+            else:
+                await interaction.followup.send(f"Paid Raffle Admin Role set to <@&{role_id}>", ephemeral=True)
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+
 class SingleRoleSelect(discord.ui.RoleSelect):
     def __init__(self, panel: SetupPanelView, key: str, placeholder: str, *, row: int | None = None):
         super().__init__(placeholder=placeholder, min_values=1, max_values=1, row=row)
@@ -858,6 +929,14 @@ class RolesViewPage1(BackView):
         self.add_item(AdminRoleSelect(self.panel, row=0))
         self.add_item(SingleRoleSelect(self.panel, "host99k_role_id", "Set 99k_Jump_Host role", row=1))
         self.add_item(SingleRoleSelect(self.panel, "insurer_role_id", "Set HJ_Insureance_provider role", row=2))
+        self.add_item(PaidRaffleAdminRoleSelect(self.panel, row=3))
+
+    @discord.ui.button(label="Set Paid Raffle Admin Role by ID/mention", style=discord.ButtonStyle.secondary, row=4, custom_id="setup:roles:set_paid_raffle_admin_by_id")
+    async def set_paid_raffle_admin_by_id_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await interaction.response.send_modal(PaidRaffleAdminRoleModal(self.panel))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
 
     @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
     async def next_btn(self, interaction: discord.Interaction, _: discord.ui.Button):

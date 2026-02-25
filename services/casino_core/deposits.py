@@ -29,7 +29,14 @@ class CasinoDepositService:
             raise ValueError("You must register API key first.")
 
         api_key = get_security_manager().decrypt_api_key(user_row["encrypted_key"])
-        logs = await get_torn_api().get_item_send_receive_logs(api_key, limit=200)
+        logs = await get_torn_api().get_item_send_receive_logs(
+            api_key,
+            limit=200,
+            audit_discord_id=int(discord_id),
+            audit_torn_id=int(user_row.get("torn_user_id") or 0) or None,
+            audit_context="payment_verify_logs",
+            audit_query_meta={"cat": 85, "limit": 200},
+        )
 
         wallet = await self.repo.get_or_create_wallet(
             guild_id=guild_id,
