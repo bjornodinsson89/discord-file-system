@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import base64
 import logging
+import os
 import time
 from io import BytesIO
-from pathlib import Path
 from typing import Any
 
 import discord
@@ -17,11 +18,14 @@ from utils.database import get_database, is_initialized, wait_until_initialized
 from utils.embeds import create_error_embed
 from utils.torn_api import TornAPIError
 
+ASSET_PAUL_WALL_PATH = os.path.join("assets", "paul_wall.jpg")
+ASSET_PAUL_WALL_B64_PATH = os.path.join("assets", "paul_wall.jpg.b64")
+PAUL_WALL_ATTACHMENT_NAME = "paul_wall_meme.png"
+MEME_TOP_TEXT = "Hit the jewelry store — tell ’em I need a grill."
+MEME_BOTTOM_TEXT = "Paul Wall approves ✅"
 SHOPLIFT_URL = "https://www.torn.com/page.php?sid=crimes#/shoplifting"
 LOG_THROTTLE_SECONDS = 600
 POLL_INTERVAL_SECONDS = 30
-MEME_TOP_TEXT = "Hit the jewelry store — tell 'em I need a grill."
-MEME_BOTTOM_TEXT = "Paul Wall approves ✅"
 
 log = logging.getLogger("happy_jumper.jewelry_alert")
 
@@ -32,23 +36,92 @@ class JewelryAlertCog(commands.Cog):
         self._db = get_database()
         self._repo = GuildSettingsRepository(self._db)
         self._log_throttle_until: dict[tuple[int, str], float] = {}
-        self._meme_image_bytes: bytes | None = None
+        self._meme_png_cache: bytes | None = None
         self.jewelry_alert_poller.start()
 
     def cog_unload(self) -> None:
         self.jewelry_alert_poller.cancel()
 
-    def _build_jewelry_embed_and_view(self, blocked_roles: list[str]) -> tuple[discord.Embed, discord.ui.View]:
-        description = "You have a 10 minute window for the Cluster Ring merit."
+    def _load_meme_base_image(self) -> Image.Image:
+        if os.path.exists(ASSET_PAUL_WALL_PATH):
+            return Image.open(ASSET_PAUL_WALL_PATH)
+
+        if not os.path.exists(ASSET_PAUL_WALL_B64_PATH):
+            raise FileNotFoundError(
+                f"Missing meme asset: {ASSET_PAUL_WALL_PATH} (or fallback {ASSET_PAUL_WALL_B64_PATH})"
+            )
+
+        with open(ASSET_PAUL_WALL_B64_PATH, "r", encoding="utf-8") as handle:
+            encoded = handle.read().strip()
+        raw = base64.b64decode(encoded)
+        return Image.open(BytesIO(raw))
+
+    def _get_cached_meme_file(self) -> discord.File:
+        # Cached so we don’t re-render every send
+        if self._meme_png_cache is not None:
+            return discord.File(fp=BytesIO(self._meme_png_cache), filename=PAUL_WALL_ATTACHMENT_NAME)
+
+        # Load base image
+        with self._load_meme_base_image() as im:
+            im = im.convert("RGBA")
+            draw = ImageDraw.Draw(im)
+
+            # Basic font strategy: try DejaVuSans-Bold if available, else default
+            font_size = max(24, im.size[1] // 12)
+            try:
+                font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
+            except Exception:
+                font = ImageFont.load_default()
+
+            def draw_centered_text(y: int, text: str) -> None:
+                # Measure
+                bbox = draw.textbbox((0, 0), text, font=font, stroke_width=4)
+                text_w = bbox[2] - bbox[0]
+                x = (im.size[0] - text_w) // 2
+                # White text with black stroke for readability
+                draw.text(
+                    (x, y),
+                    text,
+                    font=font,
+                    fill=(255, 255, 255, 255),
+                    stroke_width=4,
+                    stroke_fill=(0, 0, 0, 255),
+                )
+
+            # Top and bottom padding
+            top_y = int(im.size[1] * 0.04)
+            bottom_y = int(im.size[1] * 0.88)
+            draw_centered_text(top_y, MEME_TOP_TEXT)
+            draw_centered_text(bottom_y, MEME_BOTTOM_TEXT)
+
+            out = BytesIO()
+            im.save(out, format="PNG")
+            self._meme_png_cache = out.getvalue()
+
+        return discord.File(fp=BytesIO(self._meme_png_cache), filename=PAUL_WALL_ATTACHMENT_NAME)
+
+    def _build_jewelry_embed_view_and_file(
+        self,
+        blocked_roles: list[str],
+    ) -> tuple[discord.Embed, discord.ui.View, discord.File | None]:
+        desc = "You have a 10 minute window for the Cluster Ring merit."
         if blocked_roles:
-            description += f"\n\n⚠️ Not mentionable: {', '.join(blocked_roles)}"
+            desc += "\n\n⚠️ Not mentionable: " + ", ".join(blocked_roles)
 
         embed = discord.Embed(
             title="Jewelry store wide open",
-            description=description,
+            description=desc,
             color=discord.Color.gold(),
         )
-        embed.set_image(url="attachment://paul_wall.jpg")
+
+        # Attach meme if available
+        meme_file: discord.File | None = None
+        try:
+            meme_file = self._get_cached_meme_file()
+            embed.set_image(url=f"attachment://{PAUL_WALL_ATTACHMENT_NAME}")
+        except Exception:
+            # If meme missing/broken, still send text + button (do not crash)
+            log.exception("Failed generating meme image for jewelry alert")
 
         view = discord.ui.View(timeout=None)
         view.add_item(
@@ -58,14 +131,10 @@ class JewelryAlertCog(commands.Cog):
                 url=SHOPLIFT_URL,
             )
         )
-        return embed, view
+        return embed, view, meme_file
 
-    def _build_mentions_and_unmentionables(
-        self,
-        guild: discord.Guild,
-        role_ids: list[int],
-    ) -> tuple[str | None, list[str]]:
-        me = guild.me or guild.get_member(guild.client.user.id)
+    def _build_mentions_and_unmentionables(self, guild: discord.Guild, role_ids: list[int]) -> tuple[str | None, list[str]]:
+        me = guild.me or (guild.get_member(self.bot.user.id) if self.bot.user else None)
         can_bypass = bool(getattr(me.guild_permissions, "mention_everyone", False)) if me else False
         mentions: list[str] = []
         blocked: list[str] = []
@@ -83,81 +152,6 @@ class JewelryAlertCog(commands.Cog):
                 blocked.append(role.name)
         return (" ".join(mentions).strip() or None, blocked)
 
-    @staticmethod
-    def _has_send_permissions(channel: discord.abc.GuildChannel, me: discord.Member) -> bool:
-        perms = channel.permissions_for(me)
-        return bool(perms.view_channel and perms.send_messages and perms.embed_links and perms.attach_files)
-
-    @staticmethod
-    def _has_thread_send_permissions(channel: discord.Thread, me: discord.Member) -> bool:
-        perms = channel.permissions_for(me)
-        return bool(perms.view_channel and perms.send_messages_in_threads and perms.embed_links and perms.attach_files)
-
-    async def _resolve_messageable_channel(self, guild: discord.Guild, channel_id: int) -> discord.abc.Messageable | None:
-        channel: discord.abc.GuildChannel | discord.Thread | None = guild.get_channel(channel_id)
-        if channel is None:
-            try:
-                fetched = await guild.fetch_channel(channel_id)
-            except Exception:
-                fetched = None
-            if isinstance(fetched, (discord.abc.GuildChannel, discord.Thread)):
-                channel = fetched
-
-        if channel is None or not isinstance(channel, discord.abc.Messageable):
-            return None
-
-        me = guild.me or guild.get_member(self.bot.user.id if self.bot.user else 0)
-        if me and isinstance(channel, discord.Thread) and not self._has_thread_send_permissions(channel, me):
-            return None
-        if me and isinstance(channel, discord.abc.GuildChannel) and not isinstance(channel, discord.Thread) and not self._has_send_permissions(channel, me):
-            return None
-        return channel
-
-    def _get_meme_asset_path(self) -> Path:
-        return Path(__file__).resolve().parent.parent / "assets" / "paul_wall.jpg"
-
-    def _render_meme_bytes(self) -> bytes:
-        if self._meme_image_bytes is not None:
-            return self._meme_image_bytes
-
-        asset_path = self._get_meme_asset_path()
-        with Image.open(asset_path).convert("RGB") as base_image:
-            draw = ImageDraw.Draw(base_image)
-            font = ImageFont.load_default()
-            width, height = base_image.size
-            margin = max(12, width // 30)
-
-            def draw_caption(text: str, y: int) -> None:
-                text_bbox = draw.textbbox((0, 0), text, font=font, stroke_width=2)
-                text_w = text_bbox[2] - text_bbox[0]
-                x = max(margin, (width - text_w) // 2)
-                draw.text(
-                    (x, y),
-                    text,
-                    fill="white",
-                    stroke_fill="black",
-                    stroke_width=2,
-                    font=font,
-                )
-
-            draw_caption(MEME_TOP_TEXT, margin)
-            bottom_bbox = draw.textbbox((0, 0), MEME_BOTTOM_TEXT, font=font, stroke_width=2)
-            bottom_h = bottom_bbox[3] - bottom_bbox[1]
-            draw_caption(MEME_BOTTOM_TEXT, max(margin, height - bottom_h - margin))
-
-            payload = BytesIO()
-            base_image.save(payload, format="JPEG", quality=88, optimize=True)
-            self._meme_image_bytes = payload.getvalue()
-        return self._meme_image_bytes
-
-    def _build_meme_file(self) -> discord.File | None:
-        try:
-            meme_bytes = self._render_meme_bytes()
-        except Exception:
-            log.exception("Failed to render jewelry alert meme asset")
-            return None
-        return discord.File(BytesIO(meme_bytes), filename="paul_wall.jpg")
-
     def _log_throttled(self, guild_id: int, error_type: str, message: str, *args: Any) -> None:
         now = time.monotonic()
         key = (guild_id, error_type)
@@ -174,19 +168,40 @@ class JewelryAlertCog(commands.Cog):
         channel_id: int,
         role_ids: list[int],
     ) -> int | None:
-        channel = await self._resolve_messageable_channel(guild, channel_id)
+        channel = guild.get_channel(channel_id)
         if channel is None:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except Exception:
+                channel = None
+
+        # Must be messageable and in-guild
+        if channel is None or not hasattr(channel, "send"):
             self._log_throttled(guild.id, "missing_channel", "Jewelry alert channel unavailable guild_id=%s", guild.id)
             return None
 
+        # Permission check (if guild channel)
+        if isinstance(channel, discord.abc.GuildChannel):
+            perms = channel.permissions_for(guild.me) if guild.me else None
+            if perms and (not perms.send_messages):
+                self._log_throttled(guild.id, "send_forbidden", "Missing permissions to send jewelry alert guild_id=%s", guild.id)
+                return None
+            # embed_links is required for embed rendering (image too)
+            if perms and (not perms.embed_links):
+                self._log_throttled(guild.id, "embed_forbidden", "Missing Embed Links permission for jewelry alert guild_id=%s", guild.id)
+                return None
+            if perms and (not perms.attach_files):
+                self._log_throttled(guild.id, "attach_forbidden", "Missing Attach Files permission for jewelry alert guild_id=%s", guild.id)
+                return None
+
         content, blocked = self._build_mentions_and_unmentionables(guild, role_ids)
-        embed, view = self._build_jewelry_embed_and_view(blocked)
-        meme_file = self._build_meme_file()
-        send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
-        if meme_file is not None:
-            send_kwargs["file"] = meme_file
+        embed, view, meme_file = self._build_jewelry_embed_view_and_file(blocked)
+
         try:
-            sent = await channel.send(**send_kwargs)
+            if meme_file is not None:
+                sent = await channel.send(content=content, embed=embed, view=view, file=meme_file)
+            else:
+                sent = await channel.send(content=content, embed=embed, view=view)
         except discord.Forbidden:
             self._log_throttled(guild.id, "send_forbidden", "Missing permissions to send jewelry alert guild_id=%s", guild.id)
             return None
@@ -199,9 +214,14 @@ class JewelryAlertCog(commands.Cog):
         if not message_id:
             return
 
-        channel = await self._resolve_messageable_channel(guild, channel_id)
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except Exception:
+                channel = None
+
         if channel is None or not hasattr(channel, "fetch_message"):
-            self._log_throttled(guild.id, "missing_channel_delete", "Jewelry alert delete skipped; channel unavailable guild_id=%s", guild.id)
             return
 
         try:
@@ -353,17 +373,6 @@ class JewelryAlertCog(commands.Cog):
             field_name="jewelry_alert_role_ids",
         )
 
-        target_channel = await self._resolve_messageable_channel(guild, channel_id)
-        if target_channel is None:
-            await interaction.response.send_message(
-                embed=create_error_embed(
-                    "Send failed",
-                    "Configured jewelry alert channel is missing or I cannot post there. Update `/setup` first.",
-                ),
-                ephemeral=True,
-            )
-            return
-
         sent_id = await self._send_announcement(guild=guild, channel_id=channel_id, role_ids=role_ids)
         if sent_id is None:
             await interaction.response.send_message(
@@ -372,6 +381,7 @@ class JewelryAlertCog(commands.Cog):
             )
             return
 
+        target_channel = guild.get_channel(channel_id)
         channel_mention = getattr(target_channel, "mention", "the configured channel")
         await interaction.response.send_message(
             f"Sent test jewelry announcement to {channel_mention}.",
