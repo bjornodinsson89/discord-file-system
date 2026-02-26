@@ -7,4 +7,5 @@ EXTENSIONS = [
     "cogs.setup",
     "cogs.applications",
     "cogs.casino",
+    "cogs.bank",
 ]
