@@ -68,6 +68,9 @@ class GuildSettingsRepository:
         "jewelry_alert_role_ids",
         "jewelry_alert_active_message_id",
         "jewelry_alert_last_clear",
+        "jewelry_alert_last_is_open",
+        "jewelry_alert_last_announcement_message_id",
+        "jewelry_alert_last_announcement_channel_id",
     }
     BIGINT_FIELDS = {
         "announce_channel_id",
@@ -92,6 +95,8 @@ class GuildSettingsRepository:
         "host_tax_cash_amount",
         "jewelry_alert_channel_id",
         "jewelry_alert_active_message_id",
+        "jewelry_alert_last_announcement_message_id",
+        "jewelry_alert_last_announcement_channel_id",
     }
     BOOLEAN_FIELDS = {
         "welcome_enabled",
@@ -101,6 +106,7 @@ class GuildSettingsRepository:
         "disable_99k_announcements",
         "casino_enabled",
         "jewelry_alert_last_clear",
+        "jewelry_alert_last_is_open",
     }
     DEFAULT_KEYS = {
         "guild_id": None,
@@ -145,6 +151,9 @@ class GuildSettingsRepository:
         "jewelry_alert_role_ids": [],
         "jewelry_alert_active_message_id": None,
         "jewelry_alert_last_clear": False,
+        "jewelry_alert_last_is_open": False,
+        "jewelry_alert_last_announcement_message_id": None,
+        "jewelry_alert_last_announcement_channel_id": None,
     }
 
     def __init__(self, db_manager):
@@ -506,6 +515,9 @@ class GuildSettingsRepository:
             "jewelry_alert_role_ids": [],
             "jewelry_alert_active_message_id": None,
             "jewelry_alert_last_clear": False,
+            "jewelry_alert_last_is_open": False,
+            "jewelry_alert_last_announcement_message_id": None,
+            "jewelry_alert_last_announcement_channel_id": None,
         }
         row = await self._db_insert_settings(guild_id, defaults)
         return self._merge_defaults(row, guild_id)
