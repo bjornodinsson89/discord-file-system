@@ -355,6 +355,13 @@ class TornAPIClient:
         """Fetch Torn item index (names + images) from Torn API v2."""
         return await self._request("/torn", {"selections": "items", "key": api_key})
 
+    async def get_bank_rates(self, api_key: str) -> Dict:
+        data = await self._request("/torn", {"selections": "bank", "key": api_key})
+        bank = (data or {}).get("bank")
+        if not isinstance(bank, dict) or not bank:
+            raise TornAPIError("Bank rates missing from Torn response.")
+        return bank
+
     async def verify_payment(
         self,
         api_key: str,

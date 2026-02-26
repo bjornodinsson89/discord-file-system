@@ -63,6 +63,7 @@ class GuildSettingsRepository:
         "casino_enabled",
         "casino_house",
         "casino_games",
+        "bank_rates_api_key_encrypted",
     }
     BIGINT_FIELDS = {
         "announce_channel_id",
@@ -132,6 +133,7 @@ class GuildSettingsRepository:
         "casino_enabled": False,
         "casino_house": {},
         "casino_games": {},
+        "bank_rates_api_key_encrypted": None,
     }
 
     def __init__(self, db_manager):
@@ -466,6 +468,7 @@ class GuildSettingsRepository:
             "casino_enabled": False,
             "casino_house": {},
             "casino_games": {},
+            "bank_rates_api_key_encrypted": None,
         }
         row = await self._db_insert_settings(guild_id, defaults)
         return self._merge_defaults(row, guild_id)
