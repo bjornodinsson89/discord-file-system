@@ -140,11 +140,18 @@ class SlotsPlayView(discord.ui.View):
         self, jackpot_str: str, status: str, payout: int | None, image_name: str | None
     ) -> discord.Embed:
         em = discord.Embed(title="🎰 7️⃣7️⃣7️⃣  S L O T S  7️⃣7️⃣7️⃣ 🎰")
-        house_line = (
-            f"**House:** <@{self.house_discord_id}> (send payments to this user)"
-            if self.house_discord_id
-            else "**House:** Not set (admins: configure House in /back_of_house)"
-        )
+        if self.house_discord_id and self.house_torn_id:
+            house_line = (
+                f"**House:** <@{self.house_discord_id}>\n"
+                f"**Send payments to:** Torn ID `{self.house_torn_id}`"
+            )
+        elif self.house_discord_id:
+            house_line = (
+                f"**House:** <@{self.house_discord_id}>\n"
+                "⚠️ **Admins:** House Torn ID is missing. Configure it in /back_of_house"
+            )
+        else:
+            house_line = "**House:** Not set (admins: configure House in /back_of_house)"
         desc = f"{house_line}\n"
         if self.payout_proof_channel_id:
             desc += f"**Proof Channel:** <#{self.payout_proof_channel_id}>\n"

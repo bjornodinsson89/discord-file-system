@@ -38,7 +38,7 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Cashout"):
     async def on_submit(self, interaction: discord.Interaction):
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
-        await self.service.deny_cashout(self.guild_id, self.cashout_id, int(interaction.user.id), str(self.reason.value))
+        await self.service.deny_cashout(interaction, self.guild_id, self.cashout_id, int(interaction.user.id), str(self.reason.value))
         await interaction.response.send_message("✅ Cashout denied and refunded.", ephemeral=True)
 
 
