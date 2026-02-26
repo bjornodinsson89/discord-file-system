@@ -8,4 +8,5 @@ EXTENSIONS = [
     "cogs.applications",
     "cogs.casino",
     "cogs.bank",
+    "cogs.jewelry_alert",
 ]

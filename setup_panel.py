@@ -381,6 +381,7 @@ class SetupPanelView(OwnerView):
             f"Raffle announcement: {channel_name('raffle_announcement_channel_id')}\n"
             f"Raffle purchase panel: {channel_name('raffle_purchase_channel_id')}\n"
             f"Raffle giveaway purchase panel: {channel_name('raffle_giveaway_purchase_channel_id')}\n"
+            f"Jewelry alert: {channel_name('jewelry_alert_channel_id')}\n"
             f"Insurance: {channel_name('insurance_channel_id')}\n"
             f"Applications category: {channel_name('applications_category_id')}\n"
             f"Applications admin inbox: {channel_name('applications_admin_inbox_channel_id')}\n"
@@ -393,12 +394,18 @@ class SetupPanelView(OwnerView):
             role = guild.get_role(int(rid)) if str(rid).isdigit() else None
             if role:
                 jump_ping_mentions.append(role.mention)
+        jewelry_mentions = []
+        for rid in (s.get("jewelry_alert_role_ids") or []):
+            role = guild.get_role(int(rid)) if str(rid).isdigit() else None
+            if role:
+                jewelry_mentions.append(role.mention)
         embed.add_field(name="Roles", value=(
             f"Admin roles: {', '.join(admin_mentions) if admin_mentions else 'Not set'}\n"
             f"99k_Jump_Host role: {role_name(s.get('host99k_role_id'))}\n"
             f"HJ_Insureance_provider role: {role_name(s.get('insurer_role_id'))}\n"
             f"Raffle Host Role: {role_name(s.get('raffle_host_role_id'))}\n"
-            f"Jump ping roles: {', '.join(jump_ping_mentions) if jump_ping_mentions else 'None selected'}"
+            f"Jump ping roles: {', '.join(jump_ping_mentions) if jump_ping_mentions else 'None selected'}\n"
+            f"Jewelry alert roles: {', '.join(jewelry_mentions) if jewelry_mentions else 'None selected'}"
         ), inline=False)
         host_tax_type = str(s.get('host_tax_type') or '').strip().lower()
         host_tax_enabled = bool(s.get('host_tax_enabled'))
@@ -642,7 +649,8 @@ def _channels_embed() -> discord.Embed:
         "- **Pools purchase panel channel**: where the pool buy-in panel is posted.\n"
         "- **Raffle announcement channel**: where new raffle announcements are posted.\n"
         "- **Raffle purchase panel channel**: where paid raffle purchase panels are posted.\n"
-        "- **Raffle giveaway purchase panel channel**: where giveaway raffle panels are posted (falls back to raffle purchase panel channel).",
+        "- **Raffle giveaway purchase panel channel**: where giveaway raffle panels are posted (falls back to raffle purchase panel channel).\n"
+        "- **Jewelry alert channel**: where the bot posts “Jewlery store wide open” shoplifting window alerts.",
     )
 
 
@@ -736,6 +744,7 @@ class ChannelsViewPage4(BackView):
         super().__init__(**kwargs)
         self.remove_item(self.back_btn)
         self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Set insurance requests channel", row=0))
+        self.add_item(ChannelSelect(self.panel, "jewelry_alert_channel_id", "Set jewelry alert channel", row=1))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -965,6 +974,7 @@ class RolesViewPage2(BackView):
         super().__init__(**kwargs)
         self.remove_item(self.back_btn)
         self.add_item(AdminRoleSelect(self.panel, setting_key="jump_ping_role_ids", placeholder="Set jump ping role(s)", row=0))
+        self.add_item(AdminRoleSelect(self.panel, setting_key="jewelry_alert_role_ids", placeholder="Set jewelry alert role(s)", row=1))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def roles_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
