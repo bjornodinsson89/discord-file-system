@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import heapq
 import math
 import re
 import time
@@ -19,7 +18,6 @@ from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimi
 BANK_MAX_AMOUNT = 2_000_000_000
 CACHE_TTL_SECONDS = 3600
 STALE_MAX_AGE_SECONDS = 21600
-BUCKET_SIZE = 1_000_000
 DURATIONS_DAYS = {"1w": 7, "2w": 14, "1m": 30, "2m": 60, "3m": 90}
 
 
@@ -64,39 +62,35 @@ def compute_profit(amount: int, apr_percent: float, days: int, merits: int, tci:
     return total_profit, profit_per_day, apr_effective * 100.0
 
 
-def planner_to_goal(start_amount: int, rates: dict[str, float], merits: int, tci: bool) -> tuple[int, list[dict[str, Any]]]:
-    if start_amount >= BANK_MAX_AMOUNT:
-        return 0, []
+def time_to_goal_same_duration(
+    start_amount: int,
+    goal: int,
+    apr_percent: float,
+    days: int,
+    merits: int,
+    tci: bool,
+) -> dict[str, float | int | bool]:
+    amount = min(start_amount, goal)
+    total_days = 0
+    cycles = 0
+    hit_safety_limit = False
 
-    pq: list[tuple[int, int, list[dict[str, Any]]]] = []
-    heapq.heappush(pq, (0, start_amount, []))
-    best_days_for_bucket: dict[int, int] = {}
+    while amount < goal:
+        cycles += 1
+        if cycles > 5000:
+            hit_safety_limit = True
+            break
+        total_profit, _, _ = compute_profit(amount, apr_percent, days, merits, tci)
+        amount += total_profit
+        total_days += days
 
-    while pq:
-        days_so_far, amount, path = heapq.heappop(pq)
-        if amount >= BANK_MAX_AMOUNT:
-            return days_so_far, path
-
-        for duration, duration_days in DURATIONS_DAYS.items():
-            apr = float(rates.get(duration) or 0.0)
-            profit, _, _ = compute_profit(amount, apr, duration_days, merits, tci)
-            next_amount = min(BANK_MAX_AMOUNT, amount + profit)
-            next_days = days_so_far + duration_days
-            next_bucket = next_amount // BUCKET_SIZE
-            best = best_days_for_bucket.get(next_bucket)
-            if best is not None and next_days >= best:
-                continue
-            best_days_for_bucket[next_bucket] = next_days
-            step = {
-                "duration": duration,
-                "days": duration_days,
-                "start": amount,
-                "profit": profit,
-                "end": next_amount,
-            }
-            heapq.heappush(pq, (next_days, next_amount, path + [step]))
-
-    raise ValueError("Unable to find investment path.")
+    return {
+        "total_days": total_days,
+        "cycles": cycles,
+        "years": round(total_days / 365.0, 1),
+        "final_amount": amount,
+        "hit_safety_limit": hit_safety_limit,
+    }
 
 
 class BankCog(commands.Cog):
@@ -243,36 +237,62 @@ class BankCog(commands.Cog):
                 best_per_day = per_day
                 best_duration = (duration, total_profit, per_day)
 
-        path_days, path_steps = planner_to_goal(invest_amount, rates, merits, tci_enabled)
-        cycles = len(path_steps)
-        shown_steps = path_steps[:8]
-        step_lines = [
-            f"{idx}. {step['duration']} ({step['days']}d): ${step['start']:,} + ${step['profit']:,} = ${step['end']:,}"
-            for idx, step in enumerate(shown_steps, start=1)
-        ]
-        if cycles > 8:
-            step_lines.append("...")
-            final_step = path_steps[-1]
-            step_lines.append(
-                f"{cycles}. {final_step['duration']} ({final_step['days']}d): ${final_step['start']:,} + ${final_step['profit']:,} = ${final_step['end']:,}"
-            )
-
-        table_lines = ["Dur  Days   APR%   EffAPR%      Profit   Profit/Day"]
+        table_lines = ["Dur Days   APR% EffAPR%      Profit      /day"]
         for duration, total_profit, per_day, eff_apr in rows:
             days = DURATIONS_DAYS[duration]
             apr = float(rates.get(duration) or 0.0)
+            is_best = best_duration and duration == best_duration[0]
+            star = " ⭐" if is_best else ""
             table_lines.append(
-                f"{duration:<3} {days:>4} {apr:>6.2f} {eff_apr:>9.2f} ${total_profit:>11,} ${per_day:>11,}"
+                f"{duration:<2} {days:>4} {apr:>6.2f} {eff_apr:>7.2f} ${total_profit:>11,} ${per_day:>9,}{star}"
+            )
+
+        timeline_rows: list[dict[str, str | int | float | bool]] = []
+        for duration in ["1w", "2w", "1m", "2m", "3m"]:
+            duration_days = DURATIONS_DAYS[duration]
+            apr = float(rates.get(duration) or 0.0)
+            sim = time_to_goal_same_duration(
+                start_amount=invest_amount,
+                goal=BANK_MAX_AMOUNT,
+                apr_percent=apr,
+                days=duration_days,
+                merits=merits,
+                tci=tci_enabled,
+            )
+            timeline_rows.append(
+                {
+                    "duration": duration,
+                    "days": duration_days,
+                    "total_days": int(sim["total_days"]),
+                    "cycles": int(sim["cycles"]),
+                    "years": float(sim["years"]),
+                    "hit_safety_limit": bool(sim["hit_safety_limit"]),
+                }
+            )
+
+        timeline_rows.sort(key=lambda item: int(item["total_days"]))
+        c_lines = [
+            "C) Time to reach $2,000,000,000 (reinvest-only, same duration)",
+            f"Start: ${invest_amount:,} → Goal: ${BANK_MAX_AMOUNT:,}",
+        ]
+        for idx, item in enumerate(timeline_rows):
+            marker = "⭐ " if idx == 0 else "   "
+            if item["hit_safety_limit"]:
+                c_lines.append(
+                    f"{marker}{item['duration']:<2} ({item['days']:>2}d): safety stop (>5000 cycles)"
+                )
+                continue
+            c_lines.append(
+                f"{marker}{item['duration']:<2} ({item['days']:>2}d): {item['total_days']:>4} days (~{item['years']:.1f}y) | {item['cycles']:>3} cycles"
             )
 
         description = (
             f"**A) ⭐ Best duration right now:** `{best_duration[0]}`\n"
-            f"Profit: **${best_duration[1]:,}** | Profit/day: **${best_duration[2]:,}**\n\n"
+            f"Profit: **${best_duration[1]:,}** | Profit/day: **${best_duration[2]:,}**\n"
+            f"Base APR: **{float(rates.get(best_duration[0]) or 0.0):.2f}%** → Effective: **{next(eff for dur, _, _, eff in rows if dur == best_duration[0]):.2f}%**\n\n"
             f"**B) All durations**\n"
             f"```\n" + "\n".join(table_lines) + "\n```\n"
-            f"**C) Quickest path to $2,000,000,000 (reinvest-only)**\n"
-            f"ETA: **{path_days} days** | Cycles: **{cycles}**\n"
-            + ("\n".join(step_lines) if step_lines else "Already at bank cap.")
+            f"```\n" + "\n".join(c_lines) + "\n```"
         )
 
         embed = create_info_embed("Bank Investment Calculator", description)
@@ -282,7 +302,7 @@ class BankCog(commands.Cog):
         embed.add_field(name="Bank Cap", value=f"${BANK_MAX_AMOUNT:,}", inline=True)
         if excess_amount > 0:
             embed.add_field(name="Excess Not Invested", value=f"${excess_amount:,}", inline=True)
-        embed.set_footer(text="Assumes current APR snapshot, Torn rounding rules, immediate reinvest at maturity, and 1h cached rates per server.")
+        embed.set_footer(text="Assumes current APR snapshot, Torn rounding rules, immediate reinvest at maturity, and 1h cached rates.")
         await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
