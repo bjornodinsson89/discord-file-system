@@ -7,7 +7,6 @@ import discord
 
 from repositories.casino_core import CasinoCoreRepository
 from repositories.users import UsersRepository
-from services.casino_core.ledger import trunc_json
 from services.casino_core.settings import get_house_config
 from utils import GuildSettingsRepository, get_database, get_security_manager, get_torn_api
 from utils.database import get_pool
@@ -101,7 +100,6 @@ class CasinoDepositService:
                             "torn_name": user_row.get("torn_name") or "Unknown",
                             "torn_user_id": int(user_row.get("torn_user_id") or 0),
                             "timestamp": int(log.get("timestamp") or int(datetime.now(tz=timezone.utc).timestamp())),
-                            "excerpt": trunc_json(log, 300),
                         }
                     )
 
@@ -116,7 +114,6 @@ class CasinoDepositService:
                         em.description = f"Player: <@{discord_id}>\nQty: **{payload['qty']}**\nLog: `{payload['log_id']}`"
                         em.add_field(name="Player Torn", value=f"{payload['torn_name']} ({payload['torn_user_id']})", inline=False)
                         em.add_field(name="Timestamp", value=f"<t:{payload['timestamp']}:f>", inline=False)
-                        em.add_field(name="Log Excerpt", value=f"```json\n{payload['excerpt']}\n```", inline=False)
                         await house_user.send(embed=em)
             except Exception as exc:
                 logging.warning("Casino deposit credited but house DM failed for guild_id=%s discord_id=%s: %s", guild_id, discord_id, exc)
