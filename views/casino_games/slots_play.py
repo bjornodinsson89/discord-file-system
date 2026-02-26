@@ -47,6 +47,7 @@ class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
         self.view.current_bet = value
         await interaction.response.defer()
         await self.view.refresh_state()
+        self.view._update_spin_enabled()
         idle_file = self.view._idle_file()
         await interaction.edit_original_response(
             content="",
@@ -71,6 +72,9 @@ class SlotsPlayView(discord.ui.View):
         balance: int,
         pool_tokens: int,
         pool_millis: int,
+        house_discord_id: int = 0,
+        house_torn_id: int = 0,
+        payout_proof_channel_id: int = 0,
     ):
         super().__init__(timeout=3600)
         self.guild_id = int(guild_id)
@@ -85,7 +89,11 @@ class SlotsPlayView(discord.ui.View):
         self.balance = int(balance)
         self.pool_tokens = int(pool_tokens)
         self.pool_millis = int(pool_millis)
+        self.house_discord_id = int(house_discord_id or 0)
+        self.house_torn_id = int(house_torn_id or 0)
+        self.payout_proof_channel_id = int(payout_proof_channel_id or 0)
         self.message: discord.Message | None = None
+        self._update_spin_enabled()
 
     async def on_timeout(self) -> None:
         for child in self.children:
@@ -96,6 +104,12 @@ class SlotsPlayView(discord.ui.View):
                 await self.message.edit(view=self)
         except Exception:
             pass
+
+    def _update_spin_enabled(self) -> None:
+        can_spin = int(self.balance) >= int(self.current_bet)
+        for child in self.children:
+            if isinstance(child, discord.ui.Button) and child.label and child.label.startswith("Spin"):
+                child.disabled = not can_spin
 
     def _pool_label(self) -> str:
         if self.pool_millis > 0:
@@ -126,7 +140,15 @@ class SlotsPlayView(discord.ui.View):
         self, jackpot_str: str, status: str, payout: int | None, image_name: str | None
     ) -> discord.Embed:
         em = discord.Embed(title="🎰 7️⃣7️⃣7️⃣  S L O T S  7️⃣7️⃣7️⃣ 🎰")
-        desc = f"**Jackpot:** `{jackpot_str}`\n\n**{status}**"
+        house_line = (
+            f"**House:** <@{self.house_discord_id}> (send payments to this user)"
+            if self.house_discord_id
+            else "**House:** Not set (admins: configure House in /back_of_house)"
+        )
+        desc = f"{house_line}\n"
+        if self.payout_proof_channel_id:
+            desc += f"**Proof Channel:** <#{self.payout_proof_channel_id}>\n"
+        desc += f"**Jackpot:** `{jackpot_str}`\n\n**{status}**"
         if payout is not None:
             desc += f"\n**Payout:** `{payout}`"
         em.description = desc
@@ -135,6 +157,7 @@ class SlotsPlayView(discord.ui.View):
         return em
 
     def build_embed(self) -> discord.Embed:
+        self._update_spin_enabled()
         return self._status_embed(self._pool_label(), "R E A D Y", None, "slots.png")
 
     def build_content(self) -> str:
@@ -149,6 +172,10 @@ class SlotsPlayView(discord.ui.View):
         self.min_bet = int(self.config.get("min_bet") or 1)
         self.max_bet = int(self.config.get("max_bet") or self.min_bet)
         self.current_bet = max(self.min_bet, min(self.current_bet, self.max_bet))
+        self.house_discord_id = int(snapshot.get("house_discord_id") or 0)
+        self.house_torn_id = int(snapshot.get("house_torn_id") or 0)
+        self.payout_proof_channel_id = int(snapshot.get("payout_proof_channel_id") or 0)
+        self._update_spin_enabled()
 
     @discord.ui.button(label="Set Bet", style=discord.ButtonStyle.secondary)
     async def set_bet(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -160,15 +187,29 @@ class SlotsPlayView(discord.ui.View):
         await interaction.response.defer()
 
         try:
+            if int(self.balance) < int(self.current_bet):
+                raise SlotsError(
+                    f"Not enough tokens. Balance is {int(self.balance)}, bet is {int(self.current_bet)}."
+                )
+
             result = await self.service.spin(self.guild_id, self.discord_id, self.current_bet)
             self.balance = int(result["balance_after"])
             self.pool_tokens = int(result["pool_after_tokens"])
-            self.pool_millis = int(result["pool_after_millis"])
+            self.pool_millis = int(result.get("pool_after_millis") or 0)
             self.config = dict(result.get("config") or self.config)
+            self.min_bet = int(self.config.get("min_bet") or self.min_bet)
+            self.max_bet = int(self.config.get("max_bet") or self.max_bet)
+            self.current_bet = max(self.min_bet, min(self.current_bet, self.max_bet))
+            self.house_discord_id = int(result.get("house_discord_id") or self.house_discord_id)
+            self.house_torn_id = int(result.get("house_torn_id") or self.house_torn_id)
+            self.payout_proof_channel_id = int(
+                result.get("payout_proof_channel_id") or self.payout_proof_channel_id
+            )
+            self._update_spin_enabled()
 
-            final_reels = [int(v) for v in (result.get("reels") or [])][:3]
+            final_reels = [int(x) for x in (result.get("reels") or [])][:3]
             while len(final_reels) < 3:
-                final_reels.append(REEL_CYCLE[0])
+                final_reels.append(REEL_CYCLE[len(final_reels) % len(REEL_CYCLE)])
 
             payout = int(result["payout"])
             bet = int(result["bet"])
@@ -193,6 +234,7 @@ class SlotsPlayView(discord.ui.View):
                         self._pool_label(), "S P I N N I N G …", None, None
                     )
                     spinning_embed.set_image(url=slot_url)
+                    self._update_spin_enabled()
                     await interaction.edit_original_response(
                         content="",
                         embed=spinning_embed,
@@ -209,6 +251,7 @@ class SlotsPlayView(discord.ui.View):
 
                     tmp = self._status_embed(self._pool_label(), final_status, payout, None)
                     spinning_embed.description = tmp.description
+                    self._update_spin_enabled()
                     await interaction.edit_original_response(
                         content="",
                         embed=spinning_embed,
@@ -228,6 +271,7 @@ class SlotsPlayView(discord.ui.View):
                 self._pool_label(), "S P I N N I N G …", None, "slots.png"
             )
             idle_file = self._idle_file()
+            self._update_spin_enabled()
             await interaction.edit_original_response(
                 content="",
                 embed=spinning_embed,
@@ -255,6 +299,7 @@ class SlotsPlayView(discord.ui.View):
             spinning_embed_gif = self._status_embed(
                 self._pool_label(), "S P I N N I N G …", None, "slots.gif"
             )
+            self._update_spin_enabled()
             await interaction.edit_original_response(
                 content="",
                 embed=spinning_embed_gif,
@@ -270,6 +315,7 @@ class SlotsPlayView(discord.ui.View):
             await asyncio.sleep(animation_seconds(SPIN_FRAMES, SPIN_DURATION_MS) + 0.15)
 
             result_embed = self._status_embed(self._pool_label(), final_status, payout, "slots.gif")
+            self._update_spin_enabled()
             await interaction.edit_original_response(
                 content="",
                 embed=result_embed,
@@ -285,6 +331,7 @@ class SlotsPlayView(discord.ui.View):
             await self.service.post_big_win_announce(interaction, result)
         except SlotsCooldownError as exc:
             idle_file = self._idle_file()
+            self._update_spin_enabled()
             await interaction.edit_original_response(
                 content="",
                 embed=self._status_embed(
@@ -300,6 +347,7 @@ class SlotsPlayView(discord.ui.View):
                     pass
         except SlotsError as exc:
             idle_file = self._idle_file()
+            self._update_spin_enabled()
             await interaction.edit_original_response(
                 content="",
                 embed=self._status_embed(self._pool_label(), f"❌ {exc}", None, "slots.png"),
@@ -314,6 +362,7 @@ class SlotsPlayView(discord.ui.View):
         except Exception:
             log.exception("slots.spin_failed")
             idle_file = self._idle_file()
+            self._update_spin_enabled()
             await interaction.edit_original_response(
                 content="",
                 embed=self._status_embed(
@@ -328,7 +377,7 @@ class SlotsPlayView(discord.ui.View):
                 except Exception:
                     pass
         finally:
-            button.disabled = False
+            self._update_spin_enabled()
             await interaction.edit_original_response(view=self)
             if getattr(self, "message", None) is None:
                 try:
@@ -340,6 +389,7 @@ class SlotsPlayView(discord.ui.View):
     async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer()
         await self.refresh_state()
+        self._update_spin_enabled()
         embed = self._status_embed(self._pool_label(), "R E A D Y", None, "slots.png")
         await interaction.edit_original_response(
             content="", embed=embed, view=self, attachments=[self._idle_file()]
