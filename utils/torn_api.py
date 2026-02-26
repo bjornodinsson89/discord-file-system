@@ -362,6 +362,13 @@ class TornAPIClient:
             raise TornAPIError("Bank rates missing from Torn response.")
         return bank
 
+    async def get_shoplifting(self, api_key: str) -> Dict:
+        data = await self._request("/torn", {"selections": "shoplifting", "key": api_key})
+        shoplifting = (data or {}).get("shoplifting")
+        if not isinstance(shoplifting, dict) or not shoplifting:
+            raise TornAPIError("Shoplifting data missing from Torn response.")
+        return shoplifting
+
     async def verify_payment(
         self,
         api_key: str,

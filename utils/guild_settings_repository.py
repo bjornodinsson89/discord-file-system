@@ -64,6 +64,10 @@ class GuildSettingsRepository:
         "casino_house",
         "casino_games",
         "bank_rates_api_key_encrypted",
+        "jewelry_alert_channel_id",
+        "jewelry_alert_role_ids",
+        "jewelry_alert_active_message_id",
+        "jewelry_alert_last_clear",
     }
     BIGINT_FIELDS = {
         "announce_channel_id",
@@ -86,6 +90,8 @@ class GuildSettingsRepository:
         "raffle_host_role_id",
         "default_max_slots",
         "host_tax_cash_amount",
+        "jewelry_alert_channel_id",
+        "jewelry_alert_active_message_id",
     }
     BOOLEAN_FIELDS = {
         "welcome_enabled",
@@ -94,6 +100,7 @@ class GuildSettingsRepository:
         "host_tax_enabled",
         "disable_99k_announcements",
         "casino_enabled",
+        "jewelry_alert_last_clear",
     }
     DEFAULT_KEYS = {
         "guild_id": None,
@@ -134,6 +141,10 @@ class GuildSettingsRepository:
         "casino_house": {},
         "casino_games": {},
         "bank_rates_api_key_encrypted": None,
+        "jewelry_alert_channel_id": None,
+        "jewelry_alert_role_ids": [],
+        "jewelry_alert_active_message_id": None,
+        "jewelry_alert_last_clear": False,
     }
 
     def __init__(self, db_manager):
@@ -293,6 +304,11 @@ class GuildSettingsRepository:
                     value, guild_id=guild_id, field_name=key
                 )
                 continue
+            if key == "jewelry_alert_role_ids":
+                normalized[key] = self._normalize_role_id_list(
+                    value, guild_id=guild_id, field_name=key
+                )
+                continue
             if (
                 key
                 in {
@@ -327,6 +343,11 @@ class GuildSettingsRepository:
         data["jump_ping_role_ids"] = self._normalize_role_id_list(
             data.get("jump_ping_role_ids"), guild_id=guild_id, field_name="jump_ping_role_ids"
         )
+        data["jewelry_alert_role_ids"] = self._normalize_role_id_list(
+            data.get("jewelry_alert_role_ids"),
+            guild_id=guild_id,
+            field_name="jewelry_alert_role_ids",
+        )
         return data
 
     async def _db_insert_or_get_settings(self, guild_id: int) -> Optional[dict[str, Any]]:
@@ -356,7 +377,13 @@ class GuildSettingsRepository:
 
             for index, (key, value) in enumerate(fields.items(), start=2):
                 columns.append(key)
-                if key in {"admin_role_ids", "jump_ping_role_ids", "casino_house", "casino_games"}:
+                if key in {
+                    "admin_role_ids",
+                    "jump_ping_role_ids",
+                    "jewelry_alert_role_ids",
+                    "casino_house",
+                    "casino_games",
+                }:
                     placeholders.append(f"${index}::jsonb")
                     values.append(_jsonb(value))
                 else:
@@ -389,7 +416,13 @@ class GuildSettingsRepository:
             sets = []
             values = []
             for i, (key, value) in enumerate(fields.items(), 1):
-                if key in {"admin_role_ids", "jump_ping_role_ids", "casino_house", "casino_games"}:
+                if key in {
+                    "admin_role_ids",
+                    "jump_ping_role_ids",
+                    "jewelry_alert_role_ids",
+                    "casino_house",
+                    "casino_games",
+                }:
                     sets.append(f"{key} = ${i}::jsonb")
                     values.append(_jsonb(value))
                 else:
@@ -469,6 +502,10 @@ class GuildSettingsRepository:
             "casino_house": {},
             "casino_games": {},
             "bank_rates_api_key_encrypted": None,
+            "jewelry_alert_channel_id": None,
+            "jewelry_alert_role_ids": [],
+            "jewelry_alert_active_message_id": None,
+            "jewelry_alert_last_clear": False,
         }
         row = await self._db_insert_settings(guild_id, defaults)
         return self._merge_defaults(row, guild_id)
