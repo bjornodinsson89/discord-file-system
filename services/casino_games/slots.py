@@ -130,6 +130,8 @@ class CasinoSlotsService:
 
     async def get_balance_and_pool(self, guild_id: int, discord_id: int) -> dict:
         cfg = await self.ensure_slots_config(guild_id)
+        settings = await self.settings_repo.get_or_create(int(guild_id))
+        house = get_house_config(settings)
         user_row = await self.users_repo.get_user_api_key(int(discord_id))
         wallet = await self.casino_repo.get_or_create_wallet(
             guild_id=int(guild_id),
@@ -150,6 +152,9 @@ class CasinoSlotsService:
             "pool_tokens": int(pool.get("tokens") or 0),
             "pool_millis": int(pool.get("millis") or 0),
             "config": cfg,
+            "house_discord_id": int((house or {}).get("house_discord_id") or 0),
+            "house_torn_id": int((house or {}).get("house_torn_id") or 0),
+            "payout_proof_channel_id": int((house or {}).get("payout_proof_channel_id") or 0),
         }
 
     async def spin(self, guild_id: int, discord_id: int, bet: int) -> dict:
@@ -181,6 +186,9 @@ class CasinoSlotsService:
                     torn_user_id=int((user_row or {}).get("torn_user_id") or 0),
                     torn_name=(user_row or {}).get("torn_name") or "",
                 )
+                current_balance = int(wallet.get("balance_tokens") or 0)
+                if bet > current_balance:
+                    raise SlotsError(f"Not enough tokens. Balance is {current_balance}, bet is {bet}.")
 
                 available_at = await self.casino_repo.get_cooldown(
                     conn,
@@ -227,17 +235,22 @@ class CasinoSlotsService:
                     result_json={"status": "pending", "nonce": nonce},
                 )
 
-                wallet = await self.casino_repo.apply_ledger_entry_atomic(
-                    conn,
-                    guild_id=int(guild_id),
-                    wallet_id=int(wallet["id"]),
-                    entry_type="wager_debit",
-                    amount_tokens=-bet,
-                    idempotency_key=f"slots:{round_id}:bet",
-                    ref_type="casino_game_rounds",
-                    ref_id=round_id,
-                    metadata={"game": "slots"},
-                )
+                try:
+                    wallet = await self.casino_repo.apply_ledger_entry_atomic(
+                        conn,
+                        guild_id=int(guild_id),
+                        wallet_id=int(wallet["id"]),
+                        entry_type="wager_debit",
+                        amount_tokens=-bet,
+                        idempotency_key=f"slots:{round_id}:bet",
+                        ref_type="casino_game_rounds",
+                        ref_id=round_id,
+                        metadata={"game": "slots"},
+                    )
+                except ValueError as exc:
+                    if "Insufficient wallet balance" in str(exc):
+                        raise SlotsError("Not enough tokens for that bet. Deposit more or lower your bet.") from exc
+                    raise
 
                 contrib_millis = int((bet * int(cfg.get("jackpot_contrib_bps") or 0) * 1000) // 10000)
                 pool_after_contrib = await self.casino_repo.add_to_pool(
@@ -379,6 +392,9 @@ class CasinoSlotsService:
                     "contrib_millis": contrib_millis,
                     "round_id": int(round_id),
                     "config": cfg,
+                    "house_discord_id": int((house or {}).get("house_discord_id") or 0),
+                    "house_torn_id": int((house or {}).get("house_torn_id") or 0),
+                    "payout_proof_channel_id": int((house or {}).get("payout_proof_channel_id") or 0),
                 }
 
                 big_wins_channel_id = int((house or {}).get("big_wins_channel_id") or 0)
