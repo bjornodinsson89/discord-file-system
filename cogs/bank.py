@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import re
 import time
 from typing import Any
@@ -10,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils.database import get_database, get_pool
+from utils.database import get_database
 from utils import GuildSettingsRepository, get_security_manager, get_torn_api
 from utils.embeds import create_info_embed, create_error_embed
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
@@ -169,14 +168,14 @@ class BankCog(commands.Cog):
         except ValueError as exc:
             await interaction.response.send_message(
                 embed=create_error_embed("Invalid input", str(exc)),
-                ephemeral=False,
+                ephemeral=True,
             )
             return
 
         if starting_amount <= 0:
             await interaction.response.send_message(
                 embed=create_error_embed("Invalid amount", "Amount must be greater than 0."),
-                ephemeral=False,
+                ephemeral=True,
             )
             return
 
@@ -188,7 +187,7 @@ class BankCog(commands.Cog):
                     "Not configured",
                     "Bank rates API key is not configured yet. Ask an admin to set it in `/setup` → Feature Toggles.",
                 ),
-                ephemeral=False,
+                ephemeral=True,
             )
             return
 
@@ -197,7 +196,7 @@ class BankCog(commands.Cog):
         except Exception:
             await interaction.response.send_message(
                 embed=create_error_embed("Configuration error", "Stored bank rates API key could not be read. Ask an admin to re-save it in setup."),
-                ephemeral=False,
+                ephemeral=True,
             )
             return
 
@@ -206,19 +205,19 @@ class BankCog(commands.Cog):
         except TornAPIPermissionError:
             await interaction.response.send_message(
                 embed=create_error_embed("Bank rates unavailable", "The configured bank rates API key does not have required Torn access."),
-                ephemeral=False,
+                ephemeral=True,
             )
             return
         except TornAPIRateLimitError:
             await interaction.response.send_message(
                 embed=create_error_embed("Bank rates unavailable", "Torn API is rate limited right now. Try again shortly."),
-                ephemeral=False,
+                ephemeral=True,
             )
             return
         except TornAPIError:
             await interaction.response.send_message(
                 embed=create_error_embed("Bank rates unavailable", "Could not fetch bank rates from Torn right now. Please try again later."),
-                ephemeral=False,
+                ephemeral=True,
             )
             return
 
@@ -226,26 +225,25 @@ class BankCog(commands.Cog):
         excess_amount = max(0, starting_amount - BANK_MAX_AMOUNT)
 
         rows: list[tuple[str, int, int, float]] = []
-        best_duration = None
-        best_per_day = -math.inf
+        best_duration: tuple[str, int, int, float, int] | None = None
         for duration in ["1w", "2w", "1m", "2m", "3m"]:
             apr = float(rates.get(duration) or 0.0)
             days = DURATIONS_DAYS[duration]
             total_profit, per_day, eff_apr = compute_profit(invest_amount, apr, days, merits, tci_enabled)
             rows.append((duration, total_profit, per_day, eff_apr))
-            if per_day > best_per_day:
-                best_per_day = per_day
-                best_duration = (duration, total_profit, per_day)
+            if (
+                best_duration is None
+                or per_day > best_duration[2]
+                or (per_day == best_duration[2] and total_profit > best_duration[1])
+                or (per_day == best_duration[2] and total_profit == best_duration[1] and days < best_duration[4])
+            ):
+                best_duration = (duration, total_profit, per_day, eff_apr, days)
 
-        table_lines = ["Dur Days   APR% EffAPR%      Profit      /day"]
+        table_lines = ["Dur EffAPR%       Profit       /day"]
         for duration, total_profit, per_day, eff_apr in rows:
-            days = DURATIONS_DAYS[duration]
-            apr = float(rates.get(duration) or 0.0)
-            is_best = best_duration and duration == best_duration[0]
+            is_best = best_duration is not None and duration == best_duration[0]
             star = " ⭐" if is_best else ""
-            table_lines.append(
-                f"{duration:<2} {days:>4} {apr:>6.2f} {eff_apr:>7.2f} ${total_profit:>11,} ${per_day:>9,}{star}"
-            )
+            table_lines.append(f"{duration:<2} {eff_apr:>7.2f}% ${total_profit:>12,} ${per_day:>10,}{star}")
 
         timeline_rows: list[dict[str, str | int | float | bool]] = []
         for duration in ["1w", "2w", "1m", "2m", "3m"]:
@@ -271,39 +269,41 @@ class BankCog(commands.Cog):
             )
 
         timeline_rows.sort(key=lambda item: int(item["total_days"]))
-        c_lines = [
-            "C) Time to reach $2,000,000,000 (reinvest-only, same duration)",
-            f"Start: ${invest_amount:,} → Goal: ${BANK_MAX_AMOUNT:,}",
-        ]
+        c_lines = ["Time to $2B (reinvest-only, same duration)"]
         for idx, item in enumerate(timeline_rows):
             marker = "⭐ " if idx == 0 else "   "
             if item["hit_safety_limit"]:
                 c_lines.append(
-                    f"{marker}{item['duration']:<2} ({item['days']:>2}d): safety stop (>5000 cycles)"
+                    f"{marker}{item['duration']}: safety stop (>5000 cycles)"
                 )
                 continue
             c_lines.append(
-                f"{marker}{item['duration']:<2} ({item['days']:>2}d): {item['total_days']:>4} days (~{item['years']:.1f}y) | {item['cycles']:>3} cycles"
+                f"{marker}{item['duration']}: {item['total_days']}d (~{item['years']:.1f}y) | {item['cycles']} cycles"
             )
 
+        if best_duration is None:
+            await interaction.response.send_message(
+                embed=create_error_embed("Bank rates unavailable", "No valid bank durations were returned."),
+                ephemeral=True,
+            )
+            return
+
         description = (
-            f"**A) ⭐ Best duration right now:** `{best_duration[0]}`\n"
-            f"Profit: **${best_duration[1]:,}** | Profit/day: **${best_duration[2]:,}**\n"
-            f"Base APR: **{float(rates.get(best_duration[0]) or 0.0):.2f}%** → Effective: **{next(eff for dur, _, _, eff in rows if dur == best_duration[0]):.2f}%**\n\n"
-            f"**B) All durations**\n"
-            f"```\n" + "\n".join(table_lines) + "\n```\n"
-            f"```\n" + "\n".join(c_lines) + "\n```"
+            f"⭐ Best duration: {best_duration[0]}\n"
+            f"Profit: ${best_duration[1]:,} | Profit/day: ${best_duration[2]:,} | Eff APR: {best_duration[3]:.2f}%\n"
+            f"```text\n" + "\n".join(table_lines) + "\n```\n"
+            "```text\n" + "\n".join(c_lines[:6]) + "\n```"
         )
 
         embed = create_info_embed("Bank Investment Calculator", description)
         embed.add_field(name="Starting Amount", value=f"${starting_amount:,}", inline=True)
-        embed.add_field(name="Merits", value=str(merits), inline=True)
+        embed.add_field(name="Merits", value=f"{merits}/10", inline=True)
         embed.add_field(name="TCI", value="Yes" if tci_enabled else "No", inline=True)
         embed.add_field(name="Bank Cap", value=f"${BANK_MAX_AMOUNT:,}", inline=True)
         if excess_amount > 0:
             embed.add_field(name="Excess Not Invested", value=f"${excess_amount:,}", inline=True)
-        embed.set_footer(text="Assumes current APR snapshot, Torn rounding rules, immediate reinvest at maturity, and 1h cached rates.")
-        await interaction.response.send_message(embed=embed, ephemeral=False)
+        embed.set_footer(text="Assumes current APR snapshot, Torn rounding rules, immediate reinvest at maturity, 1h cached rates.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
