@@ -21,7 +21,7 @@ SLOTS_JACKPOT_POOL_KEY = "slots_jackpot"
 log = logging.getLogger(__name__)
 
 DEFAULT_SLOTS_CONFIG = {
-    "config_version": 5,
+    "config_version": 6,
     "enabled": True,
     "min_bet": 1,
     "max_bet": 3,
@@ -56,11 +56,11 @@ DEFAULT_SLOTS_CONFIG = {
     "reel_strip_order": [9090, 281, 197, 865, 366, 206],
     "reel_stop_counts": {
         "9090": 20,
-        "281": 23,
-        "197": 44,
-        "865": 24,
-        "366": 120,
-        "206": 25,
+        "281": 47,
+        "197": 47,
+        "865": 47,
+        "366": 47,
+        "206": 48,
     },
     "jackpot_multiplier": 50.0,
     "jackpot_contrib_bps": 300,
@@ -84,6 +84,8 @@ DEFAULT_SLOTS_CONFIG = {
         },
     },
     "pair_left_bonus_mult": 1.10,
+    "pair_push_symbols": [281, 197, 366],
+    "pair_win_symbols": [865, 206],
 }
 
 CANONICAL_SLOTS_CONFIG_KEYS = {
@@ -657,18 +659,22 @@ class CasinoSlotsService:
                 pair_item = int(reels[0])
                 pair_kind = "split"
 
-            base_mult = float(pair.get(pair_item, 0.0))
-            left_bonus_mult = float(config.get("pair_left_bonus_mult") or 1.10)
-            effective_mult = base_mult * (left_bonus_mult if pair_kind == "left" else 1.0)
+            pair_push_symbols = {int(v) for v in list(config.get("pair_push_symbols") or [])}
+            pair_win_symbols = {int(v) for v in list(config.get("pair_win_symbols") or [])}
 
-            payout = self._round_half_up(bet * effective_mult)
-            if effective_mult > 0:
-                payout = max(1, int(payout))
-            else:
-                payout = int(payout)
-            if payout == int(bet):
-                return payout, "push", pair_item
-            return payout, "small", pair_item
+            if pair_item in pair_push_symbols:
+                return int(bet), "push", pair_item
+
+            if pair_item in pair_win_symbols:
+                base_mult = float(pair.get(pair_item, 0.0))
+                left_bonus_mult = float(config.get("pair_left_bonus_mult") or 1.10)
+                effective_mult = base_mult * (left_bonus_mult if pair_kind == "left" else 1.0)
+                payout = int(self._round_half_up(bet * effective_mult))
+                if payout <= int(bet):
+                    return int(bet), "push", pair_item
+                return int(payout), "small", pair_item
+
+            return 0, "loss", pair_item
 
         return 0, "loss", None
 
