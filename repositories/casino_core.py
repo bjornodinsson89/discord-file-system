@@ -122,34 +122,6 @@ class CasinoCoreRepository(RepositoryBase):
         )
         return dict(row)
 
-    async def set_slots_client_seed(
-        self,
-        conn: asyncpg.Connection,
-        guild_id: int,
-        discord_id: int,
-        client_seed: str,
-    ) -> dict:
-        await self.get_or_create_slots_player_state(
-            conn,
-            int(guild_id),
-            int(discord_id),
-            for_update=True,
-        )
-        row = await conn.fetchrow(
-            """
-            UPDATE casino_slots_player_state
-            SET client_seed = $3,
-                nonce = 0,
-                updated_at = NOW()
-            WHERE guild_id = $1 AND discord_id = $2
-            RETURNING *
-            """,
-            int(guild_id),
-            int(discord_id),
-            str(client_seed),
-        )
-        return dict(row)
-
     async def get_or_create_retention_state(
         self,
         guild_id: int,

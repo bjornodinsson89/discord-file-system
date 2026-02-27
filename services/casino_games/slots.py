@@ -74,7 +74,7 @@ DEFAULT_SLOTS_CONFIG = {
         {"item_id": 206, "name": "Xanax", "weight": 6},
     ],
     "payouts": {
-        "triple": {"9090": 1.0, "206": 3.0, "281": 4.0, "197": 6.0, "366": 8.0, "865": 10.0},
+        "triple": {"206": 40.0, "281": 20.0, "197": 10.0, "865": 6.0, "366": 4.0},
         "pair": {"394": 0.2, "707": 0.25, "274": 0.35, "281": 0.35, "197": 0.5, "366": 0.75, "865": 1.5, "206": 2.0},
         "xanax_tease": 0.1,
     },
@@ -210,32 +210,6 @@ class CasinoSlotsService:
             "server_seed_hash": str(server_seed.get("server_seed_hash") or ""),
             "client_seed": str(player_state.get("client_seed") or ""),
             "nonce": int(player_state.get("nonce") or 0),
-            "previous_server_seed": server_seed.get("previous_server_seed"),
-            "previous_server_seed_hash": server_seed.get("previous_server_seed_hash"),
-        }
-
-    async def set_client_seed(self, guild_id: int, discord_id: int, client_seed: str) -> dict:
-        cleaned = str(client_seed).strip()
-        if len(cleaned) < 6 or len(cleaned) > 64:
-            raise SlotsError("Client seed must be between 6 and 64 characters.")
-        if "\n" in cleaned or "\r" in cleaned:
-            raise SlotsError("Client seed cannot contain newlines.")
-        if not all(ch.isprintable() for ch in cleaned):
-            raise SlotsError("Client seed must use printable characters only.")
-
-        async with self.casino_repo.acquire() as conn:
-            async with conn.transaction():
-                row = await self.casino_repo.set_slots_client_seed(
-                    conn,
-                    int(guild_id),
-                    int(discord_id),
-                    cleaned,
-                )
-                server_seed = await self.casino_repo.get_or_create_slots_server_seed(conn, int(guild_id), for_update=False)
-        return {
-            "server_seed_hash": str(server_seed.get("server_seed_hash") or ""),
-            "client_seed": str(row.get("client_seed") or cleaned),
-            "nonce": int(row.get("nonce") or 0),
             "previous_server_seed": server_seed.get("previous_server_seed"),
             "previous_server_seed_hash": server_seed.get("previous_server_seed_hash"),
         }
@@ -701,7 +675,7 @@ class CasinoSlotsService:
             payout = int(math.floor(bet * mult))
             if bet > 0 and payout <= 0:
                 payout = 1
-            return payout, "pair", pair_item
+            return payout, "small", pair_item
 
         if 206 in reels:
             return int(math.floor(bet * xanax_tease)), "xanax_tease", 206
