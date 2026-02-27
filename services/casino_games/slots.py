@@ -21,7 +21,7 @@ SLOTS_JACKPOT_POOL_KEY = "slots_jackpot"
 log = logging.getLogger(__name__)
 
 DEFAULT_SLOTS_CONFIG = {
-    "config_version": 3,
+    "config_version": 5,
     "enabled": True,
     "min_bet": 1,
     "max_bet": 3,
@@ -55,15 +55,18 @@ DEFAULT_SLOTS_CONFIG = {
     ],
     "reel_strip_order": [9090, 281, 197, 865, 366, 206],
     "reel_stop_counts": {
-        "9090": 43,
+        "9090": 20,
         "281": 23,
         "197": 44,
         "865": 24,
-        "366": 97,
+        "366": 120,
         "206": 25,
     },
     "jackpot_multiplier": 50.0,
     "jackpot_contrib_bps": 300,
+    "jackpot_safe_min": 200,
+    "jackpot_safe_max": 2000,
+    "jackpot_enforce_floor": False,
     "jackpot_display_mode": "max_bet_scaled",
     "rtp_target": 0.90,
     "payouts": {
@@ -88,6 +91,9 @@ CANONICAL_SLOTS_CONFIG_KEYS = {
     "reel_stop_counts",
     "jackpot_multiplier",
     "jackpot_contrib_bps",
+    "jackpot_safe_min",
+    "jackpot_safe_max",
+    "jackpot_enforce_floor",
     "jackpot_display_mode",
     "rtp_target",
     "payouts",
@@ -346,15 +352,26 @@ class CasinoSlotsService:
                 )
                 bps = int(cfg.get("jackpot_contrib_bps") or 0)
                 jackpot_pool_contrib_tokens = max(0, (int(bet) * bps) // 10000)
+                pool_before_contrib = int(pool_row.get("tokens") or 0)
+                pool_tokens_post_contrib = int(pool_before_contrib)
+                jackpot_overflow_to_house_tokens = 0
                 if jackpot_pool_contrib_tokens > 0:
-                    pool_row = await self.casino_repo.add_to_pool(
-                        conn,
-                        guild_id=int(guild_id),
-                        pool_key=SLOTS_JACKPOT_POOL_KEY,
-                        add_tokens=int(jackpot_pool_contrib_tokens),
-                        add_millis=0,
+                    safe_max = max(0, int(cfg.get("jackpot_safe_max") or 0))
+                    pool_after_add = int(pool_before_contrib) + int(jackpot_pool_contrib_tokens)
+                    if safe_max > 0 and pool_after_add > safe_max:
+                        jackpot_overflow_to_house_tokens = int(pool_after_add - safe_max)
+                        pool_after_add = int(safe_max)
+                    await conn.execute(
+                        """
+                        UPDATE casino_pools
+                        SET tokens = $3, updated_at = NOW()
+                        WHERE guild_id = $1 AND pool_key = $2
+                        """,
+                        int(guild_id),
+                        SLOTS_JACKPOT_POOL_KEY,
+                        int(pool_after_add),
                     )
-                pool_tokens_post_contrib = int(pool_row.get("tokens") or 0)
+                    pool_tokens_post_contrib = int(pool_after_add)
 
                 virtual_reel = self._build_virtual_reel(cfg)
                 total_stops = len(virtual_reel)
@@ -417,6 +434,37 @@ class CasinoSlotsService:
                     jackpot_pool_after_tokens = int(pool_tokens_post_contrib)
                     jackpot_pool_display_tokens = int(pool_tokens_post_contrib)
 
+                await conn.execute(
+                    """
+                    INSERT INTO casino_slots_accounting (
+                        guild_id,
+                        actor_discord_id,
+                        round_id,
+                        bet,
+                        payout,
+                        win_type,
+                        jackpot_contrib,
+                        jackpot_payout,
+                        jackpot_overflow_to_house,
+                        jackpot_pool_before,
+                        jackpot_pool_after
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                    )
+                    """,
+                    int(guild_id),
+                    int(discord_id),
+                    int(round_id),
+                    int(bet),
+                    int(payout),
+                    str(win_type),
+                    int(jackpot_pool_contrib_tokens),
+                    int(payout if win_type == "jackpot" else 0),
+                    int(jackpot_overflow_to_house_tokens),
+                    int(jackpot_pool_before_tokens),
+                    int(jackpot_pool_after_tokens),
+                )
+
                 if payout > 0:
                     wallet = await self.casino_repo.apply_ledger_entry_atomic(
                         conn,
@@ -468,6 +516,7 @@ class CasinoSlotsService:
                     "jackpot_pool_after_tokens": int(jackpot_pool_after_tokens),
                     "jackpot_pool_contrib_tokens": int(jackpot_pool_contrib_tokens),
                     "jackpot_pool_display_tokens": int(jackpot_pool_display_tokens),
+                    "jackpot_overflow_to_house_tokens": int(jackpot_overflow_to_house_tokens),
                 }
                 if hit_symbol is not None:
                     result_json["hit_symbol"] = int(hit_symbol)
@@ -489,6 +538,7 @@ class CasinoSlotsService:
                     "jackpot_pool_after_tokens": int(jackpot_pool_after_tokens),
                     "jackpot_pool_contrib_tokens": int(jackpot_pool_contrib_tokens),
                     "jackpot_pool_display_tokens": int(jackpot_pool_display_tokens),
+                    "jackpot_overflow_to_house_tokens": int(jackpot_overflow_to_house_tokens),
                     "house_discord_id": int((house or {}).get("house_discord_id") or 0),
                     "house_torn_id": int((house or {}).get("house_torn_id") or 0),
                     "payout_proof_channel_id": int((house or {}).get("payout_proof_channel_id") or 0),

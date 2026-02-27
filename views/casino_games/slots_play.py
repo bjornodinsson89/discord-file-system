@@ -225,6 +225,19 @@ class SlotsPublicResultView(discord.ui.View):
             return "S M A L L  W I N ✅"
         return "W I N ✅"
 
+    async def _safe_message_edit(self, interaction: discord.Interaction, message: discord.Message, **kwargs):
+        try:
+            return await message.edit(**kwargs)
+        except discord.NotFound:
+            try:
+                return await interaction.edit_original_response(**kwargs)
+            except Exception:
+                if interaction.channel is None:
+                    raise
+                new_msg = await interaction.channel.send(**kwargs)
+                self.message = new_msg
+                return new_msg
+
     async def on_timeout(self) -> None:
         for child in self.children:
             if hasattr(child, "disabled"):
@@ -256,7 +269,7 @@ class SlotsPublicResultView(discord.ui.View):
             return
 
         try:
-            await source_message.edit(view=self)
+            await self._safe_message_edit(interaction, source_message, view=self)
 
             snapshot = await self.service.get_balance_and_pool(self.guild_id, self.player_id)
             self.balance_after = int(snapshot["balance"])
@@ -266,7 +279,7 @@ class SlotsPublicResultView(discord.ui.View):
             if int(self.balance_after) < int(self.bet):
                 self.status_label = "❌ Not enough tokens"
                 self._update_spin_enabled()
-                await source_message.edit(view=self)
+                await self._safe_message_edit(interaction, source_message, view=self)
                 return
 
             result = await self.service.spin(self.guild_id, self.player_id, self.bet)
@@ -310,7 +323,7 @@ class SlotsPublicResultView(discord.ui.View):
             if slot_url is not None:
                 result_embed.set_image(url=slot_url)
                 self._update_spin_enabled()
-                await source_message.edit(embed=result_embed, attachments=[], view=self)
+                await self._safe_message_edit(interaction, source_message, embed=result_embed, attachments=[], view=self)
             else:
                 if config.slot_assets_ready():
                     log.warning("slot_assets_cache_miss combo=%s", combo)
@@ -328,28 +341,28 @@ class SlotsPublicResultView(discord.ui.View):
                 if cached_url:
                     result_embed.set_image(url=cached_url)
                     self._update_spin_enabled()
-                    await source_message.edit(embed=result_embed, attachments=[], view=self)
+                    await self._safe_message_edit(interaction, source_message, embed=result_embed, attachments=[], view=self)
                 else:
                     gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
                     result_embed.set_image(url="attachment://slots.gif")
                     self._update_spin_enabled()
-                    await source_message.edit(embed=result_embed, attachments=[gif_file], view=self)
+                    await self._safe_message_edit(interaction, source_message, embed=result_embed, attachments=[gif_file], view=self)
 
             self.message = source_message
             await self.service.post_big_win_announce(interaction, result)
         except SlotsCooldownError as exc:
             self.status_label = f"⏳ Wait {exc.remaining_seconds}s"
             self._update_spin_enabled()
-            await source_message.edit(view=self)
+            await self._safe_message_edit(interaction, source_message, view=self)
         except SlotsError as exc:
             self.status_label = f"❌ {exc}"
             self._update_spin_enabled()
-            await source_message.edit(view=self)
+            await self._safe_message_edit(interaction, source_message, view=self)
         except Exception:
             log.exception("slots.public_result_spin_failed")
             self.status_label = "❌ Slots error. Check logs."
             self._update_spin_enabled()
-            await source_message.edit(view=self)
+            await self._safe_message_edit(interaction, source_message, view=self)
         finally:
             self._spinning = False
 
@@ -405,6 +418,19 @@ class SlotsPlayView(discord.ui.View):
         self.message: discord.Message | None = None
         self._spinning = False
         self._update_spin_enabled()
+
+    async def _safe_message_edit(self, interaction: discord.Interaction, message: discord.Message, **kwargs):
+        try:
+            return await message.edit(**kwargs)
+        except discord.NotFound:
+            try:
+                return await interaction.edit_original_response(**kwargs)
+            except Exception:
+                if interaction.channel is None:
+                    raise
+                new_msg = await interaction.channel.send(**kwargs)
+                self.message = new_msg
+                return new_msg
 
     async def _send_public_spin_result(
         self,
@@ -564,7 +590,7 @@ class SlotsPlayView(discord.ui.View):
                 child.disabled = True
 
         try:
-            await source_message.edit(view=self)
+            await self._safe_message_edit(interaction, source_message, view=self)
 
             if int(self.balance) < int(self.current_bet):
                 raise SlotsError(
@@ -632,7 +658,7 @@ class SlotsPlayView(discord.ui.View):
             if slot_url is not None:
                 result_embed.set_image(url=slot_url)
                 result_view._update_spin_enabled()
-                await source_message.edit(embed=result_embed, attachments=[], view=result_view)
+                await self._safe_message_edit(interaction, source_message, embed=result_embed, attachments=[], view=result_view)
             else:
                 if config.slot_assets_ready():
                     log.warning("slot_assets_cache_miss combo=%s", combo)
@@ -650,12 +676,12 @@ class SlotsPlayView(discord.ui.View):
                 if cached_url:
                     result_embed.set_image(url=cached_url)
                     result_view._update_spin_enabled()
-                    await source_message.edit(embed=result_embed, attachments=[], view=result_view)
+                    await self._safe_message_edit(interaction, source_message, embed=result_embed, attachments=[], view=result_view)
                 else:
                     gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
                     result_embed.set_image(url="attachment://slots.gif")
                     result_view._update_spin_enabled()
-                    await source_message.edit(embed=result_embed, attachments=[gif_file], view=result_view)
+                    await self._safe_message_edit(interaction, source_message, embed=result_embed, attachments=[gif_file], view=result_view)
 
             result_view.message = source_message
             await self.service.post_big_win_announce(interaction, result)

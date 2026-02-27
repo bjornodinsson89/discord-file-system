@@ -91,13 +91,28 @@ class CasinoCog(commands.Cog):
             return
 
         await interaction.response.send_message("Seeding started...", ephemeral=True)
+        followup_ok = True
+
+        async def _send_seed_status(message: str):
+            nonlocal followup_ok
+            try:
+                if followup_ok:
+                    await interaction.followup.send(message, ephemeral=True)
+                elif interaction.channel is not None:
+                    await interaction.channel.send(message)
+            except discord.HTTPException as e:
+                if e.status == 401 and interaction.channel is not None:
+                    followup_ok = False
+                    await interaction.channel.send(message)
+                else:
+                    raise
 
         guild = self.bot.get_guild(int(config.SLOT_ASSETS_GUILD_ID))
         if guild is None:
             try:
                 guild = await self.bot.fetch_guild(int(config.SLOT_ASSETS_GUILD_ID))
             except Exception:
-                await interaction.followup.send("❌ Could not load assets guild.", ephemeral=True)
+                await _send_seed_status("❌ Could not load assets guild.")
                 return
 
         channel = guild.get_channel(int(config.SLOT_ASSETS_CHANNEL_ID)) if guild else None
@@ -105,20 +120,16 @@ class CasinoCog(commands.Cog):
             try:
                 channel = await self.bot.fetch_channel(int(config.SLOT_ASSETS_CHANNEL_ID))
             except Exception:
-                await interaction.followup.send("❌ Could not load assets channel.", ephemeral=True)
+                await _send_seed_status("❌ Could not load assets channel.")
                 return
 
         if not isinstance(channel, discord.TextChannel):
-            await interaction.followup.send(
-                "❌ Assets channel must be a text channel.", ephemeral=True
-            )
+            await _send_seed_status("❌ Assets channel must be a text channel.")
             return
 
         perms = channel.permissions_for(channel.guild.me) if channel.guild and channel.guild.me else None
         if perms and not (perms.send_messages and perms.attach_files):
-            await interaction.followup.send(
-                "❌ Bot missing Send Messages/Attach Files in assets channel.", ephemeral=True
-            )
+            await _send_seed_status("❌ Bot missing Send Messages/Attach Files in assets channel.")
             return
 
         symbols = list(REEL_CYCLE)
@@ -208,12 +219,9 @@ class CasinoCog(commands.Cog):
                     uploaded += 1
                     success = True
                     if uploaded % 10 == 0:
-                        await interaction.followup.send(
-                            (
-                                f"Progress: uploaded={uploaded} processed={processed} "
-                                f"skipped={skipped} failed={len(failed)}"
-                            ),
-                            ephemeral=True,
+                        await _send_seed_status(
+                            f"Progress: uploaded={uploaded} processed={processed} "
+                            f"skipped={skipped} failed={len(failed)}"
                         )
                     break
 
@@ -241,14 +249,11 @@ class CasinoCog(commands.Cog):
             await asyncio.sleep(1.2)
 
         details_preview = "\n".join(failed_details[:5]) if failed_details else ""
-        await interaction.followup.send(
-            (
-                f"Seeding complete. scanned={processed} uploaded={uploaded} "
-                f"skipped={skipped} failed={len(failed)}"
-                + (f"\nfailed_details:\n{details_preview}" if details_preview else "")
-                + (f" failed_combos={', '.join(failed[:20])}" if failed else "")
-            ),
-            ephemeral=True,
+        await _send_seed_status(
+            f"Seeding complete. scanned={processed} uploaded={uploaded} "
+            f"skipped={skipped} failed={len(failed)}"
+            + (f"\nfailed_details:\n{details_preview}" if details_preview else "")
+            + (f" failed_combos={', '.join(failed[:20])}" if failed else "")
         )
 
 
