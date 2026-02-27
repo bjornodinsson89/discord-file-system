@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
+import secrets
 from io import BytesIO
 
 import discord
@@ -59,6 +59,36 @@ class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
                 self.view.message = await interaction.original_response()
             except Exception:
                 pass
+
+
+class SlotsSeedModal(discord.ui.Modal, title="Set Client Seed"):
+    seed = discord.ui.TextInput(label="Client Seed", required=True, min_length=6, max_length=64)
+
+    def __init__(self, view: "SlotsPlayView"):
+        super().__init__()
+        self.view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await self.view.service.set_client_seed(
+                self.view.guild_id,
+                self.view.discord_id,
+                str(self.seed.value or "").strip(),
+            )
+        except SlotsError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        await self.view.refresh_state()
+        idle_file = self.view._idle_file()
+        self.view._update_spin_enabled()
+        await interaction.edit_original_response(
+            content="",
+            embed=self.view._status_embed(self.view._pool_label(), "R E A D Y", None, "slots.png"),
+            view=self.view,
+            attachments=[idle_file],
+        )
 
 
 class SlotsPlayView(discord.ui.View):
@@ -158,7 +188,12 @@ class SlotsPlayView(discord.ui.View):
         if not ids or sum(weights) <= 0:
             ids = list(REEL_CYCLE)
             weights = [1 for _ in ids]
-        return [random.choices(ids, weights=weights, k=1)[0] for _ in range(3)]
+        weighted = []
+        for item_id, weight in zip(ids, weights):
+            weighted.extend([item_id] * max(1, int(weight)))
+        if not weighted:
+            weighted = list(ids)
+        return [secrets.choice(weighted) for _ in range(3)]
 
     def _idle_file(self) -> discord.File:
         idle_png = render_idle_png(
@@ -273,7 +308,10 @@ class SlotsPlayView(discord.ui.View):
                 description=(
                     f"Player: {interaction.user.mention}\n"
                     f"Result: **{final_status}**\n"
-                    f"Bet: `{bet}` • Payout: `{payout}`"
+                    f"Bet: `{bet}` • Payout: `{payout}`\n\n"
+                    f"Server Hash: `{result.get('server_seed_hash', '')}`\n"
+                    f"Client Seed: `{result.get('client_seed', '')}`\n"
+                    f"Nonce: `{result.get('nonce', 0)}`"
                 ),
                 color=discord.Color.gold(),
             )
@@ -388,6 +426,24 @@ class SlotsPlayView(discord.ui.View):
                     self.message = await interaction.original_response()
                 except Exception:
                     pass
+
+
+    @discord.ui.button(label="Fairness", style=discord.ButtonStyle.secondary)
+    async def fairness(self, interaction: discord.Interaction, _: discord.ui.Button):
+        state = await self.service.get_fairness_state(self.guild_id, self.discord_id)
+        lines = [
+            f"Server Seed Hash: `{state.get('server_seed_hash')}`",
+            f"Client Seed: `{state.get('client_seed')}`",
+            f"Next Nonce: `{int(state.get('nonce') or 0)}`",
+        ]
+        if state.get("previous_server_seed"):
+            lines.append(f"Previous Server Seed: `{state.get('previous_server_seed')}`")
+            lines.append(f"Previous Server Seed Hash: `{state.get('previous_server_seed_hash')}`")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    @discord.ui.button(label="Set Seed", style=discord.ButtonStyle.secondary)
+    async def set_seed(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(SlotsSeedModal(self))
 
     @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary)
     async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button):

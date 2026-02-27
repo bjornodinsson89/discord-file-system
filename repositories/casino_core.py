@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import secrets
 from datetime import datetime
 from typing import Any
 
@@ -11,6 +13,143 @@ from services.casino_core.locks import advisory_lock_for_wallet
 
 
 class CasinoCoreRepository(RepositoryBase):
+    async def get_or_create_slots_server_seed(
+        self,
+        conn: asyncpg.Connection,
+        guild_id: int,
+        *,
+        for_update: bool = False,
+    ) -> dict:
+        lock_clause = " FOR UPDATE" if for_update else ""
+        row = await conn.fetchrow(
+            f"""
+            SELECT *
+            FROM casino_slots_server_seeds
+            WHERE guild_id = $1
+            {lock_clause}
+            """,
+            int(guild_id),
+        )
+        if row:
+            return dict(row)
+
+        server_seed = secrets.token_hex(32)
+        server_seed_hash = hashlib.sha256(server_seed.encode("utf-8")).hexdigest()
+        await conn.execute(
+            """
+            INSERT INTO casino_slots_server_seeds (guild_id, server_seed, server_seed_hash)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id) DO NOTHING
+            """,
+            int(guild_id),
+            server_seed,
+            server_seed_hash,
+        )
+        row = await conn.fetchrow(
+            """
+            SELECT *
+            FROM casino_slots_server_seeds
+            WHERE guild_id = $1
+            """ + (" FOR UPDATE" if for_update else ""),
+            int(guild_id),
+        )
+        return dict(row)
+
+    async def rotate_slots_server_seed(self, conn: asyncpg.Connection, guild_id: int) -> dict:
+        await self.get_or_create_slots_server_seed(conn, int(guild_id), for_update=True)
+        new_server_seed = secrets.token_hex(32)
+        new_server_seed_hash = hashlib.sha256(new_server_seed.encode("utf-8")).hexdigest()
+
+        row = await conn.fetchrow(
+            """
+            UPDATE casino_slots_server_seeds
+            SET previous_server_seed = server_seed,
+                previous_server_seed_hash = server_seed_hash,
+                previous_rotated_at = rotated_at,
+                server_seed = $2,
+                server_seed_hash = $3,
+                rotated_at = NOW()
+            WHERE guild_id = $1
+            RETURNING *
+            """,
+            int(guild_id),
+            new_server_seed,
+            new_server_seed_hash,
+        )
+        return dict(row)
+
+    async def get_or_create_slots_player_state(
+        self,
+        conn: asyncpg.Connection,
+        guild_id: int,
+        discord_id: int,
+        *,
+        for_update: bool = False,
+    ) -> dict:
+        lock_clause = " FOR UPDATE" if for_update else ""
+        row = await conn.fetchrow(
+            f"""
+            SELECT *
+            FROM casino_slots_player_state
+            WHERE guild_id = $1 AND discord_id = $2
+            {lock_clause}
+            """,
+            int(guild_id),
+            int(discord_id),
+        )
+        if row:
+            return dict(row)
+
+        client_seed = f"{int(discord_id)}-{secrets.token_hex(12)}"
+        await conn.execute(
+            """
+            INSERT INTO casino_slots_player_state (guild_id, discord_id, client_seed, nonce)
+            VALUES ($1, $2, $3, 0)
+            ON CONFLICT (guild_id, discord_id) DO NOTHING
+            """,
+            int(guild_id),
+            int(discord_id),
+            client_seed,
+        )
+        row = await conn.fetchrow(
+            """
+            SELECT *
+            FROM casino_slots_player_state
+            WHERE guild_id = $1 AND discord_id = $2
+            """ + (" FOR UPDATE" if for_update else ""),
+            int(guild_id),
+            int(discord_id),
+        )
+        return dict(row)
+
+    async def set_slots_client_seed(
+        self,
+        conn: asyncpg.Connection,
+        guild_id: int,
+        discord_id: int,
+        client_seed: str,
+    ) -> dict:
+        await self.get_or_create_slots_player_state(
+            conn,
+            int(guild_id),
+            int(discord_id),
+            for_update=True,
+        )
+        row = await conn.fetchrow(
+            """
+            UPDATE casino_slots_player_state
+            SET client_seed = $3,
+                nonce = 0,
+                updated_at = NOW()
+            WHERE guild_id = $1 AND discord_id = $2
+            RETURNING *
+            """,
+            int(guild_id),
+            int(discord_id),
+            str(client_seed),
+        )
+        return dict(row)
+
     async def get_or_create_retention_state(
         self,
         guild_id: int,

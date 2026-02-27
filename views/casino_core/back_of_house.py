@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import discord
 
+from repositories.casino_core import CasinoCoreRepository
 from utils import GuildSettingsRepository, get_database
 from views.casino_core.permissions import ensure_casino_admin
 
@@ -18,12 +19,16 @@ async def back_of_house_embed(guild_id: int) -> discord.Embed:
 
 async def casino_settings_embed(guild_id: int) -> discord.Embed:
     settings = await GuildSettingsRepository(get_database()).get_or_create(guild_id)
+    casino_repo = CasinoCoreRepository(get_database())
+    async with casino_repo.acquire() as conn:
+        seed_row = await casino_repo.get_or_create_slots_server_seed(conn, int(guild_id), for_update=False)
     em = discord.Embed(
         title="Casino Settings",
         description="Casino-wide controls",
         color=discord.Color.orange(),
     )
     em.add_field(name="Casino Enabled", value="Yes" if settings.get("casino_enabled") else "No", inline=False)
+    em.add_field(name="Slots Server Seed Hash", value=f"`{seed_row.get('server_seed_hash')}`", inline=False)
     return em
 
 
@@ -139,6 +144,26 @@ class BackOfHouseView(discord.ui.View):
         from views.casino_core.admin_credit import AdminCreditView
 
         await interaction.response.send_message("Admin Credit", view=AdminCreditView(self.guild_id), ephemeral=True)
+
+
+    @discord.ui.button(label="Rotate Slots Seed", style=discord.ButtonStyle.danger, row=3)
+    async def rotate_slots_seed(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
+        repo = CasinoCoreRepository(get_database())
+        async with repo.acquire() as conn:
+            async with conn.transaction():
+                row = await repo.rotate_slots_server_seed(conn, int(self.guild_id))
+        await interaction.response.send_message(
+            "\n".join([
+                "✅ Slots seed rotated.",
+                f"New Server Seed Hash: `{row.get('server_seed_hash')}`",
+                f"Previous Server Seed: `{row.get('previous_server_seed')}`",
+                f"Previous Server Seed Hash: `{row.get('previous_server_seed_hash')}`",
+                "Use previous seed + client seed + nonce to verify older spins.",
+            ]),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=3)
     async def close(self, interaction: discord.Interaction, _: discord.ui.Button):
