@@ -16,6 +16,7 @@ from services.casino_core.settings import get_house_config
 from utils import GuildSettingsRepository, get_database
 
 JACKPOT_SYMBOL_ID = 9090
+SLOTS_JACKPOT_POOL_KEY = "slots_jackpot"
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ DEFAULT_SLOTS_CONFIG = {
     "config_version": 2,
     "enabled": True,
     "min_bet": 1,
-    "max_bet": 2,
+    "max_bet": 3,
     "cooldown_seconds": 2,
     "announce_jackpot": True,
     "announce_threshold_tokens": 50,
@@ -62,6 +63,8 @@ DEFAULT_SLOTS_CONFIG = {
         "206": 25,
     },
     "jackpot_multiplier": 50.0,
+    "jackpot_contrib_bps": 300,
+    "jackpot_display_mode": "max_bet_scaled",
     "rtp_target": 0.90,
     "payouts": {
         "triple": {"206": 40.0, "281": 20.0, "197": 10.0, "865": 6.0, "366": 4.0},
@@ -83,6 +86,8 @@ CANONICAL_SLOTS_CONFIG_KEYS = {
     "reel_strip_order",
     "reel_stop_counts",
     "jackpot_multiplier",
+    "jackpot_contrib_bps",
+    "jackpot_display_mode",
     "rtp_target",
     "payouts",
 }
@@ -189,10 +194,19 @@ class CasinoSlotsService:
             torn_name=(user_row or {}).get("torn_name") or "",
         )
         jackpot_multiplier = float(cfg.get("jackpot_multiplier") or 0.0)
+        async with self.casino_repo.acquire() as conn:
+            pool_row = await self.casino_repo.get_or_create_pool(
+                conn,
+                guild_id=int(guild_id),
+                pool_key=SLOTS_JACKPOT_POOL_KEY,
+                seed_tokens=0,
+                seed_millis=0,
+            )
+        pool_tokens = int(pool_row.get("tokens") or 0)
         return {
             "balance": int(wallet.get("balance_tokens") or 0),
             "jackpot_multiplier": jackpot_multiplier,
-            "pool_tokens": int(jackpot_multiplier),
+            "pool_tokens": int(pool_tokens),
             "pool_millis": 0,
             "config": cfg,
             "house_discord_id": int((house or {}).get("house_discord_id") or 0),
@@ -322,10 +336,32 @@ class CasinoSlotsService:
                         raise SlotsError("Not enough tokens for that bet. Deposit more or lower your bet.") from exc
                     raise
 
+                pool_row = await self.casino_repo.get_or_create_pool(
+                    conn,
+                    guild_id=int(guild_id),
+                    pool_key=SLOTS_JACKPOT_POOL_KEY,
+                    seed_tokens=0,
+                    seed_millis=0,
+                )
+                bps = int(cfg.get("jackpot_contrib_bps") or 0)
+                jackpot_pool_contrib_tokens = max(0, (int(bet) * bps) // 10000)
+                if jackpot_pool_contrib_tokens > 0:
+                    pool_row = await self.casino_repo.add_to_pool(
+                        conn,
+                        guild_id=int(guild_id),
+                        pool_key=SLOTS_JACKPOT_POOL_KEY,
+                        add_tokens=int(jackpot_pool_contrib_tokens),
+                        add_millis=0,
+                    )
+                pool_tokens_post_contrib = int(pool_row.get("tokens") or 0)
+
                 virtual_reel = self._build_virtual_reel(cfg)
                 total_stops = len(virtual_reel)
                 reels = [virtual_reel[rng.randbelow(total_stops)] for _ in range(3)]
                 payout, win_type, hit_symbol = self._calculate_payout(cfg, bet, reels)
+                jackpot_pool_before_tokens = 0
+                jackpot_pool_after_tokens = 0
+                jackpot_pool_display_tokens = 0
                 triple_mult_used = None
                 pair_mult_used = None
                 payouts = dict(cfg.get("payouts") or {})
@@ -349,14 +385,28 @@ class CasinoSlotsService:
                 )
 
                 if win_type == "jackpot":
+                    payout, jackpot_pool_before_tokens, jackpot_pool_after_tokens = await self.casino_repo.claim_pool_scaled(
+                        conn,
+                        guild_id=int(guild_id),
+                        pool_key=SLOTS_JACKPOT_POOL_KEY,
+                        bet=int(bet),
+                        max_bet=int(cfg.get("max_bet") or 1),
+                    )
+                    jackpot_pool_display_tokens = int(jackpot_pool_after_tokens)
                     log.info(
-                        "slots_result guild_id=%s discord_id=%s result_type=jackpot bet=%s reels=%s payout=%s",
+                        "slots_result guild_id=%s discord_id=%s result_type=jackpot bet=%s reels=%s payout=%s pool_before=%s pool_after=%s",
                         int(guild_id),
                         int(discord_id),
                         int(bet),
                         reels,
                         int(payout),
+                        int(jackpot_pool_before_tokens),
+                        int(jackpot_pool_after_tokens),
                     )
+                else:
+                    jackpot_pool_before_tokens = int(pool_tokens_post_contrib)
+                    jackpot_pool_after_tokens = int(pool_tokens_post_contrib)
+                    jackpot_pool_display_tokens = int(pool_tokens_post_contrib)
 
                 if payout > 0:
                     wallet = await self.casino_repo.apply_ledger_entry_atomic(
@@ -405,6 +455,10 @@ class CasinoSlotsService:
                         "client_seed": client_seed,
                         "nonce": spin_nonce,
                     },
+                    "jackpot_pool_before_tokens": int(jackpot_pool_before_tokens),
+                    "jackpot_pool_after_tokens": int(jackpot_pool_after_tokens),
+                    "jackpot_pool_contrib_tokens": int(jackpot_pool_contrib_tokens),
+                    "jackpot_pool_display_tokens": int(jackpot_pool_display_tokens),
                 }
                 if hit_symbol is not None:
                     result_json["hit_symbol"] = int(hit_symbol)
@@ -420,6 +474,12 @@ class CasinoSlotsService:
                     "round_id": int(round_id),
                     "config": cfg,
                     "jackpot_multiplier": float(cfg.get("jackpot_multiplier") or 0.0),
+                    "pool_tokens": int(jackpot_pool_display_tokens),
+                    "pool_millis": 0,
+                    "jackpot_pool_before_tokens": int(jackpot_pool_before_tokens),
+                    "jackpot_pool_after_tokens": int(jackpot_pool_after_tokens),
+                    "jackpot_pool_contrib_tokens": int(jackpot_pool_contrib_tokens),
+                    "jackpot_pool_display_tokens": int(jackpot_pool_display_tokens),
                     "house_discord_id": int((house or {}).get("house_discord_id") or 0),
                     "house_torn_id": int((house or {}).get("house_torn_id") or 0),
                     "payout_proof_channel_id": int((house or {}).get("payout_proof_channel_id") or 0),
@@ -514,12 +574,10 @@ class CasinoSlotsService:
         payouts = dict(config.get("payouts") or {})
         triple = {int(k): float(v) for k, v in dict(payouts.get("triple") or {}).items()}
         pair = {int(k): float(v) for k, v in dict(payouts.get("pair") or {}).items()}
-        jackpot_multiplier = float(config.get("jackpot_multiplier") or 0.0)
-
         if reels[0] == reels[1] == reels[2]:
             item = int(reels[0])
             if item == JACKPOT_SYMBOL_ID:
-                return int(math.floor(bet * jackpot_multiplier)), "jackpot", item
+                return 0, "jackpot", item
             mult = float(triple.get(item, 0.0))
             return int(math.floor(bet * mult)), "triple", item
 

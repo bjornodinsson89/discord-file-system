@@ -3,6 +3,7 @@ from __future__ import annotations
 import discord
 
 from repositories.casino_core import CasinoCoreRepository
+from services.casino_games.slots import SLOTS_JACKPOT_POOL_KEY
 from utils import GuildSettingsRepository, get_database
 from views.casino_core.permissions import ensure_casino_admin
 
@@ -13,6 +14,16 @@ async def back_of_house_embed(guild_id: int) -> discord.Embed:
         description="Casino admin controls",
         color=discord.Color.dark_gold(),
     )
+    casino_repo = CasinoCoreRepository(get_database())
+    async with casino_repo.acquire() as conn:
+        jackpot_row = await casino_repo.get_or_create_pool(
+            conn,
+            guild_id=int(guild_id),
+            pool_key=SLOTS_JACKPOT_POOL_KEY,
+            seed_tokens=0,
+            seed_millis=0,
+        )
+    em.add_field(name="Slots Jackpot (Max Bet)", value=f"`{int(jackpot_row.get('tokens') or 0)}`", inline=False)
     em.set_footer(text=f"Guild {guild_id}")
     return em
 
@@ -22,6 +33,13 @@ async def casino_settings_embed(guild_id: int) -> discord.Embed:
     casino_repo = CasinoCoreRepository(get_database())
     async with casino_repo.acquire() as conn:
         seed_row = await casino_repo.get_or_create_slots_server_seed(conn, int(guild_id), for_update=False)
+        jackpot_row = await casino_repo.get_or_create_pool(
+            conn,
+            guild_id=int(guild_id),
+            pool_key=SLOTS_JACKPOT_POOL_KEY,
+            seed_tokens=0,
+            seed_millis=0,
+        )
     em = discord.Embed(
         title="Casino Settings",
         description="Casino-wide controls",
@@ -29,6 +47,7 @@ async def casino_settings_embed(guild_id: int) -> discord.Embed:
     )
     em.add_field(name="Casino Enabled", value="Yes" if settings.get("casino_enabled") else "No", inline=False)
     em.add_field(name="Slots Server Seed Hash", value=f"`{seed_row.get('server_seed_hash')}`", inline=False)
+    em.add_field(name="Slots Jackpot (Max Bet)", value=f"`{int(jackpot_row.get('tokens') or 0)}`", inline=False)
     return em
 
 
@@ -53,10 +72,42 @@ class CasinoSettingsView(discord.ui.View):
         )
 
 
+class AddJackpotSelect(discord.ui.Select):
+    def __init__(self, guild_id: int):
+        options = [
+            discord.SelectOption(label=str(amount), value=str(amount), description=f"Add {amount} tokens")
+            for amount in range(10, 101, 10)
+        ]
+        super().__init__(placeholder="Add to Jackpot", min_values=1, max_values=1, options=options, row=3)
+        self.guild_id = int(guild_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
+        amount = int(self.values[0])
+        await interaction.response.defer(ephemeral=True)
+        repo = CasinoCoreRepository(get_database())
+        async with repo.acquire() as conn:
+            async with conn.transaction():
+                row = await repo.add_to_pool(
+                    conn,
+                    guild_id=int(self.guild_id),
+                    pool_key=SLOTS_JACKPOT_POOL_KEY,
+                    add_tokens=int(amount),
+                    add_millis=0,
+                )
+        pool_tokens = int(row.get("tokens") or 0)
+        await interaction.followup.send(
+            f"✅ Added {amount} to jackpot. Jackpot (Max Bet) is now {pool_tokens}.",
+            ephemeral=True,
+        )
+
+
 class BackOfHouseView(discord.ui.View):
     def __init__(self, guild_id: int):
         super().__init__(timeout=300)
         self.guild_id = guild_id
+        self.add_item(AddJackpotSelect(guild_id))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return await ensure_casino_admin(interaction, self.guild_id)

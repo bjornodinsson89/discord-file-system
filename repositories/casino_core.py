@@ -11,6 +11,8 @@ import asyncpg
 from repositories.base import RepositoryBase
 from services.casino_core.locks import advisory_lock_for_wallet
 
+SLOTS_JACKPOT_POOL_KEY = "slots_jackpot"
+
 
 class CasinoCoreRepository(RepositoryBase):
     async def get_or_create_slots_server_seed(
@@ -589,6 +591,67 @@ class CasinoCoreRepository(RepositoryBase):
             int(reset_seed_millis),
         )
         return claim_tokens, claim_millis, int(reset_seed_tokens), int(reset_seed_millis)
+
+    async def get_or_create_slots_jackpot_pool(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        guild_id: int,
+        for_update: bool = False,
+    ) -> dict:
+        await self.get_or_create_pool(
+            conn,
+            guild_id=int(guild_id),
+            pool_key=SLOTS_JACKPOT_POOL_KEY,
+            seed_tokens=0,
+            seed_millis=0,
+        )
+        row = await conn.fetchrow(
+            "SELECT * FROM casino_pools WHERE guild_id = $1 AND pool_key = $2" + (" FOR UPDATE" if for_update else ""),
+            int(guild_id),
+            SLOTS_JACKPOT_POOL_KEY,
+        )
+        return dict(row)
+
+    async def claim_pool_scaled(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        guild_id: int,
+        pool_key: str,
+        bet: int,
+        max_bet: int,
+    ) -> tuple[int, int, int]:
+        await self.get_or_create_pool(
+            conn,
+            guild_id=int(guild_id),
+            pool_key=pool_key,
+            seed_tokens=0,
+            seed_millis=0,
+        )
+        current = await conn.fetchrow(
+            "SELECT tokens, millis FROM casino_pools WHERE guild_id = $1 AND pool_key = $2 FOR UPDATE",
+            int(guild_id),
+            str(pool_key),
+        )
+        pool_before_tokens = int((current or {}).get("tokens") or 0)
+        if max_bet <= 0:
+            max_bet = 1
+        bet = max(0, min(int(bet), int(max_bet)))
+        payout_tokens = (pool_before_tokens * int(bet)) // int(max_bet)
+        payout_tokens = max(0, min(int(payout_tokens), int(pool_before_tokens)))
+        pool_after_tokens = max(0, int(pool_before_tokens) - int(payout_tokens))
+        await conn.execute(
+            """
+            UPDATE casino_pools
+            SET tokens = $3, updated_at = NOW()
+            WHERE guild_id = $1 AND pool_key = $2
+            """,
+            int(guild_id),
+            str(pool_key),
+            int(pool_after_tokens),
+        )
+        return int(payout_tokens), int(pool_before_tokens), int(pool_after_tokens)
 
     async def get_cooldown(self, conn: asyncpg.Connection, *, guild_id: int, discord_id: int, game_key: str) -> datetime | None:
         return await conn.fetchval(
