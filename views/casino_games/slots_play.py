@@ -110,7 +110,7 @@ class SlotsPublicResultView(discord.ui.View):
         service: CasinoSlotsService,
         config: dict,
         balance_after: int,
-        jackpot_multiplier: float,
+        pool_tokens: int,
         bet: int,
         payout: int,
         win_type: str,
@@ -126,7 +126,7 @@ class SlotsPublicResultView(discord.ui.View):
         self.service = service
         self.config = dict(config or {})
         self.balance_after = int(balance_after)
-        self.jackpot_multiplier = float(jackpot_multiplier)
+        self.pool_tokens = int(pool_tokens)
         self.bet = int(bet)
         self.payout = int(payout)
         self.win_type = str(win_type or "")
@@ -197,7 +197,7 @@ class SlotsPublicResultView(discord.ui.View):
 
         snapshot = await self.service.get_balance_and_pool(self.guild_id, self.player_id)
         self.balance_after = int(snapshot["balance"])
-        self.jackpot_multiplier = float(snapshot.get("jackpot_multiplier") or self.jackpot_multiplier)
+        self.pool_tokens = int(snapshot.get("pool_tokens") or self.pool_tokens)
         self.config = dict(snapshot.get("config") or self.config)
 
         if int(self.balance_after) < int(self.bet):
@@ -210,7 +210,7 @@ class SlotsPublicResultView(discord.ui.View):
         result = await self.service.spin(self.guild_id, self.player_id, self.bet)
 
         self.balance_after = int(result["balance_after"])
-        self.jackpot_multiplier = float(result.get("jackpot_multiplier") or self.jackpot_multiplier)
+        self.pool_tokens = int(result.get("pool_tokens") or self.pool_tokens)
         self.config = dict(result.get("config") or self.config)
 
         final_reels = [int(x) for x in (result.get("reels") or [])][:3]
@@ -232,7 +232,7 @@ class SlotsPublicResultView(discord.ui.View):
             service=self.service,
             config=dict(result.get("config") or self.config),
             balance_after=int(result["balance_after"]),
-            jackpot_multiplier=float(result.get("jackpot_multiplier") or self.jackpot_multiplier),
+            pool_tokens=int(result.get("pool_tokens") or self.pool_tokens),
             bet=bet,
             payout=payout,
             win_type=win_type,
@@ -253,7 +253,7 @@ class SlotsPublicResultView(discord.ui.View):
             description=(
                 f"Player: <@{self.player_id}>\n"
                 f"Result: **{final_status}**\n"
-                f"Bet: `{bet}` • Payout: `{payout}`"
+                f"Bet: `{bet}` • Payout: `{payout}`\nJackpot (Max Bet): `{int(result.get('jackpot_pool_display_tokens') or result.get('pool_tokens') or self.pool_tokens)}`"
             ),
             color=discord.Color.gold(),
         )
@@ -281,7 +281,7 @@ class SlotsPublicResultView(discord.ui.View):
                     duration_ms=SPIN_DURATION_MS,
                     balance=self.balance_after,
                     bet=bet,
-                    jackpot_pool=int(self.jackpot_multiplier),
+                    jackpot_pool=int(self.pool_tokens),
                 )
             )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
@@ -327,7 +327,7 @@ class SlotsPlayView(discord.ui.View):
         service: CasinoSlotsService,
         config: dict,
         balance: int,
-        jackpot_multiplier: float,
+        pool_tokens: int,
         house_discord_id: int = 0,
         house_torn_id: int = 0,
         payout_proof_channel_id: int = 0,
@@ -343,7 +343,7 @@ class SlotsPlayView(discord.ui.View):
         self.current_bet = self.min_bet
 
         self.balance = int(balance)
-        self.jackpot_multiplier = float(jackpot_multiplier)
+        self.pool_tokens = int(pool_tokens)
         self.house_discord_id = int(house_discord_id or 0)
         self.house_torn_id = int(house_torn_id or 0)
         self.payout_proof_channel_id = int(payout_proof_channel_id or 0)
@@ -401,7 +401,7 @@ class SlotsPlayView(discord.ui.View):
                 child.disabled = not can_spin
 
     def _jackpot_label(self) -> str:
-        return f"{int(self.jackpot_multiplier)}x"
+        return f"{int(self.pool_tokens)}"
 
     def _roll_preview_reels(self) -> list[int]:
         symbols = list((self.config or {}).get("symbols") or [])
@@ -424,7 +424,7 @@ class SlotsPlayView(discord.ui.View):
             self._roll_preview_reels(),
             balance=self.balance,
             bet=self.current_bet,
-            jackpot_pool=int(self.jackpot_multiplier),
+            jackpot_pool=int(self.pool_tokens),
         )
         return discord.File(BytesIO(idle_png), filename="slots.png")
 
@@ -447,7 +447,7 @@ class SlotsPlayView(discord.ui.View):
         desc = f"{house_line}\n"
         if self.payout_proof_channel_id:
             desc += f"**Proof Channel:** <#{self.payout_proof_channel_id}>\n"
-        desc += f"**Jackpot:** `{jackpot_str}`\n\n**{status}**"
+        desc += f"**Jackpot (Max Bet):** `{jackpot_str}`\n\n**{status}**"
         if payout is not None:
             desc += f"\n**Payout:** `{payout}`"
         em.description = desc
@@ -474,7 +474,7 @@ class SlotsPlayView(discord.ui.View):
     async def refresh_state(self) -> None:
         snapshot = await self.service.get_balance_and_pool(self.guild_id, self.discord_id)
         self.balance = int(snapshot["balance"])
-        self.jackpot_multiplier = float(snapshot.get("jackpot_multiplier") or self.jackpot_multiplier)
+        self.pool_tokens = int(snapshot.get("pool_tokens") or self.pool_tokens)
         self.config = dict(snapshot["config"])
         self.min_bet = int(self.config.get("min_bet") or 1)
         self.max_bet = int(self.config.get("max_bet") or self.min_bet)
@@ -501,7 +501,7 @@ class SlotsPlayView(discord.ui.View):
 
             result = await self.service.spin(self.guild_id, self.discord_id, self.current_bet)
             self.balance = int(result["balance_after"])
-            self.jackpot_multiplier = float(result.get("jackpot_multiplier") or self.jackpot_multiplier)
+            self.pool_tokens = int(result.get("pool_tokens") or self.pool_tokens)
             self.config = dict(result.get("config") or self.config)
             self.min_bet = int(self.config.get("min_bet") or self.min_bet)
             self.max_bet = int(self.config.get("max_bet") or self.max_bet)
@@ -532,7 +532,7 @@ class SlotsPlayView(discord.ui.View):
                 service=self.service,
                 config=dict(result.get("config") or self.config),
                 balance_after=self.balance,
-                jackpot_multiplier=float(result.get("jackpot_multiplier") or self.jackpot_multiplier),
+                pool_tokens=int(result.get("pool_tokens") or self.pool_tokens),
                 bet=bet,
                 payout=payout,
                 win_type=win_type,
@@ -553,7 +553,7 @@ class SlotsPlayView(discord.ui.View):
                 description=(
                     f"Player: {interaction.user.mention}\n"
                     f"Result: **{final_status}**\n"
-                    f"Bet: `{bet}` • Payout: `{payout}`"
+                    f"Bet: `{bet}` • Payout: `{payout}`\nJackpot (Max Bet): `{int(result.get('jackpot_pool_display_tokens') or result.get('pool_tokens') or self.pool_tokens)}`"
                 ),
                 color=discord.Color.gold(),
             )
@@ -593,7 +593,7 @@ class SlotsPlayView(discord.ui.View):
                     duration_ms=SPIN_DURATION_MS,
                     balance=self.balance,
                     bet=bet,
-                    jackpot_pool=int(self.jackpot_multiplier),
+                    jackpot_pool=int(self.pool_tokens),
                 )
             )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")

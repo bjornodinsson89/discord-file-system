@@ -76,7 +76,7 @@ class GameSelect(discord.ui.Select):
             service=service,
             config=snapshot["config"],
             balance=int(snapshot["balance"]),
-            jackpot_multiplier=float(snapshot.get("jackpot_multiplier") or 0.0),
+            pool_tokens=int(snapshot.get("pool_tokens") or 0),
         )
         await interaction.response.edit_message(
             content="",
