@@ -316,14 +316,24 @@ class SlotsPublicResultView(discord.ui.View):
                         jackpot_pool=int(self.pool_tokens),
                     )
                 )
-                cached_url = await _cache_slot_asset_if_enabled(interaction, combo, gif_bytes)
-                if cached_url:
-                    result_embed.set_image(url=cached_url)
-                    await interaction.message.edit(embed=result_embed, attachments=[], view=self)
-                else:
-                    gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
-                    result_embed.set_image(url="attachment://slots.gif")
-                    await interaction.message.edit(embed=result_embed, attachments=[gif_file], view=self)
+            )
+            cached_url = await _cache_slot_asset_if_enabled(interaction, combo, gif_bytes)
+            if cached_url:
+                result_embed.set_image(url=cached_url)
+                posted_message = await self._send_public_spin_result(
+                    interaction,
+                    embed=result_embed,
+                    view=result_view,
+                )
+            else:
+                gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
+                result_embed.set_image(url="attachment://slots.gif")
+                posted_message = await self._send_public_spin_result(
+                    interaction,
+                    embed=result_embed,
+                    file=gif_file,
+                    view=result_view,
+                )
 
             await self.service.post_big_win_announce(interaction, result)
         except SlotsCooldownError as exc:
@@ -588,14 +598,27 @@ class SlotsPlayView(discord.ui.View):
                         jackpot_pool=int(self.pool_tokens),
                     )
                 )
-                cached_url = await _cache_slot_asset_if_enabled(interaction, combo, gif_bytes)
-                if cached_url:
-                    result_embed.set_image(url=cached_url)
-                    await interaction.message.edit(embed=result_embed, attachments=[], view=self)
-                else:
-                    gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
-                    result_embed.set_image(url="attachment://slots.gif")
-                    await interaction.message.edit(embed=result_embed, attachments=[gif_file], view=self)
+            )
+            cached_url = await _cache_slot_asset_if_enabled(interaction, combo, gif_bytes)
+            if cached_url:
+                result_embed.set_image(url=cached_url)
+                posted_message = await self._send_public_spin_result(
+                    interaction,
+                    embed=result_embed,
+                    view=result_view,
+                )
+            else:
+                gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
+                result_embed.set_image(url="attachment://slots.gif")
+                posted_message = await self._send_public_spin_result(
+                    interaction,
+                    embed=result_embed,
+                    file=gif_file,
+                    view=result_view,
+                )
+            if posted_message is not None:
+                result_view.message = posted_message
+                await interaction.followup.send("✅ Result posted.", ephemeral=True)
 
             await self.service.post_big_win_announce(interaction, result)
         except SlotsCooldownError as exc:

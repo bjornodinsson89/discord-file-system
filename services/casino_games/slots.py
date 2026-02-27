@@ -593,25 +593,15 @@ class CasinoSlotsService:
             mult = float(triple.get(item, 0.0))
             return int(math.floor(bet * mult)), "triple", item
 
-        pair_kind: str | None = None
-        pair_item: int | None = None
-        if reels[0] == reels[1] and reels[2] != reels[0]:
-            pair_kind = "left"
-            pair_item = int(reels[0])
-        elif reels[1] == reels[2] and reels[0] != reels[1]:
-            pair_kind = "right"
-            pair_item = int(reels[1])
-        elif reels[0] == reels[2] and reels[1] != reels[0]:
-            pair_kind = "split"
-            pair_item = int(reels[0])
-
-        if pair_kind is not None and pair_item is not None:
+        left_pair = reels[0] == reels[1] and reels[1] != reels[2]
+        right_pair = reels[1] == reels[2] and reels[0] != reels[1]
+        if left_pair or right_pair:
+            pair_item = int(reels[0] if left_pair else reels[1])
             base_mult = float(pair.get(pair_item, 0.0))
-            left_bonus_mult = float(config.get("pair_left_bonus_mult") or 1.10)
-            effective_mult = base_mult * (left_bonus_mult if pair_kind == "left" else 1.0)
-            payout = int(math.floor((bet * effective_mult) + 0.5))
-            if effective_mult > 0.0:
-                payout = max(1, int(payout))
+            bonus_mult = float(config.get("pair_left_bonus_mult") or 1.10)
+            effective_mult = base_mult * (bonus_mult if left_pair else 1.0)
+            payout = self._round_half_up(bet * effective_mult)
+            payout = max(1, int(payout))
             if payout == int(bet):
                 return payout, "push", pair_item
             return payout, "small", pair_item
