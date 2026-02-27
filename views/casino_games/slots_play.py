@@ -8,7 +8,7 @@ from io import BytesIO
 import discord
 
 import config
-from repositories.slot_assets import get_slot_asset_url, normalize_combo
+from repositories.slot_assets import get_slot_asset_url, normalize_combo, upsert_slot_asset
 from services.casino_games.slots import CasinoSlotsService, SlotsCooldownError, SlotsError
 from utils.jump_slots_gif import (
     REEL_CYCLE,
@@ -19,6 +19,70 @@ from utils.jump_slots_gif import (
 )
 
 log = logging.getLogger("happy_jumper.casino.slots")
+
+
+async def _cache_slot_asset_if_enabled(
+    interaction: discord.Interaction,
+    combo: str,
+    gif_bytes: bytes,
+) -> str | None:
+    if not config.slot_assets_ready():
+        return None
+
+    bot = interaction.client
+    if bot is None:
+        return None
+
+    guild = bot.get_guild(int(config.SLOT_ASSETS_GUILD_ID))
+    if guild is None:
+        try:
+            guild = await bot.fetch_guild(int(config.SLOT_ASSETS_GUILD_ID))
+        except Exception:
+            log.warning("slot_assets_fetch_guild_failed combo=%s", combo, exc_info=True)
+            return None
+
+    channel = guild.get_channel(int(config.SLOT_ASSETS_CHANNEL_ID)) if guild else None
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(int(config.SLOT_ASSETS_CHANNEL_ID))
+        except Exception:
+            log.warning("slot_assets_fetch_channel_failed combo=%s", combo, exc_info=True)
+            return None
+
+    if not isinstance(channel, discord.TextChannel):
+        return None
+
+    perms = channel.permissions_for(channel.guild.me) if channel.guild and channel.guild.me else None
+    if perms and not (perms.send_messages and perms.attach_files):
+        return None
+
+    try:
+        msg = await channel.send(
+            content=f"slot:{combo}",
+            file=discord.File(BytesIO(gif_bytes), filename="slots.gif"),
+        )
+    except Exception:
+        log.warning("slot_assets_upload_failed combo=%s", combo, exc_info=True)
+        return None
+
+    url = msg.attachments[0].url if msg.attachments else None
+    if not url:
+        return None
+
+    try:
+        await upsert_slot_asset(
+            combo,
+            url,
+            msg.id,
+            frames=SPIN_FRAMES,
+            duration_ms=SPIN_DURATION_MS,
+            max_w=0,
+            palette_colors=0,
+        )
+    except Exception:
+        log.warning("slot_assets_upsert_failed combo=%s", combo, exc_info=True)
+
+    return url
 
 
 class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
@@ -146,6 +210,8 @@ class SlotsPublicResultView(discord.ui.View):
     ) -> str:
         if win_type == "jackpot":
             return "J A C K P O T 💰"
+        if win_type == "push":
+            return "P U S H 😐"
         if payout <= 0:
             return "L O S E ☹️"
         if win_type == "small":
@@ -284,14 +350,23 @@ class SlotsPublicResultView(discord.ui.View):
                     jackpot_pool=int(self.pool_tokens),
                 )
             )
-            gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
-            result_embed.set_image(url="attachment://slots.gif")
-            posted_message = await self._send_public_spin_result(
-                interaction,
-                embed=result_embed,
-                file=gif_file,
-                view=result_view,
-            )
+            cached_url = await _cache_slot_asset_if_enabled(interaction, combo, gif_bytes)
+            if cached_url:
+                result_embed.set_image(url=cached_url)
+                posted_message = await self._send_public_spin_result(
+                    interaction,
+                    embed=result_embed,
+                    view=result_view,
+                )
+            else:
+                gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
+                result_embed.set_image(url="attachment://slots.gif")
+                posted_message = await self._send_public_spin_result(
+                    interaction,
+                    embed=result_embed,
+                    file=gif_file,
+                    view=result_view,
+                )
 
         if posted_message is not None:
             result_view.message = posted_message
@@ -458,6 +533,8 @@ class SlotsPlayView(discord.ui.View):
     def _result_status_label(self, *, win_type: str, payout: int, bet: int) -> str:
         if win_type == "jackpot":
             return "J A C K P O T 💰"
+        if win_type == "push":
+            return "P U S H 😐"
         if payout <= 0:
             return "L O S E ☹️"
         if win_type == "small":
@@ -596,14 +673,23 @@ class SlotsPlayView(discord.ui.View):
                     jackpot_pool=int(self.pool_tokens),
                 )
             )
-            gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
-            result_embed.set_image(url="attachment://slots.gif")
-            posted_message = await self._send_public_spin_result(
-                interaction,
-                embed=result_embed,
-                file=gif_file,
-                view=result_view,
-            )
+            cached_url = await _cache_slot_asset_if_enabled(interaction, combo, gif_bytes)
+            if cached_url:
+                result_embed.set_image(url=cached_url)
+                posted_message = await self._send_public_spin_result(
+                    interaction,
+                    embed=result_embed,
+                    view=result_view,
+                )
+            else:
+                gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
+                result_embed.set_image(url="attachment://slots.gif")
+                posted_message = await self._send_public_spin_result(
+                    interaction,
+                    embed=result_embed,
+                    file=gif_file,
+                    view=result_view,
+                )
             if posted_message is not None:
                 result_view.message = posted_message
                 await interaction.followup.send("✅ Result posted.", ephemeral=True)

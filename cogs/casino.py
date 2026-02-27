@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
-from repositories.slot_assets import has_combo, upsert_slot_asset
+from repositories.slot_assets import has_combo, normalize_combo, upsert_slot_asset
 from utils.jump_slots_gif import REEL_CYCLE, render_slots_gif
 from views.casino_core.back_of_house import BackOfHouseView, back_of_house_embed
 from views.casino_core.casino_home import CasinoHomeView, casino_home_embed
@@ -122,7 +122,7 @@ class CasinoCog(commands.Cog):
             return
 
         symbols = list(REEL_CYCLE)
-        combos = [f"{a},{b},{c}" for a in symbols for b in symbols for c in symbols]
+        combos = [normalize_combo([a, b, c]) for a in symbols for b in symbols for c in symbols]
         start_index = max(0, int(resume_from))
         end_index = len(combos) if int(limit) <= 0 else min(len(combos), start_index + int(limit))
 
@@ -144,7 +144,8 @@ class CasinoCog(commands.Cog):
                     skipped += 1
                     continue
 
-                reels = [int(x) for x in combo.split(",")]
+                raw = combo.split(":", 1)[1] if ":" in combo else combo
+                reels = [int(x) for x in raw.split(",")]
                 success = False
 
                 for rung in QUALITY_LADDER:
