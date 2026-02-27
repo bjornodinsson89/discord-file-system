@@ -727,22 +727,32 @@ class CasinoCoreRepository(RepositoryBase):
             )
         return [dict(r) for r in rows]
 
-    async def fetch_slots_accounting_totals(self, guild_id: int, *, days: int) -> dict:
+    async def fetch_slots_accounting_totals_window(
+        self,
+        guild_id: int,
+        *,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> dict:
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT
                     COALESCE(SUM(bet), 0) AS wagers,
                     COALESCE(SUM(payout), 0) AS payouts,
+                    COALESCE(SUM(bet - payout), 0) AS gross_profit,
                     COALESCE(SUM(jackpot_contrib), 0) AS jackpot_contrib,
                     COALESCE(SUM(jackpot_admin_add), 0) AS jackpot_admin_add,
-                    COALESCE(SUM(jackpot_overflow_to_house), 0) AS jackpot_overflow_to_house
+                    COALESCE(SUM(jackpot_overflow_to_house), 0) AS jackpot_overflow_to_house,
+                    COUNT(*) AS spins
                 FROM casino_slots_accounting
                 WHERE guild_id = $1
-                  AND created_at >= NOW() - make_interval(days => $2)
+                  AND created_at >= $2
+                  AND created_at < $3
                 """,
                 int(guild_id),
-                int(days),
+                start_utc,
+                end_utc,
             )
         return dict(row or {})
 
