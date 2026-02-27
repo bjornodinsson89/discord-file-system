@@ -725,7 +725,26 @@ class CasinoCoreRepository(RepositoryBase):
                 int(limit),
                 int(offset),
             )
-            return [dict(r) for r in rows]
+        return [dict(r) for r in rows]
+
+    async def fetch_slots_accounting_totals(self, guild_id: int, *, days: int) -> dict:
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    COALESCE(SUM(bet), 0) AS wagers,
+                    COALESCE(SUM(payout), 0) AS payouts,
+                    COALESCE(SUM(jackpot_contrib), 0) AS jackpot_contrib,
+                    COALESCE(SUM(jackpot_admin_add), 0) AS jackpot_admin_add,
+                    COALESCE(SUM(jackpot_overflow_to_house), 0) AS jackpot_overflow_to_house
+                FROM casino_slots_accounting
+                WHERE guild_id = $1
+                  AND created_at >= NOW() - make_interval(days => $2)
+                """,
+                int(guild_id),
+                int(days),
+            )
+        return dict(row or {})
 
     async def compute_admin_totals(self, guild_id: int) -> dict:
         async with self.acquire() as conn:

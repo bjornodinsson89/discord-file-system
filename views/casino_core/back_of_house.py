@@ -1,11 +1,63 @@
 from __future__ import annotations
 
+from datetime import datetime, time, timedelta, timezone
+
 import discord
 
 from repositories.casino_core import CasinoCoreRepository
 from services.casino_games.slots import SLOTS_JACKPOT_POOL_KEY
 from utils import GuildSettingsRepository, get_database
 from views.casino_core.permissions import ensure_casino_admin
+
+ACCOUNTING_RESERVE_TARGET = 5000
+
+
+def _window_start(days: int) -> datetime:
+    now = datetime.now(timezone.utc)
+    if days <= 1:
+        return datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
+    return now - timedelta(days=int(days))
+
+
+async def _build_accounting_embed(guild_id: int, days: int, label: str) -> discord.Embed:
+    repo = CasinoCoreRepository(get_database())
+    totals = await repo.fetch_slots_accounting_totals(int(guild_id), days=int(days))
+    async with repo.acquire() as conn:
+        jackpot_row = await repo.get_or_create_pool(
+            conn,
+            guild_id=int(guild_id),
+            pool_key=SLOTS_JACKPOT_POOL_KEY,
+            seed_tokens=0,
+            seed_millis=0,
+        )
+
+    wagers = int(totals.get("wagers") or 0)
+    payouts = int(totals.get("payouts") or 0)
+    jackpot_contrib = int(totals.get("jackpot_contrib") or 0)
+    jackpot_admin_add = int(totals.get("jackpot_admin_add") or 0)
+    overflow = int(totals.get("jackpot_overflow_to_house") or 0)
+    profit = int(wagers - payouts - jackpot_contrib - jackpot_admin_add + overflow)
+    distributable = max(0, int(profit - ACCOUNTING_RESERVE_TARGET))
+    split_each = distributable // 3
+    pool_tokens = int(jackpot_row.get("tokens") or 0)
+
+    em = discord.Embed(
+        title="Back of House Accounting",
+        description=f"Window: **{label}** (from `{_window_start(days).strftime('%Y-%m-%d %H:%M:%S UTC')}`)",
+        color=discord.Color.dark_teal(),
+    )
+    em.add_field(name="Wagers (W)", value=f"`{wagers}`", inline=True)
+    em.add_field(name="Payouts (P)", value=f"`{payouts}`", inline=True)
+    em.add_field(name="Jackpot Contrib (Jc)", value=f"`{jackpot_contrib}`", inline=True)
+    em.add_field(name="Admin Jackpot Adds (Ja)", value=f"`{jackpot_admin_add}`", inline=True)
+    em.add_field(name="Overflow to House (Ov)", value=f"`{overflow}`", inline=True)
+    em.add_field(name="Profit", value=f"`{profit}`", inline=True)
+    em.add_field(name="Current Jackpot Pool", value=f"`{pool_tokens}`", inline=True)
+    em.add_field(name="Reserve Target", value=f"`{ACCOUNTING_RESERVE_TARGET}`", inline=True)
+    em.add_field(name="Distributable", value=f"`{distributable}`", inline=True)
+    em.add_field(name="Split Each (3 admins)", value=f"`{split_each}`", inline=True)
+    em.set_footer(text="No payouts are automated by this report.")
+    return em
 
 
 async def back_of_house_embed(guild_id: int) -> discord.Embed:
@@ -95,6 +147,25 @@ class AddJackpotSelect(discord.ui.Select):
                     pool_key=SLOTS_JACKPOT_POOL_KEY,
                     add_tokens=int(amount),
                     add_millis=0,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO casino_slots_accounting (
+                        guild_id,
+                        actor_discord_id,
+                        bet,
+                        payout,
+                        win_type,
+                        jackpot_admin_add,
+                        jackpot_pool_before,
+                        jackpot_pool_after
+                    ) VALUES ($1, $2, 0, 0, 'admin', $3, $4, $5)
+                    """,
+                    int(self.guild_id),
+                    int(interaction.user.id),
+                    int(amount),
+                    int((row.get("tokens") or 0) - amount),
+                    int(row.get("tokens") or 0),
                 )
         pool_tokens = int(row.get("tokens") or 0)
         await interaction.followup.send(
@@ -196,6 +267,15 @@ class BackOfHouseView(discord.ui.View):
 
         await interaction.response.send_message("Admin Credit", view=AdminCreditView(self.guild_id), ephemeral=True)
 
+    @discord.ui.button(label="Accounting", style=discord.ButtonStyle.success, row=2)
+    async def accounting(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
+        await interaction.response.send_message(
+            embed=await _build_accounting_embed(self.guild_id, 1, "Today"),
+            view=AccountingWindowView(self.guild_id),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Rotate Slots Seed", style=discord.ButtonStyle.danger, row=3)
     async def rotate_slots_seed(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -223,3 +303,35 @@ class BackOfHouseView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(content="Closed.", view=self)
+
+
+class AccountingWindowSelect(discord.ui.Select):
+    def __init__(self, guild_id: int):
+        super().__init__(
+            placeholder="Choose accounting window",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Today", value="1"),
+                discord.SelectOption(label="Last 7 days", value="7"),
+                discord.SelectOption(label="Last 30 days", value="30"),
+            ],
+        )
+        self.guild_id = int(guild_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await ensure_casino_admin(interaction, self.guild_id):
+            return
+        days = int(self.values[0])
+        label = "Today" if days == 1 else f"Last {days} days"
+        await interaction.response.edit_message(
+            embed=await _build_accounting_embed(self.guild_id, days, label),
+            view=AccountingWindowView(self.guild_id),
+        )
+
+
+class AccountingWindowView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=300)
+        self.guild_id = int(guild_id)
+        self.add_item(AccountingWindowSelect(guild_id))
