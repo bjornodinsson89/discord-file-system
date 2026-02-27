@@ -303,7 +303,7 @@ class BankCog(commands.Cog):
         if excess_amount > 0:
             embed.add_field(name="Excess Not Invested", value=f"${excess_amount:,}", inline=True)
         embed.set_footer(text="Assumes current APR snapshot, Torn rounding rules, immediate reinvest at maturity, 1h cached rates.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
 
 
 async def setup(bot: commands.Bot):
