@@ -80,6 +80,7 @@ DEFAULT_SLOTS_CONFIG = {
             "274": 0.35,
         },
     },
+    "pair_left_bonus_mult": 1.10,
 }
 
 CANONICAL_SLOTS_CONFIG_KEYS = {
@@ -578,6 +579,9 @@ class CasinoSlotsService:
             rtp += (3.0 * (p_i**2) * (1.0 - p_i)) * pair_mult
         return rtp
 
+    def _round_half_up(self, x: float) -> int:
+        return int(math.floor(float(x) + 0.5))
+
     def _calculate_payout(self, config: dict, bet: int, reels: list[int]) -> tuple[int, str, int | None]:
         payouts = dict(config.get("payouts") or {})
         triple = {int(k): float(v) for k, v in dict(payouts.get("triple") or {}).items()}
@@ -589,17 +593,28 @@ class CasinoSlotsService:
             mult = float(triple.get(item, 0.0))
             return int(math.floor(bet * mult)), "triple", item
 
-        counts: dict[int, int] = {}
-        for rid in reels:
-            symbol = int(rid)
-            counts[symbol] = counts.get(symbol, 0) + 1
-        pair_item = next((k for k, v in counts.items() if v == 2), None)
-        if pair_item is not None:
-            mult = float(pair.get(int(pair_item), 0.0))
-            payout = int(math.floor(bet * mult))
-            if payout > 0:
-                return payout, "small", int(pair_item)
-            return 0, "loss", int(pair_item)
+        pair_kind: str | None = None
+        pair_item: int | None = None
+        if reels[0] == reels[1] and reels[2] != reels[0]:
+            pair_kind = "left"
+            pair_item = int(reels[0])
+        elif reels[1] == reels[2] and reels[0] != reels[1]:
+            pair_kind = "right"
+            pair_item = int(reels[1])
+        elif reels[0] == reels[2] and reels[1] != reels[0]:
+            pair_kind = "split"
+            pair_item = int(reels[0])
+
+        if pair_kind is not None and pair_item is not None:
+            base_mult = float(pair.get(pair_item, 0.0))
+            left_bonus_mult = float(config.get("pair_left_bonus_mult") or 1.10)
+            effective_mult = base_mult * (left_bonus_mult if pair_kind == "left" else 1.0)
+            payout = int(math.floor((bet * effective_mult) + 0.5))
+            if effective_mult > 0.0:
+                payout = max(1, int(payout))
+            if payout == int(bet):
+                return payout, "push", pair_item
+            return payout, "small", pair_item
 
         return 0, "loss", None
 
