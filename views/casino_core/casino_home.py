@@ -78,12 +78,18 @@ class GameSelect(discord.ui.Select):
             balance=int(snapshot["balance"]),
             pool_tokens=int(snapshot.get("pool_tokens") or 0),
         )
-        await interaction.response.edit_message(
+        await interaction.response.defer(ephemeral=True, thinking=False)
+        if interaction.channel is None:
+            await interaction.followup.send("I can’t post slots here.", ephemeral=True)
+            return
+        msg = await interaction.channel.send(
             content="",
             embed=view.build_embed(),
             view=view,
-            attachments=[view._idle_file()],
+            file=view._idle_file(),
         )
+        view.message = msg
+        await interaction.followup.send("Slots posted in this channel.", ephemeral=True)
 
 
 class CasinoHomeView(discord.ui.View):
