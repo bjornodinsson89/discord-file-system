@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import math
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -19,6 +20,7 @@ JACKPOT_SYMBOL_ID = 9090
 log = logging.getLogger(__name__)
 
 DEFAULT_SLOTS_CONFIG = {
+    "config_version": 2,
     "enabled": True,
     "min_bet": 1,
     "max_bet": 2,
@@ -75,6 +77,22 @@ DEFAULT_SLOTS_CONFIG = {
             "274": 0.35,
         },
     },
+}
+
+CANONICAL_SLOTS_CONFIG_KEYS = {
+    "reel_strip_order",
+    "reel_stop_counts",
+    "jackpot_multiplier",
+    "rtp_target",
+    "payouts",
+}
+
+EXPECTED_TRIPLE_PAYOUTS = {
+    206: 40.0,
+    281: 20.0,
+    197: 10.0,
+    865: 6.0,
+    366: 4.0,
 }
 
 
@@ -138,7 +156,15 @@ class CasinoSlotsService:
         row = await self.settings_repo.get_or_create(int(guild_id))
         games = self._coerce_config_dict((row or {}).get("casino_games"))
         current = self._coerce_config_dict(games.get("slots"))
+        current_version = int(current.get("config_version") or 0)
+        default_version = int(DEFAULT_SLOTS_CONFIG.get("config_version") or 0)
         merged = self._merge_defaults(DEFAULT_SLOTS_CONFIG, current)
+
+        if current_version < default_version:
+            for key in CANONICAL_SLOTS_CONFIG_KEYS:
+                merged[key] = deepcopy(DEFAULT_SLOTS_CONFIG[key])
+            merged["config_version"] = default_version
+
         if merged != current:
             games["slots"] = merged
             await self.settings_repo.upsert_settings(int(guild_id), casino_games=games)
@@ -205,6 +231,18 @@ class CasinoSlotsService:
 
                 games = self._coerce_config_dict((settings or {}).get("casino_games"))
                 cfg = self._merge_defaults(DEFAULT_SLOTS_CONFIG, self._coerce_config_dict(games.get("slots")))
+
+                if not self._matches_expected_triple_payouts(cfg):
+                    log.warning(
+                        "slots_config_invalid_triple_payouts guild_id=%s triple=%s; forcing default payouts",
+                        int(guild_id),
+                        (dict(cfg.get("payouts") or {}).get("triple") or {}),
+                    )
+                    cfg["payouts"] = deepcopy(DEFAULT_SLOTS_CONFIG["payouts"])
+                    cfg["config_version"] = int(DEFAULT_SLOTS_CONFIG.get("config_version") or 0)
+                    games["slots"] = cfg
+                    await self.settings_repo.upsert_settings(int(guild_id), casino_games=games)
+
                 if not cfg.get("enabled", True):
                     raise SlotsError("Slots is disabled in this server.")
 
@@ -288,6 +326,27 @@ class CasinoSlotsService:
                 total_stops = len(virtual_reel)
                 reels = [virtual_reel[rng.randbelow(total_stops)] for _ in range(3)]
                 payout, win_type, hit_symbol = self._calculate_payout(cfg, bet, reels)
+                triple_mult_used = None
+                pair_mult_used = None
+                payouts = dict(cfg.get("payouts") or {})
+                triple = {int(k): float(v) for k, v in dict(payouts.get("triple") or {}).items()}
+                pair = {int(k): float(v) for k, v in dict(payouts.get("pair") or {}).items()}
+                if win_type == "jackpot":
+                    triple_mult_used = float(cfg.get("jackpot_multiplier") or 0.0)
+                elif win_type == "triple" and hit_symbol is not None:
+                    triple_mult_used = float(triple.get(int(hit_symbol), 0.0))
+                elif hit_symbol is not None:
+                    pair_mult_used = float(pair.get(int(hit_symbol), 0.0))
+                log.debug(
+                    "slots_spin payout_debug bet=%s reels=%s win_type=%s hit=%s payout=%s triple_mult=%s pair_mult=%s",
+                    bet,
+                    reels,
+                    win_type,
+                    hit_symbol,
+                    payout,
+                    triple_mult_used,
+                    pair_mult_used,
+                )
 
                 if win_type == "jackpot":
                     log.info(
@@ -502,3 +561,10 @@ class CasinoSlotsService:
                 return {}
             return parsed if isinstance(parsed, dict) else {}
         return {}
+
+    def _matches_expected_triple_payouts(self, cfg: dict) -> bool:
+        triple = {int(k): float(v) for k, v in dict((dict(cfg.get("payouts") or {}).get("triple") or {})).items()}
+        for symbol_id, expected_multiplier in EXPECTED_TRIPLE_PAYOUTS.items():
+            if float(triple.get(int(symbol_id), 0.0)) != float(expected_multiplier):
+                return False
+        return True
