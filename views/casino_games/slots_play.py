@@ -50,7 +50,7 @@ class SlotsBetModal(discord.ui.Modal, title="Set Slots Bet"):
         idle_file = self.view._idle_file()
         await interaction.edit_original_response(
             content="",
-            embed=self.view._status_embed(self.view._pool_label(), "R E A D Y", None, "slots.png"),
+            embed=self.view._status_embed(self.view._jackpot_label(), "R E A D Y", None, "slots.png"),
             view=self.view,
             attachments=[idle_file],
         )
@@ -110,12 +110,10 @@ class SlotsPublicResultView(discord.ui.View):
         service: CasinoSlotsService,
         config: dict,
         balance_after: int,
-        pool_tokens: int,
-        pool_millis: int,
+        jackpot_multiplier: float,
         bet: int,
         payout: int,
         win_type: str,
-        outcome_bucket: str | None,
         status_label: str,
         round_id: int | None,
         server_seed_hash: str,
@@ -128,12 +126,10 @@ class SlotsPublicResultView(discord.ui.View):
         self.service = service
         self.config = dict(config or {})
         self.balance_after = int(balance_after)
-        self.pool_tokens = int(pool_tokens)
-        self.pool_millis = int(pool_millis)
+        self.jackpot_multiplier = float(jackpot_multiplier)
         self.bet = int(bet)
         self.payout = int(payout)
         self.win_type = str(win_type or "")
-        self.outcome_bucket = str(outcome_bucket or "") or None
         self.status_label = str(status_label or "")
         self.round_id = int(round_id) if round_id is not None else None
         self.server_seed_hash = str(server_seed_hash or "")
@@ -147,15 +143,12 @@ class SlotsPublicResultView(discord.ui.View):
         win_type: str,
         payout: int,
         bet: int,
-        outcome_bucket: str | None = None,
     ) -> str:
         if win_type == "jackpot":
             return "J A C K P O T 💰"
         if payout <= 0:
             return "L O S E ☹️"
-        if payout == bet:
-            return "P U S H 😐"
-        if win_type in {"small", "xanax_tease"} or str(outcome_bucket or "") == "small":
+        if win_type == "small":
             return "S M A L L  W I N ✅"
         return "W I N ✅"
 
@@ -204,8 +197,7 @@ class SlotsPublicResultView(discord.ui.View):
 
         snapshot = await self.service.get_balance_and_pool(self.guild_id, self.player_id)
         self.balance_after = int(snapshot["balance"])
-        self.pool_tokens = int(snapshot["pool_tokens"])
-        self.pool_millis = int(snapshot["pool_millis"])
+        self.jackpot_multiplier = float(snapshot.get("jackpot_multiplier") or self.jackpot_multiplier)
         self.config = dict(snapshot.get("config") or self.config)
 
         if int(self.balance_after) < int(self.bet):
@@ -218,8 +210,7 @@ class SlotsPublicResultView(discord.ui.View):
         result = await self.service.spin(self.guild_id, self.player_id, self.bet)
 
         self.balance_after = int(result["balance_after"])
-        self.pool_tokens = int(result["pool_after_tokens"])
-        self.pool_millis = int(result.get("pool_after_millis") or 0)
+        self.jackpot_multiplier = float(result.get("jackpot_multiplier") or self.jackpot_multiplier)
         self.config = dict(result.get("config") or self.config)
 
         final_reels = [int(x) for x in (result.get("reels") or [])][:3]
@@ -229,12 +220,10 @@ class SlotsPublicResultView(discord.ui.View):
         payout = int(result["payout"])
         bet = int(result["bet"])
         win_type = str(result.get("win_type") or "")
-        outcome_bucket = result.get("outcome_bucket")
         final_status = self._result_status_label(
             win_type=win_type,
             payout=payout,
             bet=bet,
-            outcome_bucket=str(outcome_bucket) if outcome_bucket is not None else None,
         )
 
         result_view = SlotsPublicResultView(
@@ -243,12 +232,10 @@ class SlotsPublicResultView(discord.ui.View):
             service=self.service,
             config=dict(result.get("config") or self.config),
             balance_after=int(result["balance_after"]),
-            pool_tokens=int(result["pool_after_tokens"]),
-            pool_millis=int(result.get("pool_after_millis") or 0),
+            jackpot_multiplier=float(result.get("jackpot_multiplier") or self.jackpot_multiplier),
             bet=bet,
             payout=payout,
             win_type=win_type,
-            outcome_bucket=str(outcome_bucket) if outcome_bucket is not None else None,
             status_label=final_status,
             round_id=result.get("round_id"),
             server_seed_hash=str(result.get("server_seed_hash") or ""),
@@ -294,7 +281,7 @@ class SlotsPublicResultView(discord.ui.View):
                     duration_ms=SPIN_DURATION_MS,
                     balance=self.balance_after,
                     bet=bet,
-                    jackpot_pool=self.pool_tokens,
+                    jackpot_pool=int(self.jackpot_multiplier),
                 )
             )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
@@ -340,8 +327,7 @@ class SlotsPlayView(discord.ui.View):
         service: CasinoSlotsService,
         config: dict,
         balance: int,
-        pool_tokens: int,
-        pool_millis: int,
+        jackpot_multiplier: float,
         house_discord_id: int = 0,
         house_torn_id: int = 0,
         payout_proof_channel_id: int = 0,
@@ -357,8 +343,7 @@ class SlotsPlayView(discord.ui.View):
         self.current_bet = self.min_bet
 
         self.balance = int(balance)
-        self.pool_tokens = int(pool_tokens)
-        self.pool_millis = int(pool_millis)
+        self.jackpot_multiplier = float(jackpot_multiplier)
         self.house_discord_id = int(house_discord_id or 0)
         self.house_torn_id = int(house_torn_id or 0)
         self.payout_proof_channel_id = int(payout_proof_channel_id or 0)
@@ -415,10 +400,8 @@ class SlotsPlayView(discord.ui.View):
             if isinstance(child, discord.ui.Button) and child.label and child.label.startswith("Spin"):
                 child.disabled = not can_spin
 
-    def _pool_label(self) -> str:
-        if self.pool_millis > 0:
-            return f"{self.pool_tokens}.{self.pool_millis:03d}"
-        return str(self.pool_tokens)
+    def _jackpot_label(self) -> str:
+        return f"{int(self.jackpot_multiplier)}x"
 
     def _roll_preview_reels(self) -> list[int]:
         symbols = list((self.config or {}).get("symbols") or [])
@@ -441,7 +424,7 @@ class SlotsPlayView(discord.ui.View):
             self._roll_preview_reels(),
             balance=self.balance,
             bet=self.current_bet,
-            jackpot_pool=self.pool_tokens,
+            jackpot_pool=int(self.jackpot_multiplier),
         )
         return discord.File(BytesIO(idle_png), filename="slots.png")
 
@@ -472,20 +455,18 @@ class SlotsPlayView(discord.ui.View):
             em.set_image(url=f"attachment://{image_name}")
         return em
 
-    def _result_status_label(self, *, win_type: str, payout: int, bet: int, outcome_bucket: str | None = None) -> str:
+    def _result_status_label(self, *, win_type: str, payout: int, bet: int) -> str:
         if win_type == "jackpot":
             return "J A C K P O T 💰"
         if payout <= 0:
             return "L O S E ☹️"
-        if payout == bet:
-            return "P U S H 😐"
-        if win_type in {"small", "xanax_tease"} or str(outcome_bucket or "") == "small":
+        if win_type == "small":
             return "S M A L L  W I N ✅"
         return "W I N ✅"
 
     def build_embed(self) -> discord.Embed:
         self._update_spin_enabled()
-        return self._status_embed(self._pool_label(), "R E A D Y", None, "slots.png")
+        return self._status_embed(self._jackpot_label(), "R E A D Y", None, "slots.png")
 
     def build_content(self) -> str:
         return ""
@@ -493,8 +474,7 @@ class SlotsPlayView(discord.ui.View):
     async def refresh_state(self) -> None:
         snapshot = await self.service.get_balance_and_pool(self.guild_id, self.discord_id)
         self.balance = int(snapshot["balance"])
-        self.pool_tokens = int(snapshot["pool_tokens"])
-        self.pool_millis = int(snapshot["pool_millis"])
+        self.jackpot_multiplier = float(snapshot.get("jackpot_multiplier") or self.jackpot_multiplier)
         self.config = dict(snapshot["config"])
         self.min_bet = int(self.config.get("min_bet") or 1)
         self.max_bet = int(self.config.get("max_bet") or self.min_bet)
@@ -521,8 +501,7 @@ class SlotsPlayView(discord.ui.View):
 
             result = await self.service.spin(self.guild_id, self.discord_id, self.current_bet)
             self.balance = int(result["balance_after"])
-            self.pool_tokens = int(result["pool_after_tokens"])
-            self.pool_millis = int(result.get("pool_after_millis") or 0)
+            self.jackpot_multiplier = float(result.get("jackpot_multiplier") or self.jackpot_multiplier)
             self.config = dict(result.get("config") or self.config)
             self.min_bet = int(self.config.get("min_bet") or self.min_bet)
             self.max_bet = int(self.config.get("max_bet") or self.max_bet)
@@ -541,12 +520,10 @@ class SlotsPlayView(discord.ui.View):
             payout = int(result["payout"])
             bet = int(result["bet"])
             win_type = str(result.get("win_type") or "")
-            outcome_bucket = result.get("outcome_bucket")
             final_status = self._result_status_label(
                 win_type=win_type,
                 payout=payout,
                 bet=bet,
-                outcome_bucket=str(outcome_bucket) if outcome_bucket is not None else None,
             )
 
             result_view = SlotsPublicResultView(
@@ -555,12 +532,10 @@ class SlotsPlayView(discord.ui.View):
                 service=self.service,
                 config=dict(result.get("config") or self.config),
                 balance_after=self.balance,
-                pool_tokens=int(result["pool_after_tokens"]),
-                pool_millis=int(result.get("pool_after_millis") or 0),
+                jackpot_multiplier=float(result.get("jackpot_multiplier") or self.jackpot_multiplier),
                 bet=bet,
                 payout=payout,
                 win_type=win_type,
-                outcome_bucket=str(outcome_bucket) if outcome_bucket is not None else None,
                 status_label=final_status,
                 round_id=result.get("round_id"),
                 server_seed_hash=str(result.get("server_seed_hash") or ""),
@@ -599,7 +574,7 @@ class SlotsPlayView(discord.ui.View):
                     self._update_spin_enabled()
                     await interaction.edit_original_response(
                         content="",
-                        embed=self._status_embed(self._pool_label(), "R E A D Y", None, "slots.png"),
+                        embed=self._status_embed(self._jackpot_label(), "R E A D Y", None, "slots.png"),
                         view=self,
                         attachments=[idle_file],
                     )
@@ -618,7 +593,7 @@ class SlotsPlayView(discord.ui.View):
                     duration_ms=SPIN_DURATION_MS,
                     balance=self.balance,
                     bet=bet,
-                    jackpot_pool=self.pool_tokens,
+                    jackpot_pool=int(self.jackpot_multiplier),
                 )
             )
             gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
@@ -636,11 +611,11 @@ class SlotsPlayView(discord.ui.View):
             idle_file = self._idle_file()
             self._update_spin_enabled()
             await interaction.edit_original_response(
-                content="",
-                embed=self._status_embed(self._pool_label(), "R E A D Y", None, "slots.png"),
-                view=self,
-                attachments=[idle_file],
-            )
+                        content="",
+                        embed=self._status_embed(self._jackpot_label(), "R E A D Y", None, "slots.png"),
+                        view=self,
+                        attachments=[idle_file],
+                    )
             if getattr(self, "message", None) is None:
                 try:
                     self.message = await interaction.original_response()
@@ -653,7 +628,7 @@ class SlotsPlayView(discord.ui.View):
             await interaction.edit_original_response(
                 content="",
                 embed=self._status_embed(
-                    self._pool_label(), f"⏳ Wait {exc.remaining_seconds}s", None, "slots.png"
+                    self._jackpot_label(), f"⏳ Wait {exc.remaining_seconds}s", None, "slots.png"
                 ),
                 view=self,
                 attachments=[idle_file],
@@ -668,7 +643,7 @@ class SlotsPlayView(discord.ui.View):
             self._update_spin_enabled()
             await interaction.edit_original_response(
                 content="",
-                embed=self._status_embed(self._pool_label(), f"❌ {exc}", None, "slots.png"),
+                embed=self._status_embed(self._jackpot_label(), f"❌ {exc}", None, "slots.png"),
                 view=self,
                 attachments=[idle_file],
             )
@@ -684,7 +659,7 @@ class SlotsPlayView(discord.ui.View):
             await interaction.edit_original_response(
                 content="",
                 embed=self._status_embed(
-                    self._pool_label(), "❌ Slots error. Check logs.", None, "slots.png"
+                    self._jackpot_label(), "❌ Slots error. Check logs.", None, "slots.png"
                 ),
                 view=self,
                 attachments=[idle_file],
@@ -721,7 +696,7 @@ class SlotsPlayView(discord.ui.View):
         await interaction.response.defer()
         await self.refresh_state()
         self._update_spin_enabled()
-        embed = self._status_embed(self._pool_label(), "R E A D Y", None, "slots.png")
+        embed = self._status_embed(self._jackpot_label(), "R E A D Y", None, "slots.png")
         await interaction.edit_original_response(
             content="", embed=embed, view=self, attachments=[self._idle_file()]
         )
