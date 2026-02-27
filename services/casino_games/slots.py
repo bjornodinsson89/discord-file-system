@@ -21,7 +21,7 @@ SLOTS_JACKPOT_POOL_KEY = "slots_jackpot"
 log = logging.getLogger(__name__)
 
 DEFAULT_SLOTS_CONFIG = {
-    "config_version": 2,
+    "config_version": 3,
     "enabled": True,
     "min_bet": 1,
     "max_bet": 3,
@@ -359,6 +359,14 @@ class CasinoSlotsService:
                 total_stops = len(virtual_reel)
                 reels = [virtual_reel[rng.randbelow(total_stops)] for _ in range(3)]
                 payout, win_type, hit_symbol = self._calculate_payout(cfg, bet, reels)
+                log.debug(
+                    "slots_spin audit bet=%s reels=%s payout=%s win_type=%s hit_symbol=%s",
+                    bet,
+                    reels,
+                    payout,
+                    win_type,
+                    hit_symbol,
+                )
                 jackpot_pool_before_tokens = 0
                 jackpot_pool_after_tokens = 0
                 jackpot_pool_display_tokens = 0

@@ -3,11 +3,14 @@ from __future__ import annotations
 from utils.database import get_database
 
 
+SLOT_ASSET_RENDER_VERSION = 2
+
+
 def normalize_combo(reels: list[int]) -> str:
     normalized = [int(v) for v in reels][:3]
     while len(normalized) < 3:
         normalized.append(0)
-    return f"{normalized[0]},{normalized[1]},{normalized[2]}"
+    return f"v{SLOT_ASSET_RENDER_VERSION}:{normalized[0]},{normalized[1]},{normalized[2]}"
 
 
 async def get_slot_asset_url(combo: str) -> str | None:
