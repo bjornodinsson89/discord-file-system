@@ -1,27 +1,42 @@
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import discord
 
 from repositories.casino_core import CasinoCoreRepository
+from repositories.users import UsersRepository
 from services.casino_games.slots import SLOTS_JACKPOT_POOL_KEY
 from utils import GuildSettingsRepository, get_database
 from views.casino_core.permissions import ensure_casino_admin
 
 ACCOUNTING_RESERVE_TARGET = 5000
 
+async def _build_accounting_embed(guild_id: int, viewer_discord_id: int, days: int, label: str) -> discord.Embed:
+    now_utc = datetime.now(timezone.utc)
+    if int(days) == 1:
+        start_utc = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
+        end_utc = now_utc
+    else:
+        start_utc = now_utc - timedelta(days=int(days))
+        end_utc = now_utc
 
-def _window_start(days: int) -> datetime:
-    now = datetime.now(timezone.utc)
-    if days <= 1:
-        return datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
-    return now - timedelta(days=int(days))
+    users_repo = UsersRepository(get_database())
+    user_row = await users_repo.get_user_api_key(int(viewer_discord_id))
+    tz_name = (user_row or {}).get("timezone_name") or "UTC"
+    try:
+        viewer_tz = ZoneInfo(tz_name)
+    except Exception:
+        viewer_tz = ZoneInfo("UTC")
+        tz_name = "UTC"
 
-
-async def _build_accounting_embed(guild_id: int, days: int, label: str) -> discord.Embed:
     repo = CasinoCoreRepository(get_database())
-    totals = await repo.fetch_slots_accounting_totals(int(guild_id), days=int(days))
+    totals = await repo.fetch_slots_accounting_totals_window(
+        int(guild_id),
+        start_utc=start_utc,
+        end_utc=end_utc,
+    )
     async with repo.acquire() as conn:
         jackpot_row = await repo.get_or_create_pool(
             conn,
@@ -40,10 +55,20 @@ async def _build_accounting_embed(guild_id: int, days: int, label: str) -> disco
     distributable = max(0, int(profit - ACCOUNTING_RESERVE_TARGET))
     split_each = distributable // 3
     pool_tokens = int(jackpot_row.get("tokens") or 0)
+    start_local = start_utc.astimezone(viewer_tz)
+    end_local = end_utc.astimezone(viewer_tz)
+    utc_window = f"{start_utc.strftime('%Y-%m-%d %H:%M')} → {end_utc.strftime('%Y-%m-%d %H:%M')}"
+    local_window = f"{start_local.strftime('%Y-%m-%d %H:%M')} → {end_local.strftime('%Y-%m-%d %H:%M')}"
 
     em = discord.Embed(
         title="Back of House Accounting",
-        description=f"Window: **{label}** (from `{_window_start(days).strftime('%Y-%m-%d %H:%M:%S UTC')}`)",
+        description="\n".join(
+            [
+                f"Window: **{label}**",
+                f"Window (UTC): `{utc_window}`",
+                f"Window (Your TZ: {tz_name}): `{local_window}`",
+            ]
+        ),
         color=discord.Color.dark_teal(),
     )
     em.add_field(name="Wagers (W)", value=f"`{wagers}`", inline=True)
@@ -113,6 +138,9 @@ class CasinoSettingsView(discord.ui.View):
 
     @discord.ui.button(label="Toggle Casino Enabled", style=discord.ButtonStyle.success)
     async def toggle_enabled(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         repo = GuildSettingsRepository(get_database())
@@ -134,6 +162,9 @@ class AddJackpotSelect(discord.ui.Select):
         self.guild_id = int(guild_id)
 
     async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         amount = int(self.values[0])
@@ -185,6 +216,9 @@ class BackOfHouseView(discord.ui.View):
 
     @discord.ui.button(label="House / Admin Settings", style=discord.ButtonStyle.primary, row=0)
     async def house_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         from views.casino_core.house_settings import HouseSettingsView, house_settings_embed
@@ -196,6 +230,9 @@ class BackOfHouseView(discord.ui.View):
 
     @discord.ui.button(label="Casino Settings", style=discord.ButtonStyle.primary, row=0)
     async def casino_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         await interaction.response.edit_message(
@@ -205,6 +242,9 @@ class BackOfHouseView(discord.ui.View):
 
     @discord.ui.button(label="Slots Settings", style=discord.ButtonStyle.secondary, row=1)
     async def slots_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         from views.casino_core.game_settings_panels import SlotsSettingsView, build_game_settings_embed
@@ -217,6 +257,9 @@ class BackOfHouseView(discord.ui.View):
 
     @discord.ui.button(label="Roulette Settings", style=discord.ButtonStyle.secondary, row=1)
     async def roulette_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         from views.casino_core.game_settings_panels import RouletteSettingsView, build_game_settings_embed
@@ -229,6 +272,9 @@ class BackOfHouseView(discord.ui.View):
 
     @discord.ui.button(label="Wheel Settings", style=discord.ButtonStyle.secondary, row=1)
     async def wheel_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         from views.casino_core.game_settings_panels import WheelSettingsView, build_game_settings_embed
@@ -241,6 +287,9 @@ class BackOfHouseView(discord.ui.View):
 
     @discord.ui.button(label="Dice Settings", style=discord.ButtonStyle.secondary, row=2)
     async def dice_settings(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         from views.casino_core.game_settings_panels import DiceSettingsView, build_game_settings_embed
@@ -253,6 +302,9 @@ class BackOfHouseView(discord.ui.View):
 
     @discord.ui.button(label="Ledger", style=discord.ButtonStyle.success, row=2)
     async def ledger(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         from views.casino_core.ledger_panel import send_admin_ledger_panel
@@ -261,6 +313,9 @@ class BackOfHouseView(discord.ui.View):
 
     @discord.ui.button(label="Admin Credit", style=discord.ButtonStyle.success, row=2)
     async def admin_credit(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         from views.casino_core.admin_credit import AdminCreditView
@@ -269,16 +324,22 @@ class BackOfHouseView(discord.ui.View):
 
     @discord.ui.button(label="Accounting", style=discord.ButtonStyle.success, row=2)
     async def accounting(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         await interaction.response.send_message(
-            embed=await _build_accounting_embed(self.guild_id, 1, "Today"),
+            embed=await _build_accounting_embed(self.guild_id, interaction.user.id, 1, "Today"),
             view=AccountingWindowView(self.guild_id),
             ephemeral=True,
         )
 
     @discord.ui.button(label="Rotate Slots Seed", style=discord.ButtonStyle.danger, row=3)
     async def rotate_slots_seed(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         repo = CasinoCoreRepository(get_database())
@@ -298,6 +359,9 @@ class BackOfHouseView(discord.ui.View):
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=3)
     async def close(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         for child in self.children:
@@ -320,12 +384,15 @@ class AccountingWindowSelect(discord.ui.Select):
         self.guild_id = int(guild_id)
 
     async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild_id or int(interaction.guild_id) != int(self.guild_id):
+            await interaction.response.send_message("❌ This panel belongs to a different server.", ephemeral=True)
+            return
         if not await ensure_casino_admin(interaction, self.guild_id):
             return
         days = int(self.values[0])
         label = "Today" if days == 1 else f"Last {days} days"
         await interaction.response.edit_message(
-            embed=await _build_accounting_embed(self.guild_id, days, label),
+            embed=await _build_accounting_embed(self.guild_id, interaction.user.id, days, label),
             view=AccountingWindowView(self.guild_id),
         )
 
