@@ -593,15 +593,29 @@ class CasinoSlotsService:
             mult = float(triple.get(item, 0.0))
             return int(math.floor(bet * mult)), "triple", item
 
-        left_pair = reels[0] == reels[1] and reels[1] != reels[2]
+        left_pair = reels[0] == reels[1] and reels[2] != reels[0]
         right_pair = reels[1] == reels[2] and reels[0] != reels[1]
-        if left_pair or right_pair:
-            pair_item = int(reels[0] if left_pair else reels[1])
+        split_pair = reels[0] == reels[2] and reels[1] != reels[0]
+        if left_pair or right_pair or split_pair:
+            if left_pair:
+                pair_item = int(reels[0])
+                pair_kind = "left"
+            elif right_pair:
+                pair_item = int(reels[1])
+                pair_kind = "right"
+            else:
+                pair_item = int(reels[0])
+                pair_kind = "split"
+
             base_mult = float(pair.get(pair_item, 0.0))
-            bonus_mult = float(config.get("pair_left_bonus_mult") or 1.10)
-            effective_mult = base_mult * (bonus_mult if left_pair else 1.0)
+            left_bonus_mult = float(config.get("pair_left_bonus_mult") or 1.10)
+            effective_mult = base_mult * (left_bonus_mult if pair_kind == "left" else 1.0)
+
             payout = self._round_half_up(bet * effective_mult)
-            payout = max(1, int(payout))
+            if effective_mult > 0:
+                payout = max(1, int(payout))
+            else:
+                payout = int(payout)
             if payout == int(bet):
                 return payout, "push", pair_item
             return payout, "small", pair_item

@@ -200,6 +200,13 @@ class SlotsPublicResultView(discord.ui.View):
         self.client_seed = str(client_seed or "")
         self.nonce = int(nonce)
         self.message: discord.Message | None = None
+        self._spinning = False
+
+    def _update_spin_enabled(self) -> None:
+        can_spin = int(self.balance_after) >= int(self.bet)
+        for child in self.children:
+            if isinstance(child, discord.ui.Button) and child.label and child.label.startswith("Spin"):
+                child.disabled = not can_spin
 
     def _result_status_label(
         self,
@@ -218,31 +225,6 @@ class SlotsPublicResultView(discord.ui.View):
             return "S M A L L  W I N ✅"
         return "W I N ✅"
 
-    async def _send_public_spin_result(
-        self,
-        interaction: discord.Interaction,
-        *,
-        content: str | None = None,
-        embed: discord.Embed | None = None,
-        file: discord.File | None = None,
-        files: list[discord.File] | None = None,
-        view: discord.ui.View | None = None,
-    ):
-        channel = interaction.channel
-        if channel is None or not hasattr(channel, "send"):
-            await interaction.followup.send("I can’t post the slot result here.", ephemeral=True)
-            return None
-        try:
-            return await channel.send(content=content, embed=embed, file=file, files=files, view=view)
-        except discord.Forbidden:
-            await interaction.followup.send(
-                "I don’t have permission to post results in this channel.", ephemeral=True
-            )
-            return None
-        except discord.HTTPException:
-            await interaction.followup.send("Failed to post the slot result. Try again.", ephemeral=True)
-            return None
-
     async def on_timeout(self) -> None:
         for child in self.children:
             if hasattr(child, "disabled"):
@@ -258,120 +240,118 @@ class SlotsPublicResultView(discord.ui.View):
         if int(interaction.user.id) != self.player_id:
             await interaction.response.send_message("This isn’t your slot panel.", ephemeral=True)
             return
-
-        await interaction.response.defer(ephemeral=True)
-
-        snapshot = await self.service.get_balance_and_pool(self.guild_id, self.player_id)
-        self.balance_after = int(snapshot["balance"])
-        self.pool_tokens = int(snapshot.get("pool_tokens") or self.pool_tokens)
-        self.config = dict(snapshot.get("config") or self.config)
-
-        if int(self.balance_after) < int(self.bet):
-            await interaction.followup.send(
-                f"Not enough tokens. Balance is {int(self.balance_after)}, bet is {int(self.bet)}.",
-                ephemeral=True,
-            )
+        if self._spinning:
             return
 
-        result = await self.service.spin(self.guild_id, self.player_id, self.bet)
+        self._spinning = True
+        await interaction.response.defer()
 
-        self.balance_after = int(result["balance_after"])
-        self.pool_tokens = int(result.get("pool_tokens") or self.pool_tokens)
-        self.config = dict(result.get("config") or self.config)
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
 
-        final_reels = [int(x) for x in (result.get("reels") or [])][:3]
-        while len(final_reels) < 3:
-            final_reels.append(REEL_CYCLE[len(final_reels) % len(REEL_CYCLE)])
+        source_message = interaction.message or self.message
+        if source_message is None:
+            self._spinning = False
+            return
 
-        payout = int(result["payout"])
-        bet = int(result["bet"])
-        win_type = str(result.get("win_type") or "")
-        final_status = self._result_status_label(
-            win_type=win_type,
-            payout=payout,
-            bet=bet,
-        )
+        try:
+            await source_message.edit(view=self)
 
-        result_view = SlotsPublicResultView(
-            guild_id=self.guild_id,
-            player_id=self.player_id,
-            service=self.service,
-            config=dict(result.get("config") or self.config),
-            balance_after=int(result["balance_after"]),
-            pool_tokens=int(result.get("pool_tokens") or self.pool_tokens),
-            bet=bet,
-            payout=payout,
-            win_type=win_type,
-            status_label=final_status,
-            round_id=result.get("round_id"),
-            server_seed_hash=str(result.get("server_seed_hash") or ""),
-            client_seed=str(result.get("client_seed") or ""),
-            nonce=int(result.get("nonce") or 0),
-        )
+            snapshot = await self.service.get_balance_and_pool(self.guild_id, self.player_id)
+            self.balance_after = int(snapshot["balance"])
+            self.pool_tokens = int(snapshot.get("pool_tokens") or self.pool_tokens)
+            self.config = dict(snapshot.get("config") or self.config)
 
-        combo = normalize_combo(final_reels)
-        slot_url: str | None = None
-        if config.slot_assets_ready():
-            slot_url = await get_slot_asset_url(combo)
+            if int(self.balance_after) < int(self.bet):
+                self.status_label = "❌ Not enough tokens"
+                self._update_spin_enabled()
+                await source_message.edit(view=self)
+                return
 
-        result_embed = discord.Embed(
-            title="🎰 Slots Result",
-            description=(
-                f"Player: <@{self.player_id}>\n"
-                f"Result: **{final_status}**\n"
-                f"Bet: `{bet}` • Payout: `{payout}`\nJackpot (Max Bet): `{int(result.get('jackpot_pool_display_tokens') or result.get('pool_tokens') or self.pool_tokens)}`"
-            ),
-            color=discord.Color.gold(),
-        )
+            result = await self.service.spin(self.guild_id, self.player_id, self.bet)
 
-        posted_message = None
-        if slot_url is not None:
-            try:
-                result_embed.set_image(url=slot_url)
-                posted_message = await self._send_public_spin_result(
-                    interaction,
-                    embed=result_embed,
-                    view=result_view,
-                )
-            except discord.HTTPException:
-                log.warning("slot_assets_url_failed combo=%s", combo, exc_info=True)
+            self.balance_after = int(result["balance_after"])
+            self.pool_tokens = int(result.get("pool_tokens") or self.pool_tokens)
+            self.config = dict(result.get("config") or self.config)
+            self.payout = int(result["payout"])
+            self.bet = int(result["bet"])
+            self.win_type = str(result.get("win_type") or "")
+            self.round_id = int(result["round_id"]) if result.get("round_id") is not None else None
+            self.server_seed_hash = str(result.get("server_seed_hash") or "")
+            self.client_seed = str(result.get("client_seed") or "")
+            self.nonce = int(result.get("nonce") or 0)
 
-        if posted_message is None:
-            if config.slot_assets_ready() and slot_url is None:
-                log.warning("slot_assets_cache_miss combo=%s", combo)
+            final_reels = [int(x) for x in (result.get("reels") or [])][:3]
+            while len(final_reels) < 3:
+                final_reels.append(REEL_CYCLE[len(final_reels) % len(REEL_CYCLE)])
 
-            gif_bytes = await asyncio.to_thread(
-                lambda: render_slots_gif(
-                    final_reels,
-                    frames=SPIN_FRAMES,
-                    duration_ms=SPIN_DURATION_MS,
-                    balance=self.balance_after,
-                    bet=bet,
-                    jackpot_pool=int(self.pool_tokens),
-                )
+            self.status_label = self._result_status_label(
+                win_type=self.win_type,
+                payout=self.payout,
+                bet=self.bet,
             )
-            cached_url = await _cache_slot_asset_if_enabled(interaction, combo, gif_bytes)
-            if cached_url:
-                result_embed.set_image(url=cached_url)
-                posted_message = await self._send_public_spin_result(
-                    interaction,
-                    embed=result_embed,
-                    view=result_view,
-                )
-            else:
-                gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
-                result_embed.set_image(url="attachment://slots.gif")
-                posted_message = await self._send_public_spin_result(
-                    interaction,
-                    embed=result_embed,
-                    file=gif_file,
-                    view=result_view,
-                )
 
-        if posted_message is not None:
-            result_view.message = posted_message
-            await interaction.followup.send(f"✅ Spun with bet {bet}. Result posted.", ephemeral=True)
+            combo = normalize_combo(final_reels)
+            slot_url: str | None = None
+            if config.slot_assets_ready():
+                slot_url = await get_slot_asset_url(combo)
+
+            result_embed = discord.Embed(
+                title="🎰 Slots Result",
+                description=(
+                    f"Player: <@{self.player_id}>\n"
+                    f"Result: **{self.status_label}**\n"
+                    f"Bet: `{self.bet}` • Payout: `{self.payout}`\nJackpot (Max Bet): `{int(result.get('jackpot_pool_display_tokens') or result.get('pool_tokens') or self.pool_tokens)}`"
+                ),
+                color=discord.Color.gold(),
+            )
+
+            if slot_url is not None:
+                result_embed.set_image(url=slot_url)
+                self._update_spin_enabled()
+                await source_message.edit(embed=result_embed, attachments=[], view=self)
+            else:
+                if config.slot_assets_ready():
+                    log.warning("slot_assets_cache_miss combo=%s", combo)
+                gif_bytes = await asyncio.to_thread(
+                    lambda: render_slots_gif(
+                        final_reels,
+                        frames=SPIN_FRAMES,
+                        duration_ms=SPIN_DURATION_MS,
+                        balance=self.balance_after,
+                        bet=self.bet,
+                        jackpot_pool=int(self.pool_tokens),
+                    )
+                )
+                cached_url = await _cache_slot_asset_if_enabled(interaction, combo, gif_bytes)
+                if cached_url:
+                    result_embed.set_image(url=cached_url)
+                    self._update_spin_enabled()
+                    await source_message.edit(embed=result_embed, attachments=[], view=self)
+                else:
+                    gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
+                    result_embed.set_image(url="attachment://slots.gif")
+                    self._update_spin_enabled()
+                    await source_message.edit(embed=result_embed, attachments=[gif_file], view=self)
+
+            self.message = source_message
             await self.service.post_big_win_announce(interaction, result)
+        except SlotsCooldownError as exc:
+            self.status_label = f"⏳ Wait {exc.remaining_seconds}s"
+            self._update_spin_enabled()
+            await source_message.edit(view=self)
+        except SlotsError as exc:
+            self.status_label = f"❌ {exc}"
+            self._update_spin_enabled()
+            await source_message.edit(view=self)
+        except Exception:
+            log.exception("slots.public_result_spin_failed")
+            self.status_label = "❌ Slots error. Check logs."
+            self._update_spin_enabled()
+            await source_message.edit(view=self)
+        finally:
+            self._spinning = False
 
     @discord.ui.button(label="Change Bet", style=discord.ButtonStyle.secondary)
     async def change_bet(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -423,6 +403,7 @@ class SlotsPlayView(discord.ui.View):
         self.house_torn_id = int(house_torn_id or 0)
         self.payout_proof_channel_id = int(payout_proof_channel_id or 0)
         self.message: discord.Message | None = None
+        self._spinning = False
         self._update_spin_enabled()
 
     async def _send_public_spin_result(
@@ -567,10 +548,24 @@ class SlotsPlayView(discord.ui.View):
 
     @discord.ui.button(label="Spin 🎰", style=discord.ButtonStyle.success)
     async def spin(self, interaction: discord.Interaction, button: discord.ui.Button):
-        button.disabled = True
-        await interaction.response.defer(ephemeral=True)
+        if self._spinning:
+            return
+
+        self._spinning = True
+        await interaction.response.defer()
+
+        source_message = interaction.message or self.message
+        if source_message is None:
+            self._spinning = False
+            return
+
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
 
         try:
+            await source_message.edit(view=self)
+
             if int(self.balance) < int(self.current_bet):
                 raise SlotsError(
                     f"Not enough tokens. Balance is {int(self.balance)}, bet is {int(self.current_bet)}."
@@ -588,7 +583,6 @@ class SlotsPlayView(discord.ui.View):
             self.payout_proof_channel_id = int(
                 result.get("payout_proof_channel_id") or self.payout_proof_channel_id
             )
-            self._update_spin_enabled()
 
             final_reels = [int(x) for x in (result.get("reels") or [])][:3]
             while len(final_reels) < 3:
@@ -636,77 +630,34 @@ class SlotsPlayView(discord.ui.View):
             )
 
             if slot_url is not None:
-                try:
-                    result_embed.set_image(url=slot_url)
-                    posted_message = await self._send_public_spin_result(
-                        interaction,
-                        embed=result_embed,
-                        view=result_view,
-                    )
-                    if posted_message is not None:
-                        result_view.message = posted_message
-                        await interaction.followup.send("✅ Result posted.", ephemeral=True)
-
-                    idle_file = self._idle_file()
-                    self._update_spin_enabled()
-                    await interaction.edit_original_response(
-                        content="",
-                        embed=self._status_embed(self._jackpot_label(), "R E A D Y", None, "slots.png"),
-                        view=self,
-                        attachments=[idle_file],
-                    )
-                    await self.service.post_big_win_announce(interaction, result)
-                    return
-                except discord.HTTPException:
-                    log.warning("slot_assets_url_failed combo=%s", combo, exc_info=True)
-
-            if config.slot_assets_ready() and slot_url is None:
-                log.warning("slot_assets_cache_miss combo=%s", combo)
-
-            gif_bytes = await asyncio.to_thread(
-                lambda: render_slots_gif(
-                    final_reels,
-                    frames=SPIN_FRAMES,
-                    duration_ms=SPIN_DURATION_MS,
-                    balance=self.balance,
-                    bet=bet,
-                    jackpot_pool=int(self.pool_tokens),
-                )
-            )
-            cached_url = await _cache_slot_asset_if_enabled(interaction, combo, gif_bytes)
-            if cached_url:
-                result_embed.set_image(url=cached_url)
-                posted_message = await self._send_public_spin_result(
-                    interaction,
-                    embed=result_embed,
-                    view=result_view,
-                )
+                result_embed.set_image(url=slot_url)
+                result_view._update_spin_enabled()
+                await source_message.edit(embed=result_embed, attachments=[], view=result_view)
             else:
-                gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
-                result_embed.set_image(url="attachment://slots.gif")
-                posted_message = await self._send_public_spin_result(
-                    interaction,
-                    embed=result_embed,
-                    file=gif_file,
-                    view=result_view,
-                )
-            if posted_message is not None:
-                result_view.message = posted_message
-                await interaction.followup.send("✅ Result posted.", ephemeral=True)
-
-            idle_file = self._idle_file()
-            self._update_spin_enabled()
-            await interaction.edit_original_response(
-                        content="",
-                        embed=self._status_embed(self._jackpot_label(), "R E A D Y", None, "slots.png"),
-                        view=self,
-                        attachments=[idle_file],
+                if config.slot_assets_ready():
+                    log.warning("slot_assets_cache_miss combo=%s", combo)
+                gif_bytes = await asyncio.to_thread(
+                    lambda: render_slots_gif(
+                        final_reels,
+                        frames=SPIN_FRAMES,
+                        duration_ms=SPIN_DURATION_MS,
+                        balance=self.balance,
+                        bet=bet,
+                        jackpot_pool=int(self.pool_tokens),
                     )
-            if getattr(self, "message", None) is None:
-                try:
-                    self.message = await interaction.original_response()
-                except Exception:
-                    pass
+                )
+                cached_url = await _cache_slot_asset_if_enabled(interaction, combo, gif_bytes)
+                if cached_url:
+                    result_embed.set_image(url=cached_url)
+                    result_view._update_spin_enabled()
+                    await source_message.edit(embed=result_embed, attachments=[], view=result_view)
+                else:
+                    gif_file = discord.File(BytesIO(gif_bytes), filename="slots.gif")
+                    result_embed.set_image(url="attachment://slots.gif")
+                    result_view._update_spin_enabled()
+                    await source_message.edit(embed=result_embed, attachments=[gif_file], view=result_view)
+
+            result_view.message = source_message
             await self.service.post_big_win_announce(interaction, result)
         except SlotsCooldownError as exc:
             idle_file = self._idle_file()
@@ -756,13 +707,7 @@ class SlotsPlayView(discord.ui.View):
                 except Exception:
                     pass
         finally:
-            self._update_spin_enabled()
-            await interaction.edit_original_response(view=self)
-            if getattr(self, "message", None) is None:
-                try:
-                    self.message = await interaction.original_response()
-                except Exception:
-                    pass
+            self._spinning = False
 
     @discord.ui.button(label="Fairness", style=discord.ButtonStyle.secondary)
     async def fairness(self, interaction: discord.Interaction, _: discord.ui.Button):
