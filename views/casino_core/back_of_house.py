@@ -78,7 +78,7 @@ class AddJackpotSelect(discord.ui.Select):
             discord.SelectOption(label=str(amount), value=str(amount), description=f"Add {amount} tokens")
             for amount in range(10, 101, 10)
         ]
-        super().__init__(placeholder="Add to Jackpot", min_values=1, max_values=1, options=options, row=3)
+        super().__init__(placeholder="Add to Jackpot", min_values=1, max_values=1, options=options, row=4)
         self.guild_id = int(guild_id)
 
     async def callback(self, interaction: discord.Interaction):
