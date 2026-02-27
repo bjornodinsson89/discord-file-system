@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import logging
 import os
 import time
@@ -10,7 +9,6 @@ from typing import Any
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from PIL import Image, ImageDraw, ImageFont
 
 from utils import GuildSettingsRepository, get_security_manager, get_torn_api
 from utils.command_checks import require_command_access
@@ -18,11 +16,8 @@ from utils.database import get_database, is_initialized, wait_until_initialized
 from utils.embeds import create_error_embed
 from utils.torn_api import TornAPIError
 
-ASSET_PAUL_WALL_PATH = os.path.join("assets", "paul_wall.jpg")
-ASSET_PAUL_WALL_B64_PATH = os.path.join("assets", "paul_wall.jpg.b64")
-PAUL_WALL_ATTACHMENT_NAME = "paul_wall_meme.png"
-MEME_TOP_TEXT = "Hit the jewelry store — tell ’em I need a grill."
-MEME_BOTTOM_TEXT = "Paul Wall approves ✅"
+ASSET_MEME_PATH = os.path.join("assets", "pwmeme.png")
+MEME_ATTACHMENT_NAME = "pwmeme.png"
 SHOPLIFT_URL = "https://www.torn.com/page.php?sid=crimes#/shoplifting"
 LOG_THROTTLE_SECONDS = 600
 POLL_INTERVAL_SECONDS = 30
@@ -42,63 +37,14 @@ class JewelryAlertCog(commands.Cog):
     def cog_unload(self) -> None:
         self.jewelry_alert_poller.cancel()
 
-    def _load_meme_base_image(self) -> Image.Image:
-        if os.path.exists(ASSET_PAUL_WALL_PATH):
-            return Image.open(ASSET_PAUL_WALL_PATH)
-
-        if not os.path.exists(ASSET_PAUL_WALL_B64_PATH):
-            raise FileNotFoundError(
-                f"Missing meme asset: {ASSET_PAUL_WALL_PATH} (or fallback {ASSET_PAUL_WALL_B64_PATH})"
-            )
-
-        with open(ASSET_PAUL_WALL_B64_PATH, "r", encoding="utf-8") as handle:
-            encoded = handle.read().strip()
-        raw = base64.b64decode(encoded)
-        return Image.open(BytesIO(raw))
-
     def _get_cached_meme_file(self) -> discord.File:
-        # Cached so we don’t re-render every send
-        if self._meme_png_cache is not None:
-            return discord.File(fp=BytesIO(self._meme_png_cache), filename=PAUL_WALL_ATTACHMENT_NAME)
-
-        # Load base image
-        with self._load_meme_base_image() as im:
-            im = im.convert("RGBA")
-            draw = ImageDraw.Draw(im)
-
-            # Basic font strategy: try DejaVuSans-Bold if available, else default
-            font_size = max(24, im.size[1] // 12)
-            try:
-                font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
-            except Exception:
-                font = ImageFont.load_default()
-
-            def draw_centered_text(y: int, text: str) -> None:
-                # Measure
-                bbox = draw.textbbox((0, 0), text, font=font, stroke_width=4)
-                text_w = bbox[2] - bbox[0]
-                x = (im.size[0] - text_w) // 2
-                # White text with black stroke for readability
-                draw.text(
-                    (x, y),
-                    text,
-                    font=font,
-                    fill=(255, 255, 255, 255),
-                    stroke_width=4,
-                    stroke_fill=(0, 0, 0, 255),
-                )
-
-            # Top and bottom padding
-            top_y = int(im.size[1] * 0.04)
-            bottom_y = int(im.size[1] * 0.88)
-            draw_centered_text(top_y, MEME_TOP_TEXT)
-            draw_centered_text(bottom_y, MEME_BOTTOM_TEXT)
-
-            out = BytesIO()
-            im.save(out, format="PNG")
-            self._meme_png_cache = out.getvalue()
-
-        return discord.File(fp=BytesIO(self._meme_png_cache), filename=PAUL_WALL_ATTACHMENT_NAME)
+        if self._meme_png_cache is None:
+            if not os.path.exists(ASSET_MEME_PATH):
+                raise FileNotFoundError(f"Missing meme asset: {ASSET_MEME_PATH}")
+            with open(ASSET_MEME_PATH, "rb") as handle:
+                self._meme_png_cache = handle.read()
+        # Always return a fresh discord.File wrapping cached bytes
+        return discord.File(fp=BytesIO(self._meme_png_cache), filename=MEME_ATTACHMENT_NAME)
 
     def _build_jewelry_embed_view_and_file(
         self,
@@ -118,7 +64,7 @@ class JewelryAlertCog(commands.Cog):
         meme_file: discord.File | None = None
         try:
             meme_file = self._get_cached_meme_file()
-            embed.set_image(url=f"attachment://{PAUL_WALL_ATTACHMENT_NAME}")
+            embed.set_image(url=f"attachment://{MEME_ATTACHMENT_NAME}")
         except Exception:
             # If meme missing/broken, still send text + button (do not crash)
             log.exception("Failed generating meme image for jewelry alert")
