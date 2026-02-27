@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import math
-import random
-import uuid
+import hashlib
 import json
 import logging
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -101,6 +101,45 @@ SLOT_CONFIG = SlotsDisplayConfig(
 )
 
 
+class ProvablyFairRNG:
+    def __init__(self, server_seed: str, client_seed: str, spin_nonce: int):
+        self.server_seed = str(server_seed)
+        self.client_seed = str(client_seed)
+        self.spin_nonce = int(spin_nonce)
+        self.counter = 0
+
+    def _digest(self) -> bytes:
+        payload = f"{self.server_seed}:{self.client_seed}:{self.spin_nonce}:{self.counter}"
+        digest = hashlib.sha256(payload.encode("utf-8")).digest()
+        self.counter += 1
+        return digest
+
+    def randbelow(self, n: int) -> int:
+        if int(n) <= 0:
+            raise ValueError("n must be positive")
+        return int.from_bytes(self._digest(), "big") % int(n)
+
+    def random_float(self) -> float:
+        return int.from_bytes(self._digest(), "big") / float(1 << 256)
+
+    def choice(self, seq):
+        if not seq:
+            raise IndexError("Cannot choose from an empty sequence")
+        return seq[self.randbelow(len(seq))]
+
+    def shuffle(self, values: list) -> None:
+        for i in range(len(values) - 1, 0, -1):
+            j = self.randbelow(i + 1)
+            values[i], values[j] = values[j], values[i]
+
+    def sample(self, seq, k: int):
+        if k < 0 or k > len(seq):
+            raise ValueError("Sample larger than population or is negative")
+        copied = list(seq)
+        self.shuffle(copied)
+        return copied[:k]
+
+
 class SlotsError(Exception):
     pass
 
@@ -155,6 +194,50 @@ class CasinoSlotsService:
             "house_discord_id": int((house or {}).get("house_discord_id") or 0),
             "house_torn_id": int((house or {}).get("house_torn_id") or 0),
             "payout_proof_channel_id": int((house or {}).get("payout_proof_channel_id") or 0),
+        }
+
+
+    async def get_fairness_state(self, guild_id: int, discord_id: int) -> dict:
+        async with self.casino_repo.acquire() as conn:
+            server_seed = await self.casino_repo.get_or_create_slots_server_seed(conn, int(guild_id), for_update=False)
+            player_state = await self.casino_repo.get_or_create_slots_player_state(
+                conn,
+                int(guild_id),
+                int(discord_id),
+                for_update=False,
+            )
+        return {
+            "server_seed_hash": str(server_seed.get("server_seed_hash") or ""),
+            "client_seed": str(player_state.get("client_seed") or ""),
+            "nonce": int(player_state.get("nonce") or 0),
+            "previous_server_seed": server_seed.get("previous_server_seed"),
+            "previous_server_seed_hash": server_seed.get("previous_server_seed_hash"),
+        }
+
+    async def set_client_seed(self, guild_id: int, discord_id: int, client_seed: str) -> dict:
+        cleaned = str(client_seed).strip()
+        if len(cleaned) < 6 or len(cleaned) > 64:
+            raise SlotsError("Client seed must be between 6 and 64 characters.")
+        if "\n" in cleaned or "\r" in cleaned:
+            raise SlotsError("Client seed cannot contain newlines.")
+        if not all(ch.isprintable() for ch in cleaned):
+            raise SlotsError("Client seed must use printable characters only.")
+
+        async with self.casino_repo.acquire() as conn:
+            async with conn.transaction():
+                row = await self.casino_repo.set_slots_client_seed(
+                    conn,
+                    int(guild_id),
+                    int(discord_id),
+                    cleaned,
+                )
+                server_seed = await self.casino_repo.get_or_create_slots_server_seed(conn, int(guild_id), for_update=False)
+        return {
+            "server_seed_hash": str(server_seed.get("server_seed_hash") or ""),
+            "client_seed": str(row.get("client_seed") or cleaned),
+            "nonce": int(row.get("nonce") or 0),
+            "previous_server_seed": server_seed.get("previous_server_seed"),
+            "previous_server_seed_hash": server_seed.get("previous_server_seed_hash"),
         }
 
     async def spin(self, guild_id: int, discord_id: int, bet: int) -> dict:
@@ -225,14 +308,37 @@ class CasinoSlotsService:
                     forced_outcome = "push"
                     forced_by_loss_streak = True
 
-                nonce = str(uuid.uuid4())
+                server_seed_row = await self.casino_repo.get_or_create_slots_server_seed(
+                    conn,
+                    int(guild_id),
+                    for_update=True,
+                )
+                player_state = await self.casino_repo.get_or_create_slots_player_state(
+                    conn,
+                    int(guild_id),
+                    int(discord_id),
+                    for_update=True,
+                )
+                spin_nonce = int(player_state.get("nonce") or 0)
+                server_seed = str(server_seed_row.get("server_seed") or "")
+                server_seed_hash = str(server_seed_row.get("server_seed_hash") or "")
+                client_seed = str(player_state.get("client_seed") or "")
+                rng = ProvablyFairRNG(server_seed=server_seed, client_seed=client_seed, spin_nonce=spin_nonce)
+
                 round_id = await self.casino_repo.create_round(
                     conn,
                     guild_id=int(guild_id),
                     wallet_id=int(wallet["id"]),
                     game_key="slots",
                     bet_tokens=bet,
-                    result_json={"status": "pending", "nonce": nonce},
+                    result_json={
+                        "status": "pending",
+                        "provably_fair": {
+                            "server_seed_hash": server_seed_hash,
+                            "client_seed": client_seed,
+                            "nonce": spin_nonce,
+                        },
+                    },
                 )
 
                 try:
@@ -269,8 +375,9 @@ class CasinoSlotsService:
                     outcome_bucket = self._choose_outcome_bucket(
                         plays=plays,
                         pool_tokens=int(pool_after_contrib["tokens"]),
+                        rng=rng,
                     )
-                reels = self._roll_reels(cfg, outcome_bucket)
+                reels = self._roll_reels(cfg, outcome_bucket, rng)
                 payout, win_type, pair_item = self._calculate_payout(
                     cfg,
                     bet,
@@ -354,6 +461,19 @@ class CasinoSlotsService:
                     conn=conn,
                 )
 
+                new_nonce = spin_nonce + 1
+                await conn.execute(
+                    """
+                    UPDATE casino_slots_player_state
+                    SET nonce = $3,
+                        updated_at = NOW()
+                    WHERE guild_id = $1 AND discord_id = $2
+                    """,
+                    int(guild_id),
+                    int(discord_id),
+                    int(new_nonce),
+                )
+
                 cooldown_seconds = max(0, int(cfg.get("cooldown_seconds") or 0))
                 await self.casino_repo.set_cooldown(
                     conn,
@@ -375,6 +495,11 @@ class CasinoSlotsService:
                     "pool_before": {"tokens": int(pool_before["tokens"]), "millis": int(pool_before["millis"])},
                     "contrib_added": {"tokens": 0, "millis": contrib_millis},
                     "pool_after": {"tokens": final_pool_tokens, "millis": final_pool_millis},
+                    "provably_fair": {
+                        "server_seed_hash": server_seed_hash,
+                        "client_seed": client_seed,
+                        "nonce": spin_nonce,
+                    },
                 }
                 await self.casino_repo.update_round(conn, round_id=round_id, payout_tokens=payout, result_json=result_json)
 
@@ -395,6 +520,9 @@ class CasinoSlotsService:
                     "house_discord_id": int((house or {}).get("house_discord_id") or 0),
                     "house_torn_id": int((house or {}).get("house_torn_id") or 0),
                     "payout_proof_channel_id": int((house or {}).get("payout_proof_channel_id") or 0),
+                    "server_seed_hash": server_seed_hash,
+                    "client_seed": client_seed,
+                    "nonce": spin_nonce,
                 }
 
                 big_wins_channel_id = int((house or {}).get("big_wins_channel_id") or 0)
@@ -438,7 +566,7 @@ class CasinoSlotsService:
         except Exception as exc:
             log.warning("Big win announcement failed channel_id=%s round_id=%s: %s", channel_id, announce.get("round_id"), exc)
 
-    def _roll_reels(self, config: dict, outcome_bucket: str) -> list[int]:
+    def _roll_reels(self, config: dict, outcome_bucket: str, rng: ProvablyFairRNG) -> list[int]:
         all_symbols = self._get_symbol_ids(config)
         if not all_symbols:
             raise SlotsError("Slots symbol configuration is invalid.")
@@ -450,27 +578,27 @@ class CasinoSlotsService:
         if outcome_bucket == "jackpot":
             return [JACKPOT_SYMBOL_ID, JACKPOT_SYMBOL_ID, JACKPOT_SYMBOL_ID]
         if outcome_bucket == "double_jp":
-            replacement = random.choice(non_jackpot_symbols)
+            replacement = rng.choice(non_jackpot_symbols)
             reels = [JACKPOT_SYMBOL_ID, JACKPOT_SYMBOL_ID, JACKPOT_SYMBOL_ID]
-            reels[random.randrange(3)] = replacement
+            reels[rng.randbelow(3)] = replacement
             return reels
         if outcome_bucket == "triple":
-            symbol = self._choose_non_jackpot_triple_symbol(config)
+            symbol = self._choose_non_jackpot_triple_symbol(config, rng)
             return [symbol, symbol, symbol]
         if outcome_bucket == "small":
-            pair_symbol = self._choose_small_pair_symbol(config)
+            pair_symbol = self._choose_small_pair_symbol(config, rng)
             alternatives = [symbol for symbol in non_jackpot_symbols if symbol != pair_symbol]
-            odd_symbol = random.choice(alternatives)
+            odd_symbol = rng.choice(alternatives)
             reels = [pair_symbol, pair_symbol, pair_symbol]
-            reels[random.randrange(3)] = odd_symbol
+            reels[rng.randbelow(3)] = odd_symbol
             return reels
         if outcome_bucket in {"push", "loss"}:
-            reels = random.sample(non_jackpot_symbols, 3)
-            random.shuffle(reels)
+            reels = rng.sample(non_jackpot_symbols, 3)
+            rng.shuffle(reels)
             return reels
         raise SlotsError(f"Unknown slots outcome bucket: {outcome_bucket}")
 
-    def _choose_outcome_bucket(self, *, plays: int, pool_tokens: int) -> str:
+    def _choose_outcome_bucket(self, *, plays: int, pool_tokens: int, rng: ProvablyFairRNG) -> str:
         odds_jackpot = ODDS_JACKPOT
         odds_double_jp = ODDS_DOUBLE_JP
         odds_triple = ODDS_TRIPLE
@@ -483,7 +611,7 @@ class CasinoSlotsService:
             odds_double_jp += boost
             odds_loss -= boost
 
-        r = random.random()
+        r = rng.random_float()
         if r < odds_jackpot:
             return "jackpot"
         if r < odds_jackpot + odds_double_jp:
@@ -499,16 +627,16 @@ class CasinoSlotsService:
     def _get_symbol_ids(self, config: dict) -> list[int]:
         return [int(s.get("item_id")) for s in list(config.get("symbols") or []) if s.get("item_id") is not None]
 
-    def _choose_small_pair_symbol(self, config: dict) -> int:
+    def _choose_small_pair_symbol(self, config: dict, rng: ProvablyFairRNG) -> int:
         payouts = dict(config.get("payouts") or {})
         pair = dict(payouts.get("pair") or {})
         symbols = self._get_symbol_ids(config)
         eligible = [item_id for item_id in symbols if item_id != JACKPOT_SYMBOL_ID and str(item_id) in pair]
         if not eligible:
             raise SlotsError("No eligible symbols for small win pair payout.")
-        return random.choice(eligible)
+        return rng.choice(eligible)
 
-    def _choose_non_jackpot_triple_symbol(self, config: dict) -> int:
+    def _choose_non_jackpot_triple_symbol(self, config: dict, rng: ProvablyFairRNG) -> int:
         payouts = dict(config.get("payouts") or {})
         triple = dict(payouts.get("triple") or {})
         ranked = sorted(
@@ -526,13 +654,13 @@ class CasinoSlotsService:
         while len(by_tier) < len(TRIPLE_TIER_WEIGHTS):
             by_tier.append(by_tier[-1])
 
-        roll = random.random()
+        roll = rng.random_float()
         cumulative = 0.0
         for index, weight in enumerate(TRIPLE_TIER_WEIGHTS):
             cumulative += weight
             if roll <= cumulative:
-                return random.choice(by_tier[index])
-        return random.choice(by_tier[-1])
+                return rng.choice(by_tier[index])
+        return rng.choice(by_tier[-1])
 
     def _calculate_payout(
         self,
@@ -610,7 +738,8 @@ if __name__ == "__main__":
     spins = 100000
     counts: dict[str, int] = {"jackpot": 0, "double_jp": 0, "triple": 0, "small": 0, "push": 0, "loss": 0}
     for _ in range(spins):
-        bucket = service._choose_outcome_bucket()
+        rng = ProvablyFairRNG(secrets.token_hex(8), "demo-client", _)
+        bucket = service._choose_outcome_bucket(plays=0, pool_tokens=100, rng=rng)
         counts[bucket] = counts.get(bucket, 0) + 1
     for name in ["push", "small", "triple", "jackpot", "double_jp", "loss"]:
         pct = (counts.get(name, 0) / spins) * 100
