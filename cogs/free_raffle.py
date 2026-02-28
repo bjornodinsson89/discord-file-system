@@ -12,6 +12,7 @@ from repositories.free_raffle_repo import FreeRaffleRepository
 from repositories.torn_items import TornItemsRepository
 from utils import get_database, require_api_key
 from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
+from utils.advisory_lock import run_with_advisory_lock
 from views.free_raffle_views import EnterRaffleView, HostControlsView
 
 log = logging.getLogger("happy_jumper.free_raffle")
@@ -416,15 +417,28 @@ class FreeRaffleCog(commands.Cog):
                 processed += 1
             except Exception:
                 log.exception("Failed processing automatic free raffle draw raffle_id=%s", raffle_id)
-        log.info("Free raffle expiration worker processed=%s", processed)
+        if processed > 0:
+            log.info("Free raffle expiration worker processed=%s", processed)
+        else:
+            log.debug("Free raffle expiration worker processed=0")
         return processed
 
     @tasks.loop(seconds=60)
     async def free_raffle_expiration_worker(self) -> None:
         if not db_is_initialized():
             return
+
+        db = get_database()
+
+        async def _run_once() -> int:
+            return await self.process_expired_raffles()
+
         try:
-            await self.process_expired_raffles()
+            acquired, processed = await run_with_advisory_lock(db, "worker:free_raffle:expire", _run_once)
+            if not acquired:
+                return
+            # process_expired_raffles already logs appropriately based on processed
+            _ = processed
         except Exception:
             log.exception("Free raffle expiration worker error")
 

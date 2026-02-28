@@ -44,6 +44,7 @@ from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimi
 from utils.payment_normalization import parse_payment_type
 from utils.discord_safe_send import safe_send_channel
 from utils.command_checks import CommandAccessError, has_role_hierarchy_access, require_command_access
+from utils.advisory_lock import run_with_advisory_lock
 from utils.redaction import redact_text
 from setup_panel import (
     DEFAULT_WELCOME_TEMPLATE,
@@ -4468,13 +4469,17 @@ async def before_readiness_worker():
 async def auto_verify_99k_payments():
     if not await _worker_db_ready("auto_verify_99k_payments"):
         return
-    try:
-        log_event(log, logging.INFO, "jump99k.auto_verify.start", action="auto_verify", result="started")
-        db = get_database()
+
+    db = get_database()
+
+    async def _run_once() -> dict[str, int]:
         repo = JumpsRepository(get_pool())
         users_repo = UsersRepository(db.pool)
         security = get_security_manager()
         torn_api = get_torn_api()
+
+        verified = 0
+        finalized_priority = 0
 
         await repo.cancel_expired_unpaid()
         pending = await repo.list_pending_payment_signups(limit=50)
@@ -4484,14 +4489,20 @@ async def auto_verify_99k_payments():
             try:
                 if signup.get("reserved_until") and signup["reserved_until"] <= datetime.now(timezone.utc):
                     continue
+
                 participant_id = int(signup["participant_discord_id"])
                 session_id = int(signup["session_id"])
 
                 key_row = await users_repo.get_user_api_key(participant_id)
                 encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
                 if not key_row or not encrypted_key:
-                    log.warning("Skipping auto_verify_99k_payments due to missing API key discord_id=%s guild_id=%s", participant_id, signup.get("guild_id"))
+                    log.warning(
+                        "Skipping auto_verify_99k_payments due to missing API key discord_id=%s guild_id=%s",
+                        participant_id,
+                        signup.get("guild_id"),
+                    )
                     continue
+
                 host_key = await users_repo.get_user_api_key(int(signup["host_discord_id"]))
                 host_torn_id = int(host_key["torn_user_id"]) if host_key and host_key.get("torn_user_id") else 0
                 if not host_torn_id:
@@ -4500,20 +4511,29 @@ async def auto_verify_99k_payments():
                 api_key = security.decrypt_api_key(encrypted_key)
                 signup_created_at = signup.get("signup_created_at") or signup.get("created_at")
                 since_ts = int((signup_created_at - timedelta(seconds=60)).timestamp())
+
                 base_amount = int(signup.get("price_amount") or 0)
                 priority_increment = int(signup.get("priority_increment") or 1)
                 priority_amount = base_amount + priority_increment
+
                 item = str(signup.get("price_item", "")).lower()
+                payment = None
+                paid_amount = base_amount
+
                 if item == "xanax":
                     payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, priority_amount, since_timestamp=since_ts)
-                    paid_amount = priority_amount if payment else base_amount
-                    if not payment:
+                    if payment:
+                        paid_amount = priority_amount
+                    else:
                         payment = await torn_api.verify_xanax_payment(api_key, host_torn_id, base_amount, since_timestamp=since_ts)
+                        paid_amount = base_amount if payment else base_amount
                 elif item == "erotic_dvd":
                     payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, priority_amount, since_timestamp=since_ts)
-                    paid_amount = priority_amount if payment else base_amount
-                    if not payment:
+                    if payment:
+                        paid_amount = priority_amount
+                    else:
                         payment = await torn_api.verify_dvd_payment(api_key, host_torn_id, base_amount, since_timestamp=since_ts)
+                        paid_amount = base_amount if payment else base_amount
                 else:
                     continue
 
@@ -4526,12 +4546,36 @@ async def auto_verify_99k_payments():
                         buyer_discord_id=participant_id,
                         signup_id=int(signup["id"]),
                     )
+                    finalized_priority += 1
 
                 updated = await repo.mark_signup_payment_verified(session_id=session_id, discord_id=participant_id)
                 if not updated:
-                    log_event(log, logging.INFO, "jump99k.auto_verify.noop", guild_id=signup.get("guild_id"), session_id=session_id, user_id=participant_id, action="auto_verify", result="no_state_change")
+                    log_event(
+                        log,
+                        logging.DEBUG,
+                        "jump99k.auto_verify.noop",
+                        guild_id=signup.get("guild_id"),
+                        session_id=session_id,
+                        user_id=participant_id,
+                        action="auto_verify",
+                        result="no_state_change",
+                    )
                     continue
-                log_event(log, logging.INFO, "jump99k.auto_verify.match", guild_id=signup.get("guild_id"), session_id=session_id, user_id=participant_id, action="auto_verify", result="matched", payment_item=item, paid_amount=paid_amount)
+
+                verified += 1
+
+                log_event(
+                    log,
+                    logging.INFO,
+                    "jump99k.auto_verify.match",
+                    guild_id=signup.get("guild_id"),
+                    session_id=session_id,
+                    user_id=participant_id,
+                    action="auto_verify",
+                    result="matched",
+                    payment_item=item,
+                    paid_amount=paid_amount,
+                )
 
                 payer_torn = int(key_row.get("torn_user_id") or 0) or None
                 await receipts.create_and_verify(
@@ -4555,13 +4599,53 @@ async def auto_verify_99k_payments():
                     await _refresh_99k_panel(bot, session_id)
                     await _refresh_roster_if_exists(bot, session_id)
             except Exception as entry_err:
-                log.warning("Auto verify failed for signup %s/%s: %s", signup.get("session_id"), signup.get("participant_discord_id"), entry_err)
+                log.warning(
+                    "Auto verify failed for signup %s/%s: %s",
+                    signup.get("session_id"),
+                    signup.get("participant_discord_id"),
+                    entry_err,
+                )
                 continue
 
-        log_event(log, logging.INFO, "jump99k.auto_verify.end", action="auto_verify", result="ok")
+        return {
+            "scanned": len(pending),
+            "verified": verified,
+            "finalized_priority": finalized_priority,
+        }
+
+    try:
+        acquired, result = await run_with_advisory_lock(db, "worker:jump99k:auto_verify", _run_once)
+        if not acquired:
+            return
+
+        scanned = int((result or {}).get("scanned", 0))
+        verified = int((result or {}).get("verified", 0))
+        finalized_priority = int((result or {}).get("finalized_priority", 0))
+
+        # Only INFO when something happened
+        if verified > 0 or finalized_priority > 0:
+            log_event(
+                log,
+                logging.INFO,
+                "jump99k.auto_verify.summary",
+                action="auto_verify",
+                result="ok",
+                scanned=scanned,
+                verified=verified,
+                finalized_priority=finalized_priority,
+            )
+        else:
+            log.debug("jump99k.auto_verify tick scanned=%s verified=0", scanned)
     except Exception as e:
-        log_event(log, logging.ERROR, "jump99k.auto_verify.failed", action="auto_verify", result="error", error_type=type(e).__name__, exc_info=True)
-        log.error(f"auto_verify_99k_payments error: {e}", exc_info=True)
+        log_event(
+            log,
+            logging.ERROR,
+            "jump99k.auto_verify.failed",
+            action="auto_verify",
+            result="error",
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
 
 
 @auto_verify_99k_payments.before_loop
