@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any
 
@@ -148,6 +149,12 @@ class JewelryAlertCog(commands.Cog):
                 sent = await channel.send(content=content, embed=embed, view=view, file=meme_file)
             else:
                 sent = await channel.send(content=content, embed=embed, view=view)
+            log.info(
+                "jewelry_alert.sent guild_id=%s channel_id=%s message_id=%s",
+                guild.id,
+                channel_id,
+                sent.id,
+            )
         except discord.Forbidden:
             self._log_throttled(guild.id, "send_forbidden", "Missing permissions to send jewelry alert guild_id=%s", guild.id)
             return None
@@ -235,6 +242,7 @@ class JewelryAlertCog(commands.Cog):
             if message_id is not None:
                 await self._repo.upsert_settings(
                     guild.id,
+                    jewelry_alert_last_sent_at=datetime.now(timezone.utc),
                     jewelry_alert_last_is_open=True,
                     jewelry_alert_last_announcement_channel_id=channel_id,
                     jewelry_alert_last_announcement_message_id=message_id,

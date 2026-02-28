@@ -15,6 +15,7 @@ from services.payment_receipts import PaymentReceiptService
 from services.logging_utils import log_event
 from utils import GuildSettingsRepository, get_database, get_security_manager, get_torn_api, require_api_key
 from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
+from utils.advisory_lock import run_with_advisory_lock
 from utils.embeds import create_error_embed
 from utils.icon_strips import build_icon_strip_file
 from utils.item_resolver import ItemResolver
@@ -2293,34 +2294,85 @@ class RafflesCog(commands.Cog):
     async def cleanup_expired(self):
         if not await self._ensure_db_ready("raffles.cleanup_expired"):
             return
-        """Clean up expired unpaid reservations."""
-        try:
-            log_event(log, logging.INFO, "raffle.cleanup_expired.start", action="cleanup_expired", result="started")
+
+        db = get_database()
+
+        async def _run_once() -> int:
             repo = RafflesRepository(get_pool())
-            count = await repo.cleanup_expired_raffle_entries()
-            log_event(log, logging.INFO, "raffle.cleanup_expired.end", action="cleanup_expired", result="ok", cleaned=count)
-            if count > 0:
-                log.info(f"Cleaned up {count} expired raffle entries")
+            return int(await repo.cleanup_expired_raffle_entries() or 0)
+
+        try:
+            acquired, cleaned = await run_with_advisory_lock(db, "worker:raffles:cleanup_expired", _run_once)
+            if not acquired:
+                return
+
+            cleaned = int(cleaned or 0)
+            if cleaned > 0:
+                log_event(
+                    log,
+                    logging.INFO,
+                    "raffle.cleanup_expired",
+                    action="cleanup_expired",
+                    result="ok",
+                    cleaned=cleaned,
+                )
+                log.info("Cleaned up %s expired raffle entries", cleaned)
+            else:
+                log.debug("raffle.cleanup_expired tick cleaned=0")
         except Exception as e:
-            log_event(log, logging.ERROR, "raffle.cleanup_expired.failed", action="cleanup_expired", result="error", error_type=type(e).__name__, exc_info=True)
-            log.error(f"Error cleaning up expired entries: {e}")
+            log_event(
+                log,
+                logging.ERROR,
+                "raffle.cleanup_expired.failed",
+                action="cleanup_expired",
+                result="error",
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
 
     @tasks.loop(minutes=5)
     async def cleanup_closed_panels(self):
         if not await self._ensure_db_ready("raffles.cleanup_closed_panels"):
             return
-        try:
-            log_event(log, logging.INFO, "raffle.cleanup_panels.start", action="cleanup_panels", result="started")
+
+        db = get_database()
+
+        async def _run_once() -> int:
             repo = RafflesRepository(get_pool())
             stale = await repo.get_stale_raffles_for_cleanup()
             for raffle in stale:
                 await self._disable_raffle_panels(raffle, status_text=f"Raffle {raffle.get('status')}.")
                 await self._disable_prize_dm_confirm(raffle)
                 await repo.mark_cleaned(int(raffle["raffle_id"]))
-            log_event(log, logging.INFO, "raffle.cleanup_panels.end", action="cleanup_panels", result="ok", cleaned=len(stale))
+            return int(len(stale))
+
+        try:
+            acquired, cleaned = await run_with_advisory_lock(db, "worker:raffles:cleanup_panels", _run_once)
+            if not acquired:
+                return
+
+            cleaned = int(cleaned or 0)
+            if cleaned > 0:
+                log_event(
+                    log,
+                    logging.INFO,
+                    "raffle.cleanup_panels",
+                    action="cleanup_panels",
+                    result="ok",
+                    cleaned=cleaned,
+                )
+            else:
+                log.debug("raffle.cleanup_panels tick cleaned=0")
         except Exception as e:
-            log_event(log, logging.ERROR, "raffle.cleanup_panels.failed", action="cleanup_panels", result="error", error_type=type(e).__name__, exc_info=True)
-            log.error(f"Error cleaning raffle panels: {e}")
+            log_event(
+                log,
+                logging.ERROR,
+                "raffle.cleanup_panels.failed",
+                action="cleanup_panels",
+                result="error",
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
 
     async def _before_worker_loop(self) -> None:
         await wait_until_initialized(timeout=30.0)

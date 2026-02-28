@@ -69,6 +69,7 @@ class GuildSettingsRepository:
         "jewelry_alert_active_message_id",
         "jewelry_alert_last_clear",
         "jewelry_alert_last_is_open",
+        "jewelry_alert_last_sent_at",
         "jewelry_alert_last_announcement_message_id",
         "jewelry_alert_last_announcement_channel_id",
     }
@@ -152,6 +153,7 @@ class GuildSettingsRepository:
         "jewelry_alert_active_message_id": None,
         "jewelry_alert_last_clear": False,
         "jewelry_alert_last_is_open": False,
+        "jewelry_alert_last_sent_at": None,
         "jewelry_alert_last_announcement_message_id": None,
         "jewelry_alert_last_announcement_channel_id": None,
     }
@@ -516,6 +518,7 @@ class GuildSettingsRepository:
             "jewelry_alert_active_message_id": None,
             "jewelry_alert_last_clear": False,
             "jewelry_alert_last_is_open": False,
+            "jewelry_alert_last_sent_at": None,
             "jewelry_alert_last_announcement_message_id": None,
             "jewelry_alert_last_announcement_channel_id": None,
         }
