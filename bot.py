@@ -117,16 +117,48 @@ async def main() -> None:
         async with bot:
             bot_task = asyncio.create_task(bot.start(config.DISCORD_TOKEN), name="discord_bot")
             stop_task = asyncio.create_task(stop_event.wait(), name="shutdown_wait")
+
             done, pending = await asyncio.wait(
-                {bot_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+                {bot_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
             )
+
+            # Cancel whichever task did not finish
             for task in pending:
                 task.cancel()
-            if stop_task in done and not bot_task.done():
-                await bot.close()
-                await bot_task
-            elif bot_task in done:
-                await bot_task
+
+            # If we were asked to stop, gracefully close and suppress expected cancellation noise
+            if stop_task in done:
+                if not bot_task.done():
+                    try:
+                        await bot.close()
+                    except Exception as exc:
+                        # Close errors during shutdown should not prevent exit
+                        log.warning("Error while closing bot during shutdown: %s", exc)
+
+                    # Ensure the bot task does not keep running
+                    if not bot_task.done():
+                        bot_task.cancel()
+
+                try:
+                    await bot_task
+                except asyncio.CancelledError:
+                    # Normal during shutdown (connect/start gets cancelled)
+                    pass
+                except Exception as exc:
+                    # During shutdown, treat unexpected end as warning (not crash spam)
+                    log.warning("Bot task ended during shutdown: %s", exc)
+            else:
+                # Bot task finished first: propagate real failures
+                try:
+                    await bot_task
+                finally:
+                    if not stop_task.done():
+                        stop_task.cancel()
+                        try:
+                            await stop_task
+                        except asyncio.CancelledError:
+                            pass
     finally:
         await health_supervisor.stop()
         await shutdown_status_panel_tasks()
