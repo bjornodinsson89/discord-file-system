@@ -92,6 +92,7 @@ TORN_NAME_CACHE_TTL_MINUTES = 10
 _TORN_NAME_CACHE: dict[int, tuple[str, datetime]] = {}
 _TORN_NAME_FAIL_LOG_CACHE: dict[int, datetime] = {}
 _READINESS_MISSING_KEY_LOG_CACHE: dict[tuple[int, int], datetime] = {}
+_READINESS_PERMISSION_LOG_CACHE: dict[tuple[int, int], datetime] = {}
 _WORKER_DB_WAIT_LOGGED: set[str] = set()
 
 
@@ -352,7 +353,68 @@ async def _fetch_and_upsert_user_readiness_snapshot(
             audit_context="jump_readiness",
             audit_query_meta={},
         )
+    except TornAPIPermissionError as exc:
+        permission_status = "API key missing Bars/Cooldowns permissions"
+        await repo.upsert_readiness_snapshot(
+            session_id=session_id,
+            guild_id=guild_id,
+            discord_id=discord_id,
+            energy=0,
+            energy_max=0,
+            drug_cooldown=0,
+            booster_cooldown=0,
+            status_text=permission_status,
+        )
+        log.info(
+            "Readiness snapshot stored with permission error guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s",
+            guild_id,
+            session_id,
+            discord_id,
+            type(exc).__name__,
+            exc,
+        )
+        return {
+            "session_id": session_id,
+            "guild_id": guild_id,
+            "discord_id": discord_id,
+            "energy": 0,
+            "energy_max": 0,
+            "drug_cooldown": 0,
+            "booster_cooldown": 0,
+            "status_text": permission_status,
+        }
+    except TornAPIRateLimitError as exc:
+        log.debug(
+            "Readiness snapshot skipped due to rate limit guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s",
+            guild_id,
+            session_id,
+            discord_id,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    except TornAPIError as exc:
+        throttle_key = (session_id, discord_id)
+        now = datetime.now(timezone.utc)
+        expiry = _READINESS_PERMISSION_LOG_CACHE.get(throttle_key)
+        if not expiry or expiry <= now:
+            log.info(
+                "Readiness snapshot fetch failed guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s",
+                guild_id,
+                session_id,
+                discord_id,
+                type(exc).__name__,
+                exc,
+            )
+            _READINESS_PERMISSION_LOG_CACHE[throttle_key] = now + timedelta(hours=1)
+        return None
     except Exception:
+        log.exception(
+            "Unexpected readiness snapshot failure guild_id=%s session_id=%s discord_id=%s",
+            guild_id,
+            session_id,
+            discord_id,
+        )
         return None
 
     try:
@@ -361,6 +423,12 @@ async def _fetch_and_upsert_user_readiness_snapshot(
         drug_cd = int((user_data or {}).get("cooldowns", {}).get("drug", 0) or 0)
         booster_cd = int((user_data or {}).get("cooldowns", {}).get("booster", 0) or 0)
     except Exception:
+        log.exception(
+            "Readiness parse failure guild_id=%s session_id=%s discord_id=%s",
+            guild_id,
+            session_id,
+            discord_id,
+        )
         return None
 
     status_text = "ready" if energy_current >= 1000 and drug_cd == 0 else "not ready"
@@ -377,6 +445,12 @@ async def _fetch_and_upsert_user_readiness_snapshot(
             status_text=status_text,
         )
     except Exception:
+        log.exception(
+            "Readiness snapshot upsert failure guild_id=%s session_id=%s discord_id=%s",
+            guild_id,
+            session_id,
+            discord_id,
+        )
         return None
     return {
         "session_id": session_id,
@@ -858,6 +932,8 @@ async def on_ready():
             log.exception("on_ready step failed: %s", step_name)
 
     log_event(log, logging.INFO, "workers_started", action="startup", result="ok", workers=started_workers)
+    if "start_readiness_worker" in started_workers or readiness_worker.is_running():
+        log.info("99k readiness worker running")
     log.info("✓ Bot is ready!")
 
 
@@ -1952,13 +2028,17 @@ async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) 
     host_energy_max = (host_readiness or {}).get("energy_max")
     host_drug_cd = (host_readiness or {}).get("drug_cooldown") if host_readiness else None
     host_booster_cd = (host_readiness or {}).get("booster_cooldown") if host_readiness else None
+    host_status_text = str((host_readiness or {}).get("status_text") or "").strip()
+    host_has_readiness = bool(host_readiness and host_readiness.get("checked_at"))
     host_ready = host_energy is not None and host_energy_max is not None and int(host_energy) >= 1000 and int(host_drug_cd or 0) == 0
-    host_emoji = "🟩" if host_ready else "🟥"
-    host_readiness_text = (
-        f"E-lvl {_format_energy_pair(host_energy, host_energy_max)} Dcd |{_format_cd_hhmm(host_drug_cd)}| Bcd |{_format_cd_hhmm(host_booster_cd)}|"
-        if host_energy is not None and host_energy_max is not None
-        else "API key required"
-    )
+    host_missing_permissions = host_has_readiness and host_status_text.lower().startswith("api key missing")
+    host_emoji = "🟥" if host_missing_permissions else ("🟩" if host_ready else "🟥")
+    if host_missing_permissions:
+        host_readiness_text = host_status_text
+    elif host_energy is not None and host_energy_max is not None:
+        host_readiness_text = f"E-lvl {_format_energy_pair(host_energy, host_energy_max)} Dcd |{_format_cd_hhmm(host_drug_cd)}| Bcd |{_format_cd_hhmm(host_booster_cd)}|"
+    else:
+        host_readiness_text = "API key required"
 
     participants = [row for row in signups if int(row.get("discord_id") or 0) != host_id]
     progress_signups = progress.get("signups") or []
@@ -1997,20 +2077,25 @@ async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) 
         energy_max = int(row.get("energy_max") or 0) if has_readiness else None
         drug_cd = row.get("drug_cooldown") if has_readiness else None
         booster_cd = row.get("booster_cooldown") if has_readiness else None
+        status_text = str(row.get("status_text") or "").strip()
+        missing_permissions = has_readiness and status_text.lower().startswith("api key missing")
 
         if bool(row.get("overdose_flag")):
             emoji = "🟧"
+        elif missing_permissions:
+            emoji = "🟥"
         elif energy is not None and energy >= 1000 and int(drug_cd or 0) == 0:
             emoji = "🟩"
         else:
             emoji = "🟥"
 
         state = participant_states[idx - 2] if idx - 2 < len(participant_states) else "waiting"
-        readiness_text = (
-            f"E-lvl {_format_energy_pair(energy, energy_max)} Dcd |{_format_cd_hhmm(drug_cd)}| Bcd |{_format_cd_hhmm(booster_cd)}|"
-            if has_readiness
-            else "API key required"
-        )
+        if missing_permissions:
+            readiness_text = status_text
+        elif has_readiness:
+            readiness_text = f"E-lvl {_format_energy_pair(energy, energy_max)} Dcd |{_format_cd_hhmm(drug_cd)}| Bcd |{_format_cd_hhmm(booster_cd)}|"
+        else:
+            readiness_text = "API key required"
         lines.append(
             f"{idx}) Name:{name}{priority_label} {readiness_text} {emoji} • {_state_label(state)}"
         )
@@ -4424,35 +4509,95 @@ async def readiness_worker():
                         key_data["encrypted_key"] = key_data["api_key_encrypted"]
 
                     api_key = security.decrypt_api_key(key_data["encrypted_key"])
-                    user_data = await torn_api.get_user_data(
-                        api_key,
-                        audit_discord_id=int(discord_id),
-                        audit_torn_id=int(key_data.get("torn_user_id") or 0) or None,
-                        audit_context="jump_readiness",
-                        audit_query_meta={},
-                    )
+                    try:
+                        user_data = await torn_api.get_user_data(
+                            api_key,
+                            audit_discord_id=int(discord_id),
+                            audit_torn_id=int(key_data.get("torn_user_id") or 0) or None,
+                            audit_context="jump_readiness",
+                            audit_query_meta={},
+                        )
 
-                    energy = int((user_data or {}).get("bars", {}).get("energy", {}).get("current", 0) or 0)
-                    energy_max = int((user_data or {}).get("bars", {}).get("energy", {}).get("maximum", 0) or 0)
-                    drug_cd = int((user_data or {}).get("cooldowns", {}).get("drug", 0) or 0)
-                    booster_cd = int((user_data or {}).get("cooldowns", {}).get("booster", 0) or 0)
+                        energy = int((user_data or {}).get("bars", {}).get("energy", {}).get("current", 0) or 0)
+                        energy_max = int((user_data or {}).get("bars", {}).get("energy", {}).get("maximum", 0) or 0)
+                        drug_cd = int((user_data or {}).get("cooldowns", {}).get("drug", 0) or 0)
+                        booster_cd = int((user_data or {}).get("cooldowns", {}).get("booster", 0) or 0)
 
-                    status_text = _get_readiness_status(
-                        {"energy": energy, "energy_max": energy_max},
-                        drug_cd,
+                        status_text = _get_readiness_status(
+                            {"energy": energy, "energy_max": energy_max},
+                            drug_cd,
+                        )
+                        await repo.upsert_readiness_snapshot(
+                            session_id=session_id,
+                            guild_id=int(session["guild_id"]),
+                            discord_id=discord_id,
+                            energy=energy,
+                            energy_max=energy_max,
+                            drug_cooldown=drug_cd,
+                            booster_cooldown=booster_cd,
+                            status_text=status_text,
+                        )
+                    except TornAPIPermissionError as exc:
+                        await repo.upsert_readiness_snapshot(
+                            session_id=session_id,
+                            guild_id=int(session["guild_id"]),
+                            discord_id=discord_id,
+                            energy=0,
+                            energy_max=0,
+                            drug_cooldown=0,
+                            booster_cooldown=0,
+                            status_text="API key missing Bars/Cooldowns permissions",
+                        )
+                        throttle_key = (session_id, discord_id)
+                        now = datetime.now(timezone.utc)
+                        expiry = _READINESS_PERMISSION_LOG_CACHE.get(throttle_key)
+                        if not expiry or expiry <= now:
+                            log.info(
+                                "Readiness refresh permission error guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s",
+                                guild.id,
+                                session_id,
+                                discord_id,
+                                type(exc).__name__,
+                                exc,
+                            )
+                            _READINESS_PERMISSION_LOG_CACHE[throttle_key] = now + timedelta(hours=1)
+                    except TornAPIRateLimitError as exc:
+                        log.debug(
+                            "Readiness refresh skipped due to rate limit guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s",
+                            guild.id,
+                            session_id,
+                            discord_id,
+                            type(exc).__name__,
+                            exc,
+                        )
+                    except TornAPIError as exc:
+                        throttle_key = (session_id, discord_id)
+                        now = datetime.now(timezone.utc)
+                        expiry = _READINESS_PERMISSION_LOG_CACHE.get(throttle_key)
+                        if not expiry or expiry <= now:
+                            log.info(
+                                "Readiness refresh Torn API error guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s",
+                                guild.id,
+                                session_id,
+                                discord_id,
+                                type(exc).__name__,
+                                exc,
+                            )
+                            _READINESS_PERMISSION_LOG_CACHE[throttle_key] = now + timedelta(hours=1)
+                    except Exception:
+                        log.exception(
+                            "Unexpected readiness refresh failure guild_id=%s session_id=%s discord_id=%s",
+                            guild.id,
+                            session_id,
+                            discord_id,
+                        )
+                except Exception:
+                    log.exception(
+                        "Failed to prepare readiness refresh guild_id=%s session_id=%s discord_id=%s",
+                        guild.id,
+                        session_id,
+                        discord_id,
                     )
-                    await repo.upsert_readiness_snapshot(
-                        session_id=session_id,
-                        guild_id=int(session["guild_id"]),
-                        discord_id=discord_id,
-                        energy=energy,
-                        energy_max=energy_max,
-                        drug_cooldown=drug_cd,
-                        booster_cooldown=booster_cd,
-                        status_text=status_text,
-                    )
-                except Exception as e:
-                    log.warning(f"Failed to refresh 99k readiness for user {discord_id}: {e}")
 
                 await asyncio.sleep(0.35)
     except Exception as e:
