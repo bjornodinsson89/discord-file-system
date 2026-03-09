@@ -1162,6 +1162,86 @@ class JumpsRepository(RepositoryBase):
 
         return True, f"Added <@{int(user_discord_id)}> to the session."
 
+
+    async def manual_remove_signup(
+        self,
+        *,
+        session_id: int,
+        removed_discord_id: int,
+        removed_by_discord_id: int,
+    ) -> tuple[bool, str]:
+        async with self.acquire() as conn:
+            async with conn.transaction():
+                session = await conn.fetchrow(
+                    """
+                    SELECT id, status, host_discord_id
+                    FROM jump_99k_sessions
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    session_id,
+                )
+                if not session:
+                    return False, "Session not found."
+
+                if str(session.get("status") or "").lower() != "open":
+                    return False, "Session is not open."
+
+                host_discord_id = int(session.get("host_discord_id") or 0)
+                if int(removed_discord_id) == host_discord_id:
+                    return False, "Host cannot be removed from this session."
+
+                signup = await conn.fetchrow(
+                    """
+                    SELECT id, status
+                    FROM jump_99k_signups
+                    WHERE session_id = $1
+                      AND participant_discord_id = $2
+                    FOR UPDATE
+                    """,
+                    session_id,
+                    removed_discord_id,
+                )
+                if not signup:
+                    return False, "User is not in this session."
+
+                signup_status = str(signup.get("status") or "").lower()
+                if signup_status not in SIGNUP_ACTIVE_STATUSES:
+                    return False, "User is not currently active in this session."
+
+                jump_state = "waiting"
+                try:
+                    jump_state = str(await conn.fetchval(
+                        """
+                        SELECT jump_state
+                        FROM jump_99k_signups
+                        WHERE session_id = $1
+                          AND participant_discord_id = $2
+                        """,
+                        session_id,
+                        removed_discord_id,
+                    ) or "waiting").lower()
+                except asyncpg.UndefinedColumnError:
+                    log.error(_JUMP_PROGRESS_MIGRATION_HINT)
+                    raise
+                if jump_state == "in_progress":
+                    return False, "Cannot remove the jumper currently in progress."
+
+                await conn.execute(
+                    """
+                    UPDATE jump_99k_signups
+                    SET status = $3,
+                        updated_at = NOW()
+                    WHERE session_id = $1
+                      AND participant_discord_id = $2
+                    """,
+                    session_id,
+                    removed_discord_id,
+                    SIGNUP_STATUS_CANCELLED,
+                )
+
+        return True, f"Removed <@{int(removed_discord_id)}> from the session."
+
     async def create_manual_signup(
         self,
         *,
