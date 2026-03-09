@@ -42,9 +42,9 @@ def test_host_controls_are_host_only_and_use_ephemeral_message_path():
     assert "Only the jump host can use these controls." in events_py
     assert "99k_roster_host_controls" in events_py
     assert 'label="Host Controls"' in events_py
-    assert 'await interaction.response.send_message(' in events_py
-    assert 'await interaction.followup.send(' in events_py
-    assert 'view=Jump99kHostControlsView(session_id=self.session_id)' in events_py
+    assert "await interaction.response.send_message(" in events_py
+    assert "await interaction.followup.send(" in events_py
+    assert "view=Jump99kHostControlsView(session_id=self.session_id)" in events_py
 
 
 def test_jump_automation_worker_runs_every_3_seconds():
@@ -64,7 +64,9 @@ def test_host_controls_helpers_are_defined_and_used():
 
 def test_roster_panel_host_controls_does_not_edit_original_message():
     events_py = Path("cogs/events.py").read_text(encoding="utf-8")
-    on_host_controls_block = events_py.split("async def _on_host_controls", 1)[1].split("async def _on_refresh", 1)[0]
+    on_host_controls_block = events_py.split("async def _on_host_controls", 1)[1].split(
+        "async def _on_refresh", 1
+    )[0]
 
     assert "_safe_edit_original" not in on_host_controls_block
     assert "interaction.response.send_message" in on_host_controls_block
@@ -72,7 +74,9 @@ def test_roster_panel_host_controls_does_not_edit_original_message():
 
 def test_roster_refresh_uses_single_roster_refresh_path():
     events_py = Path("cogs/events.py").read_text(encoding="utf-8")
-    on_refresh_block = events_py.split("async def _on_refresh", 1)[1].split("async def _on_view", 1)[0]
+    on_refresh_block = events_py.split("async def _on_refresh", 1)[1].split(
+        "async def _on_view", 1
+    )[0]
 
     assert "_refresh_or_repost_roster_panel" in on_refresh_block
     assert "_refresh_roster_if_exists" not in on_refresh_block
