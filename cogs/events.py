@@ -96,6 +96,22 @@ _READINESS_MISSING_KEY_LOG_CACHE: dict[tuple[int, int], datetime] = {}
 _READINESS_PERMISSION_LOG_CACHE: dict[tuple[int, int], datetime] = {}
 _WORKER_DB_WAIT_LOGGED: set[str] = set()
 _READINESS_SESSION_NEXT_DUE: dict[int, datetime] = {}
+_JUMP_AUTOMATION_STATE: dict[int, dict[str, object]] = {}
+
+
+def _automation_state(session_id: int) -> dict[str, object]:
+    return _JUMP_AUTOMATION_STATE.setdefault(
+        int(session_id),
+        {
+            "running": False,
+            "paused": False,
+            "active_discord_id": None,
+            "active_position": None,
+            "saw_nonzero_energy": False,
+            "consecutive_low_energy_polls": 0,
+            "last_transition_at": None,
+        },
+    )
 
 
 
@@ -919,6 +935,7 @@ async def on_ready():
     worker_steps = [
         ("start_cleanup_worker", cleanup_worker),
         ("start_readiness_worker", readiness_worker),
+        ("start_jump_automation_worker", jump_automation_worker),
         ("start_overdose_monitor", overdose_monitor),
         ("start_raffle_completion_worker", raffle_completion_worker),
         ("start_auto_verify_99k_payments", auto_verify_99k_payments),
@@ -2020,11 +2037,7 @@ async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) 
         return f"<@{int(discord_id)}>"
 
     def _state_label(state: str) -> str:
-        if state == "in_progress":
-            return "🟦 JUMPING"
-        if state == "done":
-            return "✅ DONE"
-        return "⏳ WAITING"
+        return _visible_jump_state(state)
 
     host_name = await _display_name_for(host_id)
     host_energy = (host_readiness or {}).get("energy")
@@ -2109,18 +2122,9 @@ async def build_roster_panel(session_id: int, channel: discord.abc.Messageable) 
     max_slots = int(session.get("max_slots") or 0)
     total_positions = 1 + max(0, max_slots)
     total_positions = max(1, min(total_positions, Jump99kRosterPanelView.MAX_POSITIONS))
-    enabled_start_positions, enabled_end_positions = _compute_enabled_positions(
-        roster_states=roster_states,
-        total_positions=total_positions,
-    )
 
     embed = _build_roster_embed(lines)
-    view = Jump99kRosterPanelView(
-        session_id,
-        roster_size=total_positions,
-        enabled_start_positions=enabled_start_positions,
-        enabled_end_positions=enabled_end_positions,
-    )
+    view = Jump99kRosterPanelView(session_id, roster_size=total_positions)
     return embed, view
 
 
@@ -2160,35 +2164,64 @@ def _compute_enabled_positions(*, roster_states: list[str], total_positions: int
     return enabled_start_positions, enabled_end_positions
 
 
-async def _build_jump99k_manage_view(session_id: int) -> discord.ui.View:
-    repo = JumpsRepository(get_pool())
-    session = await repo.get_session(int(session_id))
-    if not session:
-        return Jump99kHostControlsView(int(session_id))
-    signups = await repo.list_roster_signups_with_readiness(int(session_id))
-    progress = await repo.get_jump_progress(int(session_id))
-    host_id = int(session.get("host_discord_id") or 0)
+
+
+def _apply_energy_poll(*, saw_nonzero_energy: bool, consecutive_low_energy_polls: int, energy: int) -> tuple[bool, int, bool]:
+    saw_nonzero = bool(saw_nonzero_energy)
+    consecutive = int(consecutive_low_energy_polls)
+    if int(energy) > 0:
+        saw_nonzero = True
+        consecutive = 0
+    elif saw_nonzero and int(energy) < 10:
+        consecutive += 1
+    else:
+        consecutive = 0
+    should_finish = saw_nonzero and consecutive >= 4
+    return saw_nonzero, consecutive, should_finish
+
+def _visible_jump_state(state: str) -> str:
+    normalized = str(state or "waiting").lower()
+    if normalized == "in_progress":
+        return "Jumping"
+    if normalized == "done":
+        return "Finished"
+    if normalized in {"skipped", "removed"}:
+        return normalized.title()
+    return "Waiting"
+
+
+async def _load_automation_roster(repo: JumpsRepository, session_id: int) -> tuple[dict, list[dict], list[dict]]:
+    session = await repo.get_session(session_id)
+    signups = await repo.list_roster_signups_with_readiness(session_id)
+    progress = await repo.get_jump_progress(session_id)
+    host_id = int((session or {}).get("host_discord_id") or 0)
     participants = [row for row in signups if int(row.get("discord_id") or 0) != host_id]
-    participant_states: list[str] = []
     progress_signups = progress.get("signups") or []
-    for idx, _row in enumerate(participants):
-        state = "waiting"
-        if idx < len(progress_signups):
-            state = str(progress_signups[idx].get("state") or "waiting")
-        participant_states.append(state)
-    host_state = str((progress.get("host") or {}).get("state") or "waiting")
-    roster_states = [host_state, *participant_states]
-    total_positions = min(8, 1 + max(0, int(session.get("max_slots") or 0)))
-    enabled_start_positions, enabled_end_positions = _compute_enabled_positions(
-        roster_states=roster_states,
-        total_positions=total_positions,
-    )
-    return Jump99kManageView(
-        int(session_id),
-        roster_size=total_positions,
-        enabled_start_positions=enabled_start_positions,
-        enabled_end_positions=enabled_end_positions,
-    )
+    return session, participants, progress_signups
+
+
+async def _advance_to_next_jumper(*, repo: JumpsRepository, session_id: int, actor_discord_id: int) -> tuple[bool, int | None]:
+    session, participants, progress_signups = await _load_automation_roster(repo, session_id)
+    if not session:
+        return False, None
+    host_state = str((await repo.get_jump_progress(session_id)).get("host", {}).get("state") or "waiting")
+    if host_state == "waiting":
+        ok, _ = await repo.run_jump_transition_by_position(session_id=session_id, position=1, action="start", actor_discord_id=actor_discord_id)
+        return ok, int(session.get("host_discord_id") or 0) if ok else None
+
+    for idx, row in enumerate(participants, start=2):
+        if idx - 2 < len(progress_signups):
+            state = str(progress_signups[idx - 2].get("state") or "waiting")
+        else:
+            state = "waiting"
+        if state == "waiting":
+            ok, _ = await repo.run_jump_transition_by_position(session_id=session_id, position=idx, action="start", actor_discord_id=actor_discord_id)
+            return ok, int(row.get("discord_id") or 0) if ok else None
+    return False, None
+
+
+async def _build_jump99k_manage_view(session_id: int) -> discord.ui.View:
+    return Jump99kHostControlsView(int(session_id))
 
 
 def is_host_override(member: discord.Member, session: dict, host_role_id: int | None) -> bool:
@@ -2303,23 +2336,12 @@ async def _refresh_or_repost_roster_panel(bot_client: commands.Bot, session_id: 
 class Jump99kRosterPanelView(discord.ui.View):
     MAX_POSITIONS = 8
 
-    def __init__(
-        self,
-        session_id: int,
-        *,
-        roster_size: int | None = None,
-        enabled_start_positions: set[int] | None = None,
-        enabled_end_positions: set[int] | None = None,
-        include_transition_controls: bool = False,
-    ):
+    def __init__(self, session_id: int, *, roster_size: int | None = None):
         super().__init__(timeout=None)
         self.session_id = int(session_id)
-        self.include_transition_controls = bool(include_transition_controls)
         if roster_size is None:
             roster_size = self.MAX_POSITIONS
         self.roster_size = max(1, min(int(roster_size), self.MAX_POSITIONS))
-        self.enabled_start_positions = set(enabled_start_positions or set())
-        self.enabled_end_positions = set(enabled_end_positions or set())
 
         refresh_btn = discord.ui.Button(
             label="Refresh roster",
@@ -2333,281 +2355,62 @@ class Jump99kRosterPanelView(discord.ui.View):
             custom_id=f"99k_roster_view:{self.session_id}",
             row=0,
         )
-        refresh_btn.callback = self._on_refresh
-        view_btn.callback = self._on_view
-        self.add_item(refresh_btn)
-        self.add_item(view_btn)
-        manage_btn = discord.ui.Button(
-            label="Manage",
+        host_controls_btn = discord.ui.Button(
+            label="Host Controls",
             style=discord.ButtonStyle.primary,
-            custom_id=f"99k_roster_manage:{self.session_id}",
+            custom_id=f"99k_roster_host_controls:{self.session_id}",
             row=0,
         )
-        manage_btn.callback = self._on_manage
-        self.add_item(manage_btn)
+        refresh_btn.callback = self._on_refresh
+        view_btn.callback = self._on_view
+        host_controls_btn.callback = self._on_host_controls
+        self.add_item(refresh_btn)
+        self.add_item(view_btn)
+        self.add_item(host_controls_btn)
 
-        if self.include_transition_controls:
-            for position in range(1, self.roster_size + 1):
-                row = 1 + ((position - 1) // 2)
-                start_btn = discord.ui.Button(
-                    label=f"S{position}",
-                    style=discord.ButtonStyle.success,
-                    custom_id=f"99k_roster_start:{self.session_id}:{position}",
-                    row=row,
-                    disabled=not self._is_start_enabled(position),
-                )
-                end_btn = discord.ui.Button(
-                    label=f"E{position}",
-                    style=discord.ButtonStyle.danger,
-                    custom_id=f"99k_roster_end:{self.session_id}:{position}",
-                    row=row,
-                    disabled=not self._is_end_enabled(position),
-                )
-                start_btn.callback = self._build_transition_handler("start", position)
-                end_btn.callback = self._build_transition_handler("end", position)
-                self.add_item(start_btn)
-                self.add_item(end_btn)
-
-    async def _on_manage(self, interaction: discord.Interaction):
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True, thinking=False)
-            repo = JumpsRepository(get_pool())
-            session = await repo.get_session(self.session_id)
-            if not session or not await can_manage_99k_session(interaction, session):
-                await interaction.followup.send("You don’t have permission to manage this 99k session.", ephemeral=True)
-                return
-            manage_view = await _build_jump99k_manage_view(self.session_id)
-            await interaction.followup.send(
-                f"Managing 99k session #{self.session_id}",
-                view=manage_view,
-                ephemeral=True,
-            )
-        except Exception:
-            log.exception("99k manage open failed session_id=%s user_id=%s", self.session_id, interaction.user.id if interaction.user else None)
-            if interaction.response.is_done():
-                await interaction.followup.send("Sorry—could not open management controls. Please try again.", ephemeral=True)
-            else:
-                await interaction.response.send_message("Sorry—could not open management controls. Please try again.", ephemeral=True)
-
-    def _is_start_enabled(self, position: int) -> bool:
-        if position > self.roster_size:
-            return False
-        return position in self.enabled_start_positions
-
-    def _is_end_enabled(self, position: int) -> bool:
-        if position > self.roster_size:
-            return False
-        return position in self.enabled_end_positions
-
-    def _build_transition_handler(self, action: str, position: int):
-        async def _handler(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            if not interaction.guild_id or not isinstance(interaction.user, discord.Member):
-                await interaction.followup.send("You are not allowed to control this roster.", ephemeral=True)
-                return
-
-            repo = JumpsRepository(get_pool())
-            session = await repo.get_session(self.session_id)
-            if not session:
-                await interaction.followup.send("Session not found.", ephemeral=True)
-                return
-            if not await can_manage_99k_session(interaction, session):
-                await interaction.followup.send("You don’t have permission to manage this 99k session.", ephemeral=True)
-                return
-
-            signups = await repo.list_roster_signups_with_readiness(self.session_id)
-            progress = await repo.get_jump_progress(self.session_id)
-            host_id = int(session.get("host_discord_id") or 0)
-            participants = [row for row in signups if int(row.get("discord_id") or 0) != host_id]
-            participant_states: list[str] = []
-            progress_signups = progress.get("signups") or []
-            for idx, _row in enumerate(participants):
-                state = "waiting"
-                if idx < len(progress_signups):
-                    state = str(progress_signups[idx].get("state") or "waiting")
-                participant_states.append(state)
-
-            host_state = str((progress.get("host") or {}).get("state") or "waiting")
-            roster_states = [host_state, *participant_states]
-            total_positions = min(8, 1 + max(0, int(session.get("max_slots") or 0)))
-            enabled_start_positions, enabled_end_positions = _compute_enabled_positions(
-                roster_states=roster_states,
-                total_positions=total_positions,
-            )
-
-            if action == "start" and position not in enabled_start_positions:
-                only_position = next(iter(enabled_start_positions), None)
-                if only_position is None:
-                    await interaction.followup.send("Not your turn yet. No Start action is available right now.", ephemeral=True)
-                else:
-                    await interaction.followup.send(f"Not your turn yet. Only Start {only_position} is available right now.", ephemeral=True)
-                return
-            if action == "end" and position not in enabled_end_positions:
-                only_position = next(iter(enabled_end_positions), None)
-                if only_position is None:
-                    await interaction.followup.send("Not your turn yet. No End action is available right now.", ephemeral=True)
-                else:
-                    await interaction.followup.send(f"Not your turn yet. Only End {only_position} is available right now.", ephemeral=True)
-                return
-
-            settings = await GuildSettingsRepository(get_database()).get_guild_settings(int(interaction.guild_id))
-            host_role_id_raw = int(settings.get("host99k_role_id") or 0)
-            host_role_id = host_role_id_raw if host_role_id_raw > 0 else None
-            position_owner_ids = _build_position_owner_ids(
-                session=session,
-                signups=signups,
-                total_positions=total_positions,
-            )
-            host_override = is_host_override(interaction.user, session, host_role_id)
-            allowed, denial_message = can_user_press_position(
-                interaction.user,
-                session=session,
-                position=position,
-                position_owner_ids=position_owner_ids,
-                host_override=host_override,
-            )
-            if not allowed:
-                await interaction.followup.send(denial_message, ephemeral=True)
-                return
-
-            ok, message = await repo.run_jump_transition_by_position(
-                session_id=self.session_id,
-                position=position,
-                action=action,
-                actor_discord_id=int(interaction.user.id),
-            )
-            if not ok:
-                await interaction.followup.send(message, ephemeral=True)
-                return
-
-            refreshed = False
-            if interaction.client:
-                refreshed = await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
-                await _refresh_99k_panel(interaction.client, self.session_id)
-            if not refreshed:
-                await interaction.followup.send("State changed, but panel refresh failed.", ephemeral=True)
-                return
-
-            await interaction.followup.send(message, ephemeral=True)
-
-        return _handler
+    async def _on_host_controls(self, interaction: discord.Interaction):
+        await _safe_defer_ephemeral(interaction)
+        repo = JumpsRepository(get_pool())
+        session = await repo.get_session(self.session_id)
+        if not session:
+            await _safe_edit_original(interaction, content="Session not found.", view=None)
+            return
+        if int(interaction.user.id) != int(session.get("host_discord_id") or 0):
+            await _safe_edit_original(interaction, content="Only the jump host can use these controls.", view=None)
+            return
+        await _safe_edit_original(
+            interaction,
+            content="Host controls:",
+            view=Jump99kHostControlsView(session_id=self.session_id),
+        )
 
     async def _on_refresh(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            if not interaction.channel:
-                await interaction.followup.send("Channel not found.", ephemeral=True)
-                return
-            embed, roster_text = await _refresh_roster_panel(self.session_id, interaction.channel, interaction.message)
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except (discord.Forbidden, discord.NotFound):
-            log.warning(
-                "Roster message edit failed session_id=%s guild_id=%s user_id=%s",
-                self.session_id,
-                interaction.guild_id,
-                interaction.user.id if interaction.user else None,
-            )
-            try:
-                _, roster_text = await _refresh_roster_panel(self.session_id, interaction.channel, None)
-                await interaction.followup.send(f"Roster message could not be updated, but here is the latest roster:\n{roster_text}", ephemeral=True)
-            except Exception:
-                await interaction.followup.send("Could not refresh roster right now. Please try again shortly.", ephemeral=True)
-        except Exception:
-            log.exception(
-                "99k refresh_roster failed session_id=%s guild_id=%s user_id=%s",
-                self.session_id,
-                interaction.guild_id,
-                interaction.user.id if interaction.user else None,
-            )
-            await interaction.followup.send("Sorry—refreshing the roster failed. Please try again.", ephemeral=True)
+        repo = JumpsRepository(get_pool())
+        session = await repo.get_session(self.session_id)
+        if not session:
+            await interaction.followup.send("Session not found.", ephemeral=True)
+            return
+
+        refreshed = False
+        if interaction.client:
+            refreshed = await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
+            await _refresh_99k_panel(interaction.client, self.session_id)
+            await _refresh_roster_if_exists(interaction.client, self.session_id)
+
+        if refreshed:
+            await interaction.followup.send("✅ Roster refreshed.", ephemeral=True)
+        else:
+            await interaction.followup.send("Roster refresh queued.", ephemeral=True)
 
     async def _on_view(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            if not interaction.channel:
-                await interaction.followup.send("Channel not found.", ephemeral=True)
-                return
-            _, roster_text = await _refresh_roster_panel(self.session_id, interaction.channel, interaction.message)
-            await interaction.followup.send(roster_text, ephemeral=True)
-        except (discord.Forbidden, discord.NotFound):
-            log.warning(
-                "Roster message edit failed during view session_id=%s guild_id=%s user_id=%s",
-                self.session_id,
-                interaction.guild_id,
-                interaction.user.id if interaction.user else None,
-            )
-            try:
-                _, roster_text = await _refresh_roster_panel(self.session_id, interaction.channel, None)
-                await interaction.followup.send(roster_text, ephemeral=True)
-            except Exception:
-                await interaction.followup.send("Could not fetch the roster right now. Please try again.", ephemeral=True)
+            embed, _ = await build_roster_panel(self.session_id, interaction.channel)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception:
-            log.exception(
-                "99k view_roster failed session_id=%s guild_id=%s user_id=%s",
-                self.session_id,
-                interaction.guild_id,
-                interaction.user.id if interaction.user else None,
-            )
-            await interaction.followup.send("Sorry—loading the roster failed. Please try again.", ephemeral=True)
-
-
-async def _can_use_manual_add_controls(interaction: discord.Interaction, session: dict | None) -> bool:
-    if not interaction.guild or not isinstance(interaction.user, discord.Member) or not session:
-        return False
-    if int(interaction.user.id) == int(session.get("host_discord_id") or 0):
-        return True
-    if interaction.user.guild_permissions.administrator:
-        return True
-    settings = await GuildSettingsRepository(get_database()).get_guild_settings(int(interaction.guild_id))
-    host_role_id = int((settings or {}).get("host99k_role_id") or (settings or {}).get("host_role_id") or 0)
-    return host_role_id > 0 and any(int(role.id) == host_role_id for role in interaction.user.roles)
-
-
-def _is_unknown_interaction_error(exc: Exception) -> bool:
-    if isinstance(exc, discord.NotFound) and getattr(exc, "code", None) == 10062:
-        return True
-    message = str(exc).lower()
-    return "unknown interaction" in message or "error code: 10062" in message
-
-
-async def _safe_defer_ephemeral(interaction: discord.Interaction) -> None:
-    if interaction.response.is_done():
-        return
-    try:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-    except Exception as exc:
-        if _is_unknown_interaction_error(exc):
-            log.info(
-                "Interaction already expired before defer session interaction_id=%s user_id=%s",
-                interaction.id,
-                interaction.user.id if interaction.user else None,
-            )
-            return
-        raise
-
-
-async def _safe_edit_original(
-    interaction: discord.Interaction,
-    *,
-    content: str | None = None,
-    view: discord.ui.View | None = None,
-) -> None:
-    try:
-        await interaction.edit_original_response(content=content, view=view)
-    except Exception as exc:
-        if _is_unknown_interaction_error(exc):
-            if content:
-                try:
-                    await interaction.followup.send(content, ephemeral=True)
-                except Exception:
-                    log.debug(
-                        "Followup fallback failed after expired interaction interaction_id=%s user_id=%s",
-                        interaction.id,
-                        interaction.user.id if interaction.user else None,
-                    )
-            return
-        raise
+            log.exception("99k roster view failed session_id=%s", self.session_id)
+            await interaction.followup.send("Sorry—could not load the roster right now.", ephemeral=True)
 
 
 async def _grant_private_channel_access(guild: discord.Guild | None, session: dict, discord_id: int) -> None:
@@ -2673,7 +2476,7 @@ async def _list_removable_signups(*, repo: JumpsRepository, session: dict) -> li
         if discord_id <= 0 or discord_id == host_discord_id:
             continue
         state = str(progress_by_discord.get(discord_id, "waiting") or "waiting").lower()
-        if state == "in_progress":
+        if state in {"in_progress", "done", "removed"}:
             continue
         status = str(row.get("status") or "").lower()
         if status not in SIGNUP_ACTIVE_STATUSES:
@@ -2990,121 +2793,142 @@ class Jump99kHostControlsView(discord.ui.View):
     def __init__(self, session_id: int):
         super().__init__(timeout=None)
         self.session_id = int(session_id)
-        add_button = discord.ui.Button(
+        self.start_button = discord.ui.Button(
+            label="Start Jump",
+            style=discord.ButtonStyle.success,
+            custom_id=f"99k_host_start:{self.session_id}",
+            row=0,
+        )
+        state = _automation_state(self.session_id)
+        if bool(state.get("paused")):
+            self.start_button.label = "Resume Jump"
+        self.start_button.callback = self._on_start_or_resume
+        self.add_item(self.start_button)
+
+        manage_button = discord.ui.Button(
             label="Manage Jumpers",
             style=discord.ButtonStyle.primary,
             custom_id=f"99k_host_manage_jumpers:{self.session_id}",
             row=0,
         )
-        add_button.callback = self._on_manage_jumpers
-        self.add_item(add_button)
+        manage_button.callback = self._on_manage_jumpers
+        self.add_item(manage_button)
 
-        reset_button = discord.ui.Button(
-            label="Reset Progress",
-            style=discord.ButtonStyle.danger,
-            custom_id=f"99k_host_reset_progress:{self.session_id}",
-            row=0,
+        self.pause_button = discord.ui.Button(
+            label="Pause Jump",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"99k_host_pause:{self.session_id}",
+            row=1,
         )
-        reset_button.callback = self._on_reset_progress
-        self.add_item(reset_button)
+        self.pause_button.callback = self._on_pause
+        self.add_item(self.pause_button)
+
+        delete_button = discord.ui.Button(
+            label="Delete This Jump",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"99k_host_delete:{self.session_id}",
+            row=1,
+        )
+        delete_button.callback = self._on_delete_confirm
+        self.add_item(delete_button)
+
+    async def _assert_host(self, interaction: discord.Interaction) -> dict | None:
+        repo = JumpsRepository(get_pool())
+        session = await repo.get_session(self.session_id)
+        if not session or int(interaction.user.id) != int(session.get("host_discord_id") or 0):
+            await _safe_edit_original(interaction, content="Only the jump host can use these controls.", view=None)
+            return None
+        return session
 
     async def _on_manage_jumpers(self, interaction: discord.Interaction) -> None:
         await _safe_defer_ephemeral(interaction)
-        repo = JumpsRepository(get_pool())
-        session = await repo.get_session(self.session_id)
-        if not session or not await can_manage_99k_session(interaction, session):
-            await _safe_edit_original(interaction, content="You are not allowed to use host controls.", view=None)
+        session = await self._assert_host(interaction)
+        if not session:
             return
-        await _safe_edit_original(
-            interaction,
-            content="Manage jumpers for this session:",
-            view=Jump99kManageJumpersActionView(session_id=self.session_id),
-        )
+        await _safe_edit_original(interaction, content="Manage jumpers for this session:", view=Jump99kManageJumpersActionView(session_id=self.session_id))
 
-    async def _on_reset_progress(self, interaction: discord.Interaction) -> None:
+    async def _on_start_or_resume(self, interaction: discord.Interaction) -> None:
+        await _safe_defer_ephemeral(interaction)
+        session = await self._assert_host(interaction)
+        if not session:
+            return
+        state = _automation_state(self.session_id)
+        if bool(state.get("running")) and not bool(state.get("paused")):
+            await _safe_edit_original(interaction, content="Jump automation is already running.", view=None)
+            return
+
+        repo = JumpsRepository(get_pool())
+        if not bool(state.get("running")):
+            await repo.reset_jump_progress(self.session_id)
+            ok, active_id = await _advance_to_next_jumper(repo=repo, session_id=self.session_id, actor_discord_id=int(interaction.user.id))
+            if not ok:
+                await _safe_edit_original(interaction, content="Could not start jump progression.", view=None)
+                return
+            state["active_discord_id"] = active_id
+        state["running"] = True
+        state["paused"] = False
+        state["saw_nonzero_energy"] = False
+        state["consecutive_low_energy_polls"] = 0
+        state["last_transition_at"] = datetime.now(timezone.utc)
+
+        if interaction.client:
+            await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
+            await _refresh_roster_if_exists(interaction.client, self.session_id)
+            await _refresh_99k_panel(interaction.client, self.session_id)
+        await _safe_edit_original(interaction, content="✅ Jump automation running.", view=None)
+
+    async def _on_pause(self, interaction: discord.Interaction) -> None:
+        await _safe_defer_ephemeral(interaction)
+        session = await self._assert_host(interaction)
+        if not session:
+            return
+        state = _automation_state(self.session_id)
+        if not bool(state.get("running")) or bool(state.get("paused")):
+            await _safe_edit_original(interaction, content="Jump automation is not currently running.", view=None)
+            return
+        state["paused"] = True
+        await _safe_edit_original(interaction, content="⏸️ Jump automation paused.", view=None)
+
+    async def _on_delete_confirm(self, interaction: discord.Interaction) -> None:
+        await _safe_defer_ephemeral(interaction)
+        session = await self._assert_host(interaction)
+        if not session:
+            return
+        await _safe_edit_original(interaction, content=f"Delete session #{self.session_id}?", view=Jump99kDeleteConfirmView(self.session_id))
+
+
+class Jump99kDeleteConfirmView(discord.ui.View):
+    def __init__(self, session_id: int):
+        super().__init__(timeout=120)
+        self.session_id = int(session_id)
+
+    @discord.ui.button(label="Confirm Delete", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, _button: discord.ui.Button):
         await _safe_defer_ephemeral(interaction)
         repo = JumpsRepository(get_pool())
         session = await repo.get_session(self.session_id)
-        if not session or not await can_manage_99k_session(interaction, session):
-            await _safe_edit_original(interaction, content="You are not allowed to use host controls.", view=None)
+        if not session or int(interaction.user.id) != int(session.get("host_discord_id") or 0):
+            await _safe_edit_original(interaction, content="Only the jump host can use these controls.", view=None)
             return
-
-        await repo.reset_jump_progress(self.session_id)
-
+        rows = await repo.list_signups(int(self.session_id))
+        completed_ids = [int(r["discord_id"]) for r in rows if r.get("status") == "paid"]
+        ok = await repo.close_session_and_record(
+            session_id=int(self.session_id),
+            guild_id=int(session.get("guild_id") or 0),
+            completed_discord_ids=completed_ids,
+            not_completed_discord_ids=[],
+        )
+        if not ok:
+            await _safe_edit_original(interaction, content="Could not close session.", view=None)
+            return
         if interaction.client:
-            try:
-                await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
-            except Exception:
-                log.exception("Host controls progress reset roster repost failed session_id=%s", self.session_id)
-            try:
-                await _refresh_roster_if_exists(interaction.client, self.session_id)
-            except Exception:
-                log.exception("Host controls progress reset roster refresh failed session_id=%s", self.session_id)
-            try:
-                await _refresh_99k_panel(interaction.client, self.session_id)
-            except Exception:
-                log.exception("Host controls progress reset panel refresh failed session_id=%s", self.session_id)
+            await _disable_99k_session_messages(interaction.client, session, status_text="Session closed")
+        await _safe_edit_original(interaction, content="✅ Jump deleted.", view=None)
 
-        await _safe_edit_original(interaction, content="✅ Progress reset. Start 1 is available again.", view=None)
-
-
-class Jump99kManageView(Jump99kRosterPanelView):
-    def __init__(self, session_id: int, *, roster_size: int, enabled_start_positions: set[int], enabled_end_positions: set[int]):
-        super().__init__(
-            session_id,
-            roster_size=roster_size,
-            enabled_start_positions=enabled_start_positions,
-            enabled_end_positions=enabled_end_positions,
-            include_transition_controls=True,
-        )
-        manual_add_btn = discord.ui.Button(
-            label="Manage Jumpers",
-            style=discord.ButtonStyle.primary,
-            custom_id=f"99k_manage_jumpers:{self.session_id}",
-            row=4,
-        )
-        manual_add_btn.callback = self._on_manage_jumpers
-        self.add_item(manual_add_btn)
-
-        reset_btn = discord.ui.Button(
-            label="Reset Progress",
-            style=discord.ButtonStyle.danger,
-            custom_id=f"99k_manage_reset:{self.session_id}",
-            row=4,
-        )
-        reset_btn.callback = self._on_reset_progress
-        self.add_item(reset_btn)
-
-    async def _on_manage_jumpers(self, interaction: discord.Interaction):
-        try:
-            await _safe_defer_ephemeral(interaction)
-            repo = JumpsRepository(get_pool())
-            session = await repo.get_session(self.session_id)
-            if not session or not await can_manage_99k_session(interaction, session):
-                await interaction.followup.send("You don’t have permission to manage this 99k session.", ephemeral=True)
-                return
-            await interaction.followup.send("Manage jumpers for this session:", view=Jump99kManageJumpersActionView(session_id=self.session_id), ephemeral=True)
-        except Exception:
-            log.exception("99k manage jumpers open failed session_id=%s", self.session_id)
-            await interaction.followup.send("Sorry—could not open jumper management right now.", ephemeral=True)
-
-    async def _on_reset_progress(self, interaction: discord.Interaction):
-        try:
-            await _safe_defer_ephemeral(interaction)
-            repo = JumpsRepository(get_pool())
-            session = await repo.get_session(self.session_id)
-            if not session or not await can_manage_99k_session(interaction, session):
-                await interaction.followup.send("You don’t have permission to manage this 99k session.", ephemeral=True)
-                return
-            await repo.reset_jump_progress(self.session_id)
-            if interaction.client:
-                await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
-                await _refresh_roster_if_exists(interaction.client, self.session_id)
-                await _refresh_99k_panel(interaction.client, self.session_id)
-            await interaction.followup.send("✅ Progress reset. Start 1 is available again.", ephemeral=True)
-        except Exception:
-            log.exception("99k manage reset progress failed session_id=%s", self.session_id)
-            await interaction.followup.send("Sorry—could not reset progress right now.", ephemeral=True)
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await _safe_defer_ephemeral(interaction)
+        await _safe_edit_original(interaction, content="Cancelled.", view=None)
 
 
 class Jump99kUserControlsView(discord.ui.View):
@@ -4832,6 +4656,82 @@ async def before_readiness_worker():
     await wait_until_initialized(timeout=30.0)
     await sleep_startup_jitter("readiness_worker")
 
+
+
+
+@tasks.loop(seconds=3)
+async def jump_automation_worker():
+    if not await _worker_db_ready("jump_automation_worker"):
+        return
+    repo = JumpsRepository(get_pool())
+    users_repo = UsersRepository(get_pool())
+    for session_id, state in list(_JUMP_AUTOMATION_STATE.items()):
+        if not bool(state.get("running")) or bool(state.get("paused")):
+            continue
+        session = await repo.get_session(int(session_id))
+        active_discord_id = int(state.get("active_discord_id") or 0)
+        if not session or active_discord_id <= 0:
+            continue
+        snapshot = await _fetch_and_upsert_user_readiness_snapshot(
+            repo=repo,
+            users_repo=users_repo,
+            session_id=int(session_id),
+            guild_id=int(session.get("guild_id") or 0),
+            discord_id=active_discord_id,
+        )
+        if snapshot is None:
+            continue
+        energy = int(snapshot.get("energy") or 0)
+        saw_nonzero, low_count, should_finish = _apply_energy_poll(
+            saw_nonzero_energy=bool(state.get("saw_nonzero_energy")),
+            consecutive_low_energy_polls=int(state.get("consecutive_low_energy_polls") or 0),
+            energy=energy,
+        )
+        state["saw_nonzero_energy"] = saw_nonzero
+        state["consecutive_low_energy_polls"] = low_count
+
+        if should_finish:
+            progress = await repo.get_jump_progress(int(session_id))
+            host_id = int(session.get("host_discord_id") or 0)
+            if active_discord_id == host_id:
+                end_pos = 1
+            else:
+                end_pos = None
+                for idx, row in enumerate(progress.get("signups") or [], start=2):
+                    if int(row.get("discord_id") or 0) == active_discord_id:
+                        end_pos = idx
+                        break
+            if end_pos is None:
+                continue
+            await repo.run_jump_transition_by_position(session_id=int(session_id), position=end_pos, action="end", actor_discord_id=host_id)
+            ok, next_id = await _advance_to_next_jumper(repo=repo, session_id=int(session_id), actor_discord_id=host_id)
+            state["saw_nonzero_energy"] = False
+            state["consecutive_low_energy_polls"] = 0
+            if ok and next_id:
+                state["active_discord_id"] = int(next_id)
+                guild = bot.get_guild(int(session.get("guild_id") or 0))
+                if guild:
+                    channel_id = int(session.get("private_channel_id") or session.get("roster_channel_id") or 0)
+                    channel = guild.get_channel(channel_id)
+                    if channel:
+                        await safe_send_channel(channel, f"<@{int(next_id)}> use poison mistletoe on <@{active_discord_id}>, then begin your jump.")
+            else:
+                state["running"] = False
+                state["paused"] = False
+                guild = bot.get_guild(int(session.get("guild_id") or 0))
+                if guild:
+                    channel_id = int(session.get("private_channel_id") or session.get("roster_channel_id") or 0)
+                    channel = guild.get_channel(channel_id)
+                    if channel:
+                        await safe_send_channel(channel, "✅ Jump session complete.")
+        await _refresh_roster_if_exists(bot, int(session_id))
+
+
+@jump_automation_worker.before_loop
+async def before_jump_automation_worker():
+    await bot.wait_until_ready()
+    await wait_until_initialized(timeout=30.0)
+    await sleep_startup_jitter("jump_automation_worker")
 
 @tasks.loop(seconds=30)
 async def auto_verify_99k_payments():
