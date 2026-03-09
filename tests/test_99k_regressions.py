@@ -14,7 +14,10 @@ def test_modal_submit_defers_and_uses_followup_for_success():
 def test_roster_refresh_uses_repost_helper():
     events_py = Path("cogs/events.py").read_text(encoding="utf-8")
 
-    assert "refreshed = await _refresh_or_repost_roster_panel(interaction.client, self.session_id)" in events_py
+    assert (
+        "refreshed = await _refresh_or_repost_roster_panel(interaction.client, self.session_id)"
+        in events_py
+    )
     assert "await _refresh_99k_panel(interaction.client, self.session_id)" in events_py
 
 

@@ -171,13 +171,23 @@ def test_host_controls_has_required_buttons():
 
 
 def test_energy_rule_requires_seen_nonzero_then_four_lows():
-    saw, lows, done = _apply_energy_poll(saw_nonzero_energy=False, consecutive_low_energy_polls=0, energy=5)
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=False, consecutive_low_energy_polls=0, energy=5
+    )
     assert (saw, lows, done) == (True, 0, False)
-    saw, lows, done = _apply_energy_poll(saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0)
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
+    )
     assert done is False
-    saw, lows, done = _apply_energy_poll(saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0)
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
+    )
     assert done is False
-    saw, lows, done = _apply_energy_poll(saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0)
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
+    )
     assert done is False
-    saw, lows, done = _apply_energy_poll(saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0)
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
+    )
     assert done is True
