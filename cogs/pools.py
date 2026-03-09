@@ -16,7 +16,7 @@ from repositories.torn_items import TornItemsRepository
 from services.raffle_payment import RafflePaymentService
 from services.payment_receipts import PaymentReceiptService
 from utils import GuildSettingsRepository, get_security_manager, get_torn_api
-from utils.database import get_database, get_pool
+from utils.database import get_database, get_pool, is_initialized, wait_until_initialized
 from utils.embeds import create_error_embed
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
@@ -749,6 +749,8 @@ class PoolsCog(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def pool_end_draw_worker(self):
+        if not is_initialized():
+            return
         worker_slot = db_heavy_worker_slot("pools.pool_end_draw_worker")
         await worker_slot.__aenter__()
         try:
@@ -766,6 +768,7 @@ class PoolsCog(commands.Cog):
 
     @pool_end_draw_worker.before_loop
     async def before_pool_end_draw_worker(self):
+        await wait_until_initialized(timeout=30.0)
         await self.bot.wait_until_ready()
         await sleep_startup_jitter("pools.pool_end_draw_worker")
 
