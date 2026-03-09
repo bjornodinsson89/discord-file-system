@@ -2481,13 +2481,13 @@ class Jump99kRosterPanelView(discord.ui.View):
                 await interaction.followup.send(message, ephemeral=True)
                 return
 
-            if interaction.channel and interaction.message:
-                try:
-                    await _refresh_roster_panel(self.session_id, interaction.channel, interaction.message)
-                except Exception:
-                    log.exception("Failed to refresh roster after transition session_id=%s", self.session_id)
-                    await interaction.followup.send("State changed, but panel refresh failed.", ephemeral=True)
-                    return
+            refreshed = False
+            if interaction.client:
+                refreshed = await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
+                await _refresh_99k_panel(interaction.client, self.session_id)
+            if not refreshed:
+                await interaction.followup.send("State changed, but panel refresh failed.", ephemeral=True)
+                return
 
             await interaction.followup.send(message, ephemeral=True)
 
@@ -3641,29 +3641,30 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
         session_id: int | None = int(self.session["id"]) if self.session else None
         created_new_session = False
         try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
             title = "✨ 99k Happy Jump ✨"
             try:
                 slots = int(str(self.max_slots.value).strip())
             except ValueError:
-                await interaction.response.send_message(embed=create_error_embed("Invalid max slots", "Max slots must be a number from 1 to 7."), ephemeral=True)
+                await interaction.followup.send(embed=create_error_embed("Invalid max slots", "Max slots must be a number from 1 to 7."), ephemeral=True)
                 return
             if slots < 1 or slots > 7:
-                await interaction.response.send_message(embed=create_error_embed("Invalid max slots", "Max slots must be from 1 to 7."), ephemeral=True)
+                await interaction.followup.send(embed=create_error_embed("Invalid max slots", "Max slots must be from 1 to 7."), ephemeral=True)
                 return
 
             try:
                 raw_payment_type = parse_payment_type(str(self.payment_type.value), allow_free=False)
             except ValueError as exc:
-                await interaction.response.send_message(embed=create_error_embed("Invalid payment type", str(exc)), ephemeral=True)
+                await interaction.followup.send(embed=create_error_embed("Invalid payment type", str(exc)), ephemeral=True)
                 return
 
             try:
                 price_amount = int(str(self.spot_price.value).strip())
             except ValueError:
-                await interaction.response.send_message(embed=create_error_embed("Invalid spot price", "Spot price must be a whole number from 1 to 50."), ephemeral=True)
+                await interaction.followup.send(embed=create_error_embed("Invalid spot price", "Spot price must be a whole number from 1 to 50."), ephemeral=True)
                 return
             if price_amount < 1 or price_amount > 50:
-                await interaction.response.send_message(embed=create_error_embed("Invalid spot price", "Spot price must be between 1 and 50."), ephemeral=True)
+                await interaction.followup.send(embed=create_error_embed("Invalid spot price", "Spot price must be between 1 and 50."), ephemeral=True)
                 return
 
             users_repo = UsersRepository(get_pool())
@@ -3676,7 +3677,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                     host_timezone_name=host_timezone_name,
                 )
             except ValueError:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Invalid start time. Use MM-DD 8:00pm, include an offset like -0700, or paste a Discord timestamp like <t:...>.",
                     ephemeral=True,
                 )
@@ -3865,7 +3866,7 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                         settings=self.settings,
                     )
             verb = "updated" if self.session else "created"
-            await interaction.response.send_message(embed=create_success_embed("99k session saved", f"Session #{session_id} {verb}."), ephemeral=True)
+            await interaction.followup.send(embed=create_success_embed("99k session saved", f"Session #{session_id} {verb}."), ephemeral=True)
             if used_utc_fallback and str(self.possible_tct_start.value or "").strip():
                 await interaction.followup.send(
                     "Timezone not set; entered times are treated as UTC. Run /set_timezone to fix.",
