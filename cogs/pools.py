@@ -19,6 +19,7 @@ from utils import GuildSettingsRepository, get_security_manager, get_torn_api
 from utils.database import get_database, get_pool
 from utils.embeds import create_error_embed
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
+from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
 
 log = logging.getLogger("happy_jumper.pools")
 XANAX_FALLBACK_ICON_URL = "https://www.torn.com/images/items/206/large.png"
@@ -748,6 +749,8 @@ class PoolsCog(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def pool_end_draw_worker(self):
+        worker_slot = db_heavy_worker_slot("pools.pool_end_draw_worker")
+        await worker_slot.__aenter__()
         try:
             repo = PoolsRepository(get_pool())
             due_pools = await repo.list_due_pools()
@@ -758,10 +761,13 @@ class PoolsCog(commands.Cog):
                     log.exception("Failed auto-ending Xanax pool guild=%s pool_id=%s", pool.get("guild_id"), pool.get("id"))
         except Exception:
             log.exception("Failed polling due Xanax pools")
+        finally:
+            await worker_slot.__aexit__(None, None, None)
 
     @pool_end_draw_worker.before_loop
     async def before_pool_end_draw_worker(self):
         await self.bot.wait_until_ready()
+        await sleep_startup_jitter("pools.pool_end_draw_worker")
 
     @app_commands.command(name="pool", description="Start a Xanax Pool (Admin only)")
     @app_commands.checks.has_permissions(administrator=True)

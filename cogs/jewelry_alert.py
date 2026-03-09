@@ -16,6 +16,7 @@ from utils.command_checks import require_command_access
 from utils.database import get_database, is_initialized, wait_until_initialized
 from utils.embeds import create_error_embed
 from utils.torn_api import TornAPIError
+from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
 
 ASSET_MEME_PATH = os.path.join("assets", "pwmeme.png")
 MEME_ATTACHMENT_NAME = "pwmeme.png"
@@ -270,16 +271,22 @@ class JewelryAlertCog(commands.Cog):
     async def jewelry_alert_poller(self) -> None:
         if not is_initialized():
             return
-        for guild in self.bot.guilds:
-            try:
-                await self._poll_guild(guild)
-            except Exception:
-                log.exception("Jewelry alert guild poll failed guild_id=%s", guild.id)
+        worker_slot = db_heavy_worker_slot("jewelry_alert.jewelry_alert_poller")
+        await worker_slot.__aenter__()
+        try:
+            for guild in self.bot.guilds:
+                try:
+                    await self._poll_guild(guild)
+                except Exception:
+                    log.exception("Jewelry alert guild poll failed guild_id=%s", guild.id)
+        finally:
+            await worker_slot.__aexit__(None, None, None)
 
     @jewelry_alert_poller.before_loop
     async def before_jewelry_alert_poller(self) -> None:
         await wait_until_initialized(timeout=30.0)
         await self.bot.wait_until_ready()
+        await sleep_startup_jitter("jewelry_alert.jewelry_alert_poller")
 
     @app_commands.command(
         name="test_jewlery_announce",

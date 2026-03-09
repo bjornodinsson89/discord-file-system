@@ -67,8 +67,9 @@ async def create_pool() -> asyncpg.Pool:
         )
 
     base_pool_kwargs = {
-        "min_size": 2,
-        "max_size": 10,
+        "min_size": config.DB_POOL_MIN_SIZE,
+        "max_size": config.DB_POOL_MAX_SIZE,
+        "max_inactive_connection_lifetime": config.DB_POOL_MAX_INACTIVE_LIFETIME,
         "command_timeout": 60,
     }
 
