@@ -1,6 +1,10 @@
 import asyncio
 
-from cogs.events import _all_active_non_finished_ready, _readiness_poll_seconds, _list_removable_signups
+from cogs.events import (
+    _all_active_non_finished_ready,
+    _readiness_poll_seconds,
+    _list_removable_signups,
+)
 from repositories.jumps import JumpsRepository
 
 
@@ -39,14 +43,35 @@ def test_readiness_hot_poll_logic():
         {"discord_id": 11, "status_text": "Ready"},
         {"discord_id": 12, "status_text": "ready"},
     ]
-    assert _all_active_non_finished_ready(active_non_finished_discord_ids=[11, 12], readiness_rows=readiness_rows)
-    assert _readiness_poll_seconds(all_active_non_finished_ready=True, active_seconds=30, hot_seconds=10) == 10
-    assert _readiness_poll_seconds(all_active_non_finished_ready=False, active_seconds=30, hot_seconds=10) == 30
-    assert not _all_active_non_finished_ready(active_non_finished_discord_ids=[], readiness_rows=readiness_rows)
+    assert _all_active_non_finished_ready(
+        active_non_finished_discord_ids=[11, 12], readiness_rows=readiness_rows
+    )
+    assert (
+        _readiness_poll_seconds(
+            all_active_non_finished_ready=True, active_seconds=30, hot_seconds=10
+        )
+        == 10
+    )
+    assert (
+        _readiness_poll_seconds(
+            all_active_non_finished_ready=False, active_seconds=30, hot_seconds=10
+        )
+        == 30
+    )
+    assert not _all_active_non_finished_ready(
+        active_non_finished_discord_ids=[], readiness_rows=readiness_rows
+    )
 
 
 class _FakeConn:
-    def __init__(self, *, host_discord_id: int, signup_exists: bool = True, signup_status: str = "paid", jump_state: str = "waiting"):
+    def __init__(
+        self,
+        *,
+        host_discord_id: int,
+        signup_exists: bool = True,
+        signup_status: str = "paid",
+        jump_state: str = "waiting",
+    ):
         self.host_discord_id = host_discord_id
         self.signup_exists = signup_exists
         self.signup_status = signup_status
@@ -101,19 +126,27 @@ def _build_repo(conn):
 def test_manual_remove_cannot_remove_host_or_in_progress_and_can_succeed():
     conn_host = _FakeConn(host_discord_id=5)
     repo_host = _build_repo(conn_host)
-    ok, msg = asyncio.run(repo_host.manual_remove_signup(session_id=1, removed_discord_id=5, removed_by_discord_id=99))
+    ok, msg = asyncio.run(
+        repo_host.manual_remove_signup(session_id=1, removed_discord_id=5, removed_by_discord_id=99)
+    )
     assert not ok
     assert "Host cannot be removed" in msg
 
     conn_in_progress = _FakeConn(host_discord_id=5, jump_state="in_progress")
     repo_progress = _build_repo(conn_in_progress)
-    ok, msg = asyncio.run(repo_progress.manual_remove_signup(session_id=1, removed_discord_id=7, removed_by_discord_id=99))
+    ok, msg = asyncio.run(
+        repo_progress.manual_remove_signup(
+            session_id=1, removed_discord_id=7, removed_by_discord_id=99
+        )
+    )
     assert not ok
     assert "currently in progress" in msg
 
     conn_ok = _FakeConn(host_discord_id=5, jump_state="waiting")
     repo_ok = _build_repo(conn_ok)
-    ok, msg = asyncio.run(repo_ok.manual_remove_signup(session_id=1, removed_discord_id=7, removed_by_discord_id=99))
+    ok, msg = asyncio.run(
+        repo_ok.manual_remove_signup(session_id=1, removed_discord_id=7, removed_by_discord_id=99)
+    )
     assert ok
     assert "Removed" in msg
     assert conn_ok.updated is True
