@@ -2333,6 +2333,33 @@ async def _refresh_or_repost_roster_panel(bot_client: commands.Bot, session_id: 
         return False
 
 
+async def _safe_defer_ephemeral(interaction: discord.Interaction) -> None:
+    if interaction.response.is_done():
+        return
+    try:
+        await interaction.response.defer(ephemeral=True, thinking=False)
+    except discord.InteractionResponded:
+        return
+
+
+async def _safe_edit_original(
+    interaction: discord.Interaction,
+    *,
+    content: str | None = None,
+    embed: discord.Embed | None = None,
+    view: discord.ui.View | None = None,
+) -> None:
+    payload = {"content": content, "embed": embed, "view": view}
+    if interaction.response.is_done():
+        try:
+            await interaction.edit_original_response(**payload)
+            return
+        except (discord.NotFound, discord.HTTPException):
+            await interaction.followup.send(**payload, ephemeral=True)
+            return
+    await interaction.response.send_message(**payload, ephemeral=True)
+
+
 class Jump99kRosterPanelView(discord.ui.View):
     MAX_POSITIONS = 8
 
@@ -3605,27 +3632,6 @@ class Jump99kSessionModal(discord.ui.Modal, title="✨ 99k Happy Jump ✨"):
                         )
                         await repo.touch_roster_refreshed(int(session_id))
 
-                        host_controls_embed = discord.Embed(
-                            title="Host Controls",
-                            description="Manual add bypasses payment verification.",
-                            color=discord.Color.dark_teal(),
-                        )
-                        host_controls_msg = await private_channel.send(
-                            embed=host_controls_embed,
-                            view=Jump99kHostControlsView(int(session_id)),
-                        )
-                        try:
-                            await repo.set_host_controls_message(
-                                int(session_id),
-                                channel_id=int(private_channel.id),
-                                message_id=int(host_controls_msg.id),
-                            )
-                        except asyncpg.UndefinedColumnError as exc:
-                            log.warning(
-                                "Missing host controls columns while saving host controls message for session_id=%s: %s",
-                                session_id,
-                                exc,
-                            )
                     except discord.Forbidden as channel_setup_error:
                         channel_id = int(private_channel.id) if private_channel else None
                         log.exception(
