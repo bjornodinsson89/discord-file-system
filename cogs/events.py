@@ -2396,20 +2396,32 @@ class Jump99kRosterPanelView(discord.ui.View):
         self.add_item(host_controls_btn)
 
     async def _on_host_controls(self, interaction: discord.Interaction):
-        await _safe_defer_ephemeral(interaction)
         repo = JumpsRepository(get_pool())
         session = await repo.get_session(self.session_id)
         if not session:
-            await _safe_edit_original(interaction, content="Session not found.", view=None)
+            if interaction.response.is_done():
+                await interaction.followup.send("Session not found.", ephemeral=True)
+            else:
+                await interaction.response.send_message("Session not found.", ephemeral=True)
             return
         if int(interaction.user.id) != int(session.get("host_discord_id") or 0):
-            await _safe_edit_original(interaction, content="Only the jump host can use these controls.", view=None)
+            if interaction.response.is_done():
+                await interaction.followup.send("Only the jump host can use these controls.", ephemeral=True)
+            else:
+                await interaction.response.send_message("Only the jump host can use these controls.", ephemeral=True)
             return
-        await _safe_edit_original(
-            interaction,
-            content="Host controls:",
-            view=Jump99kHostControlsView(session_id=self.session_id),
-        )
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                content="Host controls:",
+                view=Jump99kHostControlsView(session_id=self.session_id),
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                content="Host controls:",
+                view=Jump99kHostControlsView(session_id=self.session_id),
+                ephemeral=True,
+            )
 
     async def _on_refresh(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -2423,7 +2435,6 @@ class Jump99kRosterPanelView(discord.ui.View):
         if interaction.client:
             refreshed = await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
             await _refresh_99k_panel(interaction.client, self.session_id)
-            await _refresh_roster_if_exists(interaction.client, self.session_id)
 
         if refreshed:
             await interaction.followup.send("✅ Roster refreshed.", ephemeral=True)
