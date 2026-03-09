@@ -2169,7 +2169,7 @@ def _compute_enabled_positions(*, roster_states: list[str], total_positions: int
 def _apply_energy_poll(*, saw_nonzero_energy: bool, consecutive_low_energy_polls: int, energy: int) -> tuple[bool, int, bool]:
     saw_nonzero = bool(saw_nonzero_energy)
     consecutive = int(consecutive_low_energy_polls)
-    if int(energy) > 0:
+    if int(energy) > 9:
         saw_nonzero = True
         consecutive = 0
     elif saw_nonzero and int(energy) < 10:
