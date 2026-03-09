@@ -45,6 +45,7 @@ from utils.payment_normalization import parse_payment_type
 from utils.discord_safe_send import safe_send_channel
 from utils.command_checks import CommandAccessError, has_role_hierarchy_access, require_command_access
 from utils.advisory_lock import run_with_advisory_lock
+from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
 from utils.redaction import redact_text
 from setup_panel import (
     DEFAULT_WELCOME_TEMPLATE,
@@ -4292,6 +4293,8 @@ async def cleanup_worker():
     if not await _worker_db_ready("cleanup_worker"):
         return
     """Background cleanup task for 99k private channels and stale buttons."""
+    worker_slot = db_heavy_worker_slot("cleanup_worker")
+    await worker_slot.__aenter__()
     try:
         repo = JumpsRepository(get_pool())
         sessions = await repo.list_non_open_sessions_for_cleanup()
@@ -4359,18 +4362,23 @@ async def cleanup_worker():
                 await repo.mark_cleaned(session_id)
     except Exception:
         log.exception("cleanup_worker failed")
+    finally:
+        await worker_slot.__aexit__(None, None, None)
 
 
 @cleanup_worker.before_loop
 async def before_cleanup_worker():
     await bot.wait_until_ready()
     await wait_until_initialized(timeout=30.0)
+    await sleep_startup_jitter("cleanup_worker")
 
 
 @tasks.loop(seconds=45)
 async def cleanup_retry_worker():
     if not await _worker_db_ready("cleanup_retry_worker"):
         return
+    worker_slot = db_heavy_worker_slot("cleanup_retry_worker")
+    await worker_slot.__aenter__()
     try:
         repo = JumpsRepository(get_pool())
         tasks_due = await repo.list_due_cleanup_tasks(limit=50)
@@ -4410,12 +4418,15 @@ async def cleanup_retry_worker():
             await asyncio.sleep(5)
     except Exception:
         log.exception("cleanup_retry_worker failed")
+    finally:
+        await worker_slot.__aexit__(None, None, None)
 
 
 @cleanup_retry_worker.before_loop
 async def before_cleanup_retry_worker():
     await bot.wait_until_ready()
     await wait_until_initialized(timeout=30.0)
+    await sleep_startup_jitter("cleanup_retry_worker")
 
 
 @tasks.loop(seconds=15)
@@ -4423,6 +4434,8 @@ async def roster_panel_refresh_worker():
     if not await _worker_db_ready("roster_panel_refresh_worker"):
         return
     """Refresh active 99k roster panels and button states."""
+    worker_slot = db_heavy_worker_slot("roster_panel_refresh_worker")
+    await worker_slot.__aenter__()
     try:
         repo = JumpsRepository(get_pool())
         sessions = await repo.list_active_sessions_with_roster_panel()
@@ -4452,12 +4465,15 @@ async def roster_panel_refresh_worker():
                 await asyncio.sleep(0.2)
     except Exception:
         log.exception("roster_panel_refresh_worker failed")
+    finally:
+        await worker_slot.__aexit__(None, None, None)
 
 
 @roster_panel_refresh_worker.before_loop
 async def before_roster_panel_refresh_worker():
     await bot.wait_until_ready()
     await wait_until_initialized(timeout=30.0)
+    await sleep_startup_jitter("roster_panel_refresh_worker")
 
 
 @tasks.loop(seconds=config.READINESS_REFRESH_INTERVAL)
@@ -4758,6 +4774,8 @@ async def auto_verify_99k_payments():
             "finalized_priority": finalized_priority,
         }
 
+    worker_slot = db_heavy_worker_slot("auto_verify_99k_payments")
+    await worker_slot.__aenter__()
     try:
         acquired, result = await run_with_advisory_lock(db, "worker:jump99k:auto_verify", _run_once)
         if not acquired:
@@ -4767,7 +4785,6 @@ async def auto_verify_99k_payments():
         verified = int((result or {}).get("verified", 0))
         finalized_priority = int((result or {}).get("finalized_priority", 0))
 
-        # Only INFO when something happened
         if verified > 0 or finalized_priority > 0:
             log_event(
                 log,
@@ -4791,12 +4808,15 @@ async def auto_verify_99k_payments():
             error_type=type(e).__name__,
             exc_info=True,
         )
+    finally:
+        await worker_slot.__aexit__(None, None, None)
 
 
 @auto_verify_99k_payments.before_loop
 async def before_auto_verify_99k_payments():
     await bot.wait_until_ready()
     await wait_until_initialized(timeout=30.0)
+    await sleep_startup_jitter("auto_verify_99k_payments")
 
 
 @tasks.loop(seconds=60)
@@ -4804,6 +4824,8 @@ async def overdose_monitor():
     if not await _worker_db_ready("overdose_monitor"):
         return
     """Track overdose events for open 99k sessions using shared overdose tracker."""
+    worker_slot = db_heavy_worker_slot("overdose_monitor")
+    await worker_slot.__aenter__()
     try:
         db = get_database()
         jumps_repo = JumpsRepository(db.pool)
@@ -4882,12 +4904,15 @@ async def overdose_monitor():
                 await asyncio.sleep(0.2)
     except Exception as e:
         log.error(f"Overdose monitor error: {e}", exc_info=True)
+    finally:
+        await worker_slot.__aexit__(None, None, None)
 
 
 @overdose_monitor.before_loop
 async def before_overdose_monitor():
     await bot.wait_until_ready()
     await wait_until_initialized(timeout=30.0)
+    await sleep_startup_jitter("overdose_monitor")
 
 
 @tasks.loop(seconds=config.INSURANCE_CHECK_INTERVAL)
@@ -4907,6 +4932,8 @@ async def raffle_completion_worker():
     if not await _worker_db_ready("raffle_completion_worker"):
         return
     """Check for completed raffles and draw winners."""
+    worker_slot = db_heavy_worker_slot("raffle_completion_worker")
+    await worker_slot.__aenter__()
     try:
         db = get_database()
         
@@ -4924,12 +4951,15 @@ async def raffle_completion_worker():
     
     except Exception as e:
         log.error(f"Raffle completion worker error: {e}", exc_info=True)
+    finally:
+        await worker_slot.__aexit__(None, None, None)
 
 
 @raffle_completion_worker.before_loop
 async def before_raffle_completion_worker():
     await bot.wait_until_ready()
     await wait_until_initialized(timeout=30.0)
+    await sleep_startup_jitter("raffle_completion_worker")
 
 
 # ============================================================================

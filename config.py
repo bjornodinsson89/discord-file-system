@@ -112,6 +112,23 @@ DB_STATEMENT_TIMEOUT_MS = max(
     safe_int_env("DB_STATEMENT_TIMEOUT_MS", default=15000, allow_blank=True) or 15000,
     1,
 )
+DB_POOL_MIN_SIZE = max(safe_int_env("DB_POOL_MIN_SIZE", default=2, allow_blank=True) or 2, 1)
+DB_POOL_MAX_SIZE = max(
+    safe_int_env("DB_POOL_MAX_SIZE", default=20, allow_blank=True) or 20,
+    DB_POOL_MIN_SIZE,
+)
+DB_POOL_MAX_INACTIVE_LIFETIME = max(
+    safe_int_env("DB_POOL_MAX_INACTIVE_LIFETIME", default=300, allow_blank=True) or 300,
+    30,
+)
+DB_HEAVY_WORKER_CONCURRENCY = max(
+    safe_int_env("DB_HEAVY_WORKER_CONCURRENCY", default=2, allow_blank=True) or 2,
+    1,
+)
+DB_WORKER_STARTUP_JITTER_SECONDS = max(
+    safe_int_env("DB_WORKER_STARTUP_JITTER_SECONDS", default=8, allow_blank=True) or 8,
+    0,
+)
 
 
 def get_db_ssl_config() -> ssl.SSLContext | None:

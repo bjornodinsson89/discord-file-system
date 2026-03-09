@@ -13,6 +13,7 @@ from repositories.torn_items import TornItemsRepository
 from utils import get_database, require_api_key
 from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
 from utils.advisory_lock import run_with_advisory_lock
+from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
 from views.free_raffle_views import EnterRaffleView, HostControlsView
 
 log = logging.getLogger("happy_jumper.free_raffle")
@@ -429,6 +430,8 @@ class FreeRaffleCog(commands.Cog):
             return
 
         db = get_database()
+        worker_slot = db_heavy_worker_slot("free_raffle.free_raffle_expiration_worker")
+        await worker_slot.__aenter__()
 
         async def _run_once() -> int:
             return await self.process_expired_raffles()
@@ -441,11 +444,14 @@ class FreeRaffleCog(commands.Cog):
             _ = processed
         except Exception:
             log.exception("Free raffle expiration worker error")
+        finally:
+            await worker_slot.__aexit__(None, None, None)
 
     @free_raffle_expiration_worker.before_loop
     async def before_free_raffle_expiration_worker(self) -> None:
         await wait_until_initialized(timeout=30.0)
         await self.bot.wait_until_ready()
+        await sleep_startup_jitter("free_raffle.free_raffle_expiration_worker")
 
 
 async def setup(bot: commands.Bot) -> None:

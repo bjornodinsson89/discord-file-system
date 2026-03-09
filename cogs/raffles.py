@@ -23,6 +23,7 @@ from utils.payment_normalization import parse_payment_type
 from utils.torn_api import TornAPIError
 from utils.discord_safe_send import safe_send_channel
 from utils.discord_perms import can_manage_paid_raffles
+from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
 log = logging.getLogger("happy_jumper.raffles")
 _PACK_WORD_RE = re.compile(r"\bpack\b", re.IGNORECASE)
 _CURLY_QUOTES_RE = re.compile(r"[’‘]")
@@ -2218,78 +2219,90 @@ class RafflesCog(commands.Cog):
         if not await self._ensure_db_ready("raffles.auto_verify_payments"):
             return
         """Auto-poll Torn API for payment verification at 4:30 mark."""
+        worker_slot = db_heavy_worker_slot("raffles.auto_verify_payments")
+        await worker_slot.__aenter__()
         try:
-            repo = RafflesRepository(get_pool())
-            pending = await repo.get_pending_verifications()
-            for entry in pending:
-                try:
-                    service = RafflePaymentService(get_database())
-                    success, sold_out_id, error = await service.verify_entry_payment(
-                        entry["entry_id"], manual=False
-                    )
-                    if success:
-                        log.info(f"Auto-verified payment for entry {entry['entry_id']}")
-                        try:
-                            user = await self.bot.fetch_user(entry["discord_id"])
-                            await user.send(
-                                f"✅ Your raffle tickets for entry #{entry['raffle_id']} have been auto-verified!"
-                            )
-                        except:
-                            pass
-                        await _update_raffle_purchase_panel_counts(self.bot, repo, int(entry["raffle_id"]))
-                        if sold_out_id:
-                            raffle = await repo.get_raffle(sold_out_id)
-                            guild = self.bot.get_guild(raffle["guild_id"])
-                            if guild and guild.system_channel:
-                                embed = discord.Embed(
-                                    title="🎉 RAFFLE SOLD OUT!",
-                                    description=f"🎁 **{raffle['prize']}** is now sold out! "
-                                               "Drawing in **30 seconds**.",
-                                    color=discord.Color.gold()
+            try:
+                repo = RafflesRepository(get_pool())
+                pending = await repo.get_pending_verifications()
+                for entry in pending:
+                    try:
+                        service = RafflePaymentService(get_database())
+                        success, sold_out_id, error = await service.verify_entry_payment(
+                            entry["entry_id"], manual=False
+                        )
+                        if success:
+                            log.info(f"Auto-verified payment for entry {entry['entry_id']}")
+                            try:
+                                user = await self.bot.fetch_user(entry["discord_id"])
+                                await user.send(
+                                    f"✅ Your raffle tickets for entry #{entry['raffle_id']} have been auto-verified!"
                                 )
-                                await guild.system_channel.send(embed=embed)
-                    elif error and "expired" in error.lower():
-                        await repo.cancel_expired_reservation(entry["entry_id"])
-                        log.info(f"Cancelled expired reservation {entry['entry_id']}")
-                        await _update_raffle_purchase_panel_counts(self.bot, repo, int(entry["raffle_id"]))
-                except Exception as e:
-                    log.error(f"Auto-verify error for entry {entry['entry_id']}: {e}")
-        except Exception as e:
-            log.error(f"Error in auto_verify_payments task: {e}")
+                            except:
+                                pass
+                            await _update_raffle_purchase_panel_counts(self.bot, repo, int(entry["raffle_id"]))
+                            if sold_out_id:
+                                raffle = await repo.get_raffle(sold_out_id)
+                                guild = self.bot.get_guild(raffle["guild_id"])
+                                if guild and guild.system_channel:
+                                    embed = discord.Embed(
+                                        title="🎉 RAFFLE SOLD OUT!",
+                                        description=f"🎁 **{raffle['prize']}** is now sold out! "
+                                                   "Drawing in **30 seconds**.",
+                                        color=discord.Color.gold()
+                                    )
+                                    await guild.system_channel.send(embed=embed)
+                        elif error and "expired" in error.lower():
+                            await repo.cancel_expired_reservation(entry["entry_id"])
+                            log.info(f"Cancelled expired reservation {entry['entry_id']}")
+                            await _update_raffle_purchase_panel_counts(self.bot, repo, int(entry["raffle_id"]))
+                    except Exception as e:
+                        log.error(f"Auto-verify error for entry {entry['entry_id']}: {e}")
+            except Exception as e:
+                log.error(f"Error in auto_verify_payments task: {e}")
+        finally:
+            await worker_slot.__aexit__(None, None, None)
+
     @tasks.loop(minutes=1)
     async def check_raffles(self):
         if not await self._ensure_db_ready("raffles.check_raffles"):
             return
         """Check for raffles that need to be drawn."""
+        worker_slot = db_heavy_worker_slot("raffles.check_raffles")
+        await worker_slot.__aenter__()
         try:
-            repo = RafflesRepository(get_pool())
-            raffles = await repo.get_raffles_to_draw()
-            for raffle in raffles:
-                try:
-                    result = await repo.draw_raffle_winner(raffle["raffle_id"])
-                    if result:
-                        updated_raffle = await repo.get_raffle(int(raffle["raffle_id"]))
-                        if updated_raffle:
-                            await self._disable_raffle_panels(updated_raffle, status_text="Raffle completed.")
-                            await self._send_prize_delivery_dm(updated_raffle)
-                            await self._send_admin_winner_announcement(updated_raffle, result)
-                        verification_cog = self.bot.get_cog("RaffleVerificationCog")
-                        if verification_cog:
-                            await verification_cog.send_winner_notification(result)
-                        guild = self.bot.get_guild(raffle["guild_id"])
-                        if guild and guild.system_channel:
-                            embed = discord.Embed(
-                                title="🎉 RAFFLE WINNER!",
-                                description=f"🎁 **{raffle['prize']}**\n\n"
-                                           f"🏆 Winner: <@{result['discord_id']}>\n"
-                                           f"🎟️ Total Entries: {result['total_entries']}",
-                                color=discord.Color.gold()
-                            )
-                            await guild.system_channel.send(embed=embed)
-                except Exception as e:
-                    log.error(f"Error drawing raffle {raffle['raffle_id']}: {e}")
-        except Exception as e:
-            log.error(f"Error in check_raffles task: {e}")
+            try:
+                repo = RafflesRepository(get_pool())
+                raffles = await repo.get_raffles_to_draw()
+                for raffle in raffles:
+                    try:
+                        result = await repo.draw_raffle_winner(raffle["raffle_id"])
+                        if result:
+                            updated_raffle = await repo.get_raffle(int(raffle["raffle_id"]))
+                            if updated_raffle:
+                                await self._disable_raffle_panels(updated_raffle, status_text="Raffle completed.")
+                                await self._send_prize_delivery_dm(updated_raffle)
+                                await self._send_admin_winner_announcement(updated_raffle, result)
+                            verification_cog = self.bot.get_cog("RaffleVerificationCog")
+                            if verification_cog:
+                                await verification_cog.send_winner_notification(result)
+                            guild = self.bot.get_guild(raffle["guild_id"])
+                            if guild and guild.system_channel:
+                                embed = discord.Embed(
+                                    title="🎉 RAFFLE WINNER!",
+                                    description=f"🎁 **{raffle['prize']}**\n\n"
+                                               f"🏆 Winner: <@{result['discord_id']}>\n"
+                                               f"🎟️ Total Entries: {result['total_entries']}",
+                                    color=discord.Color.gold()
+                                )
+                                await guild.system_channel.send(embed=embed)
+                    except Exception as e:
+                        log.error(f"Error drawing raffle {raffle['raffle_id']}: {e}")
+            except Exception as e:
+                log.error(f"Error in check_raffles task: {e}")
+        finally:
+            await worker_slot.__aexit__(None, None, None)
+
     @tasks.loop(minutes=5)
     async def cleanup_expired(self):
         if not await self._ensure_db_ready("raffles.cleanup_expired"):
@@ -2301,34 +2314,39 @@ class RafflesCog(commands.Cog):
             repo = RafflesRepository(get_pool())
             return int(await repo.cleanup_expired_raffle_entries() or 0)
 
+        worker_slot = db_heavy_worker_slot("raffles.cleanup_expired")
+        await worker_slot.__aenter__()
         try:
-            acquired, cleaned = await run_with_advisory_lock(db, "worker:raffles:cleanup_expired", _run_once)
-            if not acquired:
-                return
+            try:
+                acquired, cleaned = await run_with_advisory_lock(db, "worker:raffles:cleanup_expired", _run_once)
+                if not acquired:
+                    return
 
-            cleaned = int(cleaned or 0)
-            if cleaned > 0:
+                cleaned = int(cleaned or 0)
+                if cleaned > 0:
+                    log_event(
+                        log,
+                        logging.INFO,
+                        "raffle.cleanup_expired",
+                        action="cleanup_expired",
+                        result="ok",
+                        cleaned=cleaned,
+                    )
+                    log.info("Cleaned up %s expired raffle entries", cleaned)
+                else:
+                    log.debug("raffle.cleanup_expired tick cleaned=0")
+            except Exception as e:
                 log_event(
                     log,
-                    logging.INFO,
-                    "raffle.cleanup_expired",
+                    logging.ERROR,
+                    "raffle.cleanup_expired.failed",
                     action="cleanup_expired",
-                    result="ok",
-                    cleaned=cleaned,
+                    result="error",
+                    error_type=type(e).__name__,
+                    exc_info=True,
                 )
-                log.info("Cleaned up %s expired raffle entries", cleaned)
-            else:
-                log.debug("raffle.cleanup_expired tick cleaned=0")
-        except Exception as e:
-            log_event(
-                log,
-                logging.ERROR,
-                "raffle.cleanup_expired.failed",
-                action="cleanup_expired",
-                result="error",
-                error_type=type(e).__name__,
-                exc_info=True,
-            )
+        finally:
+            await worker_slot.__aexit__(None, None, None)
 
     @tasks.loop(minutes=5)
     async def cleanup_closed_panels(self):
@@ -2346,53 +2364,60 @@ class RafflesCog(commands.Cog):
                 await repo.mark_cleaned(int(raffle["raffle_id"]))
             return int(len(stale))
 
+        worker_slot = db_heavy_worker_slot("raffles.cleanup_closed_panels")
+        await worker_slot.__aenter__()
         try:
-            acquired, cleaned = await run_with_advisory_lock(db, "worker:raffles:cleanup_panels", _run_once)
-            if not acquired:
-                return
+            try:
+                acquired, cleaned = await run_with_advisory_lock(db, "worker:raffles:cleanup_panels", _run_once)
+                if not acquired:
+                    return
 
-            cleaned = int(cleaned or 0)
-            if cleaned > 0:
+                cleaned = int(cleaned or 0)
+                if cleaned > 0:
+                    log_event(
+                        log,
+                        logging.INFO,
+                        "raffle.cleanup_panels",
+                        action="cleanup_panels",
+                        result="ok",
+                        cleaned=cleaned,
+                    )
+                else:
+                    log.debug("raffle.cleanup_panels tick cleaned=0")
+            except Exception as e:
                 log_event(
                     log,
-                    logging.INFO,
-                    "raffle.cleanup_panels",
+                    logging.ERROR,
+                    "raffle.cleanup_panels.failed",
                     action="cleanup_panels",
-                    result="ok",
-                    cleaned=cleaned,
+                    result="error",
+                    error_type=type(e).__name__,
+                    exc_info=True,
                 )
-            else:
-                log.debug("raffle.cleanup_panels tick cleaned=0")
-        except Exception as e:
-            log_event(
-                log,
-                logging.ERROR,
-                "raffle.cleanup_panels.failed",
-                action="cleanup_panels",
-                result="error",
-                error_type=type(e).__name__,
-                exc_info=True,
-            )
+        finally:
+            await worker_slot.__aexit__(None, None, None)
 
-    async def _before_worker_loop(self) -> None:
+
+    async def _before_worker_loop(self, worker_name: str) -> None:
         await wait_until_initialized(timeout=30.0)
         await self.bot.wait_until_ready()
+        await sleep_startup_jitter(worker_name)
 
     @auto_verify_payments.before_loop
     async def before_auto_verify_payments(self) -> None:
-        await self._before_worker_loop()
+        await self._before_worker_loop("raffles.auto_verify_payments")
 
     @check_raffles.before_loop
     async def before_check_raffles(self) -> None:
-        await self._before_worker_loop()
+        await self._before_worker_loop("raffles.check_raffles")
 
     @cleanup_expired.before_loop
     async def before_cleanup_expired(self) -> None:
-        await self._before_worker_loop()
+        await self._before_worker_loop("raffles.cleanup_expired")
 
     @cleanup_closed_panels.before_loop
     async def before_cleanup_closed_panels(self) -> None:
-        await self._before_worker_loop()
+        await self._before_worker_loop("raffles.cleanup_closed_panels")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RafflesCog(bot))
