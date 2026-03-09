@@ -4,6 +4,7 @@ from cogs.events import (
     _all_active_non_finished_ready,
     _readiness_poll_seconds,
     _list_removable_signups,
+    _apply_energy_poll,
 )
 from repositories.jumps import JumpsRepository
 
@@ -150,3 +151,43 @@ def test_manual_remove_cannot_remove_host_or_in_progress_and_can_succeed():
     assert ok
     assert "Removed" in msg
     assert conn_ok.updated is True
+
+
+def test_public_roster_panel_has_only_three_buttons():
+    events_py = __import__("pathlib").Path("cogs/events.py").read_text(encoding="utf-8")
+    assert 'label="Refresh roster"' in events_py
+    assert 'label="View roster"' in events_py
+    assert 'label="Host Controls"' in events_py
+    assert 'label="Manage"' not in events_py
+
+
+def test_host_controls_has_required_buttons():
+    events_py = __import__("pathlib").Path("cogs/events.py").read_text(encoding="utf-8")
+    assert 'label="Start Jump"' in events_py
+    assert 'label="Manage Jumpers"' in events_py
+    assert 'label="Pause Jump"' in events_py
+    assert 'label="Delete This Jump"' in events_py
+    assert 'label="Reset Progress"' not in events_py
+
+
+def test_energy_rule_requires_seen_nonzero_then_four_lows():
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=False, consecutive_low_energy_polls=0, energy=5
+    )
+    assert (saw, lows, done) == (True, 0, False)
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
+    )
+    assert done is False
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
+    )
+    assert done is False
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
+    )
+    assert done is False
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
+    )
+    assert done is True
