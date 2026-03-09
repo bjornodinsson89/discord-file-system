@@ -48,3 +48,20 @@ def test_jump_automation_worker_runs_every_3_seconds():
     events_py = Path("cogs/events.py").read_text(encoding="utf-8")
     assert "@tasks.loop(seconds=3)" in events_py
     assert "async def jump_automation_worker" in events_py
+
+
+def test_host_controls_helpers_are_defined_and_used():
+    events_py = Path("cogs/events.py").read_text(encoding="utf-8")
+
+    assert "async def _safe_defer_ephemeral" in events_py
+    assert "async def _safe_edit_original(" in events_py
+    assert "await _safe_defer_ephemeral(interaction)" in events_py
+    assert "await _safe_edit_original(interaction" in events_py
+
+
+def test_session_setup_does_not_auto_post_host_controls_message():
+    events_py = Path("cogs/events.py").read_text(encoding="utf-8")
+
+    assert 'title="Host Controls"' not in events_py
+    assert "await repo.set_host_controls_message(" not in events_py
+
