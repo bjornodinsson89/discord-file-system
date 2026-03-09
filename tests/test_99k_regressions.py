@@ -64,4 +64,3 @@ def test_session_setup_does_not_auto_post_host_controls_message():
 
     assert 'title="Host Controls"' not in events_py
     assert "await repo.set_host_controls_message(" not in events_py
-
