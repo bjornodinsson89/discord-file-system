@@ -95,6 +95,8 @@ _TORN_NAME_FAIL_LOG_CACHE: dict[int, datetime] = {}
 _READINESS_MISSING_KEY_LOG_CACHE: dict[tuple[int, int], datetime] = {}
 _READINESS_PERMISSION_LOG_CACHE: dict[tuple[int, int], datetime] = {}
 _WORKER_DB_WAIT_LOGGED: set[str] = set()
+_READINESS_SESSION_NEXT_DUE: dict[int, datetime] = {}
+
 
 
 async def _resolve_bot_member(guild: discord.Guild) -> discord.Member:
@@ -2632,6 +2634,64 @@ async def _grant_private_channel_access(guild: discord.Guild | None, session: di
         await channel.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
 
 
+async def _revoke_private_channel_access(guild: discord.Guild | None, session: dict, discord_id: int) -> None:
+    if guild is None:
+        return
+    private_channel_id = session.get("private_channel_id")
+    if not private_channel_id:
+        return
+
+    member = guild.get_member(int(discord_id))
+    if member is None:
+        try:
+            member = await guild.fetch_member(int(discord_id))
+        except Exception:
+            member = None
+    if member is None:
+        return
+
+    try:
+        channel = guild.get_channel(int(private_channel_id)) or await guild.fetch_channel(int(private_channel_id))
+    except Exception:
+        return
+    if isinstance(channel, discord.abc.GuildChannel):
+        await channel.set_permissions(member, overwrite=None)
+
+
+async def _list_removable_signups(*, repo: JumpsRepository, session: dict) -> list[dict]:
+    session_id = int(session.get("id") or 0)
+    host_discord_id = int(session.get("host_discord_id") or 0)
+    progress = await repo.get_jump_progress(session_id)
+    progress_by_discord: dict[int, str] = {
+        int(row.get("discord_id") or 0): str(row.get("state") or "waiting")
+        for row in (progress.get("signups") or [])
+    }
+    roster_signups = await repo.list_roster_signups_with_readiness(session_id)
+    removable: list[dict] = []
+    for row in roster_signups:
+        discord_id = int(row.get("discord_id") or 0)
+        if discord_id <= 0 or discord_id == host_discord_id:
+            continue
+        state = str(progress_by_discord.get(discord_id, "waiting") or "waiting").lower()
+        if state == "in_progress":
+            continue
+        status = str(row.get("status") or "").lower()
+        if status not in SIGNUP_ACTIVE_STATUSES:
+            continue
+        removable.append(dict(row))
+    return removable
+
+
+def _removable_signup_option_label(row: dict) -> tuple[str, str]:
+    torn_name = str(row.get("participant_torn_name") or "").strip()
+    display_name = torn_name or f"User {int(row.get('discord_id') or 0)}"
+    if bool(row.get("is_priority")):
+        display_name = f"{display_name} [Priority]"
+    status = str(row.get("status") or "paid").lower()
+    description = f"Status: {status}"
+    return display_name[:100], description[:100]
+
+
 class Jump99kManualAddPickerView(discord.ui.View):
     def __init__(self, *, session_id: int):
         super().__init__(timeout=120)
@@ -2782,17 +2842,161 @@ class Jump99kManualAddPickerView(discord.ui.View):
             return
 
 
+class Jump99kManageJumpersActionView(discord.ui.View):
+    def __init__(self, *, session_id: int):
+        super().__init__(timeout=120)
+        self.session_id = int(session_id)
+
+    def _disable_controls(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    @discord.ui.button(label="Add jumper", style=discord.ButtonStyle.primary)
+    async def add_jumper(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await _safe_defer_ephemeral(interaction)
+        repo = JumpsRepository(get_pool())
+        session = await repo.get_session(self.session_id)
+        if not session or not await can_manage_99k_session(interaction, session):
+            self._disable_controls()
+            await _safe_edit_original(interaction, content="You are not allowed to manage this session.", view=self)
+            return
+        self._disable_controls()
+        await _safe_edit_original(interaction, content="Select a user to add to this jump:", view=Jump99kManualAddPickerView(session_id=self.session_id))
+
+    @discord.ui.button(label="Remove jumper", style=discord.ButtonStyle.danger)
+    async def remove_jumper(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await _safe_defer_ephemeral(interaction)
+        repo = JumpsRepository(get_pool())
+        session = await repo.get_session(self.session_id)
+        if not session or not await can_manage_99k_session(interaction, session):
+            self._disable_controls()
+            await _safe_edit_original(interaction, content="You are not allowed to manage this session.", view=self)
+            return
+
+        removable = await _list_removable_signups(repo=repo, session=session)
+        self._disable_controls()
+        if not removable:
+            await _safe_edit_original(interaction, content="No removable jumpers in the active roster.", view=self)
+            return
+        await _safe_edit_original(
+            interaction,
+            content="Select a jumper to remove from this jump:",
+            view=Jump99kManualRemovePickerView(session_id=self.session_id, removable_signups=removable),
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await _safe_defer_ephemeral(interaction)
+        self._disable_controls()
+        await _safe_edit_original(interaction, content="Cancelled.", view=self)
+
+
+class Jump99kManualRemovePickerView(discord.ui.View):
+    def __init__(self, *, session_id: int, removable_signups: list[dict]):
+        super().__init__(timeout=120)
+        self.session_id = int(session_id)
+        self._options = removable_signups
+
+        options = []
+        for row in removable_signups[:25]:
+            label, description = _removable_signup_option_label(row)
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    description=description,
+                    value=str(int(row.get("discord_id") or 0)),
+                )
+            )
+
+        self.select = discord.ui.Select(
+            custom_id=f"99k_manual_remove_select:{self.session_id}",
+            placeholder="Pick a jumper to remove…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.select.callback = self._on_select
+        self.add_item(self.select)
+
+        cancel_button = discord.ui.Button(
+            label="Cancel",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"99k_manual_remove_cancel:{self.session_id}",
+        )
+        cancel_button.callback = self._on_cancel
+        self.add_item(cancel_button)
+
+    def _disable_controls(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def _on_cancel(self, interaction: discord.Interaction) -> None:
+        await _safe_defer_ephemeral(interaction)
+        self._disable_controls()
+        await _safe_edit_original(interaction, content="Cancelled.", view=self)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        await _safe_defer_ephemeral(interaction)
+        repo = JumpsRepository(get_pool())
+        session = await repo.get_session(self.session_id)
+        if not session or not await can_manage_99k_session(interaction, session):
+            self._disable_controls()
+            await _safe_edit_original(interaction, content="You are not allowed to manage this session.", view=self)
+            return
+
+        selected_value = self.select.values[0] if self.select.values else None
+        if not selected_value:
+            await interaction.followup.send("Please select a user to remove.", ephemeral=True)
+            return
+
+        removed_discord_id = int(selected_value)
+        ok, message = await repo.manual_remove_signup(
+            session_id=self.session_id,
+            removed_discord_id=removed_discord_id,
+            removed_by_discord_id=int(interaction.user.id),
+        )
+        if not ok:
+            self._disable_controls()
+            await _safe_edit_original(interaction, content=f"❌ {message}", view=self)
+            return
+
+        if interaction.client:
+            await _refresh_99k_panel(interaction.client, self.session_id)
+            await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
+            await _refresh_roster_if_exists(interaction.client, self.session_id)
+
+        try:
+            await _revoke_private_channel_access(interaction.guild, session, removed_discord_id)
+        except Exception:
+            log.exception("Manual remove private-channel revoke failed session_id=%s user_id=%s", self.session_id, removed_discord_id)
+
+        log_event(
+            log,
+            logging.INFO,
+            "jump99k.manual_remove",
+            guild_id=interaction.guild_id,
+            session_id=self.session_id,
+            actor_id=int(interaction.user.id),
+            removed_user_id=removed_discord_id,
+            action="manual_remove",
+            result="ok",
+        )
+
+        self._disable_controls()
+        await _safe_edit_original(interaction, content=f"✅ {message}", view=self)
+
+
 class Jump99kHostControlsView(discord.ui.View):
     def __init__(self, session_id: int):
         super().__init__(timeout=None)
         self.session_id = int(session_id)
         add_button = discord.ui.Button(
-            label="Manual Add Jumper",
+            label="Manage Jumpers",
             style=discord.ButtonStyle.primary,
-            custom_id=f"99k_host_manual_add:{self.session_id}",
+            custom_id=f"99k_host_manage_jumpers:{self.session_id}",
             row=0,
         )
-        add_button.callback = self._on_manual_add
+        add_button.callback = self._on_manage_jumpers
         self.add_item(add_button)
 
         reset_button = discord.ui.Button(
@@ -2804,7 +3008,7 @@ class Jump99kHostControlsView(discord.ui.View):
         reset_button.callback = self._on_reset_progress
         self.add_item(reset_button)
 
-    async def _on_manual_add(self, interaction: discord.Interaction) -> None:
+    async def _on_manage_jumpers(self, interaction: discord.Interaction) -> None:
         await _safe_defer_ephemeral(interaction)
         repo = JumpsRepository(get_pool())
         session = await repo.get_session(self.session_id)
@@ -2813,8 +3017,8 @@ class Jump99kHostControlsView(discord.ui.View):
             return
         await _safe_edit_original(
             interaction,
-            content="Select a user to add to this jump:",
-            view=Jump99kManualAddPickerView(session_id=self.session_id),
+            content="Manage jumpers for this session:",
+            view=Jump99kManageJumpersActionView(session_id=self.session_id),
         )
 
     async def _on_reset_progress(self, interaction: discord.Interaction) -> None:
@@ -2854,12 +3058,12 @@ class Jump99kManageView(Jump99kRosterPanelView):
             include_transition_controls=True,
         )
         manual_add_btn = discord.ui.Button(
-            label="Manual Add Jumper",
+            label="Manage Jumpers",
             style=discord.ButtonStyle.primary,
-            custom_id=f"99k_manage_manual_add:{self.session_id}",
+            custom_id=f"99k_manage_jumpers:{self.session_id}",
             row=4,
         )
-        manual_add_btn.callback = self._on_manual_add
+        manual_add_btn.callback = self._on_manage_jumpers
         self.add_item(manual_add_btn)
 
         reset_btn = discord.ui.Button(
@@ -2871,7 +3075,7 @@ class Jump99kManageView(Jump99kRosterPanelView):
         reset_btn.callback = self._on_reset_progress
         self.add_item(reset_btn)
 
-    async def _on_manual_add(self, interaction: discord.Interaction):
+    async def _on_manage_jumpers(self, interaction: discord.Interaction):
         try:
             await _safe_defer_ephemeral(interaction)
             repo = JumpsRepository(get_pool())
@@ -2879,10 +3083,10 @@ class Jump99kManageView(Jump99kRosterPanelView):
             if not session or not await can_manage_99k_session(interaction, session):
                 await interaction.followup.send("You don’t have permission to manage this 99k session.", ephemeral=True)
                 return
-            await interaction.followup.send("Select a user to add to this jump:", view=Jump99kManualAddPickerView(session_id=self.session_id), ephemeral=True)
+            await interaction.followup.send("Manage jumpers for this session:", view=Jump99kManageJumpersActionView(session_id=self.session_id), ephemeral=True)
         except Exception:
-            log.exception("99k manage manual add failed session_id=%s", self.session_id)
-            await interaction.followup.send("Sorry—could not open manual add right now.", ephemeral=True)
+            log.exception("99k manage jumpers open failed session_id=%s", self.session_id)
+            await interaction.followup.send("Sorry—could not open jumper management right now.", ephemeral=True)
 
     async def _on_reset_progress(self, interaction: discord.Interaction):
         try:
@@ -4476,51 +4680,69 @@ async def before_roster_panel_refresh_worker():
     await sleep_startup_jitter("roster_panel_refresh_worker")
 
 
-@tasks.loop(seconds=config.READINESS_REFRESH_INTERVAL)
+@tasks.loop(seconds=5)
 async def readiness_worker():
     if not await _worker_db_ready("readiness_worker"):
         return
-    """Refresh readiness snapshots for the active 99k session in each guild."""
+    """Refresh readiness snapshots for active 99k sessions using dynamic session cadence."""
+    worker_slot = db_heavy_worker_slot("readiness_worker")
+    await worker_slot.__aenter__()
     try:
         db = get_database()
         repo = JumpsRepository(db.pool)
         users_repo = UsersRepository(db.pool)
         torn_api = get_torn_api()
         security = get_security_manager()
+        now = datetime.now(timezone.utc)
 
+        active_seconds = max(10, int(getattr(config, "READINESS_REFRESH_ACTIVE_SECONDS", 30) or 30))
+        hot_seconds = max(5, min(active_seconds, int(getattr(config, "READINESS_REFRESH_HOT_SECONDS", 10) or 10)))
+
+        active_sessions: dict[int, dict] = {}
         for guild in bot.guilds:
             session = await repo.get_active_session(guild.id)
             if not session:
                 continue
+            active_sessions[int(session["id"])] = session
 
-            session_id = int(session["id"])
+        active_ids = set(active_sessions.keys())
+        for stale_id in list(_READINESS_SESSION_NEXT_DUE.keys()):
+            if stale_id not in active_ids:
+                _READINESS_SESSION_NEXT_DUE.pop(stale_id, None)
+
+        for session_id, session in active_sessions.items():
+            next_due = _READINESS_SESSION_NEXT_DUE.get(session_id)
+            if next_due and next_due > now:
+                continue
+
             signups = await repo.list_signups(session_id)
-
-            # Include host in readiness checks as well.
-            participant_ids = {int(session.get("host_discord_id"))}
+            participant_ids = {int(session.get("host_discord_id") or 0)}
+            active_signup_ids: list[int] = []
             for s in signups:
                 if s.get("status") in SIGNUP_ACTIVE_STATUSES:
-                    participant_ids.add(int(s["discord_id"]))
+                    discord_id = int(s.get("discord_id") or 0)
+                    participant_ids.add(discord_id)
+                    active_signup_ids.append(discord_id)
 
-            for discord_id in sorted(participant_ids):
+            readiness_before = {int(r.get("discord_id") or 0): str(r.get("status_text") or "") for r in await repo.list_readiness(session_id)}
+
+            for discord_id in sorted(d for d in participant_ids if d > 0):
                 try:
                     key_row = await users_repo.get_user_api_key(discord_id)
                     if not key_row:
                         throttle_key = (session_id, discord_id)
-                        now = datetime.now(timezone.utc)
                         expiry = _READINESS_MISSING_KEY_LOG_CACHE.get(throttle_key)
                         if not expiry or expiry <= now:
                             log.info(
                                 "Skipping readiness refresh due to missing API key discord_id=%s guild_id=%s session_id=%s",
                                 discord_id,
-                                guild.id,
+                                session.get("guild_id"),
                                 session_id,
                             )
                             _READINESS_MISSING_KEY_LOG_CACHE[throttle_key] = now + timedelta(hours=1)
                         continue
 
                     key_data = dict(key_row)
-                    # Compatibility: some environments use api_key_encrypted, others encrypted_key.
                     if "encrypted_key" not in key_data and "api_key_encrypted" in key_data:
                         key_data["encrypted_key"] = key_data["api_key_encrypted"]
 
@@ -4533,16 +4755,11 @@ async def readiness_worker():
                             audit_context="jump_readiness",
                             audit_query_meta={},
                         )
-
                         energy = int((user_data or {}).get("bars", {}).get("energy", {}).get("current", 0) or 0)
                         energy_max = int((user_data or {}).get("bars", {}).get("energy", {}).get("maximum", 0) or 0)
                         drug_cd = int((user_data or {}).get("cooldowns", {}).get("drug", 0) or 0)
                         booster_cd = int((user_data or {}).get("cooldowns", {}).get("booster", 0) or 0)
-
-                        status_text = _get_readiness_status(
-                            {"energy": energy, "energy_max": energy_max},
-                            drug_cd,
-                        )
+                        status_text = _get_readiness_status({"energy": energy, "energy_max": energy_max}, drug_cd)
                         await repo.upsert_readiness_snapshot(
                             session_id=session_id,
                             guild_id=int(session["guild_id"]),
@@ -4565,65 +4782,54 @@ async def readiness_worker():
                             status_text="API key missing Bars/Cooldowns permissions",
                         )
                         throttle_key = (session_id, discord_id)
-                        now = datetime.now(timezone.utc)
                         expiry = _READINESS_PERMISSION_LOG_CACHE.get(throttle_key)
                         if not expiry or expiry <= now:
-                            log.info(
-                                "Readiness refresh permission error guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s",
-                                guild.id,
-                                session_id,
-                                discord_id,
-                                type(exc).__name__,
-                                exc,
-                            )
+                            log.info("Readiness refresh permission error guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s", session.get("guild_id"), session_id, discord_id, type(exc).__name__, exc)
                             _READINESS_PERMISSION_LOG_CACHE[throttle_key] = now + timedelta(hours=1)
                     except TornAPIRateLimitError as exc:
-                        log.debug(
-                            "Readiness refresh skipped due to rate limit guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s",
-                            guild.id,
-                            session_id,
-                            discord_id,
-                            type(exc).__name__,
-                            exc,
-                        )
+                        log.debug("Readiness refresh skipped due to rate limit guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s", session.get("guild_id"), session_id, discord_id, type(exc).__name__, exc)
                     except TornAPIError as exc:
                         throttle_key = (session_id, discord_id)
-                        now = datetime.now(timezone.utc)
                         expiry = _READINESS_PERMISSION_LOG_CACHE.get(throttle_key)
                         if not expiry or expiry <= now:
-                            log.info(
-                                "Readiness refresh Torn API error guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s",
-                                guild.id,
-                                session_id,
-                                discord_id,
-                                type(exc).__name__,
-                                exc,
-                            )
+                            log.info("Readiness refresh Torn API error guild_id=%s session_id=%s discord_id=%s error_type=%s error=%s", session.get("guild_id"), session_id, discord_id, type(exc).__name__, exc)
                             _READINESS_PERMISSION_LOG_CACHE[throttle_key] = now + timedelta(hours=1)
                     except Exception:
-                        log.exception(
-                            "Unexpected readiness refresh failure guild_id=%s session_id=%s discord_id=%s",
-                            guild.id,
-                            session_id,
-                            discord_id,
-                        )
+                        log.exception("Unexpected readiness refresh failure guild_id=%s session_id=%s discord_id=%s", session.get("guild_id"), session_id, discord_id)
                 except Exception:
-                    log.exception(
-                        "Failed to prepare readiness refresh guild_id=%s session_id=%s discord_id=%s",
-                        guild.id,
-                        session_id,
-                        discord_id,
-                    )
-
+                    log.exception("Failed to prepare readiness refresh guild_id=%s session_id=%s discord_id=%s", session.get("guild_id"), session_id, discord_id)
                 await asyncio.sleep(0.35)
+
+            readiness_after_rows = await repo.list_readiness(session_id)
+            readiness_after = {int(r.get("discord_id") or 0): str(r.get("status_text") or "") for r in readiness_after_rows}
+
+            active_non_finished = []
+            progress = await repo.get_jump_progress(session_id)
+            progress_by_discord = {int(r.get("discord_id") or 0): str(r.get("state") or "waiting") for r in (progress.get("signups") or [])}
+            for discord_id in active_signup_ids:
+                if progress_by_discord.get(discord_id) != "done":
+                    active_non_finished.append(discord_id)
+
+            all_ready = _all_active_non_finished_ready(
+                active_non_finished_discord_ids=active_non_finished,
+                readiness_rows=readiness_after_rows,
+            )
+            next_seconds = _readiness_poll_seconds(all_active_non_finished_ready=all_ready, active_seconds=active_seconds, hot_seconds=hot_seconds)
+            _READINESS_SESSION_NEXT_DUE[session_id] = datetime.now(timezone.utc) + timedelta(seconds=next_seconds)
+
+            if readiness_before != readiness_after and bot:
+                await _refresh_roster_if_exists(bot, session_id)
     except Exception as e:
         log.error(f"Readiness worker error: {e}", exc_info=True)
+    finally:
+        await worker_slot.__aexit__(None, None, None)
 
 
 @readiness_worker.before_loop
 async def before_readiness_worker():
     await bot.wait_until_ready()
     await wait_until_initialized(timeout=30.0)
+    await sleep_startup_jitter("readiness_worker")
 
 
 @tasks.loop(seconds=30)
@@ -4965,6 +5171,23 @@ async def before_raffle_completion_worker():
 # ============================================================================
 # WORKER HELPERS
 # ============================================================================
+
+
+
+def _all_active_non_finished_ready(*, active_non_finished_discord_ids: list[int], readiness_rows: list[dict]) -> bool:
+    if not active_non_finished_discord_ids:
+        return False
+    readiness_by_discord = {
+        int(row.get("discord_id") or 0): str(row.get("status_text") or "").strip().lower()
+        for row in readiness_rows
+    }
+    return all(readiness_by_discord.get(discord_id, "").startswith("ready") for discord_id in active_non_finished_discord_ids)
+
+
+def _readiness_poll_seconds(*, all_active_non_finished_ready: bool, active_seconds: int, hot_seconds: int) -> int:
+    if all_active_non_finished_ready:
+        return max(5, int(hot_seconds))
+    return max(10, int(active_seconds))
 
 def _get_readiness_status(bars: dict, drug_cd: int) -> str:
     """Determine readiness status text."""
