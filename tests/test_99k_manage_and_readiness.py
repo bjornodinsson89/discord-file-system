@@ -174,20 +174,40 @@ def test_energy_rule_requires_seen_nonzero_then_four_lows():
     saw, lows, done = _apply_energy_poll(
         saw_nonzero_energy=False, consecutive_low_energy_polls=0, energy=5
     )
+    assert (saw, lows, done) == (False, 0, False)
+
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=False, consecutive_low_energy_polls=0, energy=25
+    )
     assert (saw, lows, done) == (True, 0, False)
+
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=9
+    )
+    assert (saw, lows, done) == (True, 1, False)
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=8
+    )
+    assert (saw, lows, done) == (True, 2, False)
+
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=12
+    )
+    assert (saw, lows, done) == (True, 0, False)
+
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=9
+    )
+    assert (saw, lows, done) == (True, 1, False)
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=8
+    )
+    assert (saw, lows, done) == (True, 2, False)
+    saw, lows, done = _apply_energy_poll(
+        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=4
+    )
+    assert (saw, lows, done) == (True, 3, False)
     saw, lows, done = _apply_energy_poll(
         saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
     )
-    assert done is False
-    saw, lows, done = _apply_energy_poll(
-        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
-    )
-    assert done is False
-    saw, lows, done = _apply_energy_poll(
-        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
-    )
-    assert done is False
-    saw, lows, done = _apply_energy_poll(
-        saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
-    )
-    assert done is True
+    assert (saw, lows, done) == (True, 4, True)
