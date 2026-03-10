@@ -115,16 +115,23 @@ def test_session_setup_does_not_auto_post_host_controls_message():
 
 def test_jump_automation_worker_uses_safe_send_channel_signature_with_guild_and_channel_id():
     events_py = Path("cogs/events.py").read_text(encoding="utf-8")
-    worker_block = events_py.split("async def jump_automation_worker", 1)[1].split("@jump_automation_worker.before_loop", 1)[0]
+    worker_block = events_py.split("async def jump_automation_worker", 1)[1].split(
+        "@jump_automation_worker.before_loop", 1
+    )[0]
     assert "await safe_send_channel(guild, int(channel_id), content=content)" in worker_block
-    assert "await safe_send_channel(guild, int(channel_id), content=\"✅ Jump session complete.\")" in worker_block
+    assert (
+        'await safe_send_channel(guild, int(channel_id), content="✅ Jump session complete.")'
+        in worker_block
+    )
 
 
 def test_end_flow_signup_panel_delete_has_fallback_lookup_for_stale_message_ids():
     events_py = Path("cogs/events.py").read_text(encoding="utf-8")
-    helper_block = events_py.split("async def _delete_99k_signup_panel_with_fallback", 1)[1].split("async def _grant_private_channel_access", 1)[0]
+    helper_block = events_py.split("async def _delete_99k_signup_panel_with_fallback", 1)[1].split(
+        "async def _grant_private_channel_access", 1
+    )[0]
 
     assert "delete_message_safe(" in helper_block
-    assert "result[1] == \"already_deleted\"" in helper_block
+    assert 'result[1] == "already_deleted"' in helper_block
     assert "channel.history(limit=50)" in helper_block
     assert "Session #" in helper_block
