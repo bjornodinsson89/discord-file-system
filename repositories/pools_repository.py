@@ -294,3 +294,18 @@ class PoolsRepository(RepositoryBase):
             return int(str(result).split()[-1])
         except Exception:
             return 0
+
+
+    async def delete_pending_purchase(self, pool_id: int, buyer_discord_id: int) -> bool:
+        async with self.acquire() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM public.xanax_pool_pending_purchases
+                WHERE pool_id = $1
+                  AND buyer_discord_id = $2
+                  AND verified_at IS NULL
+                """,
+                int(pool_id),
+                int(buyer_discord_id),
+            )
+        return result.startswith("DELETE ") and int(result.split()[-1]) > 0
