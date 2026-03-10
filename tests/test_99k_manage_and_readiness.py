@@ -170,6 +170,22 @@ def test_host_controls_has_required_buttons():
     assert 'label="Reset Progress"' not in events_py
 
 
+def test_prestart_and_started_cadence_values_are_15_and_3_seconds():
+    events_py = __import__("pathlib").Path("cogs/events.py").read_text(encoding="utf-8")
+    assert "@tasks.loop(seconds=3)" in events_py
+    assert "next_seconds = 3 if jump_started else 15" in events_py
+
+
+def test_prestart_roster_worker_skips_started_sessions():
+    events_py = __import__("pathlib").Path("cogs/events.py").read_text(encoding="utf-8")
+    roster_block = events_py.split("async def roster_panel_refresh_worker", 1)[1].split(
+        "@roster_panel_refresh_worker.before_loop", 1
+    )[0]
+    assert "jump_started = await _session_jump_started(repo, session_id)" in roster_block
+    assert "if jump_started:" in roster_block
+    assert "await _refresh_or_repost_roster_panel(bot, session_id)" in roster_block
+
+
 def test_energy_rule_requires_seen_nonzero_then_four_lows():
     saw, lows, done = _apply_energy_poll(
         saw_nonzero_energy=False, consecutive_low_energy_polls=0, energy=5
