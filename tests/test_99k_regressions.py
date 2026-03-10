@@ -75,7 +75,7 @@ def test_roster_panel_host_controls_does_not_edit_original_message():
 def test_roster_refresh_uses_single_roster_refresh_path():
     events_py = Path("cogs/events.py").read_text(encoding="utf-8")
     on_refresh_block = events_py.split("async def _on_refresh", 1)[1].split(
-        "async def _on_view", 1
+        "async def _grant_private_channel_access", 1
     )[0]
 
     assert "_refresh_or_repost_roster_panel" in on_refresh_block
