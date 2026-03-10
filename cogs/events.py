@@ -78,11 +78,13 @@ from repositories.overdose import OverdoseRepository
 from repositories.torn_items import TornItemsRepository, norm_name
 from repositories.host_tax import HostTaxRepository
 from repositories.api_audit_repository import ApiAuditRepository
+from repositories.user_torn_identity_cache import UserTornIdentityCacheRepository
 from repositories.applications import ApplicationsRepository
 from services.payment_receipts import PaymentReceiptService
 from services.permissions import validate_99k_permissions
 from services.discord_cleanup import delete_message_safe, delete_channel_safe
 from services.logging_utils import log_event
+from services.torn_identity import parse_member_torn_identity_from_nickname
 from repositories.jumps import SignupStatusSchemaMismatchError
 
 log = logging.getLogger("happy_jumper")
@@ -479,6 +481,7 @@ async def ensure_admin(interaction: discord.Interaction) -> bool:
         return False
 
     member = interaction.user
+
     db = get_database()
     repo = GuildSettingsRepository(db)
     settings = await repo.get_or_create(interaction.guild.id)
@@ -950,6 +953,25 @@ async def on_ready():
     log.info("✓ Bot is ready!")
 
 
+async def _cache_member_nickname_identity(member: discord.Member) -> None:
+    torn_id, torn_name = parse_member_torn_identity_from_nickname(member)
+    if not torn_id:
+        return
+    try:
+        repo = UserTornIdentityCacheRepository(get_pool())
+        await repo.upsert_identity(
+            guild_id=int(member.guild.id),
+            discord_id=int(member.id),
+            torn_user_id=int(torn_id),
+            torn_name=torn_name,
+            source="nickname",
+            is_official_discord_verified=False,
+            last_verified_at=None,
+        )
+    except Exception:
+        log.debug("Failed caching nickname torn identity guild_id=%s user_id=%s", member.guild.id, member.id, exc_info=True)
+
+
 @bot.event
 async def on_guild_join(guild: discord.Guild):
     """Handle bot joining a new guild."""
@@ -986,6 +1008,8 @@ async def on_member_join(member: discord.Member):
     if member.bot:
         return
 
+    await _cache_member_nickname_identity(member)
+
     db = get_database()
     repo = GuildSettingsRepository(db)
     settings = await repo.get_guild_settings(member.guild.id)
@@ -1020,6 +1044,17 @@ async def on_member_join(member: discord.Member):
         log.warning("Unable to send welcome message in guild=%s channel=%s", member.guild.id, welcome_channel_id)
     except Exception:
         log.exception("Failed to send welcome message in guild=%s", member.guild.id)
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    if after.bot:
+        return
+    before_nick = str(before.nick or before.display_name or "").strip()
+    after_nick = str(after.nick or after.display_name or "").strip()
+    if before_nick == after_nick:
+        return
+    await _cache_member_nickname_identity(after)
 
 
 @bot.tree.error

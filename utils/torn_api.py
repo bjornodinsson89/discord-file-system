@@ -577,6 +577,54 @@ class TornAPIClient:
             {"log": int(log_id), "limit": int(limit), "key": api_key},
         )
 
+    async def resolve_torn_user_by_discord_id(
+        self,
+        api_key: str,
+        discord_id: int,
+        *,
+        audit_discord_id: Optional[int] = None,
+        audit_torn_id: Optional[int] = None,
+        audit_context: Optional[str] = None,
+        audit_query_meta: Optional[dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        target_discord_id = int(discord_id or 0)
+        if target_discord_id <= 0:
+            return None
+
+        try:
+            data = await self._request(
+                f"/user/discord/{target_discord_id}",
+                {"key": api_key},
+                audit_discord_id=audit_discord_id,
+                audit_torn_id=audit_torn_id,
+                audit_context=audit_context,
+                audit_endpoint="/user/discord/{discord_id}",
+                audit_query_meta=audit_query_meta,
+            )
+        except TornAPIError as exc:
+            lowered = str(exc).lower()
+            if (
+                "incorrect id" in lowered
+                or "not officially verified" in lowered
+                or "no discord" in lowered
+            ):
+                return None
+            raise
+
+        profile = data.get("profile") if isinstance(data, dict) else None
+        if not isinstance(profile, dict):
+            return None
+
+        torn_user_id = int(profile.get("id") or data.get("player_id") or data.get("user_id") or 0)
+        if torn_user_id <= 0:
+            return None
+        torn_name = str(profile.get("name") or data.get("name") or "").strip() or None
+        return {
+            "torn_user_id": torn_user_id,
+            "torn_name": torn_name,
+            "is_official_discord_verified": True,
+        }
+
     async def get_item_send_receive_logs(
         self,
         api_key: str,

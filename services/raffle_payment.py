@@ -19,6 +19,59 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _to_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _torn_extract_sender_id(entry: dict) -> int:
+    data = entry.get("data") or {}
+    return _to_int(
+        data.get("sender")
+        or data.get("sender_id")
+        or data.get("from")
+        or data.get("from_id")
+        or entry.get("sender")
+        or entry.get("sender_id")
+        or 0
+    )
+
+
+def _torn_extract_receiver_id(entry: dict) -> int:
+    data = entry.get("data") or {}
+    return _to_int(
+        data.get("receiver")
+        or data.get("receiver_id")
+        or data.get("to")
+        or data.get("to_id")
+        or entry.get("receiver")
+        or entry.get("receiver_id")
+        or 0
+    )
+
+
+def _torn_extract_item_qty(entry: dict, item_id: int) -> int:
+    data = entry.get("data") or {}
+    items = data.get("items") or data.get("item_list") or entry.get("items") or []
+    total = 0
+    if isinstance(items, list):
+        for it in items:
+            try:
+                if int(it.get("id") or it.get("item_id") or 0) == int(item_id):
+                    total += int(it.get("qty") or it.get("quantity") or it.get("amount") or 0)
+            except Exception:
+                continue
+    elif isinstance(items, dict):
+        for k, v in items.items():
+            try:
+                if int(k) == int(item_id):
+                    total += int(v)
+            except Exception:
+                continue
+    return total
+
 class RafflePaymentService:
     def __init__(self, db):
         self.db = db
@@ -55,53 +108,66 @@ class RafflePaymentService:
             if not manual and reserved_until and reserved_until < now:
                 return False, None, "Reservation expired"
 
-            buyer_key = await self.users_repo.get_user_api_key(int(entry["discord_id"]))
-            if not buyer_key or not buyer_key.get("encrypted_key"):
-                return False, None, "You must link your Torn API key first to verify paid raffle tickets."
-
             buyer_torn_id = int(entry.get("torn_user_id") or 0)
+            creator_discord_id = int(entry.get("creator_discord_id") or 0)
+            creator_key = await self.users_repo.get_user_api_key(creator_discord_id)
             creator_torn_id = int(entry.get("effective_creator_torn_id") or 0)
             if not buyer_torn_id:
                 return False, None, "Buyer Torn ID missing for this reservation. Please reserve again."
             if not creator_torn_id:
                 return False, None, "Raffle creator Torn ID is missing. Ask an admin to fix creator API key linkage."
 
-            linked_torn_id = int(buyer_key.get("torn_user_id") or 0)
-            if not linked_torn_id or linked_torn_id != buyer_torn_id:
-                return False, None, "Linked Torn account does not match this reservation. Reserve tickets again with your current API key."
-
             security = get_security_manager()
             torn_api = get_torn_api()
+            logs: list[dict[str, Any]] = []
+            used_creator_logs = False
+            creator_path_error: str | None = None
 
-            try:
-                api_key = security.decrypt(buyer_key["encrypted_key"])
-                logs = await torn_api.get_item_send_receive_logs(
-                    api_key,
-                    limit=config.PAYMENT_VERIFICATION_LOG_LIMIT,
-                    audit_discord_id=int(entry["discord_id"]),
-                    audit_torn_id=buyer_torn_id,
-                    audit_context="payment_verify_logs",
-                    audit_query_meta={"cat": 85, "limit": int(config.PAYMENT_VERIFICATION_LOG_LIMIT)},
-                )
-            except TornAPIRateLimitError:
-                return False, None, "Torn API is rate-limited right now. Please try again in a moment."
-            except TornAPIPermissionError:
-                return False, None, "Your Torn API key lacks permission to read item logs (cat=85). Update key permissions and try again."
-            except TornAPIError:
-                return False, None, "Torn verification is temporarily unavailable. Please try again shortly."
-            except Exception:
-                reserved_until_tz = (
-                    "naive" if reserved_until and reserved_until.tzinfo is None else "aware" if reserved_until else "missing"
-                )
-                created_at_tz = "naive" if created_at and created_at.tzinfo is None else "aware" if created_at else "missing"
-                log.exception(
-                    "Unexpected raffle verification error entry_id=%s manual=%s reserved_until_tz=%s created_at_tz=%s",
-                    entry_id,
-                    manual,
-                    reserved_until_tz,
-                    created_at_tz,
-                )
-                return False, None, "Torn verification is temporarily unavailable. Please try again shortly."
+            if creator_key and creator_key.get("encrypted_key"):
+                try:
+                    creator_api_key = security.decrypt(creator_key["encrypted_key"])
+                    logs = await torn_api.get_item_send_receive_logs(
+                        creator_api_key,
+                        limit=config.PAYMENT_VERIFICATION_LOG_LIMIT,
+                        audit_discord_id=creator_discord_id,
+                        audit_torn_id=creator_torn_id,
+                        audit_context="raffle_payment_verify_creator_logs",
+                        audit_query_meta={"cat": 85, "limit": int(config.PAYMENT_VERIFICATION_LOG_LIMIT)},
+                    )
+                    used_creator_logs = True
+                except TornAPIRateLimitError:
+                    return False, None, "Torn API is rate-limited right now. Please try again in a moment."
+                except TornAPIPermissionError:
+                    creator_path_error = "Creator key lacks item-log permissions."
+                except TornAPIError:
+                    creator_path_error = "Creator log verification unavailable."
+                except Exception:
+                    creator_path_error = "Creator log verification unavailable."
+
+            if not used_creator_logs:
+                buyer_key = await self.users_repo.get_user_api_key(int(entry["discord_id"]))
+                linked_torn_id = int((buyer_key or {}).get("torn_user_id") or 0)
+                if buyer_key and buyer_key.get("encrypted_key") and linked_torn_id == buyer_torn_id:
+                    try:
+                        api_key = security.decrypt(buyer_key["encrypted_key"])
+                        logs = await torn_api.get_item_send_receive_logs(
+                            api_key,
+                            limit=config.PAYMENT_VERIFICATION_LOG_LIMIT,
+                            audit_discord_id=int(entry["discord_id"]),
+                            audit_torn_id=buyer_torn_id,
+                            audit_context="raffle_payment_verify_legacy_buyer_logs",
+                            audit_query_meta={"cat": 85, "limit": int(config.PAYMENT_VERIFICATION_LOG_LIMIT)},
+                        )
+                    except TornAPIRateLimitError:
+                        return False, None, "Torn API is rate-limited right now. Please try again in a moment."
+                    except TornAPIPermissionError:
+                        return False, None, "Your Torn API key lacks permission to read item logs (cat=85). Update key permissions and try again."
+                    except TornAPIError:
+                        return False, None, "Torn verification is temporarily unavailable. Please try again shortly."
+                    except Exception:
+                        return False, None, "Torn verification is temporarily unavailable. Please try again shortly."
+                else:
+                    return False, None, creator_path_error or "Torn verification is temporarily unavailable."
 
             expected_qty = int(entry["ticket_price"] or 0) * int(entry["num_tickets"] or 0)
             try:
@@ -162,7 +228,7 @@ class RafflePaymentService:
                 currency_type=item_type,
                 metadata=match,
                 verifier_discord_id=int(entry.get("discord_id") or 0) or None,
-                verifier_torn_id=buyer_torn_id,
+                verifier_torn_id=creator_torn_id,
             )
 
             sold_out_id = await self.repo.recompute_tickets_sold_and_maybe_set_sold_out(int(entry["raffle_id"]))
@@ -196,8 +262,6 @@ class RafflePaymentService:
         since_ts: int,
         until_ts: Optional[int],
     ) -> Optional[dict[str, Any]]:
-        _ = sender_torn_id
-
         for entry in logs:
             raw_ts = entry.get("timestamp")
             try:
@@ -209,15 +273,13 @@ class RafflePaymentService:
             if until_ts is not None and ts > until_ts:
                 continue
 
-            data = entry.get("data") or {}
-            if int(data.get("receiver") or 0) != int(creator_torn_id):
+            sender = _torn_extract_sender_id(entry)
+            receiver = _torn_extract_receiver_id(entry)
+            if sender != int(sender_torn_id):
                 continue
-
-            qty_sent = sum(
-                int(item.get("qty") or 0)
-                for item in (data.get("items") or [])
-                if int(item.get("id") or 0) == required_item_id
-            )
+            if receiver != int(creator_torn_id):
+                continue
+            qty_sent = _torn_extract_item_qty(entry, required_item_id)
             if qty_sent >= required_qty:
                 return entry
 
