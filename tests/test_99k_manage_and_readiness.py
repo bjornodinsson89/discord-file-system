@@ -217,11 +217,13 @@ class _ManualAddFakeRepo:
     def __init__(self, *, add_result=(True, "ok"), add_raises: Exception | None = None):
         self.add_result = add_result
         self.add_raises = add_raises
+        self.manual_add_called = False
 
     async def get_session(self, _session_id: int):
         return {"id": 99, "status": "open", "guild_id": 1}
 
     async def manual_add_as_verified_signup(self, **_kwargs):
+        self.manual_add_called = True
         if self.add_raises is not None:
             raise self.add_raises
         return self.add_result
@@ -420,3 +422,129 @@ def test_manual_add_generic_failure_only_for_unexpected_critical_error():
             delattr(events, "_can_use_manual_add_controls")
         else:
             events._can_use_manual_add_controls = original_can_use
+
+
+def test_manual_add_select_uses_manage_permissions_and_reaches_repo_call():
+    from cogs import events
+
+    fake_repo = _ManualAddFakeRepo()
+    recorded = {}
+
+    async def _fake_safe_defer_ephemeral(_interaction):
+        return None
+
+    async def _fake_safe_edit_original(_interaction, *, content=None, embed=None, view=None):
+        recorded["content"] = content
+
+    async def _fake_can_manage(_interaction, _session):
+        return True
+
+    async def _noop_async(*_args, **_kwargs):
+        return None
+
+    originals = {
+        "_safe_defer_ephemeral": events._safe_defer_ephemeral,
+        "_safe_edit_original": events._safe_edit_original,
+        "can_manage_99k_session": events.can_manage_99k_session,
+        "_grant_private_channel_access": events._grant_private_channel_access,
+        "JumpsRepository": events.JumpsRepository,
+        "UsersRepository": events.UsersRepository,
+        "get_pool": events.get_pool,
+    }
+    try:
+        events._safe_defer_ephemeral = _fake_safe_defer_ephemeral
+        events._safe_edit_original = _fake_safe_edit_original
+        events.can_manage_99k_session = _fake_can_manage
+        events._grant_private_channel_access = _noop_async
+        events.get_pool = lambda: None
+        events.JumpsRepository = lambda _pool: fake_repo
+        events.UsersRepository = lambda _pool: _ManualAddFakeUsersRepo()
+
+        async def _run_case():
+            view = events.Jump99kManualAddPickerView(session_id=99)
+            view.user_select = type("_Select", (), {"values": [_ManualAddFakeSelectedUser()]})()
+            await view._on_select_user(_ManualAddFakeInteraction())
+
+        asyncio.run(_run_case())
+
+        assert fake_repo.manual_add_called is True
+        assert recorded["content"].startswith("✅ Added <@123> to the jump.")
+    finally:
+        for name, value in originals.items():
+            setattr(events, name, value)
+
+
+def test_manual_add_select_denies_unauthorized_user_without_nameerror():
+    from cogs import events
+
+    async def _fake_safe_defer_ephemeral(_interaction):
+        return None
+
+    async def _fake_can_manage(_interaction, _session):
+        return False
+
+    originals = {
+        "_safe_defer_ephemeral": events._safe_defer_ephemeral,
+        "can_manage_99k_session": events.can_manage_99k_session,
+        "JumpsRepository": events.JumpsRepository,
+        "UsersRepository": events.UsersRepository,
+        "get_pool": events.get_pool,
+    }
+    try:
+        events._safe_defer_ephemeral = _fake_safe_defer_ephemeral
+        events.can_manage_99k_session = _fake_can_manage
+        events.get_pool = lambda: None
+        events.JumpsRepository = lambda _pool: _ManualAddFakeRepo()
+        events.UsersRepository = lambda _pool: _ManualAddFakeUsersRepo()
+
+        async def _run_case():
+            view = events.Jump99kManualAddPickerView(session_id=99)
+            view.user_select = type("_Select", (), {"values": [_ManualAddFakeSelectedUser()]})()
+            interaction = _ManualAddFakeInteraction()
+            await view._on_select_user(interaction)
+            return interaction
+
+        interaction = asyncio.run(_run_case())
+        assert interaction.followup.messages[0][0] == "You do not have permission."
+    finally:
+        for name, value in originals.items():
+            setattr(events, name, value)
+
+
+def test_manual_add_cancel_uses_manage_permissions_without_nameerror():
+    from cogs import events
+
+    captured = {}
+
+    async def _fake_safe_defer_ephemeral(_interaction):
+        return None
+
+    async def _fake_safe_edit_original(_interaction, *, content=None, embed=None, view=None):
+        captured["content"] = content
+
+    async def _fake_can_manage(_interaction, _session):
+        return True
+
+    originals = {
+        "_safe_defer_ephemeral": events._safe_defer_ephemeral,
+        "_safe_edit_original": events._safe_edit_original,
+        "can_manage_99k_session": events.can_manage_99k_session,
+        "JumpsRepository": events.JumpsRepository,
+        "get_pool": events.get_pool,
+    }
+    try:
+        events._safe_defer_ephemeral = _fake_safe_defer_ephemeral
+        events._safe_edit_original = _fake_safe_edit_original
+        events.can_manage_99k_session = _fake_can_manage
+        events.get_pool = lambda: None
+        events.JumpsRepository = lambda _pool: _ManualAddFakeRepo()
+
+        async def _run_case():
+            view = events.Jump99kManualAddPickerView(session_id=99)
+            await view._on_cancel(_ManualAddFakeInteraction())
+
+        asyncio.run(_run_case())
+        assert captured["content"] == "Cancelled."
+    finally:
+        for name, value in originals.items():
+            setattr(events, name, value)

@@ -528,6 +528,10 @@ async def can_manage_99k_session(interaction: discord.Interaction, session: dict
     return host_role_id > 0 and any(int(role.id) == host_role_id for role in member.roles)
 
 
+async def _can_use_manual_add_controls(interaction: discord.Interaction, session: dict | None) -> bool:
+    return await can_manage_99k_session(interaction, session)
+
+
 async def assert99kHost(interaction: discord.Interaction, settings: dict | None) -> bool:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         embed = create_error_embed("Guild only", "This command can only be used in a server.")
