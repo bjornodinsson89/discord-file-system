@@ -6,7 +6,7 @@ from .base import RepositoryBase
 
 
 class UserTornIdentityCacheRepository(RepositoryBase):
-    async def get_identity(self, guild_id: int, discord_id: int) -> dict | None:
+    async def get_identity(self, guild_id: int, discord_id: int, trusted_only: bool = False) -> dict | None:
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -14,9 +14,11 @@ class UserTornIdentityCacheRepository(RepositoryBase):
                 FROM public.user_torn_identity_cache
                 WHERE guild_id = $1
                   AND discord_id = $2
+                  AND ($3::boolean = FALSE OR source IN ('api', 'nickname'))
                 """,
                 int(guild_id),
                 int(discord_id),
+                bool(trusted_only),
             )
         return dict(row) if row else None
 
@@ -78,3 +80,17 @@ class UserTornIdentityCacheRepository(RepositoryBase):
                 int(torn_user_id),
             )
         return dict(row) if row else None
+
+
+    async def delete_identity(self, guild_id: int, discord_id: int) -> bool:
+        async with self.acquire() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM public.user_torn_identity_cache
+                WHERE guild_id = $1
+                  AND discord_id = $2
+                """,
+                int(guild_id),
+                int(discord_id),
+            )
+        return result == "DELETE 1"
