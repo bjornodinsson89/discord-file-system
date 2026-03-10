@@ -208,8 +208,32 @@ class RafflePaymentService:
                 required_qty=expected_qty,
                 since_ts=since_ts,
                 until_ts=until_ts,
+                allow_implicit_creator_receiver=used_creator_logs,
             )
             if not match:
+                sender_match_count, sender_item_match_count, sender_item_time_match_count = self._summarize_payment_match_stages(
+                    logs=logs,
+                    sender_torn_id=buyer_torn_id,
+                    required_item_id=required_item_id,
+                    since_ts=since_ts,
+                    until_ts=until_ts,
+                )
+                log.info(
+                    "Raffle payment match miss entry_id=%s raffle_id=%s log_source=%s buyer_torn_id=%s creator_torn_id=%s required_item_id=%s required_qty=%s since_ts=%s until_ts=%s logs_scanned=%s sender_matches=%s sender_item_matches=%s sender_item_time_matches=%s",
+                    entry_id,
+                    entry.get("raffle_id"),
+                    "creator" if used_creator_logs else "buyer",
+                    buyer_torn_id,
+                    creator_torn_id,
+                    required_item_id,
+                    expected_qty,
+                    since_ts,
+                    until_ts,
+                    len(logs),
+                    sender_match_count,
+                    sender_item_match_count,
+                    sender_item_time_match_count,
+                )
                 return False, None, "Payment not found in Torn logs yet. Make sure items were sent to the raffle creator."
 
             verified = await self.repo.mark_entry_verified(entry_id)
@@ -261,6 +285,7 @@ class RafflePaymentService:
         required_qty: int,
         since_ts: int,
         until_ts: Optional[int],
+        allow_implicit_creator_receiver: bool = False,
     ) -> Optional[dict[str, Any]]:
         for entry in logs:
             raw_ts = entry.get("timestamp")
@@ -277,10 +302,50 @@ class RafflePaymentService:
             receiver = _torn_extract_receiver_id(entry)
             if sender != int(sender_torn_id):
                 continue
-            if receiver != int(creator_torn_id):
+            if allow_implicit_creator_receiver:
+                if receiver not in (0, int(creator_torn_id)):
+                    continue
+            elif receiver != int(creator_torn_id):
                 continue
             qty_sent = _torn_extract_item_qty(entry, required_item_id)
             if qty_sent >= required_qty:
                 return entry
 
         return None
+
+    def _summarize_payment_match_stages(
+        self,
+        *,
+        logs: list[dict[str, Any]],
+        sender_torn_id: int,
+        required_item_id: int,
+        since_ts: int,
+        until_ts: Optional[int],
+    ) -> tuple[int, int, int]:
+        sender_match_count = 0
+        sender_item_match_count = 0
+        sender_item_time_match_count = 0
+
+        for entry in logs:
+            sender = _torn_extract_sender_id(entry)
+            if sender != int(sender_torn_id):
+                continue
+            sender_match_count += 1
+
+            qty_sent = _torn_extract_item_qty(entry, required_item_id)
+            if qty_sent <= 0:
+                continue
+            sender_item_match_count += 1
+
+            raw_ts = entry.get("timestamp")
+            try:
+                ts = int(raw_ts or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts < since_ts:
+                continue
+            if until_ts is not None and ts > until_ts:
+                continue
+            sender_item_time_match_count += 1
+
+        return sender_match_count, sender_item_match_count, sender_item_time_match_count

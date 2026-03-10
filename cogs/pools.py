@@ -628,8 +628,29 @@ class PoolVerifyPaymentView(discord.ui.View):
             required_qty=total_cost,
             since_ts=since_ts,
             until_ts=now_ts,
+            allow_implicit_creator_receiver=creator_path_used,
         )
         if not match:
+            sender_match_count, sender_item_match_count, sender_item_time_match_count = verifier._summarize_payment_match_stages(
+                logs=logs,
+                sender_torn_id=buyer_torn_id,
+                required_item_id=206,
+                since_ts=since_ts,
+                until_ts=now_ts,
+            )
+            log.info(
+                "Pool payment match miss pool_id=%s buyer_discord_id=%s buyer_torn_id=%s creator_torn_id=%s required_qty=%s log_source=%s logs_scanned=%s sender_matches=%s sender_item_matches=%s sender_item_time_matches=%s",
+                self.pool_id,
+                interaction.user.id,
+                buyer_torn_id,
+                creator_torn_id,
+                total_cost,
+                "creator" if creator_path_used else "buyer",
+                len(logs),
+                sender_match_count,
+                sender_item_match_count,
+                sender_item_time_match_count,
+            )
             await interaction.followup.send(
                 f"❌ Payment not found. Send **💊 {total_cost} Xanax** to {creator_name} [{creator_torn_id}] in Torn, then press Verify again.",
                 ephemeral=True,
