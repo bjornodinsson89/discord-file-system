@@ -2376,12 +2376,6 @@ class Jump99kRosterPanelView(discord.ui.View):
             custom_id=f"99k_roster_refresh:{self.session_id}",
             row=0,
         )
-        view_btn = discord.ui.Button(
-            label="View roster",
-            style=discord.ButtonStyle.secondary,
-            custom_id=f"99k_roster_view:{self.session_id}",
-            row=0,
-        )
         host_controls_btn = discord.ui.Button(
             label="Host Controls",
             style=discord.ButtonStyle.primary,
@@ -2389,10 +2383,8 @@ class Jump99kRosterPanelView(discord.ui.View):
             row=0,
         )
         refresh_btn.callback = self._on_refresh
-        view_btn.callback = self._on_view
         host_controls_btn.callback = self._on_host_controls
         self.add_item(refresh_btn)
-        self.add_item(view_btn)
         self.add_item(host_controls_btn)
 
     async def _on_host_controls(self, interaction: discord.Interaction):
@@ -2440,16 +2432,6 @@ class Jump99kRosterPanelView(discord.ui.View):
             await interaction.followup.send("✅ Roster refreshed.", ephemeral=True)
         else:
             await interaction.followup.send("Roster refresh queued.", ephemeral=True)
-
-    async def _on_view(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            embed, _ = await build_roster_panel(self.session_id, interaction.channel)
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception:
-            log.exception("99k roster view failed session_id=%s", self.session_id)
-            await interaction.followup.send("Sorry—could not load the roster right now.", ephemeral=True)
-
 
 async def _grant_private_channel_access(guild: discord.Guild | None, session: dict, discord_id: int) -> None:
     if guild is None:
@@ -2605,69 +2587,6 @@ class Jump99kManualAddPickerView(discord.ui.View):
             if not ok:
                 await interaction.followup.send(msg, ephemeral=True)
                 return
-
-            if interaction.guild:
-                await _grant_private_channel_access(interaction.guild, session, int(selected.id))
-
-            missing_api_key = not bool((user_row or {}).get("encrypted_key") or (user_row or {}).get("api_key_encrypted"))
-            if missing_api_key:
-                private_channel_id = session.get("private_channel_id")
-                private_channel = None
-                if interaction.client and private_channel_id:
-                    try:
-                        private_channel = interaction.client.get_channel(int(private_channel_id)) or await interaction.client.fetch_channel(int(private_channel_id))
-                    except Exception:
-                        private_channel = None
-                if private_channel:
-                    try:
-                        await private_channel.send(
-                            f"{selected.mention} please run /set_api_key so the bot can poll your energy/cooldowns for readiness."
-                        )
-                    except Exception:
-                        log.exception("Manual add API key reminder failed in private channel session_id=%s user_id=%s", self.session_id, selected.id)
-
-                try:
-                    await selected.send(
-                        "You were manually added to a 99k session. Please run /set_api_key so the bot can poll your energy/cooldowns for readiness."
-                    )
-                except discord.Forbidden:
-                    log.debug("Manual add API key reminder DM blocked session_id=%s user_id=%s", self.session_id, selected.id)
-                except Exception:
-                    log.exception("Manual add API key reminder DM failed session_id=%s user_id=%s", self.session_id, selected.id)
-            else:
-                try:
-                    await _fetch_and_upsert_user_readiness_snapshot(
-                        repo=repo,
-                        users_repo=users_repo,
-                        session_id=self.session_id,
-                        guild_id=int(session.get("guild_id") or 0),
-                        discord_id=int(selected.id),
-                    )
-                except Exception:
-                    log.exception("Manual add one-off readiness refresh failed session_id=%s user_id=%s", self.session_id, selected.id)
-
-            roster_channel_id = session.get("roster_channel_id") or session.get("private_channel_id")
-            roster_message_id = session.get("roster_message_id")
-            if roster_channel_id and roster_message_id and interaction.client:
-                try:
-                    channel = interaction.client.get_channel(int(roster_channel_id)) or await interaction.client.fetch_channel(int(roster_channel_id))
-                    message = await channel.fetch_message(int(roster_message_id))
-                    embed, view = await build_roster_panel(self.session_id, channel)
-                    await message.edit(embed=embed, view=view)
-                except Exception:
-                    log.exception("Manual add roster refresh failed session_id=%s", self.session_id)
-
-            if interaction.client:
-                await _refresh_99k_panel(interaction.client, self.session_id)
-                await _refresh_roster_if_exists(interaction.client, self.session_id)
-
-            self._disable_controls()
-            await _safe_edit_original(interaction, content=f"✅ Added {selected.mention} to the jump.", view=self)
-            if missing_api_key:
-                await interaction.followup.send(
-                    f"Added {selected.mention}, but their Energy/Cooldowns will not populate until they set an API key.",
-                    ephemeral=True,
-                )
         except Exception:
             log.exception(
                 "Manual add select failed session_id=%s user_id=%s",
@@ -2681,6 +2600,98 @@ class Jump99kManualAddPickerView(discord.ui.View):
                 view=self,
             )
             return
+
+        had_post_add_failures = False
+
+        if interaction.guild:
+            try:
+                await _grant_private_channel_access(interaction.guild, session, int(selected.id))
+            except Exception:
+                had_post_add_failures = True
+                log.exception(
+                    "Manual add channel access grant failed session_id=%s user_id=%s",
+                    self.session_id,
+                    selected.id,
+                )
+
+        missing_api_key = not bool((user_row or {}).get("encrypted_key") or (user_row or {}).get("api_key_encrypted"))
+        if missing_api_key:
+            private_channel_id = session.get("private_channel_id")
+            private_channel = None
+            if interaction.client and private_channel_id:
+                try:
+                    private_channel = interaction.client.get_channel(int(private_channel_id)) or await interaction.client.fetch_channel(int(private_channel_id))
+                except Exception:
+                    private_channel = None
+            if private_channel:
+                try:
+                    await private_channel.send(
+                        f"{selected.mention} please run /set_api_key so the bot can poll your energy/cooldowns for readiness."
+                    )
+                except Exception:
+                    had_post_add_failures = True
+                    log.exception("Manual add private reminder failed session_id=%s user_id=%s", self.session_id, selected.id)
+
+            try:
+                await selected.send(
+                    "You were manually added to a 99k session. Please run /set_api_key so the bot can poll your energy/cooldowns for readiness."
+                )
+            except discord.Forbidden:
+                log.debug("Manual add API key reminder DM blocked session_id=%s user_id=%s", self.session_id, selected.id)
+            except Exception:
+                had_post_add_failures = True
+                log.exception("Manual add DM failed session_id=%s user_id=%s", self.session_id, selected.id)
+        else:
+            try:
+                await _fetch_and_upsert_user_readiness_snapshot(
+                    repo=repo,
+                    users_repo=users_repo,
+                    session_id=self.session_id,
+                    guild_id=int(session.get("guild_id") or 0),
+                    discord_id=int(selected.id),
+                )
+            except Exception:
+                had_post_add_failures = True
+                log.exception("Manual add readiness refresh failed session_id=%s user_id=%s", self.session_id, selected.id)
+
+        roster_channel_id = session.get("roster_channel_id") or session.get("private_channel_id")
+        roster_message_id = session.get("roster_message_id")
+        if roster_channel_id and roster_message_id and interaction.client:
+            try:
+                channel = interaction.client.get_channel(int(roster_channel_id)) or await interaction.client.fetch_channel(int(roster_channel_id))
+                message = await channel.fetch_message(int(roster_message_id))
+                embed, view = await build_roster_panel(self.session_id, channel)
+                await message.edit(embed=embed, view=view)
+            except Exception:
+                had_post_add_failures = True
+                log.exception("Manual add roster refresh failed session_id=%s user_id=%s", self.session_id, selected.id)
+
+        if interaction.client:
+            try:
+                await _refresh_99k_panel(interaction.client, self.session_id)
+            except Exception:
+                had_post_add_failures = True
+                log.exception("Manual add panel refresh failed session_id=%s user_id=%s", self.session_id, selected.id)
+            try:
+                await _refresh_roster_if_exists(interaction.client, self.session_id)
+            except Exception:
+                had_post_add_failures = True
+                log.exception("Manual add roster refresh failed session_id=%s user_id=%s", self.session_id, selected.id)
+
+        self._disable_controls()
+        success_message = f"✅ Added {selected.mention} to the jump."
+        if had_post_add_failures:
+            success_message += " Added user, but some follow-up updates could not be completed."
+        await _safe_edit_original(interaction, content=success_message, view=self)
+        if missing_api_key:
+            try:
+                await interaction.followup.send(
+                    f"Added {selected.mention}, but their Energy/Cooldowns will not populate until they set an API key.",
+                    ephemeral=True,
+                )
+            except Exception:
+                had_post_add_failures = True
+                log.exception("Manual add private reminder failed session_id=%s user_id=%s", self.session_id, selected.id)
 
 
 class Jump99kManageJumpersActionView(discord.ui.View):

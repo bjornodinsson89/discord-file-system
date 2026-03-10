@@ -153,10 +153,10 @@ def test_manual_remove_cannot_remove_host_or_in_progress_and_can_succeed():
     assert conn_ok.updated is True
 
 
-def test_public_roster_panel_has_only_three_buttons():
+def test_public_roster_panel_has_only_refresh_and_host_controls_buttons():
     events_py = __import__("pathlib").Path("cogs/events.py").read_text(encoding="utf-8")
     assert 'label="Refresh roster"' in events_py
-    assert 'label="View roster"' in events_py
+    assert 'label="View roster"' not in events_py
     assert 'label="Host Controls"' in events_py
     assert 'label="Manage"' not in events_py
 
@@ -211,3 +211,208 @@ def test_energy_rule_requires_seen_nonzero_then_four_lows():
         saw_nonzero_energy=saw, consecutive_low_energy_polls=lows, energy=0
     )
     assert (saw, lows, done) == (True, 4, True)
+
+
+class _ManualAddFakeRepo:
+    def __init__(self, *, add_result=(True, "ok"), add_raises: Exception | None = None):
+        self.add_result = add_result
+        self.add_raises = add_raises
+
+    async def get_session(self, _session_id: int):
+        return {"id": 99, "status": "open", "guild_id": 1}
+
+    async def manual_add_as_verified_signup(self, **_kwargs):
+        if self.add_raises is not None:
+            raise self.add_raises
+        return self.add_result
+
+
+class _ManualAddFakeUsersRepo:
+    async def get_user_api_key(self, _discord_id: int):
+        return {"encrypted_key": "k", "torn_user_id": 1, "torn_name": "name"}
+
+
+class _ManualAddFakeSelectedUser:
+    id = 123
+    mention = "<@123>"
+
+    async def send(self, _msg: str):
+        return None
+
+
+class _ManualAddFakeFollowup:
+    def __init__(self):
+        self.messages = []
+
+    async def send(self, content=None, **kwargs):
+        self.messages.append((content, kwargs))
+
+
+class _ManualAddFakeInteractionUser:
+    id = 555
+
+
+class _ManualAddFakeInteraction:
+    def __init__(self):
+        self.user = _ManualAddFakeInteractionUser()
+        self.guild_id = 1
+        self.guild = object()
+        self.client = None
+        self.followup = _ManualAddFakeFollowup()
+
+
+def test_manual_add_success_survives_post_add_side_effect_failure():
+    from cogs import events
+
+    captured = {}
+
+    async def _fake_safe_defer_ephemeral(_interaction):
+        return None
+
+    async def _fake_safe_edit_original(_interaction, *, content=None, embed=None, view=None):
+        captured["content"] = content
+        captured["view"] = view
+
+    async def _fake_can_use_manual_add_controls(_interaction, _session):
+        return True
+
+    async def _fail_grant_access(_guild, _session, _discord_id):
+        raise RuntimeError("boom")
+
+    _missing = object()
+    original_can_use = getattr(events, "_can_use_manual_add_controls", _missing)
+    originals = {
+        "_safe_defer_ephemeral": events._safe_defer_ephemeral,
+        "_safe_edit_original": events._safe_edit_original,
+        "_grant_private_channel_access": events._grant_private_channel_access,
+        "JumpsRepository": events.JumpsRepository,
+        "UsersRepository": events.UsersRepository,
+        "get_pool": events.get_pool,
+    }
+    try:
+        events._safe_defer_ephemeral = _fake_safe_defer_ephemeral
+        events._safe_edit_original = _fake_safe_edit_original
+        events._can_use_manual_add_controls = _fake_can_use_manual_add_controls
+        events._grant_private_channel_access = _fail_grant_access
+        events.get_pool = lambda: None
+        events.JumpsRepository = lambda _pool: _ManualAddFakeRepo()
+        events.UsersRepository = lambda _pool: _ManualAddFakeUsersRepo()
+
+        async def _run_case():
+            view = events.Jump99kManualAddPickerView(session_id=99)
+            view.user_select = type("_Select", (), {"values": [_ManualAddFakeSelectedUser()]})()
+            interaction = _ManualAddFakeInteraction()
+            await view._on_select_user(interaction)
+            return interaction
+
+        _ = asyncio.run(_run_case())
+
+        assert captured["content"].startswith("✅ Added <@123> to the jump.")
+        assert "follow-up updates could not be completed" in captured["content"]
+    finally:
+        for name, value in originals.items():
+            setattr(events, name, value)
+        if original_can_use is _missing:
+            delattr(events, "_can_use_manual_add_controls")
+        else:
+            events._can_use_manual_add_controls = original_can_use
+
+
+def test_manual_add_preserves_business_logic_failure_message():
+    from cogs import events
+
+    captured = {}
+
+    async def _fake_safe_defer_ephemeral(_interaction):
+        return None
+
+    async def _fake_safe_edit_original(_interaction, *, content=None, embed=None, view=None):
+        captured["content"] = content
+
+    async def _fake_can_use_manual_add_controls(_interaction, _session):
+        return True
+
+    _missing = object()
+    original_can_use = getattr(events, "_can_use_manual_add_controls", _missing)
+    originals = {
+        "_safe_defer_ephemeral": events._safe_defer_ephemeral,
+        "_safe_edit_original": events._safe_edit_original,
+        "JumpsRepository": events.JumpsRepository,
+        "UsersRepository": events.UsersRepository,
+        "get_pool": events.get_pool,
+    }
+    try:
+        events._safe_defer_ephemeral = _fake_safe_defer_ephemeral
+        events._safe_edit_original = _fake_safe_edit_original
+        events._can_use_manual_add_controls = _fake_can_use_manual_add_controls
+        events.get_pool = lambda: None
+        events.JumpsRepository = lambda _pool: _ManualAddFakeRepo(add_result=(False, "Session full."))
+        events.UsersRepository = lambda _pool: _ManualAddFakeUsersRepo()
+
+        async def _run_case():
+            view = events.Jump99kManualAddPickerView(session_id=99)
+            view.user_select = type("_Select", (), {"values": [_ManualAddFakeSelectedUser()]})()
+            interaction = _ManualAddFakeInteraction()
+            await view._on_select_user(interaction)
+            return interaction
+
+        interaction = asyncio.run(_run_case())
+
+        assert interaction.followup.messages[0][0] == "Session full."
+        assert captured == {}
+    finally:
+        for name, value in originals.items():
+            setattr(events, name, value)
+        if original_can_use is _missing:
+            delattr(events, "_can_use_manual_add_controls")
+        else:
+            events._can_use_manual_add_controls = original_can_use
+
+
+def test_manual_add_generic_failure_only_for_unexpected_critical_error():
+    from cogs import events
+
+    captured = {}
+
+    async def _fake_safe_defer_ephemeral(_interaction):
+        return None
+
+    async def _fake_safe_edit_original(_interaction, *, content=None, embed=None, view=None):
+        captured["content"] = content
+
+    async def _fake_can_use_manual_add_controls(_interaction, _session):
+        return True
+
+    _missing = object()
+    original_can_use = getattr(events, "_can_use_manual_add_controls", _missing)
+    originals = {
+        "_safe_defer_ephemeral": events._safe_defer_ephemeral,
+        "_safe_edit_original": events._safe_edit_original,
+        "JumpsRepository": events.JumpsRepository,
+        "UsersRepository": events.UsersRepository,
+        "get_pool": events.get_pool,
+    }
+    try:
+        events._safe_defer_ephemeral = _fake_safe_defer_ephemeral
+        events._safe_edit_original = _fake_safe_edit_original
+        events._can_use_manual_add_controls = _fake_can_use_manual_add_controls
+        events.get_pool = lambda: None
+        events.JumpsRepository = lambda _pool: _ManualAddFakeRepo(add_raises=RuntimeError("db boom"))
+        events.UsersRepository = lambda _pool: _ManualAddFakeUsersRepo()
+
+        async def _run_case():
+            view = events.Jump99kManualAddPickerView(session_id=99)
+            view.user_select = type("_Select", (), {"values": [_ManualAddFakeSelectedUser()]})()
+            interaction = _ManualAddFakeInteraction()
+            await view._on_select_user(interaction)
+
+        asyncio.run(_run_case())
+
+        assert captured["content"] == "Sorry—could not add that user. Please try again."
+    finally:
+        for name, value in originals.items():
+            setattr(events, name, value)
+        if original_can_use is _missing:
+            delattr(events, "_can_use_manual_add_controls")
+        else:
+            events._can_use_manual_add_controls = original_can_use
