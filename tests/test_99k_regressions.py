@@ -19,6 +19,7 @@ def test_roster_refresh_uses_repost_helper():
         in events_py
     )
     assert "await _refresh_99k_panel(interaction.client, self.session_id)" in events_py
+    assert "async def _refresh_stored_roster_panel_message" in events_py
 
 
 def test_needs_cleanup_status_is_allowed_by_migration_and_repo_queries():
@@ -74,12 +75,35 @@ def test_roster_panel_host_controls_does_not_edit_original_message():
 
 def test_roster_refresh_uses_single_roster_refresh_path():
     events_py = Path("cogs/events.py").read_text(encoding="utf-8")
-    on_refresh_block = events_py.split("async def _on_refresh", 1)[1].split(
-        "async def _grant_private_channel_access", 1
+    roster_view_block = events_py.split("class Jump99kRosterPanelView", 1)[1].split(
+        "async def _end_99k_session_via_shared_flow", 1
     )[0]
+    on_refresh_block = roster_view_block.split("async def _on_refresh", 1)[1]
 
     assert "_refresh_or_repost_roster_panel" in on_refresh_block
     assert "_refresh_roster_if_exists" not in on_refresh_block
+
+
+def test_roster_refresh_reposts_only_when_stored_message_missing():
+    events_py = Path("cogs/events.py").read_text(encoding="utf-8")
+    helper_block = events_py.split("async def _refresh_or_repost_roster_panel", 1)[1].split(
+        "async def _session_jump_started", 1
+    )[0]
+
+    assert 'if refresh_status == "refreshed":' in helper_block
+    assert 'if refresh_status == "error":' in helper_block
+    assert "await repo.set_roster_panel_message(" in helper_block
+
+
+def test_delete_button_and_command_share_end_flow():
+    events_py = Path("cogs/events.py").read_text(encoding="utf-8")
+
+    assert "async def _end_99k_session_via_shared_flow(" in events_py
+    assert "await _end_99k_session_via_shared_flow(" in events_py
+    confirm_block = events_py.split("class Jump99kDeleteConfirmView", 1)[1].split(
+        "class Jump99kUserControlsView", 1
+    )[0]
+    assert "close_session_and_record" not in confirm_block
 
 
 def test_session_setup_does_not_auto_post_host_controls_message():

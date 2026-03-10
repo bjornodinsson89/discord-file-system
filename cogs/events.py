@@ -2267,16 +2267,17 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
     return embed, roster_text
 
 
-async def _refresh_roster_if_exists(bot_client: commands.Bot, session_id: int) -> None:
+async def _refresh_stored_roster_panel_message(bot_client: commands.Bot, session_id: int, *, session: dict | None = None) -> str:
     repo = JumpsRepository(get_pool())
-    session = await repo.get_session(session_id)
+    if session is None:
+        session = await repo.get_session(int(session_id))
     if not session:
-        return
+        return "missing_session"
 
     roster_channel_id = session.get("roster_channel_id") or session.get("private_channel_id")
     roster_message_id = session.get("roster_message_id")
     if not roster_channel_id or not roster_message_id:
-        return
+        return "missing_reference"
 
     guild = bot_client.get_guild(int(session["guild_id"]))
 
@@ -2289,12 +2290,20 @@ async def _refresh_roster_if_exists(bot_client: commands.Bot, session_id: int) -
                 channel = await bot_client.fetch_channel(int(roster_channel_id))
         roster_message = await channel.fetch_message(int(roster_message_id))
         await _refresh_roster_panel(int(session_id), channel, roster_message)
+        return "refreshed"
     except (discord.NotFound, discord.Forbidden):
         await repo.clear_roster_panel_message(int(session_id))
+        return "missing_message"
     except discord.HTTPException:
         log.warning("Roster refresh HTTPException for session=%s", session_id)
+        return "error"
     except Exception:
         log.exception("Failed to refresh roster panel for session=%s", session_id)
+        return "error"
+
+
+async def _refresh_roster_if_exists(bot_client: commands.Bot, session_id: int) -> None:
+    await _refresh_stored_roster_panel_message(bot_client, int(session_id))
 
 
 async def _refresh_or_repost_roster_panel(bot_client: commands.Bot, session_id: int) -> bool:
@@ -2303,19 +2312,11 @@ async def _refresh_or_repost_roster_panel(bot_client: commands.Bot, session_id: 
     if not session:
         return False
 
-    roster_channel_id = session.get("roster_channel_id") or session.get("private_channel_id")
-    roster_message_id = session.get("roster_message_id")
-
-    if roster_channel_id and roster_message_id:
-        try:
-            channel = bot_client.get_channel(int(roster_channel_id)) or await bot_client.fetch_channel(int(roster_channel_id))
-            roster_message = await channel.fetch_message(int(roster_message_id))
-            await _refresh_roster_panel(int(session_id), channel, roster_message)
-            return True
-        except (discord.NotFound, discord.Forbidden):
-            await repo.clear_roster_panel_message(int(session_id))
-        except Exception:
-            log.exception("Failed to refresh existing roster panel for session=%s", session_id)
+    refresh_status = await _refresh_stored_roster_panel_message(bot_client, int(session_id), session=session)
+    if refresh_status == "refreshed":
+        return True
+    if refresh_status == "error":
+        return False
 
     private_channel_id = session.get("private_channel_id")
     if not private_channel_id:
@@ -2335,6 +2336,22 @@ async def _refresh_or_repost_roster_panel(bot_client: commands.Bot, session_id: 
     except Exception:
         log.exception("Failed to re-post roster panel for session=%s", session_id)
         return False
+
+
+async def _session_jump_started(repo: JumpsRepository, session_id: int) -> bool:
+    state = _automation_state(int(session_id))
+    if bool(state.get("running")):
+        return True
+    progress = await repo.get_jump_progress(int(session_id))
+    host = progress.get("host") or {}
+    host_state = str(host.get("state") or "waiting")
+    if host.get("started_at") or host_state in {"in_progress", "done"}:
+        return True
+    for row in progress.get("signups") or []:
+        row_state = str(row.get("state") or "waiting")
+        if row.get("started_at") or row_state in {"in_progress", "done"}:
+            return True
+    return False
 
 
 async def _safe_defer_ephemeral(interaction: discord.Interaction) -> None:
@@ -2436,6 +2453,100 @@ class Jump99kRosterPanelView(discord.ui.View):
             await interaction.followup.send("✅ Roster refreshed.", ephemeral=True)
         else:
             await interaction.followup.send("Roster refresh queued.", ephemeral=True)
+
+
+async def _end_99k_session_via_shared_flow(
+    interaction: discord.Interaction,
+    *,
+    session: dict,
+    actor_discord_id: int,
+) -> tuple[bool, list[str]]:
+    repo = JumpsRepository(get_pool())
+
+    if session.get("status") == "open":
+        rows = await repo.list_signups(int(session["id"]))
+        completed_ids = [int(r["discord_id"]) for r in rows if r.get("status") == "paid"]
+        ok = await repo.close_session_and_record(
+            session_id=int(session["id"]),
+            guild_id=int(interaction.guild_id),
+            completed_discord_ids=completed_ids,
+            not_completed_discord_ids=[],
+        )
+        if not ok:
+            return False, [f"Could not close session #{int(session['id'])}."]
+
+    perm_report = validate_99k_permissions(
+        interaction.guild,
+        bot.user,
+        signup_channel_id=int(session.get("announce_channel_id") or 0) or None,
+        announce_channel_id=int(session.get("announce_channel_id") or 0) or None,
+        private_category_id=int(session.get("private_channel_id") or 0) or None,
+    )
+    missing_lines = []
+    for cname, ch in perm_report.get("channels", {}).items():
+        missing = ch.get("missing_permissions", [])
+        if missing:
+            missing_lines.append(f"{cname}: {', '.join(missing)}")
+
+    if interaction.client:
+        await _refresh_roster_if_exists(interaction.client, int(session["id"]))
+        await _disable_99k_session_messages(interaction.client, session, status_text="Session closed")
+
+    def _result_line(label: str, result: tuple[bool, str]) -> str:
+        success, reason = result
+        if success:
+            return f"{label}: ✅"
+        return f"{label}: ❌ ({reason})"
+
+    session_id = int(session["id"])
+    announce_channel_id, announce_message_id = get_announce_ids(session)
+    private_channel_id = int(session["private_channel_id"]) if session.get("private_channel_id") else None
+    roster_channel_id = int(session["roster_channel_id"]) if session.get("roster_channel_id") else None
+    roster_message_id = int(session["roster_message_id"]) if session.get("roster_message_id") else None
+    host_controls_channel_id = int(session["host_controls_channel_id"]) if session.get("host_controls_channel_id") else None
+    host_controls_message_id = int(session["host_controls_message_id"]) if session.get("host_controls_message_id") else None
+
+    signup_panel_result = await delete_message_safe(interaction.guild, announce_channel_id, announce_message_id, f"99k session {session_id} ended", {"session_id": session_id})
+    roster_panel_channel_id = roster_channel_id or private_channel_id
+    roster_result = await delete_message_safe(interaction.guild, roster_panel_channel_id, roster_message_id, f"99k session {session_id} ended", {"session_id": session_id})
+    host_controls_result = await delete_message_safe(interaction.guild, host_controls_channel_id, host_controls_message_id, f"99k session {session_id} ended", {"session_id": session_id})
+    channel_result = await delete_channel_safe(interaction.guild, private_channel_id, f"99k session {session_id} ended", {"session_id": session_id})
+
+    if signup_panel_result[0]:
+        await repo.clear_announcement_message(session_id)
+    if roster_result[0]:
+        await repo.clear_roster_panel_message(session_id)
+    if host_controls_result[0]:
+        await repo.clear_host_controls_message(session_id)
+    if channel_result[0]:
+        await repo.clear_private_channel_only(session_id)
+
+    cleanup_complete = signup_panel_result[0] and roster_result[0] and host_controls_result[0] and channel_result[0]
+    if not signup_panel_result[0]:
+        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_message", channel_id=announce_channel_id, message_id=announce_message_id, error=signup_panel_result[1])
+    if not roster_result[0]:
+        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_message", channel_id=roster_panel_channel_id, message_id=roster_message_id, error=roster_result[1])
+    if not host_controls_result[0]:
+        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_message", channel_id=host_controls_channel_id, message_id=host_controls_message_id, error=host_controls_result[1])
+    if not channel_result[0]:
+        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_channel", channel_id=private_channel_id, message_id=None, error=channel_result[1])
+    if cleanup_complete:
+        await repo.mark_cleaned(session_id)
+
+    summary_lines = [
+        f"Ended session #{session['id']}.",
+        _result_line("Signup panel removed", signup_panel_result),
+        _result_line("Roster panel removed", roster_result),
+        _result_line("Host controls removed", host_controls_result),
+        _result_line("Private channel deleted", channel_result),
+    ]
+    if not cleanup_complete:
+        summary_lines.append("Cleanup incomplete; fix permissions and run /99k end again to retry.")
+    if missing_lines:
+        summary_lines.append("Permission warnings:\n" + "\n".join(missing_lines))
+
+    log_event(log, logging.INFO, "jump99k.end", guild_id=interaction.guild_id, session_id=session_id, user_id=actor_discord_id, action="end", result="ok" if cleanup_complete else "partial")
+    return True, summary_lines
 
 async def _grant_private_channel_access(guild: discord.Guild | None, session: dict, discord_id: int) -> None:
     if guild is None:
@@ -2677,7 +2788,7 @@ class Jump99kManualAddPickerView(discord.ui.View):
                 had_post_add_failures = True
                 log.exception("Manual add panel refresh failed session_id=%s user_id=%s", self.session_id, selected.id)
             try:
-                await _refresh_roster_if_exists(interaction.client, self.session_id)
+                await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
             except Exception:
                 had_post_add_failures = True
                 log.exception("Manual add roster refresh failed session_id=%s user_id=%s", self.session_id, selected.id)
@@ -2819,7 +2930,6 @@ class Jump99kManualRemovePickerView(discord.ui.View):
         if interaction.client:
             await _refresh_99k_panel(interaction.client, self.session_id)
             await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
-            await _refresh_roster_if_exists(interaction.client, self.session_id)
 
         try:
             await _revoke_private_channel_access(interaction.guild, session, removed_discord_id)
@@ -2926,7 +3036,6 @@ class Jump99kHostControlsView(discord.ui.View):
 
         if interaction.client:
             await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
-            await _refresh_roster_if_exists(interaction.client, self.session_id)
             await _refresh_99k_panel(interaction.client, self.session_id)
         await _safe_edit_original(interaction, content="✅ Jump automation running.", view=None)
 
@@ -2963,19 +3072,14 @@ class Jump99kDeleteConfirmView(discord.ui.View):
         if not session or int(interaction.user.id) != int(session.get("host_discord_id") or 0):
             await _safe_edit_original(interaction, content="Only the jump host can use these controls.", view=None)
             return
-        rows = await repo.list_signups(int(self.session_id))
-        completed_ids = [int(r["discord_id"]) for r in rows if r.get("status") == "paid"]
-        ok = await repo.close_session_and_record(
-            session_id=int(self.session_id),
-            guild_id=int(session.get("guild_id") or 0),
-            completed_discord_ids=completed_ids,
-            not_completed_discord_ids=[],
+        ok, _summary_lines = await _end_99k_session_via_shared_flow(
+            interaction,
+            session=session,
+            actor_discord_id=int(interaction.user.id),
         )
         if not ok:
-            await _safe_edit_original(interaction, content="Could not close session.", view=None)
+            await _safe_edit_original(interaction, content=f"Could not close session #{self.session_id}.", view=None)
             return
-        if interaction.client:
-            await _disable_99k_session_messages(interaction.client, session, status_text="Session closed")
         await _safe_edit_original(interaction, content="✅ Jump deleted.", view=None)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
@@ -2997,7 +3101,7 @@ class Jump99kUserControlsView(discord.ui.View):
             repo = JumpsRepository(db.pool)
             ok = await repo.cancel_signup(session_id=self.session_id, discord_id=interaction.user.id)
             await _refresh_99k_panel(interaction.client, self.session_id)
-            await _refresh_roster_if_exists(interaction.client, self.session_id)
+            await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
             if ok:
                 await interaction.followup.send("You’ve been removed.", ephemeral=True)
             else:
@@ -3153,7 +3257,7 @@ class Jump99kUserControlsView(discord.ui.View):
             if interaction.guild:
                 await _grant_private_channel_access(interaction.guild, session, interaction.user.id)
             await _refresh_99k_panel(interaction.client, self.session_id)
-            await _refresh_roster_if_exists(interaction.client, self.session_id)
+            await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
             await interaction.followup.send(
                 "✅ Payment verified for this 99k session.",
                 view=InsuranceOfferView(self.session_id, interaction.user.id),
@@ -3927,92 +4031,17 @@ async def jump99k_end(interaction: discord.Interaction, jump_id: int):
         )
         return
 
-    if session.get("status") == "open":
-        rows = await repo.list_signups(int(session["id"]))
-        completed_ids = [int(r["discord_id"]) for r in rows if r.get("status") == "paid"]
-        ok = await repo.close_session_and_record(
-            session_id=int(session["id"]),
-            guild_id=int(interaction.guild_id),
-            completed_discord_ids=completed_ids,
-            not_completed_discord_ids=[],
-        )
-        if not ok:
-            await interaction.followup.send(
-                embed=create_error_embed("Could not close", f"Could not close session #{int(session['id'])}."),
-                ephemeral=True,
-            )
-            return
-
-    perm_report = validate_99k_permissions(
-        interaction.guild,
-        bot.user,
-        signup_channel_id=int(session.get("announce_channel_id") or 0) or None,
-        announce_channel_id=int(session.get("announce_channel_id") or 0) or None,
-        private_category_id=int(session.get("private_channel_id") or 0) or None,
+    ok, summary_lines = await _end_99k_session_via_shared_flow(
+        interaction,
+        session=session,
+        actor_discord_id=int(interaction.user.id),
     )
-    missing_lines = []
-    for cname, ch in perm_report.get("channels", {}).items():
-        missing = ch.get("missing_permissions", [])
-        if missing:
-            missing_lines.append(f"{cname}: {', '.join(missing)}")
-
-    await _refresh_roster_if_exists(interaction.client, int(session["id"]))
-    await _disable_99k_session_messages(interaction.client, session, status_text="Session closed")
-
-    def _result_line(label: str, result: tuple[bool, str]) -> str:
-        success, reason = result
-        if success:
-            return f"{label}: ✅"
-        return f"{label}: ❌ ({reason})"
-
-    session_id = int(session["id"])
-    announce_channel_id, announce_message_id = get_announce_ids(session)
-    private_channel_id = int(session["private_channel_id"]) if session.get("private_channel_id") else None
-    roster_channel_id = int(session["roster_channel_id"]) if session.get("roster_channel_id") else None
-    roster_message_id = int(session["roster_message_id"]) if session.get("roster_message_id") else None
-    host_controls_channel_id = int(session["host_controls_channel_id"]) if session.get("host_controls_channel_id") else None
-    host_controls_message_id = int(session["host_controls_message_id"]) if session.get("host_controls_message_id") else None
-
-    signup_panel_result = await delete_message_safe(interaction.guild, announce_channel_id, announce_message_id, f"99k session {session_id} ended", {"session_id": session_id})
-    roster_panel_channel_id = roster_channel_id or private_channel_id
-    roster_result = await delete_message_safe(interaction.guild, roster_panel_channel_id, roster_message_id, f"99k session {session_id} ended", {"session_id": session_id})
-    host_controls_result = await delete_message_safe(interaction.guild, host_controls_channel_id, host_controls_message_id, f"99k session {session_id} ended", {"session_id": session_id})
-    channel_result = await delete_channel_safe(interaction.guild, private_channel_id, f"99k session {session_id} ended", {"session_id": session_id})
-
-    if signup_panel_result[0]:
-        await repo.clear_announcement_message(session_id)
-    if roster_result[0]:
-        await repo.clear_roster_panel_message(session_id)
-    if host_controls_result[0]:
-        await repo.clear_host_controls_message(session_id)
-    if channel_result[0]:
-        await repo.clear_private_channel_only(session_id)
-
-    cleanup_complete = signup_panel_result[0] and roster_result[0] and host_controls_result[0] and channel_result[0]
-    if not signup_panel_result[0]:
-        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_message", channel_id=announce_channel_id, message_id=announce_message_id, error=signup_panel_result[1])
-    if not roster_result[0]:
-        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_message", channel_id=roster_panel_channel_id, message_id=roster_message_id, error=roster_result[1])
-    if not host_controls_result[0]:
-        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_message", channel_id=host_controls_channel_id, message_id=host_controls_message_id, error=host_controls_result[1])
-    if not channel_result[0]:
-        await repo.enqueue_cleanup_task(guild_id=int(interaction.guild_id), session_id=session_id, task_type="delete_channel", channel_id=private_channel_id, message_id=None, error=channel_result[1])
-    if cleanup_complete:
-        await repo.mark_cleaned(session_id)
-
-    summary_lines = [
-        f"Ended session #{session['id']}.",
-        _result_line("Signup panel removed", signup_panel_result),
-        _result_line("Roster panel removed", roster_result),
-        _result_line("Host controls removed", host_controls_result),
-        _result_line("Private channel deleted", channel_result),
-    ]
-    if not cleanup_complete:
-        summary_lines.append("Cleanup incomplete; fix permissions and run /99k end again to retry.")
-    if missing_lines:
-        summary_lines.append("Permission warnings:\n" + "\n".join(missing_lines))
-
-    log_event(log, logging.INFO, "jump99k.end", guild_id=interaction.guild_id, session_id=session_id, user_id=interaction.user.id, action="end", result="ok" if cleanup_complete else "partial")
+    if not ok:
+        await interaction.followup.send(
+            embed=create_error_embed("Could not close", summary_lines[0]),
+            ephemeral=True,
+        )
+        return
 
     await interaction.followup.send(
         embed=create_success_embed("99k session ended", "\n".join(summary_lines)),
@@ -4490,7 +4519,7 @@ async def before_cleanup_retry_worker():
     await sleep_startup_jitter("cleanup_retry_worker")
 
 
-@tasks.loop(seconds=15)
+@tasks.loop(seconds=3)
 async def roster_panel_refresh_worker():
     if not await _worker_db_ready("roster_panel_refresh_worker"):
         return
@@ -4502,24 +4531,11 @@ async def roster_panel_refresh_worker():
         sessions = await repo.list_active_sessions_with_roster_panel()
         for session in sessions:
             session_id = int(session["id"])
-            roster_channel_id = session.get("roster_channel_id")
-            roster_message_id = session.get("roster_message_id")
-            if not roster_channel_id or not roster_message_id:
+            jump_started = await _session_jump_started(repo, session_id)
+            if jump_started:
                 continue
-
             try:
-                channel = bot.get_channel(int(roster_channel_id))
-                if channel is None:
-                    channel = await bot.fetch_channel(int(roster_channel_id))
-
-                message = await channel.fetch_message(int(roster_message_id))
-                embed, view = await build_roster_panel(session_id, channel)
-                await message.edit(embed=embed, view=view)
-                await repo.touch_roster_refreshed(session_id)
-            except (discord.NotFound, discord.Forbidden):
-                await repo.clear_roster_panel_message(session_id)
-            except discord.HTTPException:
-                log.warning("Roster auto-refresh HTTPException session=%s", session_id)
+                await _refresh_or_repost_roster_panel(bot, session_id)
             except Exception:
                 log.exception("Roster auto-refresh failed session=%s", session_id)
             finally:
@@ -4537,7 +4553,7 @@ async def before_roster_panel_refresh_worker():
     await sleep_startup_jitter("roster_panel_refresh_worker")
 
 
-@tasks.loop(seconds=5)
+@tasks.loop(seconds=3)
 async def readiness_worker():
     if not await _worker_db_ready("readiness_worker"):
         return
@@ -4551,9 +4567,6 @@ async def readiness_worker():
         torn_api = get_torn_api()
         security = get_security_manager()
         now = datetime.now(timezone.utc)
-
-        active_seconds = max(10, int(getattr(config, "READINESS_REFRESH_ACTIVE_SECONDS", 30) or 30))
-        hot_seconds = max(5, min(active_seconds, int(getattr(config, "READINESS_REFRESH_HOT_SECONDS", 10) or 10)))
 
         active_sessions: dict[int, dict] = {}
         for guild in bot.guilds:
@@ -4571,6 +4584,8 @@ async def readiness_worker():
             next_due = _READINESS_SESSION_NEXT_DUE.get(session_id)
             if next_due and next_due > now:
                 continue
+
+            jump_started = await _session_jump_started(repo, session_id)
 
             signups = await repo.list_signups(session_id)
             participant_ids = {int(session.get("host_discord_id") or 0)}
@@ -4659,23 +4674,11 @@ async def readiness_worker():
 
             readiness_after_rows = await repo.list_readiness(session_id)
             readiness_after = {int(r.get("discord_id") or 0): str(r.get("status_text") or "") for r in readiness_after_rows}
-
-            active_non_finished = []
-            progress = await repo.get_jump_progress(session_id)
-            progress_by_discord = {int(r.get("discord_id") or 0): str(r.get("state") or "waiting") for r in (progress.get("signups") or [])}
-            for discord_id in active_signup_ids:
-                if progress_by_discord.get(discord_id) != "done":
-                    active_non_finished.append(discord_id)
-
-            all_ready = _all_active_non_finished_ready(
-                active_non_finished_discord_ids=active_non_finished,
-                readiness_rows=readiness_after_rows,
-            )
-            next_seconds = _readiness_poll_seconds(all_active_non_finished_ready=all_ready, active_seconds=active_seconds, hot_seconds=hot_seconds)
+            next_seconds = 3 if jump_started else 15
             _READINESS_SESSION_NEXT_DUE[session_id] = datetime.now(timezone.utc) + timedelta(seconds=next_seconds)
 
             if readiness_before != readiness_after and bot:
-                await _refresh_roster_if_exists(bot, session_id)
+                await _refresh_or_repost_roster_panel(bot, session_id)
     except Exception as e:
         log.error(f"Readiness worker error: {e}", exc_info=True)
     finally:
@@ -4756,7 +4759,7 @@ async def jump_automation_worker():
                     channel = guild.get_channel(channel_id)
                     if channel:
                         await safe_send_channel(channel, "✅ Jump session complete.")
-        await _refresh_roster_if_exists(bot, int(session_id))
+        await _refresh_or_repost_roster_panel(bot, int(session_id))
 
 
 @jump_automation_worker.before_loop
@@ -4897,7 +4900,7 @@ async def auto_verify_99k_payments():
                 if guild and session:
                     await _grant_private_channel_access(guild, session, participant_id)
                     await _refresh_99k_panel(bot, session_id)
-                    await _refresh_roster_if_exists(bot, session_id)
+                    await _refresh_or_repost_roster_panel(bot, session_id)
             except Exception as entry_err:
                 log.warning(
                     "Auto verify failed for signup %s/%s: %s",
