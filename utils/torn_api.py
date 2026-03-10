@@ -603,7 +603,11 @@ class TornAPIClient:
             )
         except TornAPIError as exc:
             lowered = str(exc).lower()
-            if "incorrect id" in lowered or "not officially verified" in lowered or "no discord" in lowered:
+            if (
+                "incorrect id" in lowered
+                or "not officially verified" in lowered
+                or "no discord" in lowered
+            ):
                 return None
             raise
 
