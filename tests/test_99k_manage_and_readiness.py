@@ -578,7 +578,11 @@ class _TransitionFakeUsersRepo:
 def test_jump_transition_notification_uses_required_torn_identity_and_ping():
     session = {"host_discord_id": 10}
     roster_rows = [
-        {"discord_id": 10, "participant_torn_user_id": 3666214, "participant_torn_name": "BjornOdinnsson89"},
+        {
+            "discord_id": 10,
+            "participant_torn_user_id": 3666214,
+            "participant_torn_name": "BjornOdinnsson89",
+        },
         {"discord_id": 11, "participant_torn_user_id": 1234567, "participant_torn_name": "Papanad"},
     ]
     users_repo = _TransitionFakeUsersRepo()
