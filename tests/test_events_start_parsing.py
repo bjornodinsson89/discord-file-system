@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -85,3 +85,25 @@ def test_parse_optional_session_start_falls_back_when_host_timezone_invalid():
     assert aware == datetime(2026, 2, 20, 17, 30, tzinfo=timezone.utc)
     assert scheduled == f"<t:{int(aware.timestamp())}:F>"
     assert used_fallback is True
+
+
+def test_parse_optional_session_start_omitted_year_stays_current_year_for_past_dates():
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(days=1)
+    aware, _, used_fallback = _parse_optional_session_start(
+        f"{past.month:02d}-{past.day:02d} {past.hour:02d}:{past.minute:02d}",
+        {},
+        host_timezone_name="UTC",
+    )
+    assert aware.year == now.year
+    assert used_fallback is False
+
+
+def test_parse_optional_session_start_explicit_year_is_preserved():
+    aware, _, used_fallback = _parse_optional_session_start(
+        "2026-01-15 11:00",
+        {},
+        host_timezone_name="UTC",
+    )
+    assert aware == datetime(2026, 1, 15, 11, 0, tzinfo=timezone.utc)
+    assert used_fallback is False

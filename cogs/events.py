@@ -261,17 +261,6 @@ def _parse_optional_session_start(raw_value: str, _settings: dict, *, host_timez
     except ValueError as exc:
         raise ValueError("invalid start") from exc
 
-    if not year_text:
-        local_now = now_utc.astimezone(parse_timezone)
-        if aware_local < (local_now - timedelta(minutes=5)):
-            next_year = local_now.year + 1
-            while next_year <= local_now.year + 4:
-                try:
-                    aware_local = aware_local.replace(year=next_year)
-                    break
-                except ValueError:
-                    next_year += 1
-
     aware_utc = aware_local.astimezone(timezone.utc)
     unix_ts = int(aware_utc.timestamp())
     return aware_utc, f"<t:{unix_ts}:F>", used_utc_fallback
@@ -2561,7 +2550,14 @@ async def _end_99k_session_via_shared_flow(
     host_controls_channel_id = int(session["host_controls_channel_id"]) if session.get("host_controls_channel_id") else None
     host_controls_message_id = int(session["host_controls_message_id"]) if session.get("host_controls_message_id") else None
 
-    signup_panel_result = await delete_message_safe(interaction.guild, announce_channel_id, announce_message_id, f"99k session {session_id} ended", {"session_id": session_id})
+    signup_panel_result = await _delete_99k_signup_panel_with_fallback(
+        guild=interaction.guild,
+        bot_user_id=int(interaction.client.user.id) if interaction.client and interaction.client.user else None,
+        session_id=session_id,
+        announce_channel_id=announce_channel_id,
+        announce_message_id=announce_message_id,
+        reason=f"99k session {session_id} ended",
+    )
     roster_panel_channel_id = roster_channel_id or private_channel_id
     roster_result = await delete_message_safe(interaction.guild, roster_panel_channel_id, roster_message_id, f"99k session {session_id} ended", {"session_id": session_id})
     host_controls_result = await delete_message_safe(interaction.guild, host_controls_channel_id, host_controls_message_id, f"99k session {session_id} ended", {"session_id": session_id})
@@ -2602,6 +2598,56 @@ async def _end_99k_session_via_shared_flow(
 
     log_event(log, logging.INFO, "jump99k.end", guild_id=interaction.guild_id, session_id=session_id, user_id=actor_discord_id, action="end", result="ok" if cleanup_complete else "partial")
     return True, summary_lines
+
+
+async def _delete_99k_signup_panel_with_fallback(
+    *,
+    guild: discord.Guild,
+    bot_user_id: int | None,
+    session_id: int,
+    announce_channel_id: int | None,
+    announce_message_id: int | None,
+    reason: str,
+) -> tuple[bool, str]:
+    result = await delete_message_safe(
+        guild,
+        announce_channel_id,
+        announce_message_id,
+        reason,
+        {"session_id": session_id},
+    )
+
+    should_fallback_lookup = announce_channel_id and announce_message_id and result[1] == "already_deleted"
+    if not should_fallback_lookup:
+        return result
+
+    try:
+        channel = guild.get_channel(int(announce_channel_id)) or await guild.fetch_channel(int(announce_channel_id))
+    except Exception:
+        return result
+
+    if not hasattr(channel, "history"):
+        return result
+
+    marker = f"Session #{int(session_id)}"
+    try:
+        async for msg in channel.history(limit=50):
+            if bot_user_id and int(getattr(getattr(msg, "author", None), "id", 0) or 0) != int(bot_user_id):
+                continue
+            content = str(getattr(msg, "content", "") or "")
+            if "99k Happy Jump" not in content or marker not in content:
+                continue
+            try:
+                await msg.delete(reason=reason)
+            except TypeError:
+                await msg.delete()
+            return True, "ok"
+    except (discord.Forbidden, discord.HTTPException):
+        return False, "fallback_lookup_failed"
+    except Exception:
+        return result
+
+    return result
 
 async def _grant_private_channel_access(guild: discord.Guild | None, session: dict, discord_id: int) -> None:
     if guild is None:
@@ -4812,7 +4858,7 @@ async def jump_automation_worker():
                             previous_discord_id=active_discord_id,
                             next_discord_id=int(next_id),
                         )
-                        await safe_send_channel(channel, content)
+                        await safe_send_channel(guild, int(channel_id), content=content)
             else:
                 state["running"] = False
                 state["paused"] = False
@@ -4821,7 +4867,7 @@ async def jump_automation_worker():
                     channel_id = int(session.get("private_channel_id") or session.get("roster_channel_id") or 0)
                     channel = guild.get_channel(channel_id)
                     if channel:
-                        await safe_send_channel(channel, "✅ Jump session complete.")
+                        await safe_send_channel(guild, int(channel_id), content="✅ Jump session complete.")
         await _refresh_or_repost_roster_panel(bot, int(session_id))
 
 
