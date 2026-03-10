@@ -13,6 +13,7 @@ from repositories.users import UsersRepository
 from services.raffle_payment import RafflePaymentService
 from services.payment_receipts import PaymentReceiptService
 from services.logging_utils import log_event
+from services.torn_identity import resolve_buyer_identity_for_paid_feature
 from utils import GuildSettingsRepository, get_database, get_security_manager, get_torn_api, require_api_key
 from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
 from utils.advisory_lock import run_with_advisory_lock
@@ -896,25 +897,34 @@ async def _reserve_raffle_tickets(
             return
     # PAID ENTRY
     users_repo = UsersRepository(get_pool())
-    if not await require_api_key(interaction, get_database(), "enter a raffle"):
-        return
-    buyer_key = await users_repo.get_user_api_key(interaction.user.id)
-    if not buyer_key or not buyer_key.get("torn_user_id"):
-        await _send_error("❌ Could not resolve your linked Torn account. Run `/set api key` to register it.")
-        return
     creator_discord_id = int(raffle["creator_discord_id"])
     creator_key = await users_repo.get_user_api_key(creator_discord_id)
     creator_torn_id = int(raffle.get("creator_torn_id") or (creator_key or {}).get("torn_user_id") or 0)
     creator_name = str((creator_key or {}).get("torn_name") or "").strip() or "User"
-    if not creator_torn_id:
-        await _send_error("❌ Raffle creator Torn ID is not configured. Please contact an admin.")
+    if not creator_torn_id or not creator_key or not creator_key.get("encrypted_key"):
+        await _send_error("❌ Raffle creator Torn verification key is not configured. Please contact an admin.")
         return
+
+    if interaction.guild is None:
+        await _send_error("❌ Paid raffle entries are only available in servers.")
+        return
+
+    identity, resolve_error = await resolve_buyer_identity_for_paid_feature(
+        guild=interaction.guild,
+        buyer_discord_id=int(interaction.user.id),
+        creator_discord_id=creator_discord_id,
+        db=get_database(),
+    )
+    if not identity:
+        await _send_error(f"❌ {resolve_error}")
+        return
+
     reserved_until = datetime.utcnow() + timedelta(minutes=5)
     try:
         entry = await repo.reserve_entry(
             raffle_id=raffle_id,
             discord_id=interaction.user.id,
-            torn_user_id=int(buyer_key["torn_user_id"]),
+            torn_user_id=int(identity.torn_user_id),
             num_tickets=quantity,
             reserved_until=reserved_until
         )
@@ -939,7 +949,7 @@ async def _reserve_raffle_tickets(
         )
         embed.add_field(
             name="💳 How to Pay",
-            value="📨 Send items via Torn, bot will auto-detect. Click '✅ Verify Now' to check early.",
+            value="📨 Send items via Torn to the raffle creator, then click '✅ Verify Now' to check early.",
             inline=False
         )
         view = PaymentVerificationView(raffle_id, entry["entry_id"], repo, manual=True)

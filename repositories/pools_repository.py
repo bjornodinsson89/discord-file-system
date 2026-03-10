@@ -193,3 +193,104 @@ class PoolsRepository(RepositoryBase):
                 """
             )
         return [dict(row) for row in rows]
+
+    async def create_or_replace_pending_purchase(
+        self,
+        pool_id: int,
+        guild_id: int,
+        buyer_discord_id: int,
+        buyer_torn_user_id: int,
+        buyer_torn_name: str | None,
+        identity_source: str,
+        quantity: int,
+        total_cost_xanax: int,
+        reserved_until,
+    ) -> dict:
+        async with self.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE public.xanax_pool_pending_purchases
+                    SET verified_at = NOW(),
+                        updated_at = NOW()
+                    WHERE pool_id = $1
+                      AND buyer_discord_id = $2
+                      AND verified_at IS NULL
+                    """,
+                    int(pool_id),
+                    int(buyer_discord_id),
+                )
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO public.xanax_pool_pending_purchases (
+                        pool_id,
+                        guild_id,
+                        buyer_discord_id,
+                        buyer_torn_user_id,
+                        buyer_torn_name,
+                        identity_source,
+                        quantity,
+                        total_cost_xanax,
+                        reserved_until,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+                    RETURNING *
+                    """,
+                    int(pool_id),
+                    int(guild_id),
+                    int(buyer_discord_id),
+                    int(buyer_torn_user_id),
+                    buyer_torn_name,
+                    identity_source,
+                    int(quantity),
+                    int(total_cost_xanax),
+                    reserved_until,
+                )
+        return dict(row)
+
+    async def get_pending_purchase(self, pool_id: int, buyer_discord_id: int) -> dict | None:
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT *
+                FROM public.xanax_pool_pending_purchases
+                WHERE pool_id = $1
+                  AND buyer_discord_id = $2
+                  AND verified_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                int(pool_id),
+                int(buyer_discord_id),
+            )
+        return dict(row) if row else None
+
+    async def mark_pending_purchase_verified(self, pending_id: int) -> bool:
+        async with self.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE public.xanax_pool_pending_purchases
+                SET verified_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = $1
+                  AND verified_at IS NULL
+                """,
+                int(pending_id),
+            )
+        return result == "UPDATE 1"
+
+    async def delete_expired_pending_purchases(self) -> int:
+        async with self.acquire() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM public.xanax_pool_pending_purchases
+                WHERE verified_at IS NULL
+                  AND reserved_until < NOW()
+                """
+            )
+        try:
+            return int(str(result).split()[-1])
+        except Exception:
+            return 0
