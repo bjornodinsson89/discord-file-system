@@ -2194,6 +2194,61 @@ def _visible_jump_state(state: str) -> str:
     return "Waiting"
 
 
+def _format_jump_torn_identity(*, torn_name: str | None, torn_user_id: int | None, fallback_name: str) -> str:
+    name = str(torn_name or "").strip()
+    torn_id = int(torn_user_id or 0)
+    fallback = str(fallback_name or "").strip() or "User"
+    if name and torn_id > 0:
+        return f"{name}[{torn_id}]"
+    if name:
+        return name
+    if torn_id > 0:
+        return f"{fallback}[{torn_id}]"
+    return fallback
+
+
+async def _build_jump_transition_notification(
+    *,
+    users_repo: UsersRepository,
+    session: dict,
+    roster_rows: list[dict],
+    previous_discord_id: int,
+    next_discord_id: int,
+) -> str:
+    host_discord_id = int(session.get("host_discord_id") or 0)
+    roster_by_discord_id: dict[int, dict] = {
+        int(row.get("discord_id") or 0): row
+        for row in roster_rows
+    }
+
+    async def _resolve_torn_identity(discord_id: int) -> str:
+        fallback_name = f"User {int(discord_id)}"
+        roster_row = roster_by_discord_id.get(int(discord_id), {})
+        torn_name = str(roster_row.get("participant_torn_name") or "").strip() or None
+        torn_user_id = int(roster_row.get("participant_torn_user_id") or roster_row.get("torn_user_id") or 0)
+
+        if (not torn_name or torn_user_id <= 0) and int(discord_id) == host_discord_id:
+            user_row = await users_repo.get_user_api_key(int(discord_id))
+            if user_row:
+                if not torn_name:
+                    torn_name = str(user_row.get("torn_name") or "").strip() or None
+                if torn_user_id <= 0:
+                    torn_user_id = int(user_row.get("torn_user_id") or 0)
+
+        return _format_jump_torn_identity(
+            torn_name=torn_name,
+            torn_user_id=torn_user_id,
+            fallback_name=fallback_name,
+        )
+
+    previous_identity = await _resolve_torn_identity(int(previous_discord_id))
+    next_identity = await _resolve_torn_identity(int(next_discord_id))
+    return (
+        f"{previous_identity} is finished, <@{int(next_discord_id)}> {next_identity} "
+        f"use poison mistletoe on {previous_identity} and begin your jump"
+    )
+
+
 async def _load_automation_roster(repo: JumpsRepository, session_id: int) -> tuple[dict, list[dict], list[dict]]:
     session = await repo.get_session(session_id)
     signups = await repo.list_roster_signups_with_readiness(session_id)
@@ -4749,7 +4804,15 @@ async def jump_automation_worker():
                     channel_id = int(session.get("private_channel_id") or session.get("roster_channel_id") or 0)
                     channel = guild.get_channel(channel_id)
                     if channel:
-                        await safe_send_channel(channel, f"<@{int(next_id)}> use poison mistletoe on <@{active_discord_id}>, then begin your jump.")
+                        roster_rows = await repo.list_roster_signups_with_readiness(int(session_id))
+                        content = await _build_jump_transition_notification(
+                            users_repo=users_repo,
+                            session=session,
+                            roster_rows=roster_rows,
+                            previous_discord_id=active_discord_id,
+                            next_discord_id=int(next_id),
+                        )
+                        await safe_send_channel(channel, content)
             else:
                 state["running"] = False
                 state["paused"] = False

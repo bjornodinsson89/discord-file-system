@@ -5,6 +5,7 @@ from cogs.events import (
     _readiness_poll_seconds,
     _list_removable_signups,
     _apply_energy_poll,
+    _build_jump_transition_notification,
 )
 from repositories.jumps import JumpsRepository
 
@@ -564,3 +565,60 @@ def test_manual_add_cancel_uses_manage_permissions_without_nameerror():
     finally:
         for name, value in originals.items():
             setattr(events, name, value)
+
+
+class _TransitionFakeUsersRepo:
+    def __init__(self, rows_by_discord_id: dict[int, dict] | None = None):
+        self.rows_by_discord_id = rows_by_discord_id or {}
+
+    async def get_user_api_key(self, discord_id: int):
+        return self.rows_by_discord_id.get(int(discord_id))
+
+
+def test_jump_transition_notification_uses_required_torn_identity_and_ping():
+    session = {"host_discord_id": 10}
+    roster_rows = [
+        {"discord_id": 10, "participant_torn_user_id": 3666214, "participant_torn_name": "BjornOdinnsson89"},
+        {"discord_id": 11, "participant_torn_user_id": 1234567, "participant_torn_name": "Papanad"},
+    ]
+    users_repo = _TransitionFakeUsersRepo()
+
+    message = asyncio.run(
+        _build_jump_transition_notification(
+            users_repo=users_repo,
+            session=session,
+            roster_rows=roster_rows,
+            previous_discord_id=10,
+            next_discord_id=11,
+        )
+    )
+
+    assert "BjornOdinnsson89[3666214] is finished" in message
+    assert "<@11>" in message
+    assert "Papanad[1234567]" in message
+    assert "use poison mistletoe on BjornOdinnsson89[3666214] and begin your jump" in message
+
+
+def test_jump_transition_notification_falls_back_when_torn_fields_missing():
+    session = {"host_discord_id": 10}
+    roster_rows = [
+        {"discord_id": 10},
+        {"discord_id": 11, "participant_torn_name": "NextOnlyName"},
+    ]
+    users_repo = _TransitionFakeUsersRepo(
+        rows_by_discord_id={10: {"torn_name": "HostFromApi", "torn_user_id": 999}}
+    )
+
+    message = asyncio.run(
+        _build_jump_transition_notification(
+            users_repo=users_repo,
+            session=session,
+            roster_rows=roster_rows,
+            previous_discord_id=10,
+            next_discord_id=11,
+        )
+    )
+
+    assert "HostFromApi[999] is finished" in message
+    assert "<@11>" in message
+    assert "NextOnlyName use poison mistletoe" in message
