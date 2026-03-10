@@ -346,7 +346,9 @@ def test_manual_add_preserves_business_logic_failure_message():
         events._safe_edit_original = _fake_safe_edit_original
         events._can_use_manual_add_controls = _fake_can_use_manual_add_controls
         events.get_pool = lambda: None
-        events.JumpsRepository = lambda _pool: _ManualAddFakeRepo(add_result=(False, "Session full."))
+        events.JumpsRepository = lambda _pool: _ManualAddFakeRepo(
+            add_result=(False, "Session full.")
+        )
         events.UsersRepository = lambda _pool: _ManualAddFakeUsersRepo()
 
         async def _run_case():
@@ -397,7 +399,9 @@ def test_manual_add_generic_failure_only_for_unexpected_critical_error():
         events._safe_edit_original = _fake_safe_edit_original
         events._can_use_manual_add_controls = _fake_can_use_manual_add_controls
         events.get_pool = lambda: None
-        events.JumpsRepository = lambda _pool: _ManualAddFakeRepo(add_raises=RuntimeError("db boom"))
+        events.JumpsRepository = lambda _pool: _ManualAddFakeRepo(
+            add_raises=RuntimeError("db boom")
+        )
         events.UsersRepository = lambda _pool: _ManualAddFakeUsersRepo()
 
         async def _run_case():
