@@ -382,6 +382,7 @@ class SetupPanelView(OwnerView):
             f"Raffle purchase panel: {channel_name('raffle_purchase_channel_id')}\n"
             f"Raffle giveaway purchase panel: {channel_name('raffle_giveaway_purchase_channel_id')}\n"
             f"Jewelry alert: {channel_name('jewelry_alert_channel_id')}\n"
+            f"Who Can Jump panel: {channel_name('who_can_jump_channel_id')}\n"
             f"Insurance: {channel_name('insurance_channel_id')}\n"
             f"Applications category: {channel_name('applications_category_id')}\n"
             f"Applications admin inbox: {channel_name('applications_admin_inbox_channel_id')}\n"
@@ -650,7 +651,7 @@ def _channels_embed() -> discord.Embed:
         "- **Raffle announcement channel**: where new raffle announcements are posted.\n"
         "- **Raffle purchase panel channel**: where paid raffle purchase panels are posted.\n"
         "- **Raffle giveaway purchase panel channel**: where giveaway raffle panels are posted (falls back to raffle purchase panel channel).\n"
-        "- **Jewelry alert channel**: where the bot posts “Jewlery store wide open” shoplifting window alerts.",
+        "- **Jewelry alert channel**: where the bot posts “Jewlery store wide open” shoplifting window alerts.\n- **Who Can Jump panel channel**: where the bot maintains the live host readiness board.",
     )
 
 
@@ -745,6 +746,7 @@ class ChannelsViewPage4(BackView):
         self.remove_item(self.back_btn)
         self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Set insurance requests channel", row=0))
         self.add_item(ChannelSelect(self.panel, "jewelry_alert_channel_id", "Set jewelry alert channel", row=1))
+        self.add_item(ChannelSelect(self.panel, "who_can_jump_channel_id", "Set Who Can Jump panel channel", row=2))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
