@@ -225,7 +225,10 @@ def test_collect_rows_uses_live_helper_not_snapshot_path(monkeypatch):
             def __init__(self, members):
                 self.members = members
 
-        guild = SimpleNamespace(id=99, get_role=lambda _rid: _Role([_Member(11, "Host A"), _Member(12, "Bot", bot=True)]))
+        guild = SimpleNamespace(
+            id=99,
+            get_role=lambda _rid: _Role([_Member(11, "Host A"), _Member(12, "Bot", bot=True)]),
+        )
 
         calls = {"live": 0}
 
@@ -329,7 +332,9 @@ def test_fetch_who_can_jump_readiness_error_mapping(monkeypatch):
             async def get_user_data(self, *_args, **_kwargs):
                 raise events.TornAPIRateLimitError("rate limited")
 
-        missing = await events._fetch_who_can_jump_readiness(users_repo=_UsersRepo(None), discord_id=1, guild_id=1)
+        missing = await events._fetch_who_can_jump_readiness(
+            users_repo=_UsersRepo(None), discord_id=1, guild_id=1
+        )
         assert missing["status_text"] == "API key missing"
         assert missing["has_api_key"] is False
 
