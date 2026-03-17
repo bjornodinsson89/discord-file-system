@@ -97,6 +97,10 @@ class FreeRaffleModal(discord.ui.Modal, title="Giveaway"):
             public_view = self.cog.public_view(raffle_id)
             public_message = await interaction.channel.send(embed=embed, view=public_view)
             await repo.set_message_id(raffle_id, int(public_message.id))
+            interaction.client.dispatch(
+                "giveaway_started",
+                {"guild_id": int(interaction.guild_id), "giveaway_id": raffle_id, "id": raffle_id},
+            )
 
             host_view = self.cog.host_controls_view(raffle_id)
             await interaction.followup.send(
@@ -341,7 +345,7 @@ class FreeRaffleCog(commands.Cog):
                 await self._send_ephemeral(interaction, "Raffle is not active.")
                 return
 
-            inserted = await repo.add_entry(raffle_id, int(interaction.user.id))
+            inserted = await repo.add_entry_with_source(raffle_id, int(interaction.user.id), entry_source="button", entry_weight=1, dedupe_key=None)
             if inserted:
                 interaction.client.dispatch(
                     "giveaway_joined",

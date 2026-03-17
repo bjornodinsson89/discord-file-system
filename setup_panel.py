@@ -1613,6 +1613,10 @@ class EngagementEventXPView(BackView):
     async def auto_entry_toggle(self, interaction: discord.Interaction, _: discord.ui.Button):
         await self.panel.save_engagement_changes(interaction, {"auto_entry_giveaways_enabled": not bool(self.panel.engagement_settings.get("auto_entry_giveaways_enabled", True))})
 
+    @discord.ui.button(label="Next →", style=discord.ButtonStyle.secondary, row=4)
+    async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Reward roles"), EngagementRolesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def custom_back(self, interaction: discord.Interaction, _: discord.ui.Button):
         await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Chat/Voice/Reaction settings"), EngagementChatVoiceReactionView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
@@ -1636,3 +1640,27 @@ async def send_setup_panel(interaction: discord.Interaction, db) -> None:
     engagement_settings = await EngagementRepository(db.pool).get_or_create_guild_settings(interaction.guild.id)
     panel = SetupPanelView(owner_id=interaction.user.id, db=db, settings=settings, guild=interaction.guild, engagement_settings=engagement_settings)
     await interaction.response.send_message(embed=panel._build_embed(), view=panel, ephemeral=True)
+
+
+class EngagementRolesView(BackView):
+    @discord.ui.button(label="Manage level roles", style=discord.ButtonStyle.primary, row=0)
+    async def manage_level_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_message("Use engagement role reward configuration tools to manage level roles.", ephemeral=True)
+
+    @discord.ui.button(label="Manage prize roles", style=discord.ButtonStyle.primary, row=1)
+    async def manage_prize_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_message("Use engagement role reward configuration tools to manage prize roles.", ephemeral=True)
+
+    @discord.ui.button(label="Sync all reward roles", style=discord.ButtonStyle.primary, row=2)
+    async def sync_all_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_message("Run /engagement sync_roles to sync all reward roles.", ephemeral=True)
+
+    @discord.ui.button(label="Seed default reward ladder", style=discord.ButtonStyle.primary, row=3)
+    async def seed_default_reward_ladder(self, interaction: discord.Interaction, _: discord.ui.Button):
+        repo = EngagementRepository(self.db.pool)
+        await repo.seed_default_reward_ladders(interaction.guild.id)
+        await interaction.response.send_message("Default reward ladders seeded if they were missing.", ephemeral=True)
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
+    async def custom_back(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Event XP settings"), EngagementEventXPView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
