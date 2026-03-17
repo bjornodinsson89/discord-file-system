@@ -20,7 +20,27 @@ class StoreService:
             torn_item_id=item.get("torn_item_id"), torn_item_name=item.get("torn_item_name")
         )
 
-    async def redeem_item(self, *, guild: discord.Guild, user: discord.Member, item_id: int) -> tuple[dict | None, str | None]:
+    async def _refund_role_redemption_failure(
+        self,
+        *,
+        guild_id: int,
+        redemption_id: int,
+        actor_user_id: int,
+        reason: str,
+    ) -> None:
+        await self.refund_redemption(
+            guild_id=guild_id,
+            redemption_id=redemption_id,
+            admin_user_id=actor_user_id,
+            notes=reason,
+        )
+
+    async def redeem_item(
+        self, *, guild: discord.Guild, user: discord.Member, item_id: int
+    ) -> tuple[dict | None, str | None]:
+        role_id_for_grant: int | None = None
+        redemption: dict | None = None
+
         async with self.repo.acquire() as conn:
             async with conn.transaction():
                 settings = await self.repo.upsert_guild_settings_with_conn(conn, guild.id)
@@ -31,9 +51,13 @@ class StoreService:
                 if not item or not bool(item.get("is_active")):
                     return None, "That store item is not available."
 
-                if item.get("category") == "torn_item" and not bool(settings.get("torn_item_store_enabled", True)):
+                if item.get("category") == "torn_item" and not bool(
+                    settings.get("torn_item_store_enabled", True)
+                ):
                     return None, "Torn item store is currently disabled."
-                if item.get("category") == "discord_perk" and not bool(settings.get("discord_perk_store_enabled", True)):
+                if item.get("category") == "discord_perk" and not bool(
+                    settings.get("discord_perk_store_enabled", True)
+                ):
                     return None, "Discord perk store is currently disabled."
 
                 stock = item.get("stock")
@@ -42,16 +66,13 @@ class StoreService:
 
                 max_per_user = item.get("max_per_user")
                 if max_per_user is not None:
-                    existing = await self.repo.count_user_redemptions_for_item(guild.id, user.id, item_id, conn=conn)
+                    existing = await self.repo.count_user_redemptions_for_item(
+                        guild.id, user.id, item_id, conn=conn
+                    )
                     if existing >= int(max_per_user):
                         return None, "You reached the max redemptions for this item."
 
                 fulfillment_type = str(item.get("fulfillment_type") or "admin_manual")
-                status = "pending"
-                fulfilled_by = None
-                fulfilled_at = None
-                notes = None
-
                 if fulfillment_type == "discord_role":
                     role_id = int(item.get("discord_role_id") or 0)
                     role = guild.get_role(role_id) if role_id else None
@@ -59,14 +80,7 @@ class StoreService:
                         return None, "Configured role for this perk no longer exists."
                     if role in user.roles:
                         return None, "You already have that role."
-                    try:
-                        await user.add_roles(role, reason=f"Store redemption item #{item_id}")
-                    except Exception:
-                        return None, "Failed to grant role. Please contact an admin."
-                    status = "fulfilled"
-                    fulfilled_by = user.id
-                    fulfilled_at = datetime.now(timezone.utc)
-                    notes = "Role granted automatically"
+                    role_id_for_grant = role_id
 
                 redemption = await self.repo.create_redemption(
                     conn=conn,
@@ -75,11 +89,11 @@ class StoreService:
                     store_item_id=item_id,
                     token_cost=int(item.get("token_cost") or 0),
                     quantity=1,
-                    status=status,
+                    status="pending",
                     fulfillment_type=fulfillment_type,
-                    fulfilled_by=fulfilled_by,
-                    fulfilled_at=fulfilled_at,
-                    notes=notes,
+                    fulfilled_by=None,
+                    fulfilled_at=None,
+                    notes=None,
                 )
 
                 spent = await self.token_service.spend_store_tokens(
@@ -97,12 +111,68 @@ class StoreService:
                 if stock is not None:
                     await self.repo.adjust_stock(guild.id, item_id, -1, conn=conn)
 
-                return redemption, None
+        if redemption is None:
+            return None, "Failed to create redemption."
 
-    async def fulfill_redemption(self, *, guild_id: int, redemption_id: int, admin_user_id: int, notes: str | None = None) -> tuple[dict | None, str | None]:
+        if role_id_for_grant is None:
+            return redemption, None
+
+        role = guild.get_role(int(role_id_for_grant))
+        if role is None:
+            await self._refund_role_redemption_failure(
+                guild_id=guild.id,
+                redemption_id=int(redemption["id"]),
+                actor_user_id=user.id,
+                reason="Auto-refund: configured Discord role no longer exists",
+            )
+            return None, "Configured role for this perk no longer exists."
+
+        if role in user.roles:
+            await self._refund_role_redemption_failure(
+                guild_id=guild.id,
+                redemption_id=int(redemption["id"]),
+                actor_user_id=user.id,
+                reason="Auto-refund: member already had role before assignment",
+            )
+            return None, "You already have that role."
+
+        try:
+            await user.add_roles(role, reason=f"Store redemption item #{item_id}")
+        except Exception:
+            await self._refund_role_redemption_failure(
+                guild_id=guild.id,
+                redemption_id=int(redemption["id"]),
+                actor_user_id=user.id,
+                reason="Auto-refund: Discord role assignment failed",
+            )
+            return None, "Failed to grant role. No tokens were charged."
+
+        updated, err = await self.fulfill_redemption(
+            guild_id=guild.id,
+            redemption_id=int(redemption["id"]),
+            admin_user_id=user.id,
+            notes="Role granted automatically",
+        )
+        if err:
+            return (
+                redemption,
+                "Role granted, but fulfillment status update failed. Please contact an admin.",
+            )
+        return updated, None
+
+    async def fulfill_redemption(
+        self,
+        *,
+        guild_id: int,
+        redemption_id: int,
+        admin_user_id: int,
+        notes: str | None = None,
+    ) -> tuple[dict | None, str | None]:
         async with self.repo.acquire() as conn:
             async with conn.transaction():
-                redemption = await self.repo.get_redemption(guild_id, redemption_id, conn=conn, for_update=True)
+                redemption = await self.repo.get_redemption(
+                    guild_id, redemption_id, conn=conn, for_update=True
+                )
                 if not redemption:
                     return None, "Redemption not found."
                 if redemption.get("status") != "pending":
@@ -118,16 +188,27 @@ class StoreService:
                 )
                 return updated, None
 
-    async def refund_redemption(self, *, guild_id: int, redemption_id: int, admin_user_id: int, notes: str | None = None) -> tuple[dict | None, str | None]:
+    async def refund_redemption(
+        self,
+        *,
+        guild_id: int,
+        redemption_id: int,
+        admin_user_id: int,
+        notes: str | None = None,
+    ) -> tuple[dict | None, str | None]:
         async with self.repo.acquire() as conn:
             async with conn.transaction():
-                redemption = await self.repo.get_redemption(guild_id, redemption_id, conn=conn, for_update=True)
+                redemption = await self.repo.get_redemption(
+                    guild_id, redemption_id, conn=conn, for_update=True
+                )
                 if not redemption:
                     return None, "Redemption not found."
                 if redemption.get("status") not in {"pending", "fulfilled"}:
                     return None, "Redemption cannot be refunded."
 
-                item = await self.repo.get_item(guild_id, int(redemption["store_item_id"]), conn=conn, for_update=True)
+                item = await self.repo.get_item(
+                    guild_id, int(redemption["store_item_id"]), conn=conn, for_update=True
+                )
                 if item and item.get("stock") is not None:
                     await self.repo.adjust_stock(guild_id, int(item["id"]), +1, conn=conn)
 
@@ -154,7 +235,9 @@ class StoreService:
                 )
                 return updated, None
 
-    async def post_admin_redemption_message(self, guild: discord.Guild, redemption: dict, item: dict) -> str | None:
+    async def post_admin_redemption_message(
+        self, guild: discord.Guild, redemption: dict, item: dict
+    ) -> str | None:
         settings = await self.repo.get_or_create_guild_settings(guild.id)
         channel_id = int(settings.get("fulfillment_channel_id") or 0)
         if not channel_id:

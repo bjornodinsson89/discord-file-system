@@ -33,12 +33,15 @@ class _Role:
 
 
 class _Member:
-    def __init__(self, uid: int, roles=None, fail_add: bool = False):
+    def __init__(self, uid: int, roles=None, fail_add: bool = False, on_add=None):
         self.id = uid
         self.roles = list(roles or [])
         self._fail_add = fail_add
+        self._on_add = on_add
 
     async def add_roles(self, role, reason=None):
+        if self._on_add is not None:
+            self._on_add()
         if self._fail_add:
             raise RuntimeError("no perms")
         if role not in self.roles:
@@ -112,18 +115,21 @@ class _FakeStoreRepo:
 
 
 class _FakeTokenSvc:
-    def __init__(self, *, allow_spend: bool = True):
+    def __init__(self, *, allow_spend: bool = True, events=None):
         self.allow_spend = allow_spend
         self.spent = 0
         self.refunded = 0
+        self.events = events if events is not None else []
 
     async def spend_store_tokens(self, *, amount: int, **_kwargs):
+        self.events.append("spend")
         if not self.allow_spend:
             raise ValueError("insufficient prize token balance")
         self.spent += amount
         return True
 
     async def refund_store_tokens(self, *, amount: int, **_kwargs):
+        self.events.append("refund")
         self.refunded += amount
         return True
 
@@ -317,3 +323,40 @@ def test_setup_store_persistence_path_uses_store_guild_settings():
     assert "save_store_changes" in src
     assert "upsert_guild_settings" in src
     assert "store_settings" in src
+
+
+def test_discord_role_redemption_charges_before_role_grant_and_refunds_on_grant_failure():
+    async def _run():
+        role = _Role(77)
+        guild = _Guild(1, roles=[role])
+        item = {
+            "id": 1,
+            "name": "VIP",
+            "category": "discord_perk",
+            "token_cost": 3,
+            "stock": 2,
+            "is_active": True,
+            "fulfillment_type": "discord_role",
+            "discord_role_id": 77,
+        }
+
+        events = []
+        token = _FakeTokenSvc(events=events)
+
+        def _on_add():
+            events.append("add_role")
+
+        repo = _FakeStoreRepo(item=item)
+        service = StoreService(repo, token)
+        member = _Member(10, fail_add=True, on_add=_on_add)
+
+        redemption, err = await service.redeem_item(guild=guild, user=member, item_id=1)
+        assert redemption is None
+        assert "no tokens were charged" in str(err).lower()
+        assert events[0] == "spend"
+        assert events[1] == "add_role"
+        assert events[2] == "refund"
+        assert token.spent == 3
+        assert token.refunded == 3
+
+    asyncio.run(_run())
