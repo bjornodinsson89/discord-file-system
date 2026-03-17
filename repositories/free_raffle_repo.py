@@ -413,3 +413,31 @@ class FreeRaffleRepository(RepositoryBase):
                 """
             )
             return int(result.split()[-1])
+
+    async def cleanup_departed_member(self, guild_id: int, user_id: int) -> dict[str, int]:
+        async with self.acquire() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM free_raffle_entries e
+                USING free_raffles r
+                WHERE e.raffle_id = r.id
+                  AND r.guild_id = $1
+                  AND e.discord_id = $2
+                """,
+                guild_id,
+                user_id,
+            )
+            return {"free_raffle_entries": int(str(result).split()[-1])}
+
+    async def list_guild_participant_user_ids(self, guild_id: int) -> set[int]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT e.discord_id
+                FROM free_raffle_entries e
+                JOIN free_raffles r ON r.id = e.raffle_id
+                WHERE r.guild_id = $1
+                """,
+                guild_id,
+            )
+            return {int(r["discord_id"]) for r in rows if int(r["discord_id"] or 0) > 0}

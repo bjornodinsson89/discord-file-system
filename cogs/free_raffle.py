@@ -14,6 +14,7 @@ from utils import get_database, require_api_key
 from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
 from utils.advisory_lock import run_with_advisory_lock
 from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
+from utils.panel_edit_safety import PANEL_EDIT_SAFETY
 from views.free_raffle_views import EnterRaffleView, HostControlsView
 from utils.embeds import clamp_percent, format_remaining_time, render_text_progress_bar
 
@@ -316,7 +317,13 @@ class FreeRaffleCog(commands.Cog):
                 host_discord_id=int(raffle["host_discord_id"]),
                 status=str(raffle.get("status") or ""),
             )
-            await message.edit(embed=embed, view=view)
+            await PANEL_EDIT_SAFETY.request_edit(
+                message,
+                embed=embed,
+                view=view,
+                min_interval_seconds=5,
+                force=str(raffle.get("status") or "").lower() != "active",
+            )
         except Exception as exc:
             log.error(
                 "Failed refreshing free raffle message: raffle_id=%s channel_id=%s message_id=%s error_type=%s error=%s",
@@ -367,7 +374,13 @@ class FreeRaffleCog(commands.Cog):
                             host_discord_id=int(refreshed_raffle["host_discord_id"]),
                             status=str(refreshed_raffle.get("status") or ""),
                         )
-                        await interaction.message.edit(embed=embed, view=view)
+                        await PANEL_EDIT_SAFETY.request_edit(
+                            interaction.message,
+                            embed=embed,
+                            view=view,
+                            min_interval_seconds=5,
+                            force=False,
+                        )
                     else:
                         await self.refresh_public_message(raffle_id)
                 else:

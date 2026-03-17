@@ -47,6 +47,7 @@ from utils.discord_safe_send import safe_send_channel
 from utils.command_checks import CommandAccessError, has_role_hierarchy_access, require_command_access
 from utils.advisory_lock import run_with_advisory_lock
 from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
+from utils.panel_edit_safety import PANEL_EDIT_SAFETY
 from utils.redaction import redact_text
 from setup_panel import (
     DEFAULT_WELCOME_TEMPLATE,
@@ -86,6 +87,7 @@ from services.permissions import validate_99k_permissions
 from services.discord_cleanup import delete_message_safe, delete_channel_safe
 from services.logging_utils import log_event
 from services.torn_identity import parse_member_torn_identity_from_nickname
+from services.member_cleanup import MemberCleanupService
 from repositories.jumps import SignupStatusSchemaMismatchError
 
 log = logging.getLogger("happy_jumper")
@@ -944,6 +946,7 @@ async def on_ready():
         ("start_roster_panel_refresh_worker", roster_panel_refresh_worker),
         ("start_who_can_jump_panel_worker", who_can_jump_panel_worker),
         ("start_cleanup_retry_worker", cleanup_retry_worker),
+        ("start_departed_member_reconciliation_worker", departed_member_reconciliation_worker),
     ]
     started_workers = []
     for step_name, worker in worker_steps:
@@ -1052,6 +1055,20 @@ async def on_member_join(member: discord.Member):
     except Exception:
         log.exception("Failed to send welcome message in guild=%s", member.guild.id)
 
+
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    if member.bot:
+        return
+    try:
+        cleanup = MemberCleanupService(get_pool())
+        summary = await cleanup.cleanup_departed_member(int(member.guild.id), int(member.id))
+        total = sum(int(v or 0) for v in summary.values())
+        log.info("Departed-member cleanup complete guild_id=%s user_id=%s removed=%s", member.guild.id, member.id, total)
+    except Exception:
+        log.exception("Departed-member cleanup failed guild_id=%s user_id=%s", member.guild.id, member.id)
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
@@ -2708,17 +2725,40 @@ async def _refresh_who_can_jump_panel_for_guild_locked(guild_id: int, *, request
     ):
         return
 
-    try:
-        await message.edit(content=None, embed=embed, view=view)
-        _WHO_CAN_JUMP_LAST_RENDER[int(guild.id)] = {"signature": render_signature, "edited_at": now}
-    except discord.NotFound:
+    async def _clear_panel_ref() -> None:
         await settings_repo.upsert_settings(int(guild.id), who_can_jump_message_id=None)
         settings["who_can_jump_message_id"] = None
-        retry = await _ensure_who_can_jump_panel_message(guild=guild, settings_repo=settings_repo, settings=settings)
-        if retry is None:
+
+    try:
+        edited = await PANEL_EDIT_SAFETY.request_edit(
+            message,
+            content=None,
+            embed=embed,
+            view=view,
+            min_interval_seconds=20,
+            force=bool(requested_page_index is not None),
+            not_found_cb=_clear_panel_ref,
+        )
+        if edited:
+            _WHO_CAN_JUMP_LAST_RENDER[int(guild.id)] = {"signature": render_signature, "edited_at": now}
             return
-        await retry.edit(content=None, embed=embed, view=view)
-        _WHO_CAN_JUMP_LAST_RENDER[int(guild.id)] = {"signature": render_signature, "edited_at": now}
+        if settings.get("who_can_jump_message_id") is None:
+            retry = await _ensure_who_can_jump_panel_message(guild=guild, settings_repo=settings_repo, settings=settings)
+            if retry is not None:
+                retried = await PANEL_EDIT_SAFETY.request_edit(
+                    retry,
+                    content=None,
+                    embed=embed,
+                    view=view,
+                    min_interval_seconds=20,
+                    force=True,
+                )
+                if retried:
+                    _WHO_CAN_JUMP_LAST_RENDER[int(guild.id)] = {"signature": render_signature, "edited_at": now}
+        return
+    except Exception:
+        log.exception("Failed safe-editing who-can-jump panel guild_id=%s", guild.id)
+        return
 
 
 async def register_persistent_who_can_jump_views() -> None:
@@ -2899,7 +2939,13 @@ async def _refresh_roster_panel(session_id: int, channel: discord.abc.Messageabl
     roster_text = embed.description or ""
 
     if message is not None:
-        await message.edit(embed=embed, view=view)
+        await PANEL_EDIT_SAFETY.request_edit(
+            message,
+            embed=embed,
+            view=view,
+            min_interval_seconds=10,
+            force=False,
+        )
 
     repo = JumpsRepository(get_pool())
     await repo.touch_roster_refreshed(session_id)
@@ -6096,3 +6142,39 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+@tasks.loop(minutes=30)
+async def departed_member_reconciliation_worker():
+    if not await _worker_db_ready("departed_member_reconciliation_worker"):
+        return
+    cleanup = MemberCleanupService(get_pool())
+    for guild in bot.guilds:
+        try:
+            members = guild.members
+            if not members:
+                members = [m async for m in guild.fetch_members(limit=None)]
+            present_ids = {int(m.id) for m in members if not m.bot}
+            known_ids = await cleanup.list_known_guild_user_ids(int(guild.id))
+            stale = [uid for uid in known_ids if uid not in present_ids]
+            removed = 0
+            for uid in stale[:500]:
+                summary = await cleanup.cleanup_departed_member(int(guild.id), int(uid))
+                removed += sum(int(v or 0) for v in summary.values())
+                await asyncio.sleep(0.05)
+            if stale:
+                log.info(
+                    "Departed-member reconciliation guild_id=%s stale_users=%s removed_rows=%s",
+                    guild.id,
+                    len(stale),
+                    removed,
+                )
+        except Exception:
+            log.exception("Departed-member reconciliation failed guild_id=%s", guild.id)
+
+
+@departed_member_reconciliation_worker.before_loop
+async def before_departed_member_reconciliation_worker():
+    await bot.wait_until_ready()
+    await wait_until_initialized(timeout=30.0)
+    await sleep_startup_jitter("departed_member_reconciliation_worker")

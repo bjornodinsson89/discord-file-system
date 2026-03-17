@@ -21,6 +21,7 @@ from utils.database import get_database, get_pool, is_initialized, wait_until_in
 from utils.embeds import create_error_embed
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
+from utils.panel_edit_safety import PANEL_EDIT_SAFETY
 
 log = logging.getLogger("happy_jumper.pools")
 XANAX_FALLBACK_ICON_URL = "https://www.torn.com/images/items/206/large.png"
@@ -140,7 +141,13 @@ async def _refresh_pool_panel_message(bot: commands.Bot, pool_id: int) -> None:
 
     sold = await repo.get_total_tickets(pool_id)
     embed = await _build_pool_panel_embed(pool, sold)
-    await message.edit(embed=embed, view=PoolPurchasePanelView(pool_id=pool_id, disabled=(pool.get("status") != "active")))
+    await PANEL_EDIT_SAFETY.request_edit(
+        message,
+        embed=embed,
+        view=PoolPurchasePanelView(pool_id=pool_id, disabled=(pool.get("status") != "active")),
+        min_interval_seconds=5,
+        force=False,
+    )
 
 
 async def _end_pool_and_draw(bot: commands.Bot, guild_id: int, pool_id: int) -> bool:
@@ -166,7 +173,13 @@ async def _end_pool_and_draw(bot: commands.Bot, guild_id: int, pool_id: int) -> 
                 message = await channel.fetch_message(int(message_id))
                 sold = await repo.get_total_tickets(pool_id)
                 embed = await _build_pool_panel_embed((ended_pool or pool), sold)
-                await message.edit(embed=embed, view=PoolPurchasePanelView(pool_id=pool_id, disabled=True))
+                await PANEL_EDIT_SAFETY.request_edit(
+                    message,
+                    embed=embed,
+                    view=PoolPurchasePanelView(pool_id=pool_id, disabled=True),
+                    min_interval_seconds=5,
+                    force=True,
+                )
             except Exception:
                 log.warning("Failed disabling pool panel guild=%s pool_id=%s", guild_id, pool_id)
 

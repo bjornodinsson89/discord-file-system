@@ -25,6 +25,7 @@ from utils.torn_api import TornAPIError
 from utils.discord_safe_send import safe_send_channel
 from utils.discord_perms import can_manage_paid_raffles
 from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
+from utils.panel_edit_safety import PANEL_EDIT_SAFETY
 log = logging.getLogger("happy_jumper.raffles")
 _PACK_WORD_RE = re.compile(r"\bpack\b", re.IGNORECASE)
 _CURLY_QUOTES_RE = re.compile(r"[’‘]")
@@ -123,9 +124,14 @@ async def _update_raffle_purchase_panel_counts(
 
         embed = _build_paid_raffle_panel_embed(raffle)
         allow_token = bool(raffle.get("allow_prize_token_purchase"))
-        if msg.embeds and msg.embeds[0].to_dict() == embed.to_dict():
-            return
-        await msg.edit(embed=embed, view=RafflePurchasePanelView(raffle_id=int(raffle_id), allow_prize_token_purchase=allow_token))
+        view = RafflePurchasePanelView(raffle_id=int(raffle_id), allow_prize_token_purchase=allow_token)
+        await PANEL_EDIT_SAFETY.request_edit(
+            msg,
+            embed=embed,
+            view=view,
+            min_interval_seconds=5,
+            force=False,
+        )
     except Exception:
         log.exception("Failed to update raffle purchase panel counts raffle_id=%s", raffle_id)
 
@@ -1541,7 +1547,13 @@ class RafflePrizeImagePromptView(discord.ui.View):
             else:
                 embed = discord.Embed(title=f"🎟️ Raffle #{self.raffle_id}")
             embed.set_image(url=image_url)
-            await panel_message.edit(embed=embed, view=RafflePurchasePanelView(raffle_id=self.raffle_id, allow_prize_token_purchase=False))
+            await PANEL_EDIT_SAFETY.request_edit(
+                panel_message,
+                embed=embed,
+                view=RafflePurchasePanelView(raffle_id=self.raffle_id, allow_prize_token_purchase=False),
+                min_interval_seconds=5,
+                force=True,
+            )
         except Exception:
             log.exception("Failed to update purchase panel image for raffle %s", self.raffle_id)
     @discord.ui.button(label="📷 Add Prize Image (optional)", style=discord.ButtonStyle.primary)
@@ -2183,7 +2195,13 @@ class RafflesCog(commands.Cog):
             if "closed" not in title.lower() and "cancel" not in title.lower() and "complete" not in title.lower():
                 embed.title = f"{title} (Closed)"
         try:
-            await message.edit(embed=embed, view=new_view)
+            await PANEL_EDIT_SAFETY.request_edit(
+                message,
+                embed=embed,
+                view=new_view,
+                min_interval_seconds=5,
+                force=True,
+            )
         except Exception:
             pass
 

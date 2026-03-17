@@ -683,3 +683,31 @@ class RafflesRepository(RepositoryBase):
                 """
             )
             return [dict(row) for row in rows]
+
+    async def cleanup_departed_member(self, guild_id: int, user_id: int) -> dict[str, int]:
+        async with self.acquire() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM raffle_entries e
+                USING raffles r
+                WHERE e.raffle_id = r.raffle_id
+                  AND r.guild_id = $1
+                  AND e.discord_id = $2
+                """,
+                guild_id,
+                user_id,
+            )
+            return {"raffle_entries": int(str(result).split()[-1])}
+
+    async def list_guild_participant_user_ids(self, guild_id: int) -> set[int]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT e.discord_id
+                FROM raffle_entries e
+                JOIN raffles r ON r.raffle_id = e.raffle_id
+                WHERE r.guild_id = $1
+                """,
+                guild_id,
+            )
+            return {int(r["discord_id"]) for r in rows if int(r["discord_id"] or 0) > 0}

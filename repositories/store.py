@@ -270,3 +270,17 @@ class StoreRepository(RepositoryBase):
                 if row and row.get("image_url"):
                     return str(row["image_url"])
         return None
+
+    async def cleanup_departed_member(self, guild_id: int, user_id: int) -> dict[str, int]:
+        async with self.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM reward_redemptions WHERE guild_id = $1 AND user_id = $2",
+                guild_id,
+                user_id,
+            )
+            return {"reward_redemptions": int(str(result).split()[-1])}
+
+    async def list_guild_user_ids(self, guild_id: int) -> set[int]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch("SELECT DISTINCT user_id FROM reward_redemptions WHERE guild_id = $1", guild_id)
+            return {int(r["user_id"]) for r in rows if int(r["user_id"] or 0) > 0}
