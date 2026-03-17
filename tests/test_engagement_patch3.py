@@ -77,7 +77,17 @@ def test_prize_roles_stack_and_level_role_exclusive_highest_tier_only():
     async def _run():
         repo = _FakeRepo()
         service = RoleRewardService(repo)
-        guild = _FakeGuild(1, [_FakeRole(100), _FakeRole(101), _FakeRole(102), _FakeRole(201), _FakeRole(202), _FakeRole(203)])
+        guild = _FakeGuild(
+            1,
+            [
+                _FakeRole(100),
+                _FakeRole(101),
+                _FakeRole(102),
+                _FakeRole(201),
+                _FakeRole(202),
+                _FakeRole(203),
+            ],
+        )
         member = _FakeMember(9, roles=[guild.get_role(100), guild.get_role(101)])
 
         profile = {
@@ -104,7 +114,12 @@ def test_role_sync_fails_soft_missing_role_or_permissions():
         service = RoleRewardService(repo)
         guild = _FakeGuild(1, [_FakeRole(100)])
         member = _FakeMember(9, fail_add=True)
-        profile = {"level": 30, "prize_token_lifetime_earned": 100, "jump_99k_completed_count": 100, "paid_raffle_purchases_count": 100}
+        profile = {
+            "level": 30,
+            "prize_token_lifetime_earned": 100,
+            "jump_99k_completed_count": 100,
+            "paid_raffle_purchases_count": 100,
+        }
         result = await service.sync_member_roles(guild, member, profile)
         assert result["failed"] >= 1
 
@@ -117,9 +132,9 @@ def test_patch3_sources_include_commands_workers_and_setup_page4_roles():
         '@engagement.command(name="sync_roles"',
         '@engagement.command(name="reverse_event"',
         '@engagement.command(name="rebuild_profile"',
-        'auto_entry_reconciliation_worker',
-        'role_repair_worker',
-        'giveaway_auto_entry:{giveaway_id}:{user_id}',
+        "auto_entry_reconciliation_worker",
+        "role_repair_worker",
+        "giveaway_auto_entry:{giveaway_id}:{user_id}",
     ]:
         assert expected in engagement_src
 
@@ -135,7 +150,9 @@ def test_patch3_sources_include_commands_workers_and_setup_page4_roles():
 
 
 def test_migration_has_patch3_tables_and_entry_fields():
-    src = Path("migrations/2026_03_18_engagement_patch3_roles_and_giveaway.sql").read_text(encoding="utf-8")
+    src = Path("migrations/2026_03_18_engagement_patch3_roles_and_giveaway.sql").read_text(
+        encoding="utf-8"
+    )
     assert "engagement_role_rewards" in src
     assert "engagement_prize_roles" in src
     assert "entry_source" in src
