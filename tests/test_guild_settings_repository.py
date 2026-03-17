@@ -207,12 +207,16 @@ def test_repo_supports_who_can_jump_panel_fields():
     normalized = repo._normalize_updates({
         "who_can_jump_channel_id": "12345",
         "who_can_jump_message_id": "67890",
+        "who_can_jump_page_index": "2",
     })
     assert normalized["who_can_jump_channel_id"] == 12345
     assert normalized["who_can_jump_message_id"] == 67890
+    assert normalized["who_can_jump_page_index"] == 2
 
     merged = repo._merge_defaults({}, guild_id=9001)
     assert "who_can_jump_channel_id" in merged
     assert "who_can_jump_message_id" in merged
+    assert "who_can_jump_page_index" in merged
     assert merged["who_can_jump_channel_id"] is None
     assert merged["who_can_jump_message_id"] is None
+    assert merged["who_can_jump_page_index"] == 0

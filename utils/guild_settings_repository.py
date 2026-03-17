@@ -69,6 +69,7 @@ class GuildSettingsRepository:
         "jewelry_alert_role_ids",
         "jewelry_alert_active_message_id",
         "who_can_jump_message_id",
+        "who_can_jump_page_index",
         "jewelry_alert_last_clear",
         "jewelry_alert_last_is_open",
         "jewelry_alert_last_sent_at",
@@ -157,6 +158,7 @@ class GuildSettingsRepository:
         "jewelry_alert_role_ids": [],
         "jewelry_alert_active_message_id": None,
         "who_can_jump_message_id": None,
+        "who_can_jump_page_index": 0,
         "jewelry_alert_last_clear": False,
         "jewelry_alert_last_is_open": False,
         "jewelry_alert_last_sent_at": None,
@@ -334,6 +336,7 @@ class GuildSettingsRepository:
                     "host_tax_recipient_torn_id",
                     "host_tax_item_id",
                     "host_tax_quantity",
+                    "who_can_jump_page_index",
                 }
                 and value is not None
             ):
@@ -524,6 +527,7 @@ class GuildSettingsRepository:
             "jewelry_alert_role_ids": [],
             "jewelry_alert_active_message_id": None,
             "who_can_jump_message_id": None,
+            "who_can_jump_page_index": 0,
             "jewelry_alert_last_clear": False,
             "jewelry_alert_last_is_open": False,
             "jewelry_alert_last_sent_at": None,

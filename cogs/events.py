@@ -914,6 +914,7 @@ async def on_ready():
         ("register_persistent_roster_views", register_persistent_roster_views),
         ("register_persistent_signup_views", register_persistent_signup_views),
         ("register_persistent_pool_views", lambda: register_persistent_pool_views(bot)),
+        ("register_persistent_who_can_jump_views", register_persistent_who_can_jump_views),
         ("add_timezone_prompt_view", _add_timezone_prompt_view),
     ]
     for step_name, step in ready_steps:
@@ -2285,7 +2286,7 @@ def _classify_jump_readiness(
         return "API Key Missing"
     if "permission" in status_lower or "bars/cooldowns" in status_lower:
         return "API Permissions Missing"
-    if "invalid" in status_lower or "api" in status_lower and "missing" in status_lower:
+    if "unavailable" in status_lower or "rate limit" in status_lower or "timeout" in status_lower:
         return "API Unavailable"
     if energy is None or drug_cooldown is None or booster_cooldown is None:
         return "API Unavailable"
@@ -2317,6 +2318,53 @@ def _format_who_can_jump_identity(*, torn_name: str | None, torn_user_id: int | 
     )
 
 
+class WhoCanJumpPanelView(discord.ui.View):
+    def __init__(self, guild_id: int, *, page_index: int, total_pages: int):
+        super().__init__(timeout=None)
+        self.guild_id = int(guild_id)
+        self.page_index = max(0, int(page_index))
+        self.total_pages = max(1, int(total_pages))
+
+        prev_btn = discord.ui.Button(
+            label="◀ Prev",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"who_can_jump_prev:{self.guild_id}",
+            row=0,
+            disabled=self.page_index <= 0,
+        )
+        next_btn = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"who_can_jump_next:{self.guild_id}",
+            row=0,
+            disabled=self.page_index >= self.total_pages - 1,
+        )
+        refresh_btn = discord.ui.Button(
+            label="Refresh",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"who_can_jump_refresh:{self.guild_id}",
+            row=0,
+        )
+        prev_btn.callback = self._on_prev
+        next_btn.callback = self._on_next
+        refresh_btn.callback = self._on_refresh
+        self.add_item(prev_btn)
+        self.add_item(next_btn)
+        self.add_item(refresh_btn)
+
+    async def _on_prev(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await _refresh_who_can_jump_panel_for_guild(self.guild_id, requested_page_index=self.page_index - 1)
+
+    async def _on_next(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await _refresh_who_can_jump_panel_for_guild(self.guild_id, requested_page_index=self.page_index + 1)
+
+    async def _on_refresh(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await _refresh_who_can_jump_panel_for_guild(self.guild_id, requested_page_index=self.page_index)
+
+
 async def _collect_who_can_jump_rows(
     *, guild: discord.Guild, settings: dict, users_repo: UsersRepository, jumps_repo: JumpsRepository
 ) -> tuple[list[dict], str | None]:
@@ -2332,6 +2380,7 @@ async def _collect_who_can_jump_rows(
     for member in role.members:
         if member.bot:
             continue
+
         has_api_key = False
         torn_name = None
         torn_user_id = None
@@ -2345,6 +2394,7 @@ async def _collect_who_can_jump_rows(
                 has_api_key = bool((key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted"))
                 torn_name = str((key_row or {}).get("torn_name") or "").strip() or None
                 torn_user_id = int((key_row or {}).get("torn_user_id") or 0) or None
+
             snapshot = await _fetch_and_upsert_user_readiness_snapshot(
                 repo=jumps_repo,
                 users_repo=users_repo,
@@ -2370,18 +2420,19 @@ async def _collect_who_can_jump_rows(
             status_text=status_text,
             has_api_key=has_api_key,
         )
-        identity = _format_who_can_jump_identity(
-            torn_name=torn_name,
-            torn_user_id=torn_user_id,
-            fallback_name=str(member.display_name or "").strip() or "Unknown member",
+        rows.append(
+            {
+                "identity": _format_who_can_jump_identity(
+                    torn_name=torn_name,
+                    torn_user_id=torn_user_id,
+                    fallback_name=str(member.display_name or "").strip() or "Unknown member",
+                ),
+                "status": status,
+                "energy": energy if not status.startswith("API ") else None,
+                "drug_cooldown": drug_cd if not status.startswith("API ") else None,
+                "booster_cooldown": booster_cd if not status.startswith("API ") else None,
+            }
         )
-        rows.append({
-            "identity": identity,
-            "status": status,
-            "energy": energy if status not in {"API Key Missing", "API Permissions Missing", "API Unavailable"} else None,
-            "drug_cooldown": drug_cd if status not in {"API Key Missing", "API Permissions Missing", "API Unavailable"} else None,
-            "booster_cooldown": booster_cd if status not in {"API Key Missing", "API Permissions Missing", "API Unavailable"} else None,
-        })
 
     status_rank = {
         "Ready Now": 0,
@@ -2397,45 +2448,55 @@ async def _collect_who_can_jump_rows(
     return rows, None
 
 
-def _build_who_can_jump_embeds(*, guild: discord.Guild, rows: list[dict], state: str | None = None) -> list[discord.Embed]:
+def _build_who_can_jump_embed(
+    *,
+    rows: list[dict],
+    state: str | None,
+    page_index: int,
+    page_size: int = 10,
+) -> tuple[discord.Embed, int, int]:
     now = discord.utils.utcnow()
-    if state == "setup_needed":
-        embed = create_info_embed("Who Can Jump", "Setup needed: configure a valid **99k_Jump_Host role** in `/setup`.")
-        embed.description = f"Ready: 0 • Waiting: 0 • API Issues: 0\nUpdated: {discord.utils.format_dt(now, style='R')}\n\n{embed.description}"
-        return [embed]
-    if not rows:
-        embed = create_info_embed("Who Can Jump", "No non-bot members currently have the configured host role.")
-        embed.description = f"Ready: 0 • Waiting: 0 • API Issues: 0\nUpdated: {discord.utils.format_dt(now, style='R')}\n\n{embed.description}"
-        return [embed]
+    total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+    clamped_page_index = min(max(0, int(page_index)), total_pages - 1)
 
     ready = sum(1 for row in rows if row["status"] == "Ready Now")
     api_issues = sum(1 for row in rows if row["status"].startswith("API "))
     waiting = len(rows) - ready - api_issues
 
-    user_blocks = []
-    for row in rows:
-        block = (
+    summary = (
+        f"Ready: {ready} • Waiting: {waiting} • API Issues: {api_issues}\n"
+        f"Updated: {discord.utils.format_dt(now, style='R')}\n"
+    )
+
+    if state == "setup_needed":
+        embed = create_info_embed(
+            "Who Can Jump",
+            summary + "\nSetup needed: configure a valid **99k_Jump_Host role** in `/setup`.",
+        )
+        embed.set_footer(text="Page 1/1")
+        return embed, 1, 0
+
+    if not rows:
+        embed = create_info_embed(
+            "Who Can Jump",
+            summary + "\nNo non-bot members currently have the configured host role.",
+        )
+        embed.set_footer(text="Page 1/1")
+        return embed, 1, 0
+
+    start = clamped_page_index * page_size
+    page_rows = rows[start : start + page_size]
+    blocks: list[str] = []
+    for row in page_rows:
+        blocks.append(
             f"**{row['identity']}** • {row['status']}\n"
             f"⚡ Energy   {_render_energy_bar(row.get('energy'))}\n"
             f"💊 Drug CD  {_render_cooldown_bar(row.get('drug_cooldown'))}\n"
             f"🧃 Boost CD {_render_cooldown_bar(row.get('booster_cooldown'))}"
         )
-        user_blocks.append(block)
-
-    embeds: list[discord.Embed] = []
-    chunk_size = 7
-    for i in range(0, len(user_blocks), chunk_size):
-        chunk = user_blocks[i : i + chunk_size]
-        title = "Who Can Jump" if i == 0 else "Who Can Jump (cont.)"
-        description = "\n\n".join(chunk)
-        if i == 0:
-            description = (
-                f"Ready: {ready} • Waiting: {waiting} • API Issues: {api_issues}\n"
-                f"Updated: {discord.utils.format_dt(now, style='R')}\n\n"
-                + description
-            )
-        embeds.append(create_info_embed(title, description))
-    return embeds
+    embed = create_info_embed("Who Can Jump", summary + "\n" + "\n\n".join(blocks))
+    embed.set_footer(text=f"Page {clamped_page_index + 1}/{total_pages}")
+    return embed, total_pages, clamped_page_index
 
 
 async def _ensure_who_can_jump_panel_message(
@@ -2473,7 +2534,7 @@ async def _ensure_who_can_jump_panel_message(
     return sent
 
 
-async def _refresh_who_can_jump_panel_for_guild(guild_id: int) -> None:
+async def _refresh_who_can_jump_panel_for_guild(guild_id: int, *, requested_page_index: int | None = None) -> None:
     guild = bot.get_guild(int(guild_id))
     if guild is None:
         return
@@ -2495,15 +2556,58 @@ async def _refresh_who_can_jump_panel_for_guild(guild_id: int) -> None:
         users_repo=users_repo,
         jumps_repo=jumps_repo,
     )
-    embeds = _build_who_can_jump_embeds(guild=guild, rows=rows, state=state)
+
+    stored_page_index = int(settings.get("who_can_jump_page_index") or 0)
+    page_index = stored_page_index if requested_page_index is None else int(requested_page_index)
+    embed, total_pages, clamped_page_index = _build_who_can_jump_embed(
+        rows=rows,
+        state=state,
+        page_index=page_index,
+        page_size=10,
+    )
+    view = WhoCanJumpPanelView(int(guild.id), page_index=clamped_page_index, total_pages=total_pages)
+
+    updates: dict[str, int | None] = {}
+    if int(settings.get("who_can_jump_page_index") or 0) != clamped_page_index:
+        updates["who_can_jump_page_index"] = clamped_page_index
+    if updates:
+        await settings_repo.upsert_settings(int(guild.id), **updates)
+        settings.update(updates)
+
     try:
-        await message.edit(content=None, embeds=embeds, view=None)
+        await message.edit(content=None, embed=embed, view=view)
     except discord.NotFound:
-        settings["who_can_jump_message_id"] = None
         await settings_repo.upsert_settings(int(guild.id), who_can_jump_message_id=None)
+        settings["who_can_jump_message_id"] = None
         retry = await _ensure_who_can_jump_panel_message(guild=guild, settings_repo=settings_repo, settings=settings)
-        if retry is not None:
-            await retry.edit(content=None, embeds=embeds, view=None)
+        if retry is None:
+            return
+        await retry.edit(content=None, embed=embed, view=view)
+
+
+async def register_persistent_who_can_jump_views() -> None:
+    db = get_database()
+    repo = GuildSettingsRepository(db)
+    async with acquire_conn(db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT guild_id, who_can_jump_message_id, COALESCE(who_can_jump_page_index, 0) AS who_can_jump_page_index
+            FROM public.guild_settings
+            WHERE who_can_jump_channel_id IS NOT NULL
+              AND who_can_jump_message_id IS NOT NULL
+            """
+        )
+    for row in rows:
+        guild_id = int(row.get("guild_id") or 0)
+        message_id = int(row.get("who_can_jump_message_id") or 0)
+        page_index = int(row.get("who_can_jump_page_index") or 0)
+        if guild_id <= 0 or message_id <= 0:
+            continue
+        bot.add_view(WhoCanJumpPanelView(guild_id, page_index=page_index, total_pages=1), message_id=message_id)
+        try:
+            await _refresh_who_can_jump_panel_for_guild(guild_id)
+        except Exception:
+            log.exception("Failed initial who-can-jump refresh guild_id=%s", guild_id)
 
 
 @tasks.loop(seconds=60)
