@@ -26,7 +26,11 @@ def test_setup_summary_includes_who_can_jump_channel_line():
         panel = SetupPanelView(
             owner_id=1,
             db=SimpleNamespace(),
-            settings={"who_can_jump_channel_id": None, "jump_ping_role_ids": [], "jewelry_alert_role_ids": []},
+            settings={
+                "who_can_jump_channel_id": None,
+                "jump_ping_role_ids": [],
+                "jewelry_alert_role_ids": [],
+            },
             guild=guild,
         )
         embed = panel._build_embed()
@@ -45,7 +49,9 @@ def test_channels_view_page4_has_three_selectors_only():
             guild=_Guild(),
             panel=SimpleNamespace(),
         )
-        selectors = [child for child in page.children if child.__class__.__name__ == "ChannelSelect"]
+        selectors = [
+            child for child in page.children if child.__class__.__name__ == "ChannelSelect"
+        ]
         assert len(selectors) == 3
 
     asyncio.run(_run())

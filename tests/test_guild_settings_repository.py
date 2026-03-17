@@ -204,11 +204,13 @@ def test_repo_normalizes_disable_99k_announcements_bool_values():
 
 def test_repo_supports_who_can_jump_panel_fields():
     repo = GuildSettingsRepository(_DB())
-    normalized = repo._normalize_updates({
-        "who_can_jump_channel_id": "12345",
-        "who_can_jump_message_id": "67890",
-        "who_can_jump_page_index": "2",
-    })
+    normalized = repo._normalize_updates(
+        {
+            "who_can_jump_channel_id": "12345",
+            "who_can_jump_message_id": "67890",
+            "who_can_jump_page_index": "2",
+        }
+    )
     assert normalized["who_can_jump_channel_id"] == 12345
     assert normalized["who_can_jump_message_id"] == 67890
     assert normalized["who_can_jump_page_index"] == 2
