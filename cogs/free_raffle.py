@@ -15,6 +15,7 @@ from utils.database import get_pool, is_initialized as db_is_initialized, wait_u
 from utils.advisory_lock import run_with_advisory_lock
 from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
 from views.free_raffle_views import EnterRaffleView, HostControlsView
+from utils.embeds import clamp_percent, format_remaining_time, render_text_progress_bar
 
 log = logging.getLogger("happy_jumper.free_raffle")
 
@@ -45,7 +46,7 @@ def _status_color(status: str, winner_id: int | None) -> discord.Color:
     return discord.Color.dark_grey()
 
 
-class FreeRaffleModal(discord.ui.Modal, title="Free Raffle"):
+class FreeRaffleModal(discord.ui.Modal, title="Giveaway"):
     prize = discord.ui.TextInput(label="Prize", required=True, max_length=200)
     ends_in_days = discord.ui.TextInput(label="Ends in (days)", required=True, min_length=1, max_length=2)
     note = discord.ui.TextInput(
@@ -99,17 +100,17 @@ class FreeRaffleModal(discord.ui.Modal, title="Free Raffle"):
 
             host_view = self.cog.host_controls_view(raffle_id)
             await interaction.followup.send(
-                "✅ Free raffle created. Host controls are below.",
+                "✅ Giveaway created. Host controls are below.",
                 ephemeral=True,
                 view=host_view,
             )
         except Exception:
             log.exception("Failed creating free raffle")
-            await interaction.followup.send("❌ Failed to create free raffle. Please try again.", ephemeral=True)
+            await interaction.followup.send("❌ Failed to create giveaway. Please try again.", ephemeral=True)
 
 
 class FreeRaffleCog(commands.Cog):
-    freeraffle = app_commands.Group(name="freeraffle", description="Free raffle commands")
+    giveaway = app_commands.Group(name="giveaway", description="Giveaway commands")
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -158,12 +159,12 @@ class FreeRaffleCog(commands.Cog):
         custom_id = str(data.get("custom_id") or "")
         if not custom_id.startswith("fr_draw:"):
             return
-        await self._send_ephemeral(interaction, "This free raffle is now drawn automatically when it ends.")
+        await self._send_ephemeral(interaction, "This giveaway is now drawn automatically when it ends.")
 
-    @freeraffle.command(name="start", description="Start a free raffle")
+    @giveaway.command(name="start", description="Start a giveaway")
     async def start(self, interaction: discord.Interaction) -> None:
         db = get_database()
-        if not await require_api_key(interaction, db, "start a free raffle"):
+        if not await require_api_key(interaction, db, "start a giveaway"):
             return
         await interaction.response.send_modal(FreeRaffleModal(self))
 
@@ -216,21 +217,46 @@ class FreeRaffleCog(commands.Cog):
             ends_line = f"\n**Ends:** <t:{ends_unix}:R> (<t:{ends_unix}:f>)"
 
         thumbnail_url = await self.resolve_thumbnail(prize_text)
-        title = "🎉 FREE RAFFLE 🎉" if thumbnail_url else "🎉 FREE RAFFLE 🎉 🎁"
-        description = (
-            "Tap **🎟️ Enter** for a chance to win!"
-            f"{ends_line}\n\n"
-            f"**🪓 Prize: {prize_text}**\n\n"
-            "**How to Enter**\n"
-            "✅ Click **🎟️ Enter**\n"
-            "✅ One entry per person\n"
-            "✅ Winner announced automatically"
-        )
+        title = "🎉 GIVEAWAY 🎉" if thumbnail_url else "🎉 GIVEAWAY 🎉 🎁"
+        now = datetime.now(timezone.utc)
+        created_at = raffle.get("created_at")
+        if isinstance(created_at, datetime) and created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        end_time = ends_at if isinstance(ends_at, datetime) else None
+        total_seconds = int((end_time - created_at).total_seconds()) if end_time and created_at else 0
+        elapsed_seconds = int((now - created_at).total_seconds()) if end_time and created_at else 0
+        time_percent = clamp_percent((elapsed_seconds / total_seconds) * 100) if total_seconds > 0 else 0
 
-        embed = discord.Embed(title=title, description=description, color=color)
-        embed.add_field(name="🎟️ Entries", value=f"**{entry_count}**", inline=True)
-        embed.add_field(name="⏳ Status", value=f"**{status}**", inline=True)
-        embed.add_field(name="👑 Host", value=f"<@{int(raffle['host_discord_id'])}>", inline=False)
+        embed = discord.Embed(
+            title=title,
+            description="Join now for a chance to win.",
+            color=color,
+        )
+        embed.add_field(
+            name="LIVE STATS",
+            value=(
+                f"Entrants: **{entry_count}**\n"
+                f"Time: `{render_text_progress_bar(time_percent)}`\n"
+                f"Status: **{status}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(name="PRIZE", value=f"🪓 {prize_text}", inline=False)
+        embed.add_field(
+            name="GIVEAWAY INFO",
+            value=(
+                f"Host: <@{int(raffle['host_discord_id'])}>\n"
+                f"Ends: {ends_line.strip() if ends_line else 'Unknown'}\n"
+                f"Remaining: {format_remaining_time(end_time, now)}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="HOW TO PLAY",
+            value="✅ Click **🎟️ Enter Giveaway**\n✅ One entry per person\n✅ Winner announced automatically",
+            inline=False,
+        )
+        embed.set_footer(text=f"Last updated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
         if note_text:
             embed.add_field(name="📝 Note", value=note_text, inline=False)
         if winner_id:
@@ -317,6 +343,17 @@ class FreeRaffleCog(commands.Cog):
 
             inserted = await repo.add_entry(raffle_id, int(interaction.user.id))
             if inserted:
+                interaction.client.dispatch(
+                    "giveaway_joined",
+                    {
+                        "guild_id": int(raffle.get("guild_id") or interaction.guild_id or 0),
+                        "user_id": int(interaction.user.id),
+                        "giveaway_id": int(raffle_id),
+                        "entry_id": None,
+                        "joined_at": datetime.now(timezone.utc),
+                        "dedupe_key": f"giveaway_join:{raffle_id}:{int(interaction.user.id)}",
+                    },
+                )
                 if interaction.message is not None:
                     refreshed_raffle = await repo.get_raffle(raffle_id)
                     if refreshed_raffle:
@@ -331,12 +368,12 @@ class FreeRaffleCog(commands.Cog):
                         await self.refresh_public_message(raffle_id)
                 else:
                     await self.refresh_public_message(raffle_id)
-                await self._send_ephemeral(interaction, "✅ You’re entered.")
+                await self._send_ephemeral(interaction, "✅ You’re entered in the giveaway.")
                 return
-            await self._send_ephemeral(interaction, "You’re already entered.")
+            await self._send_ephemeral(interaction, "You’re already entered in this giveaway.")
         except Exception:
             log.exception("Failed handling free raffle entry for raffle_id=%s", raffle_id)
-            await self._send_ephemeral(interaction, "Failed to enter raffle. Please try again.")
+            await self._send_ephemeral(interaction, "Failed to enter giveaway. Please try again.")
 
     async def _assert_host(self, interaction: discord.Interaction, raffle: dict | None) -> bool:
         if not raffle:
@@ -370,7 +407,7 @@ class FreeRaffleCog(commands.Cog):
             await self._send_ephemeral(interaction, "Failed to cancel raffle. Please try again.")
 
     async def handle_draw(self, interaction: discord.Interaction, raffle_id: int) -> None:
-        await self._send_ephemeral(interaction, "This free raffle is now drawn automatically when it ends.")
+        await self._send_ephemeral(interaction, "This giveaway is now drawn automatically when it ends.")
 
     async def announce_raffle_result(self, raffle: dict, winner_id: int | None) -> None:
         channel = self.bot.get_channel(int(raffle["channel_id"]))
@@ -383,14 +420,14 @@ class FreeRaffleCog(commands.Cog):
             return
 
         if winner_id is None:
-            await channel.send("🎉 Free raffle ended: No entries — no winner.")
+            await channel.send("🎉 Giveaway ended: No entries — no winner.")
             return
 
         guild = self.bot.get_guild(int(raffle["guild_id"]))
         winner_mention = f"<@{winner_id}>"
         if guild is not None and guild.get_member(winner_id) is None:
             winner_mention = f"<@{winner_id}> (ID: {winner_id})"
-        await channel.send(f"🎉 Free raffle winner: {winner_mention}")
+        await channel.send(f"🎉 Giveaway winner: {winner_mention}")
 
     async def process_expired_raffles(self) -> int:
         repo = FreeRaffleRepository(get_pool())

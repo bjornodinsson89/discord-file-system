@@ -17,7 +17,7 @@ from services.torn_identity import resolve_buyer_identity_for_paid_feature
 from utils import GuildSettingsRepository, get_database, get_security_manager, get_torn_api, require_api_key
 from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
 from utils.advisory_lock import run_with_advisory_lock
-from utils.embeds import create_error_embed
+from utils.embeds import create_error_embed, clamp_percent, format_remaining_time, render_text_progress_bar
 from utils.icon_strips import build_icon_strip_file
 from utils.item_resolver import ItemResolver
 from utils.payment_normalization import parse_payment_type
@@ -50,6 +50,33 @@ def _payment_text(payment_type: str, amount: int) -> str:
         return f"📀 {amount} eDVD"
     return f"{amount} {payment_type}"
 
+
+def _build_paid_raffle_panel_embed(raffle: dict) -> discord.Embed:
+    raffle_id = int(raffle["raffle_id"])
+    tickets_available = int(raffle.get("tickets_available") or 0)
+    tickets_sold = max(0, int(raffle.get("tickets_sold") or 0))
+    sold_for_percent = min(tickets_sold, tickets_available) if tickets_available > 0 else tickets_sold
+    ticket_percent = clamp_percent((sold_for_percent / tickets_available) * 100) if tickets_available > 0 else 0
+    now = datetime.now(timezone.utc)
+    created_at = raffle.get("created_at")
+    end_time = raffle.get("end_time")
+    if isinstance(created_at, datetime) and created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    if isinstance(end_time, datetime) and end_time.tzinfo is None:
+        end_time = end_time.replace(tzinfo=timezone.utc)
+    duration = int((end_time - created_at).total_seconds()) if isinstance(end_time, datetime) and isinstance(created_at, datetime) else 0
+    elapsed = int((now - created_at).total_seconds()) if isinstance(end_time, datetime) and isinstance(created_at, datetime) else 0
+    time_percent = clamp_percent((elapsed / duration) * 100) if duration > 0 else 0
+    tickets_display = "Unlimited" if tickets_available <= 0 else str(tickets_available)
+    draw_text = "30 seconds after sellout" if raffle.get("end_trigger") == "tickets_sold" else (f"<t:{int(end_time.timestamp())}:R>" if isinstance(end_time, datetime) else "Unknown")
+    price_text = _payment_text(str(raffle.get("ticket_payment_type") or ""), int(raffle.get("ticket_price") or 0))
+    embed = discord.Embed(title=f"🎟️ Raffle #{raffle_id}: {raffle.get('prize')}", description="Use the buttons below to buy tickets or check your entry.", color=discord.Color.blurple())
+    embed.add_field(name="LIVE STATS", value=f"Tickets: `{render_text_progress_bar(ticket_percent)}`\nTime: `{render_text_progress_bar(time_percent)}`\nSold / Available: **{tickets_sold}/{tickets_display}**", inline=False)
+    embed.add_field(name="PRIZE", value=f"🎁 {raffle.get('prize')}", inline=False)
+    embed.add_field(name="RAFFLE INFO", value=f"Ticket price: **{price_text}**\nHost: <@{int(raffle.get('creator_discord_id') or 0)}>\nDraw: {draw_text}", inline=False)
+    embed.add_field(name="HOW TO PLAY", value="1) Click **🎟️ Buy Tickets**\n2) Send payment in Torn\n3) Verify payment", inline=False)
+    embed.set_footer(text=f"Last updated: {format_remaining_time(end_time, now)} remaining")
+    return embed
 
 def _compute_panel_tickets_value(raffle: dict) -> str:
     tickets_available = int(raffle.get("tickets_available") or 0)
@@ -94,31 +121,11 @@ async def _update_raffle_purchase_panel_counts(
         except Exception:
             return
 
-        tickets_value = _compute_panel_tickets_value(raffle)
-        if msg.embeds:
-            embed = msg.embeds[0].copy()
-        else:
-            embed = discord.Embed(
-                title=f"🎟️ Raffle #{raffle_id}",
-                color=discord.Color.blurple(),
-            )
-
-        fields: list[tuple[str, str, bool]] = []
-        updated = False
-        for field in embed.fields:
-            if str(field.name).strip() == "Tickets":
-                fields.append(("Tickets", tickets_value, field.inline))
-                updated = True
-            else:
-                fields.append((str(field.name), str(field.value), field.inline))
-
-        embed.clear_fields()
-        for name, value, inline in fields:
-            embed.add_field(name=name, value=value, inline=inline)
-        if not updated:
-            embed.add_field(name="Tickets", value=tickets_value, inline=True)
-
-        await msg.edit(embed=embed, view=RafflePurchasePanelView(raffle_id=int(raffle_id)))
+        embed = _build_paid_raffle_panel_embed(raffle)
+        allow_token = bool(raffle.get("allow_prize_token_purchase"))
+        if msg.embeds and msg.embeds[0].to_dict() == embed.to_dict():
+            return
+        await msg.edit(embed=embed, view=RafflePurchasePanelView(raffle_id=int(raffle_id), allow_prize_token_purchase=allow_token))
     except Exception:
         log.exception("Failed to update raffle purchase panel counts raffle_id=%s", raffle_id)
 
@@ -608,6 +615,8 @@ class RaffleCreateModal(discord.ui.Modal):
                 "hours_after_sold_out": hours_after_sold_out,
                 "single_item_meta": single_item_meta,
                 "admin_comments": None,
+                "allow_prize_token_purchase": False,
+                "prize_token_cost_per_ticket": None,
             }
             if draft["end_trigger"] == "time" and draft["end_time"] is None:
                 raise ValueError("Time-based raffles require an end_time")
@@ -633,7 +642,7 @@ class RaffleCreateModal(discord.ui.Modal):
                 return
             raffle_cog.store_create_draft(interaction.user.id, draft)
             await interaction.response.send_message(
-                "Draft saved. Add optional notes or skip to create the raffle.",
+                "Draft saved. Add optional notes, then set Prize Token purchase option.",
                 ephemeral=True,
                 view=RaffleCommentsChoiceView(self.bot, interaction.user.id),
             )
@@ -674,7 +683,7 @@ class RafflePackChoiceView(discord.ui.View):
             await interaction.response.send_message("❌ Draft expired. Please run /raffle_create again.", ephemeral=True)
             return
         raffle_cog.pop_pack_draft(interaction.user.id)
-        await raffle_cog.create_raffle_from_draft(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
+        await raffle_cog.prompt_prize_token_step(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
 
 
 class RaffleCommentsChoiceView(discord.ui.View):
@@ -709,7 +718,7 @@ class RaffleCommentsChoiceView(discord.ui.View):
             return
         raffle_cog.pop_create_draft(interaction.user.id)
         draft["admin_comments"] = None
-        await raffle_cog.create_raffle_from_draft(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
+        await raffle_cog.prompt_prize_token_step(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
 
 
 class RaffleCommentsModal(discord.ui.Modal):
@@ -739,8 +748,83 @@ class RaffleCommentsModal(discord.ui.Modal):
             return
         draft["admin_comments"] = str(self.admin_comments.value or "").strip() or None
         raffle_cog.pop_create_draft(interaction.user.id)
-        await raffle_cog.create_raffle_from_draft(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
+        await raffle_cog.prompt_prize_token_step(interaction, draft, is_bundle=False, bundle_text=None, bundle_entries=[])
 
+
+
+
+class RafflePrizeTokenCostModal(discord.ui.Modal):
+    token_cost_per_ticket = discord.ui.TextInput(
+        label="Prize Token cost per ticket",
+        placeholder="10",
+        required=True,
+        max_length=9,
+    )
+
+    def __init__(self, bot: commands.Bot, creator_discord_id: int, is_bundle: bool, bundle_text: str | None, bundle_entries: list[dict]):
+        super().__init__(title="Prize Token Purchase")
+        self.bot = bot
+        self.creator_discord_id = creator_discord_id
+        self.is_bundle = is_bundle
+        self.bundle_text = bundle_text
+        self.bundle_entries = bundle_entries
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raffle_cog = self.bot.get_cog("RafflesCog")
+        if raffle_cog is None:
+            await interaction.response.send_message("❌ Raffle system unavailable.", ephemeral=True)
+            return
+        draft = raffle_cog.get_create_draft(interaction.user.id)
+        if not draft:
+            await interaction.response.send_message("❌ Draft expired. Please run /raffle_create again.", ephemeral=True)
+            return
+        try:
+            cost = int(str(self.token_cost_per_ticket.value).strip())
+        except ValueError:
+            await interaction.response.send_message("❌ Token cost must be a whole number greater than 0.", ephemeral=True)
+            return
+        if cost <= 0:
+            await interaction.response.send_message("❌ Token cost must be greater than 0.", ephemeral=True)
+            return
+        draft["allow_prize_token_purchase"] = True
+        draft["prize_token_cost_per_ticket"] = cost
+        raffle_cog.pop_create_draft(interaction.user.id)
+        await raffle_cog.create_raffle_from_draft(interaction, draft, is_bundle=self.is_bundle, bundle_text=self.bundle_text, bundle_entries=self.bundle_entries)
+
+
+class RafflePrizeTokenChoiceView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, creator_discord_id: int, is_bundle: bool, bundle_text: str | None, bundle_entries: list[dict]):
+        super().__init__(timeout=600)
+        self.bot = bot
+        self.creator_discord_id = creator_discord_id
+        self.is_bundle = is_bundle
+        self.bundle_text = bundle_text
+        self.bundle_entries = bundle_entries
+
+    @discord.ui.button(label="Yes, Allow Prize Tokens", style=discord.ButtonStyle.primary)
+    async def enable(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.creator_discord_id:
+            await interaction.response.send_message("❌ Only the raffle creator can continue this draft.", ephemeral=True)
+            return
+        await interaction.response.send_modal(RafflePrizeTokenCostModal(self.bot, self.creator_discord_id, self.is_bundle, self.bundle_text, self.bundle_entries))
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
+    async def disable(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.creator_discord_id:
+            await interaction.response.send_message("❌ Only the raffle creator can continue this draft.", ephemeral=True)
+            return
+        raffle_cog = self.bot.get_cog("RafflesCog")
+        if raffle_cog is None:
+            await interaction.response.send_message("❌ Raffle system unavailable.", ephemeral=True)
+            return
+        draft = raffle_cog.get_create_draft(interaction.user.id)
+        if not draft:
+            await interaction.response.send_message("❌ Draft expired. Please run /raffle_create again.", ephemeral=True)
+            return
+        draft["allow_prize_token_purchase"] = False
+        draft["prize_token_cost_per_ticket"] = None
+        raffle_cog.pop_create_draft(interaction.user.id)
+        await raffle_cog.create_raffle_from_draft(interaction, draft, is_bundle=self.is_bundle, bundle_text=self.bundle_text, bundle_entries=self.bundle_entries)
 
 class RafflePackContentsModal(discord.ui.Modal):
     contents = discord.ui.TextInput(
@@ -1023,27 +1107,50 @@ class RaffleQuantitySelect(discord.ui.Select):
         await _reserve_raffle_tickets(interaction, self.repo, self.raffle_id, quantity)
 class RafflePurchasePanelView(discord.ui.View):
     """Persistent purchase panel for raffle interactions."""
-    def __init__(self, raffle_id: int):
+    def __init__(self, raffle_id: int, allow_prize_token_purchase: bool = False):
         super().__init__(timeout=None)
         self.raffle_id = raffle_id
-        self.add_item(discord.ui.Button(
+        self.allow_prize_token_purchase = allow_prize_token_purchase
+
+        buy_button = discord.ui.Button(
             label="🎟️ Buy Tickets",
             style=discord.ButtonStyle.success,
             custom_id=f"raffle:buy:{raffle_id}",
-        ))
-        self.add_item(discord.ui.Button(
+        )
+        buy_button.callback = self.buy_tickets
+        self.add_item(buy_button)
+
+        if self.allow_prize_token_purchase:
+            token_button = discord.ui.Button(
+                label="🪙 Buy With Prize Tokens",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"raffle:buy_tokens:{raffle_id}",
+            )
+            token_button.callback = self.buy_with_prize_tokens
+            self.add_item(token_button)
+
+        my_tickets_button = discord.ui.Button(
             label="ℹ️ My Tickets",
             style=discord.ButtonStyle.secondary,
             custom_id=f"raffle:my:{raffle_id}",
-        ))
-        self.add_item(discord.ui.Button(
+        )
+        my_tickets_button.callback = self.my_tickets
+        self.add_item(my_tickets_button)
+
+        manage_button = discord.ui.Button(
             label="Manage",
             style=discord.ButtonStyle.primary,
             custom_id=f"raffle:manage:{raffle_id}",
-        ))
-        self.children[0].callback = self.buy_tickets
-        self.children[1].callback = self.my_tickets
-        self.children[2].callback = self.manage
+        )
+        manage_button.callback = self.manage
+        self.add_item(manage_button)
+
+    async def buy_with_prize_tokens(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "⚠️ Prize Token purchases are not enabled yet for this server.",
+            ephemeral=True,
+        )
+
     async def buy_tickets(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
@@ -1279,6 +1386,21 @@ class PaymentVerificationView(discord.ui.View):
                 await interaction.followup.send(
                     "✅ Payment verified! Your tickets are confirmed.", ephemeral=True
                 )
+            entry_details = await self.repo.get_entry_with_raffle(self.entry_id)
+            if entry_details:
+                interaction.client.dispatch(
+                    "paid_raffle_purchase_verified",
+                    {
+                        "guild_id": int(entry_details.get("guild_id") or interaction.guild_id or 0),
+                        "user_id": int(entry_details.get("discord_id") or interaction.user.id),
+                        "raffle_id": int(entry_details.get("raffle_id") or self.raffle_id),
+                        "entry_id": int(entry_details.get("entry_id") or self.entry_id),
+                        "ticket_count": int(entry_details.get("num_tickets") or 0),
+                        "payment_type": str(entry_details.get("ticket_payment_type") or ""),
+                        "verified_at": datetime.now(timezone.utc),
+                        "dedupe_key": f"raffle_purchase:{int(entry_details.get('entry_id') or self.entry_id)}",
+                    },
+                )
             await _update_raffle_purchase_panel_counts(interaction.client, self.repo, self.raffle_id)
             self.stop()
         except Exception as e:
@@ -1419,7 +1541,7 @@ class RafflePrizeImagePromptView(discord.ui.View):
             else:
                 embed = discord.Embed(title=f"🎟️ Raffle #{self.raffle_id}")
             embed.set_image(url=image_url)
-            await panel_message.edit(embed=embed, view=RafflePurchasePanelView(raffle_id=self.raffle_id))
+            await panel_message.edit(embed=embed, view=RafflePurchasePanelView(raffle_id=self.raffle_id, allow_prize_token_purchase=False))
         except Exception:
             log.exception("Failed to update purchase panel image for raffle %s", self.raffle_id)
     @discord.ui.button(label="📷 Add Prize Image (optional)", style=discord.ButtonStyle.primary)
@@ -1515,7 +1637,7 @@ class RafflesCog(commands.Cog):
                 panel_raffles = await repo.get_active_raffles_with_panels()
                 for raffle in panel_raffles:
                     self.bot.add_view(
-                        RafflePurchasePanelView(raffle_id=int(raffle["raffle_id"])),
+                        RafflePurchasePanelView(raffle_id=int(raffle["raffle_id"]), allow_prize_token_purchase=bool(raffle.get("allow_prize_token_purchase"))),
                         message_id=int(raffle["purchase_panel_message_id"]),
                     )
                 active_raffles = await repo.get_all_active_raffle_ids()
@@ -1524,7 +1646,7 @@ class RafflesCog(commands.Cog):
                 for raffle_id in active_raffles:
                     if raffle_id in panel_raffle_ids:
                         continue
-                    self.bot.add_view(RafflePurchasePanelView(raffle_id=raffle_id))
+                    self.bot.add_view(RafflePurchasePanelView(raffle_id=raffle_id, allow_prize_token_purchase=False))
                 for dm_row in pending_dm:
                     self.bot.add_view(
                         RafflePrizeConfirmDMView(
@@ -1871,6 +1993,27 @@ class RafflesCog(commands.Cog):
         ], filename="payments.png", icon_size=32, max_width=420)
     async def _build_bundle_file(self, bundle_entries: list[dict]):
         return await build_icon_strip_file(bundle_entries, filename="bundle.png", icon_size=36, max_width=700)
+    async def prompt_prize_token_step(
+        self,
+        interaction: discord.Interaction,
+        draft: dict,
+        *,
+        is_bundle: bool,
+        bundle_text: str | None,
+        bundle_entries: list[dict],
+    ) -> None:
+        if str(draft.get("ticket_payment_type") or "").lower() == "free":
+            draft["allow_prize_token_purchase"] = False
+            draft["prize_token_cost_per_ticket"] = None
+            await self.create_raffle_from_draft(interaction, draft, is_bundle=is_bundle, bundle_text=bundle_text, bundle_entries=bundle_entries)
+            return
+        self.store_create_draft(int(interaction.user.id), draft)
+        await interaction.response.send_message(
+            "Allow Prize Token ticket purchases?",
+            ephemeral=True,
+            view=RafflePrizeTokenChoiceView(self.bot, int(interaction.user.id), is_bundle, bundle_text, bundle_entries),
+        )
+
     async def create_raffle_from_draft(
         self,
         interaction: discord.Interaction,
@@ -1895,6 +2038,8 @@ class RafflesCog(commands.Cog):
                 admin_comments=draft.get("admin_comments"),
                 is_bundle=is_bundle,
                 bundle_text=bundle_text,
+                allow_prize_token_purchase=bool(draft.get("allow_prize_token_purchase", False)),
+                prize_token_cost_per_ticket=draft.get("prize_token_cost_per_ticket"),
             )
             db = get_database()
             settings_repo = GuildSettingsRepository(db)
@@ -1929,29 +2074,23 @@ class RafflesCog(commands.Cog):
                     ephemeral=True,
                 )
                 return
-            ticket_payment_type = draft["ticket_payment_type"]
-            price_text = _payment_text(ticket_payment_type, draft["ticket_price"])
-            tickets_display = "Unlimited" if int(draft.get("tickets_available") or 0) == 0 else str(draft["tickets_available"])
-            draw_text = (
-                "⏰ **Draw occurs 30 seconds after sellout.**"
-                if draft.get("end_trigger") == "tickets_sold"
-                else "⏰ **Draw occurs at end time (or manual draw).**"
-            )
-            purchase_panel_embed = discord.Embed(
-                title=f"🎟️ Raffle #{raffle_id}: {draft['prize']}",
-                description=f"Use the buttons below to buy tickets or check your entry.\n{draw_text}",
-                color=discord.Color.blurple(),
-            )
-            purchase_panel_embed.add_field(name="Price", value=price_text, inline=True)
-            purchase_panel_embed.add_field(name="Tickets", value=tickets_display, inline=True)
-            purchase_panel_embed.add_field(name="Max per user", value="Unlimited" if draft['max_tickets_per_user'] == 0 else str(draft['max_tickets_per_user']), inline=True)
+            created_raffle = await repo.get_raffle(raffle_id)
+            if not created_raffle:
+                raise RuntimeError("Failed to load created raffle")
+            purchase_panel_embed = _build_paid_raffle_panel_embed(created_raffle)
             if draft.get("admin_comments"):
                 purchase_panel_embed.add_field(name="📌 Notes", value=str(draft["admin_comments"])[:1024], inline=False)
             prize_thumbnail_url = await self._get_single_prize_thumbnail_url(draft["prize"], is_bundle)
             if prize_thumbnail_url:
                 purchase_panel_embed.set_thumbnail(url=prize_thumbnail_url)
             single_item_meta = draft.get("single_item_meta")
-            panel_message = await purchase_channel.send(embed=purchase_panel_embed, view=RafflePurchasePanelView(raffle_id=raffle_id))
+            panel_message = await purchase_channel.send(
+                embed=purchase_panel_embed,
+                view=RafflePurchasePanelView(
+                    raffle_id=raffle_id,
+                    allow_prize_token_purchase=bool(created_raffle.get("allow_prize_token_purchase")),
+                ),
+            )
             await repo.set_purchase_panel_ref(raffle_id=raffle_id, channel_id=purchase_channel.id, message_id=panel_message.id)
             if is_bundle and bundle_entries:
                 bundle_file_io = await self._build_bundle_file(bundle_entries)
@@ -1960,6 +2099,8 @@ class RafflesCog(commands.Cog):
                     bundle_embed = discord.Embed(title="Pack Contents", description=bundle_text or "", color=discord.Color.blurple())
                     bundle_embed.set_image(url="attachment://bundle.png")
                     await purchase_channel.send(embed=bundle_embed, file=bundle_file)
+            tickets_display = "Unlimited" if int(draft.get("tickets_available") or 0) == 0 else str(draft["tickets_available"])
+            price_text = _payment_text(draft["ticket_payment_type"], draft["ticket_price"])
             announce_embed = discord.Embed(
                 title="🎉 New Raffle Created!",
                 description=f"🎁 **Prize:** {draft['prize']}\n🎟️ **Tickets:** {tickets_display} available\n💰 **Price:** {price_text} per ticket\n📋 **Max per user:** {'Unlimited' if draft['max_tickets_per_user'] == 0 else draft['max_tickets_per_user']}",
@@ -2052,7 +2193,7 @@ class RafflesCog(commands.Cog):
         await self._disable_message_buttons(
             panel_channel_id,
             panel_message_id,
-            view=RafflePurchasePanelView(int(raffle["raffle_id"])),
+            view=RafflePurchasePanelView(int(raffle["raffle_id"]), allow_prize_token_purchase=bool(raffle.get("allow_prize_token_purchase"))),
             status_text=status_text,
         )
         await self._disable_message_buttons(
@@ -2251,6 +2392,21 @@ class RafflesCog(commands.Cog):
                             except:
                                 pass
                             await _update_raffle_purchase_panel_counts(self.bot, repo, int(entry["raffle_id"]))
+                            details = await repo.get_entry_with_raffle(int(entry["entry_id"]))
+                            if details:
+                                self.bot.dispatch(
+                                    "paid_raffle_purchase_verified",
+                                    {
+                                        "guild_id": int(details.get("guild_id") or 0),
+                                        "user_id": int(details.get("discord_id") or 0),
+                                        "raffle_id": int(details.get("raffle_id") or entry["raffle_id"]),
+                                        "entry_id": int(details.get("entry_id") or entry["entry_id"]),
+                                        "ticket_count": int(details.get("num_tickets") or 0),
+                                        "payment_type": str(details.get("ticket_payment_type") or ""),
+                                        "verified_at": datetime.now(timezone.utc),
+                                        "dedupe_key": f"raffle_purchase:{int(details.get('entry_id') or entry['entry_id'])}",
+                                    },
+                                )
                             if sold_out_id:
                                 raffle = await repo.get_raffle(sold_out_id)
                                 guild = self.bot.get_guild(raffle["guild_id"])

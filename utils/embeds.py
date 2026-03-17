@@ -7,6 +7,39 @@ import config
 from utils.payouts import payout_items_to_human
 
 
+def clamp_percent(value: float) -> float:
+    return max(0.0, min(100.0, float(value)))
+
+
+def render_text_progress_bar(percent: float, *, width: int = 12) -> str:
+    safe_percent = clamp_percent(percent)
+    safe_width = max(1, int(width))
+    filled = round((safe_percent / 100.0) * safe_width)
+    filled = max(0, min(safe_width, int(filled)))
+    return f"{'█' * filled}{'░' * (safe_width - filled)} {safe_percent:.0f}%"
+
+
+def format_remaining_time(target: datetime | None, now: datetime | None = None) -> str:
+    if target is None:
+        return "Unknown"
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=timezone.utc)
+    now_dt = now or datetime.now(timezone.utc)
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=timezone.utc)
+    delta = int((target - now_dt).total_seconds())
+    if delta <= 0:
+        return "Ended"
+    days, rem = divmod(delta, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    if days > 0:
+        return f"{days}d {hours}h"
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
 def create_base_embed(
     title: str, description: Optional[str] = None, color: int = config.COLOR_PRIMARY
 ) -> discord.Embed:

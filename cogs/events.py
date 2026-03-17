@@ -3113,6 +3113,20 @@ async def _end_99k_session_via_shared_flow(
         )
         if not ok:
             return False, [f"Could not close session #{int(session['id'])}."]
+        if interaction.client:
+            closed_at = datetime.now(timezone.utc)
+            for completed_user_id in completed_ids:
+                interaction.client.dispatch(
+                    "jump_99k_completed",
+                    {
+                        "guild_id": int(session.get("guild_id") or interaction.guild_id or 0),
+                        "user_id": int(completed_user_id),
+                        "session_id": int(session.get("id") or 0),
+                        "host_user_id": int(session.get("host_discord_id") or 0) if session.get("host_discord_id") is not None else None,
+                        "closed_at": closed_at,
+                        "dedupe_key": f"jump_completed:{int(session.get('id') or 0)}:{int(completed_user_id)}",
+                    },
+                )
 
     perm_report = validate_99k_permissions(
         interaction.guild,
@@ -3937,6 +3951,18 @@ class Jump99kUserControlsView(discord.ui.View):
                 torn_user_id=payer_torn,
                 torn_name=payer_torn_name,
             )
+            if updated:
+                interaction.client.dispatch(
+                    "jump_99k_purchase_verified",
+                    {
+                        "guild_id": int(session.get("guild_id") or interaction.guild_id or 0),
+                        "user_id": int(interaction.user.id),
+                        "session_id": int(self.session_id),
+                        "signup_id": int(signup.get("id") or 0) if signup.get("id") is not None else None,
+                        "verified_at": datetime.now(timezone.utc),
+                        "dedupe_key": f"jump_purchase:{int(self.session_id)}:{int(interaction.user.id)}",
+                    },
+                )
             if not updated:
                 await interaction.followup.send("Your signup is not in a payable state. If already verified, you are good to go.", ephemeral=True)
                 log_event(
@@ -5578,6 +5604,18 @@ async def auto_verify_99k_payments():
                     torn_user_id=int((key_row or {}).get("torn_user_id") or 0) or None,
                     torn_name=str((key_row or {}).get("torn_name") or "").strip() or None,
                 )
+                if updated:
+                    bot.dispatch(
+                        "jump_99k_purchase_verified",
+                        {
+                            "guild_id": int(signup.get("guild_id") or 0),
+                            "user_id": int(participant_id),
+                            "session_id": int(session_id),
+                            "signup_id": int(signup.get("id") or 0) if signup.get("id") is not None else None,
+                            "verified_at": datetime.now(timezone.utc),
+                            "dedupe_key": f"jump_purchase:{int(session_id)}:{int(participant_id)}",
+                        },
+                    )
                 if not updated:
                     log_event(
                         log,
