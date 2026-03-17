@@ -58,12 +58,17 @@ def test_create_or_restore_signup_persists_torn_name_and_does_not_wipe_on_blank(
 
     query, params = conn.execute_calls[0]
     assert "participant_torn_name" in query
-    assert "COALESCE(NULLIF(EXCLUDED.participant_torn_name, ''), jump_99k_signups.participant_torn_name)" in query
+    assert (
+        "COALESCE(NULLIF(EXCLUDED.participant_torn_name, ''), jump_99k_signups.participant_torn_name)"
+        in query
+    )
     assert params[4] == "Name"
 
 
 def test_mark_signup_payment_verified_backfills_identity_with_schema_drift_safety():
-    conn = _FakeConn(columns=["payment_source", "participant_torn_name", "participant_torn_user_id"])
+    conn = _FakeConn(
+        columns=["payment_source", "participant_torn_name", "participant_torn_user_id"]
+    )
     repo = _repo_with_conn(conn)
 
     ok = asyncio.run(

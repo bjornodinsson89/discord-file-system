@@ -626,7 +626,9 @@ def test_jump_transition_notification_uses_required_torn_identity_and_ping():
 def test_jump_transition_notification_recovers_non_host_identity_from_api_key():
     session = {"host_discord_id": 10}
     roster_rows = [{"discord_id": 10, "participant_torn_name": "HostOnlyName"}, {"discord_id": 11}]
-    users_repo = _TransitionFakeUsersRepo(rows_by_discord_id={11: {"torn_name": "Recovered", "torn_user_id": 5678}})
+    users_repo = _TransitionFakeUsersRepo(
+        rows_by_discord_id={11: {"torn_name": "Recovered", "torn_user_id": 5678}}
+    )
 
     message = asyncio.run(
         _build_jump_transition_notification(
@@ -645,7 +647,10 @@ def test_jump_transition_notification_recovers_non_host_identity_from_api_key():
 
 def test_jump_transition_notification_uses_display_name_with_torn_id_when_name_missing():
     session = {"host_discord_id": 10}
-    roster_rows = [{"discord_id": 10, "participant_torn_user_id": 999}, {"discord_id": 11, "participant_torn_user_id": 7777}]
+    roster_rows = [
+        {"discord_id": 10, "participant_torn_user_id": 999},
+        {"discord_id": 11, "participant_torn_user_id": 7777},
+    ]
 
     message = asyncio.run(
         _build_jump_transition_notification(
@@ -667,7 +672,10 @@ def test_jump_transition_notification_uses_name_only_when_only_torn_name_exists(
         _build_jump_transition_notification(
             users_repo=_TransitionFakeUsersRepo(),
             session={"host_discord_id": 10},
-            roster_rows=[{"discord_id": 10, "participant_torn_name": "OnlyHostName"}, {"discord_id": 11, "participant_torn_name": "NextOnlyName"}],
+            roster_rows=[
+                {"discord_id": 10, "participant_torn_name": "OnlyHostName"},
+                {"discord_id": 11, "participant_torn_name": "NextOnlyName"},
+            ],
             previous_discord_id=10,
             next_discord_id=11,
             guild=_FakeGuild(),
@@ -708,9 +716,17 @@ def test_jump_transition_notification_falls_back_to_display_name_or_mention_not_
 
 
 def test_removable_signup_option_label_never_uses_raw_discord_id():
-    label, _ = _removable_signup_option_label({"discord_id": 240380367066890240, "participant_torn_user_id": 3747168, "display_name": "Display"})
+    label, _ = _removable_signup_option_label(
+        {
+            "discord_id": 240380367066890240,
+            "participant_torn_user_id": 3747168,
+            "display_name": "Display",
+        }
+    )
     assert label == "Display[3747168]"
 
-    label_name, _ = _removable_signup_option_label({"discord_id": 240380367066890240, "participant_torn_name": "TornName"})
+    label_name, _ = _removable_signup_option_label(
+        {"discord_id": 240380367066890240, "participant_torn_name": "TornName"}
+    )
     assert label_name.startswith("TornName")
     assert "User 240380367066890240" not in label_name
