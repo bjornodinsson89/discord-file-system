@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import json
 from typing import Any
 
 import discord
@@ -13,6 +14,7 @@ from utils.discord_channels import resolve_guild_channel
 from utils.embeds import create_error_embed, create_info_embed, create_success_embed
 from constants.insurers import INSURER_CATEGORIES, normalize_insurer_categories
 from repositories.applications import ApplicationsRepository
+from repositories.engagement import EngagementRepository
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 
 log = logging.getLogger("happy_jumper.setup_panel")
@@ -572,6 +574,19 @@ class SetupPanelView(OwnerView):
     async def feature_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             await _send_or_edit(interaction, create_info_embed("Feature Toggles", "Change runtime behavior toggles."), FeatureTogglesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="Engagement", style=discord.ButtonStyle.primary)
+    async def engagement_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            eng_repo = EngagementRepository(self.db.pool)
+            eng_settings = await eng_repo.get_or_create_guild_settings(interaction.guild_id)
+            await _send_or_edit(
+                interaction,
+                create_info_embed("Engagement: Core", "Configure interaction XP and profile features."),
+                EngagementCoreView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self, eng_settings=eng_settings),
+            )
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
@@ -1355,6 +1370,178 @@ class HostTaxConfigModal(discord.ui.Modal):
                 }
             )
         await self.panel.save_changes(interaction, updates)
+
+
+class LevelUpChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, panel: SetupPanelView):
+        super().__init__(
+            placeholder="Set level-up announcement channel",
+            channel_types=[discord.ChannelType.text],
+            min_values=0,
+            max_values=1,
+        )
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        repo = EngagementRepository(self.panel.db.pool)
+        selected = self.values[0].id if self.values else None
+        await repo.update_guild_settings(interaction.guild_id, {"levelup_channel_id": selected})
+        await interaction.response.send_message(embed=create_success_embed("Saved", "Level-up channel updated."), ephemeral=True)
+
+
+class EngagementIgnoredTargetsModal(discord.ui.Modal):
+    def __init__(self, panel: SetupPanelView, eng_settings: dict[str, Any]):
+        super().__init__(title="Ignored channels/categories/roles")
+        self.panel = panel
+        self.channel_ids = discord.ui.TextInput(
+            label="Ignored channel IDs (comma-separated)",
+            required=False,
+            default=",".join(str(v) for v in (eng_settings.get("ignored_channel_ids_json") or [])),
+            max_length=512,
+        )
+        self.category_ids = discord.ui.TextInput(
+            label="Ignored category IDs (comma-separated)",
+            required=False,
+            default=",".join(str(v) for v in (eng_settings.get("ignored_category_ids_json") or [])),
+            max_length=512,
+        )
+        self.role_ids = discord.ui.TextInput(
+            label="Ignored role IDs (comma-separated)",
+            required=False,
+            default=",".join(str(v) for v in (eng_settings.get("ignored_role_ids_json") or [])),
+            max_length=512,
+        )
+        self.add_item(self.channel_ids)
+        self.add_item(self.category_ids)
+        self.add_item(self.role_ids)
+
+    @staticmethod
+    def _parse_ids(raw: str) -> list[int]:
+        values: list[int] = []
+        for token in (raw or "").split(","):
+            token = token.strip()
+            if token and token.isdigit():
+                values.append(int(token))
+        return values
+
+    async def on_submit(self, interaction: discord.Interaction):
+        repo = EngagementRepository(self.panel.db.pool)
+        await repo.update_guild_settings(
+            interaction.guild_id,
+            {
+                "ignored_channel_ids_json": self._parse_ids(str(self.channel_ids.value)),
+                "ignored_category_ids_json": self._parse_ids(str(self.category_ids.value)),
+                "ignored_role_ids_json": self._parse_ids(str(self.role_ids.value)),
+            },
+        )
+        await interaction.response.send_message(embed=create_success_embed("Saved", "Ignored target lists updated."), ephemeral=True)
+
+
+class EngagementBaseView(BackView):
+    def __init__(self, *, eng_settings: dict[str, Any], **kwargs):
+        super().__init__(**kwargs)
+        self.eng_settings = eng_settings
+
+    async def _toggle(self, interaction: discord.Interaction, key: str):
+        repo = EngagementRepository(self.db.pool)
+        current = bool(self.eng_settings.get(key))
+        self.eng_settings = await repo.update_guild_settings(interaction.guild_id, {key: not current})
+        await interaction.response.send_message(embed=create_success_embed("Saved", f"Updated `{key}`."), ephemeral=True)
+
+
+class EngagementCoreView(EngagementBaseView):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.add_item(LevelUpChannelSelect(self.panel))
+
+    @discord.ui.button(label="Toggle interaction XP enabled", style=discord.ButtonStyle.primary)
+    async def toggle_enabled(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle(interaction, "enabled")
+
+    @discord.ui.button(label="Toggle leaderboard enabled", style=discord.ButtonStyle.primary)
+    async def toggle_leaderboard(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle(interaction, "leaderboard_enabled")
+
+    @discord.ui.button(label="Toggle profile cards enabled", style=discord.ButtonStyle.primary)
+    async def toggle_profile_cards(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle(interaction, "profile_cards_enabled")
+
+    @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
+    async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(
+            interaction,
+            create_info_embed("Engagement: Chat / Voice / Reaction", "Configure per-source toggles and ignored targets."),
+            EngagementChatVoiceReactionView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel, eng_settings=self.eng_settings),
+        )
+
+
+class EngagementChatVoiceReactionView(EngagementBaseView):
+    @discord.ui.button(label="Toggle message XP", style=discord.ButtonStyle.primary)
+    async def toggle_message(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle(interaction, "message_xp_enabled")
+
+    @discord.ui.button(label="Toggle reaction XP", style=discord.ButtonStyle.primary)
+    async def toggle_reaction(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle(interaction, "reaction_xp_enabled")
+
+    @discord.ui.button(label="Toggle voice XP", style=discord.ButtonStyle.primary)
+    async def toggle_voice(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle(interaction, "voice_xp_enabled")
+
+    @discord.ui.button(label="Manage ignored channels/categories/roles", style=discord.ButtonStyle.secondary)
+    async def manage_ignored(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(EngagementIgnoredTargetsModal(self.panel, self.eng_settings))
+
+    @discord.ui.button(label="Next →", style=discord.ButtonStyle.primary, row=4)
+    async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(
+            interaction,
+            create_info_embed("Engagement: Event XP", "Configure event XP and auto-entry toggle."),
+            EngagementEventXpView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel, eng_settings=self.eng_settings),
+        )
+
+
+class EventXpModal(discord.ui.Modal):
+    def __init__(self, panel: SetupPanelView, key: str, title: str, current: int):
+        super().__init__(title=title)
+        self.panel = panel
+        self.key = key
+        self.value_input = discord.ui.TextInput(label="XP", required=True, default=str(current), max_length=4)
+        self.add_item(self.value_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = str(self.value_input.value).strip()
+        if not raw.isdigit():
+            await interaction.response.send_message(embed=create_error_embed("Invalid value", "XP must be a positive integer."), ephemeral=True)
+            return
+        repo = EngagementRepository(self.panel.db.pool)
+        await repo.update_guild_settings(interaction.guild_id, {self.key: int(raw)})
+        await interaction.response.send_message(embed=create_success_embed("Saved", f"Updated `{self.key}`."), ephemeral=True)
+
+
+class EngagementEventXpView(EngagementBaseView):
+    @discord.ui.button(label="Configure paid raffle purchase XP", style=discord.ButtonStyle.secondary)
+    async def raffle_xp(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(
+            EventXpModal(self.panel, "paid_raffle_purchase_xp_base", "Paid raffle purchase XP base", int(self.eng_settings.get("paid_raffle_purchase_xp_base") or 15))
+        )
+
+    @discord.ui.button(label="Configure jump purchase XP", style=discord.ButtonStyle.secondary)
+    async def jump_purchase_xp(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(
+            EventXpModal(self.panel, "jump_purchase_xp", "Jump purchase XP", int(self.eng_settings.get("jump_purchase_xp") or 40))
+        )
+
+    @discord.ui.button(label="Configure jump completion XP", style=discord.ButtonStyle.secondary)
+    async def jump_completion_xp(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(
+            EventXpModal(self.panel, "jump_completion_xp", "Jump completion XP", int(self.eng_settings.get("jump_completion_xp") or 75))
+        )
+
+    @discord.ui.button(label="Toggle auto-entry giveaways enabled", style=discord.ButtonStyle.primary)
+    async def toggle_auto_entry(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle(interaction, "auto_entry_giveaways_enabled")
+
 
 
 class HostTaxView(BackView):
