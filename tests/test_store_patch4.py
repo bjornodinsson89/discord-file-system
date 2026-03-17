@@ -92,7 +92,9 @@ class _FakeStoreRepo:
     async def adjust_stock(self, _guild_id: int, _item_id: int, delta: int, *, conn=None):
         self.stock_delta += delta
 
-    async def get_redemption(self, guild_id: int, redemption_id: int, *, conn=None, for_update=False):
+    async def get_redemption(
+        self, guild_id: int, redemption_id: int, *, conn=None, for_update=False
+    ):
         for r in self.redemptions:
             if r["guild_id"] == guild_id and r["id"] == redemption_id:
                 return dict(r)
@@ -279,7 +281,9 @@ def test_refund_restores_tokens_and_stock_atomically():
                 "token_cost": 4,
             }
         )
-        updated, err = await service.refund_redemption(guild_id=1, redemption_id=1, admin_user_id=999)
+        updated, err = await service.refund_redemption(
+            guild_id=1, redemption_id=1, admin_user_id=999
+        )
         assert err is None
         assert updated["status"] == "refunded"
         assert token.refunded == 4
