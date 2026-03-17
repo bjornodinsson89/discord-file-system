@@ -528,3 +528,43 @@ class EngagementRepository(RepositoryBase):
                     int(tokens["prize_token_lifetime_spent"]),
                 )
                 return dict(row)
+
+
+    async def cleanup_departed_member(self, guild_id: int, user_id: int) -> dict[str, int]:
+        async with self.acquire() as conn:
+            message_state = await conn.execute(
+                "DELETE FROM engagement_message_state WHERE guild_id = $1 AND user_id = $2",
+                guild_id,
+                user_id,
+            )
+            reaction_state = await conn.execute(
+                "DELETE FROM engagement_reaction_state WHERE guild_id = $1 AND (reactor_user_id = $2 OR target_user_id = $2)",
+                guild_id,
+                user_id,
+            )
+            profile = await conn.execute(
+                "DELETE FROM engagement_profiles WHERE guild_id = $1 AND user_id = $2",
+                guild_id,
+                user_id,
+            )
+            return {
+                "engagement_message_state": int(str(message_state).split()[-1]),
+                "engagement_reaction_state": int(str(reaction_state).split()[-1]),
+                "engagement_profiles": int(str(profile).split()[-1]),
+            }
+
+    async def list_guild_user_ids(self, guild_id: int) -> set[int]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id AS uid FROM engagement_profiles WHERE guild_id = $1
+                UNION
+                SELECT user_id AS uid FROM engagement_message_state WHERE guild_id = $1
+                UNION
+                SELECT reactor_user_id AS uid FROM engagement_reaction_state WHERE guild_id = $1
+                UNION
+                SELECT target_user_id AS uid FROM engagement_reaction_state WHERE guild_id = $1
+                """,
+                guild_id,
+            )
+            return {int(r["uid"]) for r in rows if int(r["uid"] or 0) > 0}

@@ -309,3 +309,43 @@ class PoolsRepository(RepositoryBase):
                 int(buyer_discord_id),
             )
         return result.startswith("DELETE ") and int(result.split()[-1]) > 0
+
+    async def cleanup_departed_member(self, guild_id: int, user_id: int) -> dict[str, int]:
+        async with self.acquire() as conn:
+            entry_result = await conn.execute(
+                """
+                DELETE FROM xanax_pool_entries e
+                USING xanax_pools p
+                WHERE e.pool_id = p.id
+                  AND p.guild_id = $1
+                  AND e.user_discord_id = $2
+                """,
+                guild_id,
+                user_id,
+            )
+            pending_result = await conn.execute(
+                "DELETE FROM xanax_pool_pending_purchases WHERE guild_id = $1 AND buyer_discord_id = $2",
+                guild_id,
+                user_id,
+            )
+            return {
+                "xanax_pool_entries": int(str(entry_result).split()[-1]),
+                "xanax_pool_pending_purchases": int(str(pending_result).split()[-1]),
+            }
+
+    async def list_guild_participant_user_ids(self, guild_id: int) -> set[int]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT e.user_discord_id AS uid
+                FROM xanax_pool_entries e
+                JOIN xanax_pools p ON p.id = e.pool_id
+                WHERE p.guild_id = $1
+                UNION
+                SELECT DISTINCT buyer_discord_id AS uid
+                FROM xanax_pool_pending_purchases
+                WHERE guild_id = $1
+                """,
+                guild_id,
+            )
+            return {int(r["uid"]) for r in rows if int(r["uid"] or 0) > 0}

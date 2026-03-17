@@ -1744,3 +1744,36 @@ class JumpsRepository(RepositoryBase):
             open_count = int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_sessions WHERE guild_id = $1 AND status = 'open'", guild_id) or 0)
             signups = int(await conn.fetchval("SELECT COUNT(*) FROM jump_99k_signups WHERE guild_id = $1", guild_id) or 0)
             return {"total_sessions": total, "open_sessions": open_count, "total_signups": signups}
+
+    async def cleanup_departed_member(self, guild_id: int, user_id: int) -> dict[str, int]:
+        async with self.acquire() as conn:
+            signup_result = await conn.execute(
+                "DELETE FROM jump_99k_signups WHERE guild_id = $1 AND participant_discord_id = $2",
+                guild_id,
+                user_id,
+            )
+            readiness_result = await conn.execute(
+                "DELETE FROM jump_99k_readiness WHERE guild_id = $1 AND discord_id = $2",
+                guild_id,
+                user_id,
+            )
+            return {
+                "jump_99k_signups": int(str(signup_result).split()[-1]),
+                "jump_99k_readiness": int(str(readiness_result).split()[-1]),
+            }
+
+    async def list_guild_participant_user_ids(self, guild_id: int) -> set[int]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT participant_discord_id AS uid
+                FROM jump_99k_signups
+                WHERE guild_id = $1 AND participant_discord_id IS NOT NULL
+                UNION
+                SELECT DISTINCT discord_id AS uid
+                FROM jump_99k_readiness
+                WHERE guild_id = $1 AND discord_id IS NOT NULL
+                """,
+                guild_id,
+            )
+            return {int(r["uid"]) for r in rows if int(r["uid"] or 0) > 0}

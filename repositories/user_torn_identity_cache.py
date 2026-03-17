@@ -94,3 +94,11 @@ class UserTornIdentityCacheRepository(RepositoryBase):
                 int(discord_id),
             )
         return result == "DELETE 1"
+
+    async def list_guild_discord_ids(self, guild_id: int) -> set[int]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT discord_id FROM public.user_torn_identity_cache WHERE guild_id = $1",
+                int(guild_id),
+            )
+        return {int(r["discord_id"]) for r in rows if int(r["discord_id"] or 0) > 0}

@@ -136,3 +136,17 @@ class PrizeTokensRepository(RepositoryBase):
                 limit,
             )
             return [dict(r) for r in rows]
+
+    async def cleanup_departed_member(self, guild_id: int, user_id: int) -> dict[str, int]:
+        async with self.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM prize_token_transactions WHERE guild_id = $1 AND user_id = $2",
+                guild_id,
+                user_id,
+            )
+            return {"prize_token_transactions": int(str(result).split()[-1])}
+
+    async def list_guild_user_ids(self, guild_id: int) -> set[int]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch("SELECT DISTINCT user_id FROM prize_token_transactions WHERE guild_id = $1", guild_id)
+            return {int(r["user_id"]) for r in rows if int(r["user_id"] or 0) > 0}
