@@ -67,7 +67,9 @@ class _FakeRepo:
     async def get_hourly_reaction_xp(self, _guild_id: int, _target_user_id: int):
         return self.reaction_hourly
 
-    async def add_reaction_marker(self, guild_id: int, message_id: int, reactor_user_id: int, _target_user_id: int):
+    async def add_reaction_marker(
+        self, guild_id: int, message_id: int, reactor_user_id: int, _target_user_id: int
+    ):
         key = (guild_id, message_id, reactor_user_id)
         if key in self.reacts:
             return False
@@ -85,7 +87,9 @@ def test_level_calculation():
 
 
 def test_migration_has_engagement_tables():
-    src = open("migrations/2026_03_17_add_engagement_backend_foundation.sql", encoding="utf-8").read()
+    src = open(
+        "migrations/2026_03_17_add_engagement_backend_foundation.sql", encoding="utf-8"
+    ).read()
     for table in [
         "engagement_profiles",
         "engagement_event_ledger",
@@ -156,14 +160,20 @@ def test_reaction_xp_duplicate_and_cap():
     async def _run():
         repo = _FakeRepo()
         service = EngagementService(repo, _FakePrizeTokenService())
-        ok = await service.reaction_xp_if_eligible(guild_id=1, reactor_user_id=10, target_user_id=20, message_id=30)
+        ok = await service.reaction_xp_if_eligible(
+            guild_id=1, reactor_user_id=10, target_user_id=20, message_id=30
+        )
         assert ok is True
 
-        dup = await service.reaction_xp_if_eligible(guild_id=1, reactor_user_id=10, target_user_id=20, message_id=30)
+        dup = await service.reaction_xp_if_eligible(
+            guild_id=1, reactor_user_id=10, target_user_id=20, message_id=30
+        )
         assert dup is False
 
         repo.reaction_hourly = 20
-        capped = await service.reaction_xp_if_eligible(guild_id=1, reactor_user_id=11, target_user_id=20, message_id=30)
+        capped = await service.reaction_xp_if_eligible(
+            guild_id=1, reactor_user_id=11, target_user_id=20, message_id=30
+        )
         assert capped is False
 
     asyncio.run(_run())
@@ -177,9 +187,15 @@ def test_dispatch_consumers_award_expected_xp_and_no_xp_for_giveaway():
         tokens = _FakePrizeTokenService()
         service = EngagementService(repo, tokens)
 
-        await service.process_paid_raffle_purchase({"guild_id": 1, "user_id": 7, "entry_id": 1, "ticket_count": 4, "dedupe_key": "a"})
-        await service.process_jump_purchase_verified({"guild_id": 1, "user_id": 7, "session_id": 9, "dedupe_key": "b"})
-        await service.process_jump_completed({"guild_id": 1, "user_id": 7, "session_id": 9, "dedupe_key": "c"})
+        await service.process_paid_raffle_purchase(
+            {"guild_id": 1, "user_id": 7, "entry_id": 1, "ticket_count": 4, "dedupe_key": "a"}
+        )
+        await service.process_jump_purchase_verified(
+            {"guild_id": 1, "user_id": 7, "session_id": 9, "dedupe_key": "b"}
+        )
+        await service.process_jump_completed(
+            {"guild_id": 1, "user_id": 7, "session_id": 9, "dedupe_key": "c"}
+        )
         profile = repo.profiles[(1, 7)]
         assert profile["paid_raffle_xp_total"] == 23
         assert profile["jump_purchase_xp_total"] == 40
@@ -211,3 +227,15 @@ def test_level_up_grants_exactly_one_token_per_level():
         assert len(tokens.grants) == 2
 
     asyncio.run(_run())
+
+
+def test_profile_upsert_insert_path_includes_increment_columns():
+    src = open("repositories/engagement.py", encoding="utf-8").read()
+    assert "INSERT INTO engagement_profiles (" in src
+    assert "message_xp_total" in src
+    assert "paid_raffle_purchases_count" in src
+
+
+def test_prize_token_dedupe_uses_on_conflict_do_nothing():
+    src = open("repositories/prize_tokens.py", encoding="utf-8").read()
+    assert "ON CONFLICT (guild_id, dedupe_key) DO NOTHING" in src

@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import asyncpg
-
 from .base import RepositoryBase
 
 
@@ -37,23 +35,38 @@ class EngagementRepository(RepositoryBase):
             )
             return dict(row)
 
-    async def apply_xp_delta(self, guild_id: int, user_id: int, xp_delta: int, increments: dict[str, int]) -> dict:
+    async def apply_xp_delta(
+        self, guild_id: int, user_id: int, xp_delta: int, increments: dict[str, int]
+    ) -> dict:
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO engagement_profiles (guild_id, user_id, xp_total)
-                VALUES ($1, $2, $3)
+                INSERT INTO engagement_profiles (
+                    guild_id,
+                    user_id,
+                    xp_total,
+                    message_xp_total,
+                    reaction_xp_total,
+                    paid_raffle_xp_total,
+                    jump_purchase_xp_total,
+                    jump_completion_xp_total,
+                    paid_raffle_purchases_count,
+                    paid_raffle_tickets_count,
+                    jump_99k_purchases_count,
+                    jump_99k_completed_count
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 ON CONFLICT (guild_id, user_id) DO UPDATE
                 SET xp_total = engagement_profiles.xp_total + EXCLUDED.xp_total,
-                    message_xp_total = engagement_profiles.message_xp_total + $4,
-                    reaction_xp_total = engagement_profiles.reaction_xp_total + $5,
-                    paid_raffle_xp_total = engagement_profiles.paid_raffle_xp_total + $6,
-                    jump_purchase_xp_total = engagement_profiles.jump_purchase_xp_total + $7,
-                    jump_completion_xp_total = engagement_profiles.jump_completion_xp_total + $8,
-                    paid_raffle_purchases_count = engagement_profiles.paid_raffle_purchases_count + $9,
-                    paid_raffle_tickets_count = engagement_profiles.paid_raffle_tickets_count + $10,
-                    jump_99k_purchases_count = engagement_profiles.jump_99k_purchases_count + $11,
-                    jump_99k_completed_count = engagement_profiles.jump_99k_completed_count + $12,
+                    message_xp_total = engagement_profiles.message_xp_total + EXCLUDED.message_xp_total,
+                    reaction_xp_total = engagement_profiles.reaction_xp_total + EXCLUDED.reaction_xp_total,
+                    paid_raffle_xp_total = engagement_profiles.paid_raffle_xp_total + EXCLUDED.paid_raffle_xp_total,
+                    jump_purchase_xp_total = engagement_profiles.jump_purchase_xp_total + EXCLUDED.jump_purchase_xp_total,
+                    jump_completion_xp_total = engagement_profiles.jump_completion_xp_total + EXCLUDED.jump_completion_xp_total,
+                    paid_raffle_purchases_count = engagement_profiles.paid_raffle_purchases_count + EXCLUDED.paid_raffle_purchases_count,
+                    paid_raffle_tickets_count = engagement_profiles.paid_raffle_tickets_count + EXCLUDED.paid_raffle_tickets_count,
+                    jump_99k_purchases_count = engagement_profiles.jump_99k_purchases_count + EXCLUDED.jump_99k_purchases_count,
+                    jump_99k_completed_count = engagement_profiles.jump_99k_completed_count + EXCLUDED.jump_99k_completed_count,
                     updated_at = NOW()
                 RETURNING *
                 """,
@@ -150,7 +163,9 @@ class EngagementRepository(RepositoryBase):
                 last_channel_id,
             )
 
-    async def add_reaction_marker(self, guild_id: int, message_id: int, reactor_user_id: int, target_user_id: int) -> bool:
+    async def add_reaction_marker(
+        self, guild_id: int, message_id: int, reactor_user_id: int, target_user_id: int
+    ) -> bool:
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -166,7 +181,9 @@ class EngagementRepository(RepositoryBase):
             )
             return row is not None
 
-    async def get_recent_event_rows(self, guild_id: int, user_id: int, limit: int = 10) -> list[dict]:
+    async def get_recent_event_rows(
+        self, guild_id: int, user_id: int, limit: int = 10
+    ) -> list[dict]:
         async with self.acquire() as conn:
             rows = await conn.fetch(
                 """

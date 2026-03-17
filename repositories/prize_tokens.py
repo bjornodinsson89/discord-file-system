@@ -23,14 +23,6 @@ class PrizeTokensRepository(RepositoryBase):
             return None
         async with self.acquire() as conn:
             async with conn.transaction():
-                dup = await conn.fetchrow(
-                    "SELECT id FROM prize_token_transactions WHERE guild_id = $1 AND dedupe_key = $2",
-                    guild_id,
-                    dedupe_key,
-                )
-                if dup:
-                    return None
-
                 await conn.execute(
                     """
                     INSERT INTO engagement_profiles (guild_id, user_id)
@@ -59,6 +51,7 @@ class PrizeTokensRepository(RepositoryBase):
                         guild_id, user_id, transaction_type, amount, balance_after,
                         source_type, source_id, dedupe_key, metadata_json
                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+                    ON CONFLICT (guild_id, dedupe_key) DO NOTHING
                     RETURNING *
                     """,
                     guild_id,
@@ -71,6 +64,9 @@ class PrizeTokensRepository(RepositoryBase):
                     dedupe_key,
                     json.dumps(metadata or {}),
                 )
+                if tx is None:
+                    return None
+
                 await conn.execute(
                     """
                     UPDATE engagement_profiles
@@ -88,7 +84,9 @@ class PrizeTokensRepository(RepositoryBase):
                 )
                 return dict(tx)
 
-    async def get_recent_transactions(self, guild_id: int, user_id: int, limit: int = 10) -> list[dict]:
+    async def get_recent_transactions(
+        self, guild_id: int, user_id: int, limit: int = 10
+    ) -> list[dict]:
         async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM prize_token_transactions WHERE guild_id = $1 AND user_id = $2 ORDER BY id DESC LIMIT $3",
