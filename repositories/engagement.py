@@ -323,43 +323,117 @@ class EngagementRepository(RepositoryBase):
             )
             return [dict(r) for r in rows]
 
+    async def set_level_reward_role_id(self, guild_id: int, level_required: int, role_id: int) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE engagement_role_rewards
+                SET role_id = $3
+                WHERE guild_id = $1 AND level_required = $2
+                """,
+                guild_id,
+                level_required,
+                role_id,
+            )
+
+    async def set_prize_reward_role_id(
+        self, guild_id: int, milestone_type: str, milestone_value: int, role_id: int
+    ) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE engagement_prize_roles
+                SET role_id = $4
+                WHERE guild_id = $1 AND milestone_type = $2 AND milestone_value = $3
+                """,
+                guild_id,
+                milestone_type,
+                milestone_value,
+                role_id,
+            )
+
     async def seed_default_reward_ladders(self, guild_id: int) -> None:
+        level_defaults = [
+            (1, "Pickpocket", "95A5A6"),
+            (4, "Mugger", "7F8C8D"),
+            (7, "Booster", "8E44AD"),
+            (10, "Wheelman", "9B59B6"),
+            (13, "Safecracker", "2980B9"),
+            (16, "Drug Runner", "3498DB"),
+            (19, "Racketeer", "16A085"),
+            (22, "Loan Shark", "1ABC9C"),
+            (25, "Bookie", "27AE60"),
+            (28, "Arms Dealer", "2ECC71"),
+            (31, "Heist Planner", "F39C12"),
+            (34, "Faction Soldier", "F1C40F"),
+            (37, "Street Boss", "D35400"),
+            (40, "Underboss", "E67E22"),
+            (43, "Crime Lord", "C0392B"),
+            (46, "Faction Heavy", "E74C3C"),
+            (49, "Torn Legend", "FF4D6D"),
+            (50, "City Kingpin", "FD79A8"),
+        ]
+        milestone_defaults = [
+            ("lifetime_tokens_earned", 5, "Supporter", "00CEC9"),
+            ("lifetime_tokens_earned", 15, "High Roller", "00B894"),
+            ("lifetime_tokens_earned", 30, "Whale", "55EFC4"),
+            ("jump_completions", 3, "Jump Starter", "74B9FF"),
+            ("jump_completions", 10, "Jump Specialist", "0984E3"),
+            ("jump_completions", 25, "Airborne Addict", "6C5CE7"),
+            ("raffle_purchases", 5, "Ticket Buyer", "FFEAA7"),
+            ("raffle_purchases", 15, "Raffle Addict", "FDCB6E"),
+            ("raffle_purchases", 30, "Jackpot Chaser", "E17055"),
+            ("message_xp_total", 2500, "Talkative", "81ECEC"),
+            ("message_xp_total", 10000, "Loudmouth", "00CEC9"),
+            ("voice_xp_total", 1000, "Night Owl", "A29BFE"),
+            ("voice_xp_total", 5000, "Radio Active", "6C5CE7"),
+            ("reaction_xp_total", 500, "Crowd Favorite", "FAB1A0"),
+            ("reaction_xp_total", 2000, "Local Celebrity", "FF7675"),
+        ]
         async with self.acquire() as conn:
             async with conn.transaction():
-                level_exists = await conn.fetchval(
-                    "SELECT 1 FROM engagement_role_rewards WHERE guild_id = $1 LIMIT 1", guild_id
+                old_levels = await conn.fetch(
+                    "SELECT level_required, role_id FROM engagement_role_rewards WHERE guild_id = $1",
+                    guild_id,
                 )
-                if not level_exists:
-                    for level in [5, 10, 20, 35, 50]:
-                        await conn.execute(
-                            """
-                            INSERT INTO engagement_role_rewards (guild_id, level_required, role_id, remove_lower_tiers)
-                            VALUES ($1, $2, 0, TRUE)
-                            """,
-                            guild_id,
-                            level,
-                        )
-
-                prize_exists = await conn.fetchval(
-                    "SELECT 1 FROM engagement_prize_roles WHERE guild_id = $1 LIMIT 1", guild_id
+                old_milestones = await conn.fetch(
+                    "SELECT milestone_type, milestone_value, role_id FROM engagement_prize_roles WHERE guild_id = $1",
+                    guild_id,
                 )
-                if not prize_exists:
-                    defaults = [
-                        ("lifetime_tokens_earned", 5),
-                        ("lifetime_tokens_earned", 15),
-                        ("jump_completions", 5),
-                        ("raffle_purchases", 10),
-                    ]
-                    for milestone_type, milestone_value in defaults:
-                        await conn.execute(
-                            """
-                            INSERT INTO engagement_prize_roles (guild_id, milestone_type, milestone_value, role_id)
-                            VALUES ($1, $2, $3, 0)
-                            """,
-                            guild_id,
-                            milestone_type,
-                            milestone_value,
-                        )
+                level_role_ids = {int(r["level_required"]): int(r["role_id"] or 0) for r in old_levels}
+                milestone_role_ids = {
+                    (str(r["milestone_type"]), int(r["milestone_value"])): int(r["role_id"] or 0)
+                    for r in old_milestones
+                }
+                await conn.execute("DELETE FROM engagement_role_rewards WHERE guild_id = $1", guild_id)
+                await conn.execute("DELETE FROM engagement_prize_roles WHERE guild_id = $1", guild_id)
+                for level, role_name, role_color in level_defaults:
+                    await conn.execute(
+                        """
+                        INSERT INTO engagement_role_rewards
+                        (guild_id, level_required, role_id, remove_lower_tiers, role_name, role_color, auto_created)
+                        VALUES ($1, $2, $3, TRUE, $4, $5, TRUE)
+                        """,
+                        guild_id,
+                        level,
+                        int(level_role_ids.get(level, 0)),
+                        role_name,
+                        role_color,
+                    )
+                for milestone_type, milestone_value, role_name, role_color in milestone_defaults:
+                    await conn.execute(
+                        """
+                        INSERT INTO engagement_prize_roles
+                        (guild_id, milestone_type, milestone_value, role_id, role_name, role_color, auto_created)
+                        VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+                        """,
+                        guild_id,
+                        milestone_type,
+                        milestone_value,
+                        int(milestone_role_ids.get((milestone_type, milestone_value), 0)),
+                        role_name,
+                        role_color,
+                    )
 
     async def list_profiles_for_guild(self, guild_id: int) -> list[dict]:
         async with self.acquire() as conn:

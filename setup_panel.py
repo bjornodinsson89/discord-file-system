@@ -10,6 +10,7 @@ from utils import GuildSettingsRepository, get_security_manager, get_torn_api
 from repositories.audit import AuditRepository
 from repositories.engagement import EngagementRepository
 from repositories.store import StoreRepository
+from services.role_reward_service import RoleRewardService
 from utils.database import MissingDatabaseColumnError
 from utils.discord_channels import resolve_guild_channel
 from utils.embeds import create_error_embed, create_info_embed, create_success_embed
@@ -1669,23 +1670,44 @@ async def send_setup_panel(interaction: discord.Interaction, db) -> None:
 
 
 class EngagementRolesView(BackView):
-    @discord.ui.button(label="Manage level roles", style=discord.ButtonStyle.primary, row=0)
-    async def manage_level_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Use engagement role reward configuration tools to manage level roles.", ephemeral=True)
+    @discord.ui.button(label="Create/Repair Reward Roles", style=discord.ButtonStyle.primary, row=0)
+    async def create_repair_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
+        service = RoleRewardService(EngagementRepository(self.db.pool))
+        await service.seed_default_ladders_if_missing(interaction.guild.id)
+        created, repaired = await service.ensure_reward_roles(interaction.guild)
+        await interaction.response.send_message(f"Done. Created: {created}, repaired: {repaired}.", ephemeral=True)
 
-    @discord.ui.button(label="Manage prize roles", style=discord.ButtonStyle.primary, row=1)
-    async def manage_prize_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Use engagement role reward configuration tools to manage prize roles.", ephemeral=True)
-
-    @discord.ui.button(label="Sync all reward roles", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="Sync All Reward Roles", style=discord.ButtonStyle.primary, row=1)
     async def sync_all_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Run /engagement sync_roles to sync all reward roles.", ephemeral=True)
+        repo = EngagementRepository(self.db.pool)
+        service = RoleRewardService(repo)
+        await service.seed_default_ladders_if_missing(interaction.guild.id)
+        await service.ensure_reward_roles(interaction.guild)
+        profiles = await repo.list_profiles_for_guild(interaction.guild.id)
+        totals = {"granted": 0, "removed": 0, "failed": 0}
+        for profile in profiles:
+            member = interaction.guild.get_member(int(profile["user_id"]))
+            if member is None:
+                continue
+            result = await service.sync_member_roles(interaction.guild, member, profile)
+            for key in totals:
+                totals[key] += int(result.get(key, 0))
+        await interaction.response.send_message(f"Sync completed: {totals}", ephemeral=True)
 
-    @discord.ui.button(label="Seed default reward ladder", style=discord.ButtonStyle.primary, row=3)
-    async def seed_default_reward_ladder(self, interaction: discord.Interaction, _: discord.ui.Button):
+    @discord.ui.button(label="Reseed Reward Role Definitions", style=discord.ButtonStyle.primary, row=2)
+    async def reseed_reward_definitions(self, interaction: discord.Interaction, _: discord.ui.Button):
         repo = EngagementRepository(self.db.pool)
         await repo.seed_default_reward_ladders(interaction.guild.id)
-        await interaction.response.send_message("Default reward ladders seeded if they were missing.", ephemeral=True)
+        await interaction.response.send_message("Reward role definitions reseeded.", ephemeral=True)
+
+    @discord.ui.button(label="View Reward Role Status", style=discord.ButtonStyle.primary, row=3)
+    async def view_reward_role_status(self, interaction: discord.Interaction, _: discord.ui.Button):
+        service = RoleRewardService(EngagementRepository(self.db.pool))
+        status = await service.rewards_status(interaction.guild.id, interaction.guild)
+        await interaction.response.send_message(
+            f"Configured roles: {status['total']}\nLinked and present: {status['linked']}\nMissing/deleted: {status['missing']}",
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def custom_back(self, interaction: discord.Interaction, _: discord.ui.Button):
