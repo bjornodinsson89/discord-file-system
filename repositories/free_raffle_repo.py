@@ -61,7 +61,9 @@ class FreeRaffleRepository(RepositoryBase):
             )
             return dict(row) if row else None
 
-    async def set_status(self, raffle_id: int, status: str, ended_at: datetime | None = None) -> None:
+    async def set_status(
+        self, raffle_id: int, status: str, ended_at: datetime | None = None
+    ) -> None:
         async with self.acquire() as conn:
             await conn.execute(
                 """
@@ -89,8 +91,6 @@ class FreeRaffleRepository(RepositoryBase):
             )
             return result.endswith("1")
 
-
-
     async def add_entry_with_source(
         self,
         raffle_id: int,
@@ -114,6 +114,99 @@ class FreeRaffleRepository(RepositoryBase):
                 dedupe_key,
             )
             return result.endswith("1")
+
+    async def auto_enter_once_with_token_spend(
+        self,
+        *,
+        guild_id: int,
+        raffle_id: int,
+        user_id: int,
+        entry_weight: int,
+        dedupe_key: str,
+    ) -> bool:
+        async with self.acquire() as conn:
+            async with conn.transaction():
+                raffle = await conn.fetchrow(
+                    """
+                    SELECT id
+                    FROM free_raffles
+                    WHERE id = $1
+                      AND guild_id = $2
+                      AND status = 'active'
+                      AND COALESCE(auto_entry_enabled, FALSE) = TRUE
+                    FOR UPDATE
+                    """,
+                    raffle_id,
+                    guild_id,
+                )
+                if raffle is None:
+                    return False
+
+                await conn.execute(
+                    """
+                    INSERT INTO engagement_profiles (guild_id, user_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT (guild_id, user_id) DO NOTHING
+                    """,
+                    guild_id,
+                    user_id,
+                )
+                profile = await conn.fetchrow(
+                    """
+                    SELECT prize_token_balance
+                    FROM engagement_profiles
+                    WHERE guild_id = $1 AND user_id = $2
+                    FOR UPDATE
+                    """,
+                    guild_id,
+                    user_id,
+                )
+                balance = int(profile.get("prize_token_balance") or 0)
+                if balance < 1:
+                    return False
+                next_balance = balance - 1
+
+                tx_row = await conn.fetchrow(
+                    """
+                    WITH inserted_entry AS (
+                        INSERT INTO free_raffle_entries (raffle_id, discord_id, entry_source, entry_weight, dedupe_key)
+                        VALUES ($1, $2, 'auto_token', $3, $4)
+                        ON CONFLICT (raffle_id, discord_id) DO NOTHING
+                        RETURNING raffle_id
+                    )
+                    INSERT INTO prize_token_transactions (
+                        guild_id, user_id, transaction_type, amount, balance_after,
+                        source_type, source_id, dedupe_key, metadata_json
+                    )
+                    SELECT $5, $2, 'auto_entry_spend', -1, $6,
+                           'giveaway', $1::TEXT, $4, jsonb_build_object('giveaway_id', $1)
+                    FROM inserted_entry
+                    ON CONFLICT (guild_id, dedupe_key) DO NOTHING
+                    RETURNING id
+                    """,
+                    raffle_id,
+                    user_id,
+                    max(1, int(entry_weight)),
+                    dedupe_key,
+                    guild_id,
+                    next_balance,
+                )
+                if tx_row is None:
+                    return False
+
+                await conn.execute(
+                    """
+                    UPDATE engagement_profiles
+                    SET prize_token_balance = $3,
+                        prize_token_lifetime_spent = prize_token_lifetime_spent + 1,
+                        updated_at = NOW()
+                    WHERE guild_id = $1 AND user_id = $2
+                    """,
+                    guild_id,
+                    user_id,
+                    next_balance,
+                )
+                return True
 
     async def user_has_entry(self, raffle_id: int, discord_id: int) -> bool:
         async with self.acquire() as conn:
@@ -141,6 +234,7 @@ class FreeRaffleRepository(RepositoryBase):
                     guild_id,
                 )
             return [dict(r) for r in rows]
+
     async def get_entry_count(self, raffle_id: int) -> int:
         async with self.acquire() as conn:
             value = await conn.fetchval(
@@ -221,7 +315,9 @@ class FreeRaffleRepository(RepositoryBase):
             )
             return [dict(row) for row in rows]
 
-    async def draw_expired_raffle(self, raffle_id: int, *, now: datetime | None = None) -> dict | None:
+    async def draw_expired_raffle(
+        self, raffle_id: int, *, now: datetime | None = None
+    ) -> dict | None:
         draw_time = now or datetime.now(timezone.utc)
         async with self.acquire() as conn:
             async with conn.transaction():

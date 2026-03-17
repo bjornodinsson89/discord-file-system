@@ -37,11 +37,19 @@ class RoleRewardService:
         removed = 0
         failed = 0
 
-        eligible_level = [r for r in level_rewards if int(r.get("role_id") or 0) > 0 and int(profile.get("level") or 0) >= int(r.get("level_required") or 0)]
+        eligible_level = [
+            r
+            for r in level_rewards
+            if int(r.get("role_id") or 0) > 0
+            and int(profile.get("level") or 0) >= int(r.get("level_required") or 0)
+        ]
         target_level_reward = eligible_level[-1] if eligible_level else None
+        target_level_role_id = (
+            int(target_level_reward.get("role_id") or 0) if target_level_reward else 0
+        )
 
         if target_level_reward is not None:
-            target_role = guild.get_role(int(target_level_reward["role_id"]))
+            target_role = guild.get_role(target_level_role_id)
             if target_role is None:
                 failed += 1
             else:
@@ -52,24 +60,33 @@ class RoleRewardService:
                 except Exception:
                     failed += 1
 
-                if bool(target_level_reward.get("remove_lower_tiers", True)):
-                    for reward in level_rewards:
-                        role_id = int(reward.get("role_id") or 0)
-                        if role_id <= 0 or role_id == int(target_level_reward["role_id"]):
-                            continue
-                        role = guild.get_role(role_id)
-                        if role is not None and role in member.roles:
-                            try:
-                                await member.remove_roles(role, reason="Engagement level reward tier cleanup")
-                                removed += 1
-                            except Exception:
-                                failed += 1
+        should_cleanup_level_tiers = target_level_reward is None or bool(
+            target_level_reward.get("remove_lower_tiers", True)
+        )
+        if should_cleanup_level_tiers:
+            for reward in level_rewards:
+                role_id = int(reward.get("role_id") or 0)
+                if role_id <= 0 or role_id == target_level_role_id:
+                    continue
+                role = guild.get_role(role_id)
+                if role is not None and role in member.roles:
+                    try:
+                        await member.remove_roles(
+                            role, reason="Engagement level reward tier cleanup"
+                        )
+                        removed += 1
+                    except Exception:
+                        failed += 1
 
         for reward in prize_rewards:
             role_id = int(reward.get("role_id") or 0)
             if role_id <= 0:
                 continue
-            if not self.prize_role_eligible(profile, str(reward.get("milestone_type") or ""), int(reward.get("milestone_value") or 0)):
+            if not self.prize_role_eligible(
+                profile,
+                str(reward.get("milestone_type") or ""),
+                int(reward.get("milestone_value") or 0),
+            ):
                 continue
             role = guild.get_role(role_id)
             if role is None:

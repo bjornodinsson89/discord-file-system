@@ -108,6 +108,27 @@ def test_prize_roles_stack_and_level_role_exclusive_highest_tier_only():
     asyncio.run(_run())
 
 
+def test_level_role_cleanup_when_no_tier_is_eligible():
+    async def _run():
+        repo = _FakeRepo()
+        service = RoleRewardService(repo)
+        guild = _FakeGuild(1, [_FakeRole(100), _FakeRole(101), _FakeRole(102)])
+        member = _FakeMember(9, roles=[guild.get_role(100), guild.get_role(101)])
+
+        profile = {
+            "level": 1,
+            "prize_token_lifetime_earned": 0,
+            "jump_99k_completed_count": 0,
+            "paid_raffle_purchases_count": 0,
+        }
+        result = await service.sync_member_roles(guild, member, profile)
+        assert guild.get_role(100) not in member.roles
+        assert guild.get_role(101) not in member.roles
+        assert result["removed"] >= 2
+
+    asyncio.run(_run())
+
+
 def test_role_sync_fails_soft_missing_role_or_permissions():
     async def _run():
         repo = _FakeRepo()
@@ -166,3 +187,15 @@ def test_weighted_draw_path_uses_entry_weight_without_row_duplication():
     assert "entry_weight" in src
     assert "secrets.randbelow" in src
     assert "INSERT INTO free_raffle_entries" in src
+
+
+def test_auto_entry_path_is_atomic_for_token_spend_and_entry_insert():
+    src = Path("repositories/free_raffle_repo.py").read_text(encoding="utf-8")
+    assert "auto_enter_once_with_token_spend" in src
+    assert "async with conn.transaction()" in src
+    assert "WITH inserted_entry AS" in src
+    assert "INSERT INTO free_raffle_entries" in src
+    assert "INSERT INTO prize_token_transactions" in src
+
+    engagement_src = Path("cogs/engagement.py").read_text(encoding="utf-8")
+    assert "auto_enter_once_with_token_spend" in engagement_src

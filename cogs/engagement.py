@@ -56,7 +56,9 @@ class EngagementCog(commands.Cog):
             channel = guild.get_channel(channel_id)
             if channel is None or not hasattr(channel, "send"):
                 return
-            await channel.send(f"🎉 {member.mention} reached Level {level} and earned 1 Prize Token.")
+            await channel.send(
+                f"🎉 {member.mention} reached Level {level} and earned 1 Prize Token."
+            )
         except Exception:
             return
 
@@ -80,23 +82,12 @@ class EngagementCog(commands.Cog):
             return False
 
         raffle_repo = FreeRaffleRepository(get_pool())
-        if await raffle_repo.user_has_entry(giveaway_id, user_id):
-            return False
-
-        profile = await self.repo.get_or_create_profile(guild_id, user_id)
-        if int(profile.get("prize_token_balance") or 0) < 1:
-            return False
-
-        spent = await self.token_service.spend_auto_entry_token(guild_id, user_id, giveaway_id)
-        if not spent:
-            return False
-
         profile = await self.repo.get_or_create_profile(guild_id, user_id)
         weight = self.role_rewards.giveaway_weight_for_level(int(profile.get("level") or 0))
-        return await raffle_repo.add_entry_with_source(
-            giveaway_id,
-            user_id,
-            entry_source="auto_token",
+        return await raffle_repo.auto_enter_once_with_token_spend(
+            guild_id=guild_id,
+            raffle_id=giveaway_id,
+            user_id=user_id,
             entry_weight=weight,
             dedupe_key=f"giveaway_auto_entry:{giveaway_id}:{user_id}",
         )
@@ -116,7 +107,9 @@ class EngagementCog(commands.Cog):
             if int(p.get("prize_token_balance") or 0) < 1:
                 continue
             for giveaway in auto:
-                inserted = await self._maybe_auto_enter_user_for_giveaway(giveaway, int(p["user_id"]))
+                inserted = await self._maybe_auto_enter_user_for_giveaway(
+                    giveaway, int(p["user_id"])
+                )
                 count += 1 if inserted else 0
         return count
 
@@ -165,7 +158,9 @@ class EngagementCog(commands.Cog):
                         voice_state = getattr(member, "voice", None)
                         if voice_state is None:
                             continue
-                        if bool(getattr(voice_state, "self_mute", False)) and bool(getattr(voice_state, "self_deaf", False)):
+                        if bool(getattr(voice_state, "self_mute", False)) and bool(
+                            getattr(voice_state, "self_deaf", False)
+                        ):
                             continue
                         await self.service.voice_xp_if_eligible(
                             guild_id=guild.id,
@@ -191,7 +186,9 @@ class EngagementCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.guild is None or message.author.bot:
             return
-        if getattr(message, "interaction", None) is not None or message.content.strip().startswith("/"):
+        if getattr(message, "interaction", None) is not None or message.content.strip().startswith(
+            "/"
+        ):
             return
         await self.service.message_xp_if_eligible(
             guild_id=message.guild.id,
@@ -278,7 +275,9 @@ class EngagementCog(commands.Cog):
                 await self._maybe_auto_enter_user_for_giveaway(giveaway, int(p["user_id"]))
 
     @profile.command(name="view", description="View detailed profile stats")
-    async def profile_view(self, interaction: discord.Interaction, member: discord.Member | None = None):
+    async def profile_view(
+        self, interaction: discord.Interaction, member: discord.Member | None = None
+    ):
         if interaction.guild is None:
             await interaction.response.send_message("Guild only.", ephemeral=True)
             return
@@ -306,7 +305,9 @@ class EngagementCog(commands.Cog):
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @profile.command(name="rank", description="View compact rank")
-    async def profile_rank(self, interaction: discord.Interaction, member: discord.Member | None = None):
+    async def profile_rank(
+        self, interaction: discord.Interaction, member: discord.Member | None = None
+    ):
         if interaction.guild is None:
             await interaction.response.send_message("Guild only.", ephemeral=True)
             return
@@ -326,7 +327,9 @@ class EngagementCog(commands.Cog):
         )
 
     @profile.command(name="rewards", description="View rewards progress")
-    async def profile_rewards(self, interaction: discord.Interaction, member: discord.Member | None = None):
+    async def profile_rewards(
+        self, interaction: discord.Interaction, member: discord.Member | None = None
+    ):
         if interaction.guild is None:
             await interaction.response.send_message("Guild only.", ephemeral=True)
             return
@@ -346,7 +349,9 @@ class EngagementCog(commands.Cog):
         )
 
     @tokens.command(name="balance", description="View token balance")
-    async def tokens_balance(self, interaction: discord.Interaction, member: discord.Member | None = None):
+    async def tokens_balance(
+        self, interaction: discord.Interaction, member: discord.Member | None = None
+    ):
         if interaction.guild is None:
             await interaction.response.send_message("Guild only.", ephemeral=True)
             return
@@ -360,12 +365,16 @@ class EngagementCog(commands.Cog):
         )
 
     @tokens.command(name="history", description="View recent token transactions")
-    async def tokens_history(self, interaction: discord.Interaction, member: discord.Member | None = None):
+    async def tokens_history(
+        self, interaction: discord.Interaction, member: discord.Member | None = None
+    ):
         if interaction.guild is None:
             await interaction.response.send_message("Guild only.", ephemeral=True)
             return
         target = member or interaction.user
-        txs = await self.token_repo.get_recent_transactions(interaction.guild.id, target.id, limit=10)
+        txs = await self.token_repo.get_recent_transactions(
+            interaction.guild.id, target.id, limit=10
+        )
         if not txs:
             await interaction.response.send_message("No token history yet.", ephemeral=True)
             return
@@ -376,7 +385,9 @@ class EngagementCog(commands.Cog):
             )
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
-    async def _send_leaderboard(self, interaction: discord.Interaction, board: str, title: str, value_key: str):
+    async def _send_leaderboard(
+        self, interaction: discord.Interaction, board: str, title: str, value_key: str
+    ):
         if interaction.guild is None:
             await interaction.response.send_message("Guild only.", ephemeral=True)
             return
@@ -401,19 +412,27 @@ class EngagementCog(commands.Cog):
 
     @leaderboard.command(name="tokens", description="Top users by lifetime earned tokens")
     async def leaderboard_tokens(self, interaction: discord.Interaction):
-        await self._send_leaderboard(interaction, "tokens", "Tokens Leaderboard", "prize_token_lifetime_earned")
+        await self._send_leaderboard(
+            interaction, "tokens", "Tokens Leaderboard", "prize_token_lifetime_earned"
+        )
 
     @leaderboard.command(name="jumps", description="Top users by completed jumps")
     async def leaderboard_jumps(self, interaction: discord.Interaction):
-        await self._send_leaderboard(interaction, "jumps", "Jumps Leaderboard", "jump_99k_completed_count")
+        await self._send_leaderboard(
+            interaction, "jumps", "Jumps Leaderboard", "jump_99k_completed_count"
+        )
 
     @leaderboard.command(name="raffles", description="Top users by paid raffle tickets")
     async def leaderboard_raffles(self, interaction: discord.Interaction):
-        await self._send_leaderboard(interaction, "raffles", "Raffles Leaderboard", "paid_raffle_tickets_count")
+        await self._send_leaderboard(
+            interaction, "raffles", "Raffles Leaderboard", "paid_raffle_tickets_count"
+        )
 
     @engagement.command(name="debug", description="Debug engagement state")
     @app_commands.checks.has_permissions(administrator=True)
-    async def engagement_debug(self, interaction: discord.Interaction, member: discord.Member | None = None):
+    async def engagement_debug(
+        self, interaction: discord.Interaction, member: discord.Member | None = None
+    ):
         if interaction.guild is None:
             await interaction.response.send_message("Guild only.", ephemeral=True)
             return
@@ -421,7 +440,9 @@ class EngagementCog(commands.Cog):
         p = await self._profile_for(interaction.guild.id, target.id)
         message_state = await self.repo.get_message_state(interaction.guild.id, target.id)
         events = await self.repo.get_recent_event_rows(interaction.guild.id, target.id, limit=5)
-        txs = await self.token_repo.get_recent_transactions(interaction.guild.id, target.id, limit=5)
+        txs = await self.token_repo.get_recent_transactions(
+            interaction.guild.id, target.id, limit=5
+        )
         await interaction.response.send_message(
             f"Profile: {p}\nMessage state: {message_state}\nRecent events: {events}\nRecent token tx: {txs}",
             ephemeral=True,
@@ -455,14 +476,18 @@ class EngagementCog(commands.Cog):
 
     @engagement.command(name="sync_roles", description="Sync engagement reward roles")
     @app_commands.checks.has_permissions(administrator=True)
-    async def engagement_sync_roles(self, interaction: discord.Interaction, member: discord.Member | None = None):
+    async def engagement_sync_roles(
+        self, interaction: discord.Interaction, member: discord.Member | None = None
+    ):
         if interaction.guild is None:
             await interaction.response.send_message("Guild only.", ephemeral=True)
             return
         await self.role_rewards.seed_default_ladders_if_missing(interaction.guild.id)
         if member is not None:
             result = await self._sync_roles_for_member(interaction.guild.id, member.id)
-            await interaction.response.send_message(f"Synced roles for {member.mention}: {result}", ephemeral=True)
+            await interaction.response.send_message(
+                f"Synced roles for {member.mention}: {result}", ephemeral=True
+            )
             return
         profiles = await self.repo.list_profiles_for_guild(interaction.guild.id)
         total = {"granted": 0, "removed": 0, "failed": 0}
@@ -470,7 +495,9 @@ class EngagementCog(commands.Cog):
             r = await self._sync_roles_for_member(interaction.guild.id, int(p["user_id"]))
             for k in total:
                 total[k] += int(r.get(k, 0))
-        await interaction.response.send_message(f"Synced all eligible members: {total}", ephemeral=True)
+        await interaction.response.send_message(
+            f"Synced all eligible members: {total}", ephemeral=True
+        )
 
     @engagement.command(name="reverse_event", description="Reverse one event by dedupe key")
     @app_commands.checks.has_permissions(administrator=True)
@@ -480,18 +507,24 @@ class EngagementCog(commands.Cog):
             return
         row = await self.repo.reverse_event_by_dedupe_key(interaction.guild.id, dedupe_key)
         if not row:
-            await interaction.response.send_message("No unreversed event found for that dedupe key.", ephemeral=True)
+            await interaction.response.send_message(
+                "No unreversed event found for that dedupe key.", ephemeral=True
+            )
             return
         user_id = int(row.get("user_id") or 0)
         rebuilt = await self.repo.rebuild_profile_from_ledgers(interaction.guild.id, user_id)
         lvl = level_from_total_xp(int(rebuilt.get("xp_total") or 0))
         await self.repo.update_level(interaction.guild.id, user_id, lvl)
         await self._sync_roles_for_member(interaction.guild.id, user_id)
-        await interaction.response.send_message(f"Reversed event for <@{user_id}> and rebuilt profile.", ephemeral=True)
+        await interaction.response.send_message(
+            f"Reversed event for <@{user_id}> and rebuilt profile.", ephemeral=True
+        )
 
     @engagement.command(name="rebuild_profile", description="Rebuild one profile from ledgers")
     @app_commands.checks.has_permissions(administrator=True)
-    async def engagement_rebuild_profile(self, interaction: discord.Interaction, member: discord.Member):
+    async def engagement_rebuild_profile(
+        self, interaction: discord.Interaction, member: discord.Member
+    ):
         if interaction.guild is None:
             await interaction.response.send_message("Guild only.", ephemeral=True)
             return
@@ -499,7 +532,9 @@ class EngagementCog(commands.Cog):
         lvl = level_from_total_xp(int(rebuilt.get("xp_total") or 0))
         await self.repo.update_level(interaction.guild.id, member.id, lvl)
         await self._sync_roles_for_member(interaction.guild.id, member.id)
-        await interaction.response.send_message(f"Rebuilt engagement profile for {member.mention}.", ephemeral=True)
+        await interaction.response.send_message(
+            f"Rebuilt engagement profile for {member.mention}.", ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot):
