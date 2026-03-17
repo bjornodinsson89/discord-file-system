@@ -85,7 +85,7 @@ def test_level_calculation():
 
 
 def test_migration_has_engagement_tables():
-    src = open("migrations/2026_03_17_add_engagement_backend_foundation.sql", "r", encoding="utf-8").read()
+    src = open("migrations/2026_03_17_add_engagement_backend_foundation.sql", encoding="utf-8").read()
     for table in [
         "engagement_profiles",
         "engagement_event_ledger",
@@ -98,7 +98,7 @@ def test_migration_has_engagement_tables():
 
 
 def test_command_groups_and_commands_present():
-    src = open("cogs/engagement.py", "r", encoding="utf-8").read()
+    src = open("cogs/engagement.py", encoding="utf-8").read()
     assert 'Group(name="profile"' in src
     assert '@profile.command(name="view"' in src
     assert '@profile.command(name="rank"' in src
