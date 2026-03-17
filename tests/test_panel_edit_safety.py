@@ -25,6 +25,7 @@ def test_unchanged_payload_skips_edit():
         changed = await safety.request_edit(msg, content="base", min_interval_seconds=5)
         assert changed is False
         assert len(msg.edits) == 0
+
     asyncio.run(_run())
 
 
@@ -38,6 +39,7 @@ def test_throttles_and_latest_payload_wins():
         await asyncio.sleep(0.25)
         assert len(msg.edits) == 2
         assert msg.edits[-1]["content"] == "third"
+
     asyncio.run(_run())
 
 
@@ -49,8 +51,8 @@ def test_forced_identical_update_still_skips():
         changed = await safety.request_edit(msg, content="new", min_interval_seconds=10, force=True)
         assert changed is False
         assert len(msg.edits) == 1
-    asyncio.run(_run())
 
+    asyncio.run(_run())
 
 
 class ErrorMessage(DummyMessage):
@@ -64,4 +66,5 @@ def test_edit_exceptions_do_not_raise():
         msg = ErrorMessage()
         changed = await safety.request_edit(msg, content="x", min_interval_seconds=0.1)
         assert changed is False
+
     asyncio.run(_run())
