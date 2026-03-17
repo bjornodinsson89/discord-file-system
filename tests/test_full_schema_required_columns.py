@@ -41,3 +41,21 @@ def test_005_canonical_jump_99k_pricing_migration_defines_required_columns():
 
     for snippet in required_snippets:
         assert snippet in migration_sql
+
+
+def test_who_can_jump_panel_migration_adds_required_columns():
+    migration_sql = Path("migrations/2026_03_17_add_who_can_jump_panel_columns.sql").read_text(
+        encoding="utf-8"
+    )
+    assert "ADD COLUMN IF NOT EXISTS who_can_jump_channel_id BIGINT" in migration_sql
+    assert "ADD COLUMN IF NOT EXISTS who_can_jump_message_id BIGINT" in migration_sql
+
+
+def test_who_can_jump_page_index_migration_adds_required_column():
+    migration_sql = Path("migrations/2026_03_17_add_who_can_jump_page_index.sql").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "ADD COLUMN IF NOT EXISTS who_can_jump_page_index INTEGER NOT NULL DEFAULT 0"
+        in migration_sql
+    )

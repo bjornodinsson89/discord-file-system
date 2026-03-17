@@ -914,6 +914,7 @@ async def on_ready():
         ("register_persistent_roster_views", register_persistent_roster_views),
         ("register_persistent_signup_views", register_persistent_signup_views),
         ("register_persistent_pool_views", lambda: register_persistent_pool_views(bot)),
+        ("register_persistent_who_can_jump_views", register_persistent_who_can_jump_views),
         ("add_timezone_prompt_view", _add_timezone_prompt_view),
     ]
     for step_name, step in ready_steps:
@@ -936,6 +937,7 @@ async def on_ready():
         ("start_raffle_completion_worker", raffle_completion_worker),
         ("start_auto_verify_99k_payments", auto_verify_99k_payments),
         ("start_roster_panel_refresh_worker", roster_panel_refresh_worker),
+        ("start_who_can_jump_panel_worker", who_can_jump_panel_worker),
         ("start_cleanup_retry_worker", cleanup_retry_worker),
     ]
     started_workers = []
@@ -2229,6 +2231,409 @@ def _format_jump_torn_identity(*, torn_name: str | None, torn_user_id: int | Non
     if torn_id > 0:
         return f"{fallback}[{torn_id}]"
     return fallback
+
+
+
+
+def _progress_bar(current: int | None, total: int | None, width: int = 10) -> str:
+    if current is None or total is None or total <= 0:
+        return f"[{'░' * width}]"
+    ratio = max(0.0, min(float(current) / float(total), 1.0))
+    filled = int(round(ratio * width))
+    return f"[{'█' * filled}{'░' * (width - filled)}]"
+
+
+def _format_duration_short(seconds: int | None) -> str:
+    if seconds is None:
+        return "Unknown"
+    remaining = max(0, int(seconds))
+    if remaining == 0:
+        return "Ready"
+    hours, rem = divmod(remaining, 3600)
+    minutes = rem // 60
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m left"
+    return f"{minutes}m left"
+
+
+def _render_energy_bar(energy: int | None) -> str:
+    if energy is None:
+        return f"{_progress_bar(None, None)} Unknown"
+    bounded = max(0, int(energy))
+    return f"{_progress_bar(min(bounded, 1000), 1000)} {min(bounded, 1000)}/1000"
+
+
+def _render_cooldown_bar(seconds: int | None, visual_cap_seconds: int = 28800) -> str:
+    if seconds is None:
+        return f"{_progress_bar(None, None)} Unknown"
+    remaining = max(0, int(seconds))
+    ready_progress = max(0.0, min(1.0, 1 - (min(remaining, visual_cap_seconds) / visual_cap_seconds)))
+    filled = int(round(ready_progress * 10))
+    bar = f"[{'█' * filled}{'░' * (10 - filled)}]"
+    return f"{bar} {_format_duration_short(remaining)}"
+
+
+def _classify_jump_readiness(
+    *,
+    energy: int | None,
+    drug_cooldown: int | None,
+    booster_cooldown: int | None,
+    status_text: str | None,
+    has_api_key: bool,
+) -> str:
+    status_lower = str(status_text or "").strip().lower()
+    if not has_api_key:
+        return "API Key Missing"
+    if "permission" in status_lower or "bars/cooldowns" in status_lower:
+        return "API Permissions Missing"
+    if "unavailable" in status_lower or "rate limit" in status_lower or "timeout" in status_lower:
+        return "API Unavailable"
+    if energy is None or drug_cooldown is None or booster_cooldown is None:
+        return "API Unavailable"
+
+    blockers = 0
+    if int(energy) < 1000:
+        blockers += 1
+    if int(drug_cooldown) > 0:
+        blockers += 1
+    if int(booster_cooldown) > 0:
+        blockers += 1
+
+    if blockers == 0:
+        return "Ready Now"
+    if blockers > 1:
+        return "Waiting on Multiple"
+    if int(energy) < 1000:
+        return "Waiting on Energy"
+    if int(drug_cooldown) > 0:
+        return "Waiting on Drug CD"
+    return "Waiting on Booster CD"
+
+
+def _format_who_can_jump_identity(*, torn_name: str | None, torn_user_id: int | None, fallback_name: str) -> str:
+    return _format_jump_torn_identity(
+        torn_name=torn_name,
+        torn_user_id=torn_user_id,
+        fallback_name=(str(fallback_name or "").strip() or "Unknown member"),
+    )
+
+
+class WhoCanJumpPanelView(discord.ui.View):
+    def __init__(self, guild_id: int, *, page_index: int, total_pages: int):
+        super().__init__(timeout=None)
+        self.guild_id = int(guild_id)
+        self.page_index = max(0, int(page_index))
+        self.total_pages = max(1, int(total_pages))
+
+        prev_btn = discord.ui.Button(
+            label="◀ Prev",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"who_can_jump_prev:{self.guild_id}",
+            row=0,
+            disabled=self.page_index <= 0,
+        )
+        next_btn = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"who_can_jump_next:{self.guild_id}",
+            row=0,
+            disabled=self.page_index >= self.total_pages - 1,
+        )
+        refresh_btn = discord.ui.Button(
+            label="Refresh",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"who_can_jump_refresh:{self.guild_id}",
+            row=0,
+        )
+        prev_btn.callback = self._on_prev
+        next_btn.callback = self._on_next
+        refresh_btn.callback = self._on_refresh
+        self.add_item(prev_btn)
+        self.add_item(next_btn)
+        self.add_item(refresh_btn)
+
+    async def _on_prev(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await _refresh_who_can_jump_panel_for_guild(self.guild_id, requested_page_index=self.page_index - 1)
+
+    async def _on_next(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await _refresh_who_can_jump_panel_for_guild(self.guild_id, requested_page_index=self.page_index + 1)
+
+    async def _on_refresh(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await _refresh_who_can_jump_panel_for_guild(self.guild_id, requested_page_index=self.page_index)
+
+
+async def _collect_who_can_jump_rows(
+    *, guild: discord.Guild, settings: dict, users_repo: UsersRepository, jumps_repo: JumpsRepository
+) -> tuple[list[dict], str | None]:
+    host_role_id = int(settings.get("host99k_role_id") or 0)
+    if host_role_id <= 0:
+        return [], "setup_needed"
+
+    role = guild.get_role(host_role_id)
+    if role is None:
+        return [], "setup_needed"
+
+    rows: list[dict] = []
+    for member in role.members:
+        if member.bot:
+            continue
+
+        has_api_key = False
+        torn_name = None
+        torn_user_id = None
+        energy = None
+        drug_cd = None
+        booster_cd = None
+        status_text = None
+        try:
+            key_row = await users_repo.get_user_api_key(int(member.id))
+            if key_row:
+                has_api_key = bool((key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted"))
+                torn_name = str((key_row or {}).get("torn_name") or "").strip() or None
+                torn_user_id = int((key_row or {}).get("torn_user_id") or 0) or None
+
+            snapshot = await _fetch_and_upsert_user_readiness_snapshot(
+                repo=jumps_repo,
+                users_repo=users_repo,
+                session_id=0,
+                guild_id=int(guild.id),
+                discord_id=int(member.id),
+            )
+            if snapshot:
+                energy = int(snapshot.get("energy") or 0)
+                drug_cd = int(snapshot.get("drug_cooldown") or 0)
+                booster_cd = int(snapshot.get("booster_cooldown") or 0)
+                status_text = str(snapshot.get("status_text") or "")
+            elif has_api_key:
+                status_text = "API unavailable"
+        except Exception:
+            log.exception("Failed who-can-jump row guild_id=%s discord_id=%s", guild.id, member.id)
+            status_text = "API unavailable"
+
+        status = _classify_jump_readiness(
+            energy=energy,
+            drug_cooldown=drug_cd,
+            booster_cooldown=booster_cd,
+            status_text=status_text,
+            has_api_key=has_api_key,
+        )
+        rows.append(
+            {
+                "identity": _format_who_can_jump_identity(
+                    torn_name=torn_name,
+                    torn_user_id=torn_user_id,
+                    fallback_name=str(member.display_name or "").strip() or "Unknown member",
+                ),
+                "status": status,
+                "energy": energy if not status.startswith("API ") else None,
+                "drug_cooldown": drug_cd if not status.startswith("API ") else None,
+                "booster_cooldown": booster_cd if not status.startswith("API ") else None,
+            }
+        )
+
+    status_rank = {
+        "Ready Now": 0,
+        "Waiting on Energy": 1,
+        "Waiting on Drug CD": 1,
+        "Waiting on Booster CD": 1,
+        "Waiting on Multiple": 2,
+        "API Key Missing": 3,
+        "API Permissions Missing": 3,
+        "API Unavailable": 3,
+    }
+    rows.sort(key=lambda r: (status_rank.get(r["status"], 9), str(r["identity"]).lower()))
+    return rows, None
+
+
+def _build_who_can_jump_embed(
+    *,
+    rows: list[dict],
+    state: str | None,
+    page_index: int,
+    page_size: int = 10,
+) -> tuple[discord.Embed, int, int]:
+    now = discord.utils.utcnow()
+    total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+    clamped_page_index = min(max(0, int(page_index)), total_pages - 1)
+
+    ready = sum(1 for row in rows if row["status"] == "Ready Now")
+    api_issues = sum(1 for row in rows if row["status"].startswith("API "))
+    waiting = len(rows) - ready - api_issues
+
+    summary = (
+        f"Ready: {ready} • Waiting: {waiting} • API Issues: {api_issues}\n"
+        f"Updated: {discord.utils.format_dt(now, style='R')}\n"
+    )
+
+    if state == "setup_needed":
+        embed = create_info_embed(
+            "Who Can Jump",
+            summary + "\nSetup needed: configure a valid **99k_Jump_Host role** in `/setup`.",
+        )
+        embed.set_footer(text="Page 1/1")
+        return embed, 1, 0
+
+    if not rows:
+        embed = create_info_embed(
+            "Who Can Jump",
+            summary + "\nNo non-bot members currently have the configured host role.",
+        )
+        embed.set_footer(text="Page 1/1")
+        return embed, 1, 0
+
+    start = clamped_page_index * page_size
+    page_rows = rows[start : start + page_size]
+    blocks: list[str] = []
+    for row in page_rows:
+        blocks.append(
+            f"**{row['identity']}** • {row['status']}\n"
+            f"⚡ Energy   {_render_energy_bar(row.get('energy'))}\n"
+            f"💊 Drug CD  {_render_cooldown_bar(row.get('drug_cooldown'))}\n"
+            f"🧃 Boost CD {_render_cooldown_bar(row.get('booster_cooldown'))}"
+        )
+    embed = create_info_embed("Who Can Jump", summary + "\n" + "\n\n".join(blocks))
+    embed.set_footer(text=f"Page {clamped_page_index + 1}/{total_pages}")
+    return embed, total_pages, clamped_page_index
+
+
+async def _ensure_who_can_jump_panel_message(
+    *, guild: discord.Guild, settings_repo: GuildSettingsRepository, settings: dict
+) -> discord.Message | None:
+    channel_id = int(settings.get("who_can_jump_channel_id") or 0)
+    if channel_id <= 0:
+        return None
+    channel = guild.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await guild.fetch_channel(channel_id)
+        except Exception:
+            return None
+    if not hasattr(channel, "permissions_for") or not hasattr(channel, "fetch_message") or not hasattr(channel, "send"):
+        return None
+
+    bot_member = await _resolve_bot_member(guild)
+    perms = channel.permissions_for(bot_member)
+    if not (perms.view_channel and perms.send_messages and perms.embed_links):
+        return None
+
+    message_id = int(settings.get("who_can_jump_message_id") or 0)
+    if message_id > 0:
+        try:
+            return await channel.fetch_message(message_id)
+        except discord.NotFound:
+            pass
+        except Exception:
+            return None
+
+    sent = await channel.send(embed=create_info_embed("Who Can Jump", "Initializing panel..."))
+    await settings_repo.upsert_settings(int(guild.id), who_can_jump_message_id=int(sent.id))
+    settings["who_can_jump_message_id"] = int(sent.id)
+    return sent
+
+
+async def _refresh_who_can_jump_panel_for_guild(guild_id: int, *, requested_page_index: int | None = None) -> None:
+    guild = bot.get_guild(int(guild_id))
+    if guild is None:
+        return
+    db = get_database()
+    settings_repo = GuildSettingsRepository(db)
+    settings = await settings_repo.get_settings(int(guild.id))
+    if not settings.get("who_can_jump_channel_id"):
+        return
+
+    message = await _ensure_who_can_jump_panel_message(guild=guild, settings_repo=settings_repo, settings=settings)
+    if message is None:
+        return
+
+    users_repo = UsersRepository(db.pool)
+    jumps_repo = JumpsRepository(db.pool)
+    rows, state = await _collect_who_can_jump_rows(
+        guild=guild,
+        settings=settings,
+        users_repo=users_repo,
+        jumps_repo=jumps_repo,
+    )
+
+    stored_page_index = int(settings.get("who_can_jump_page_index") or 0)
+    page_index = stored_page_index if requested_page_index is None else int(requested_page_index)
+    embed, total_pages, clamped_page_index = _build_who_can_jump_embed(
+        rows=rows,
+        state=state,
+        page_index=page_index,
+        page_size=10,
+    )
+    view = WhoCanJumpPanelView(int(guild.id), page_index=clamped_page_index, total_pages=total_pages)
+
+    updates: dict[str, int | None] = {}
+    if int(settings.get("who_can_jump_page_index") or 0) != clamped_page_index:
+        updates["who_can_jump_page_index"] = clamped_page_index
+    if updates:
+        await settings_repo.upsert_settings(int(guild.id), **updates)
+        settings.update(updates)
+
+    try:
+        await message.edit(content=None, embed=embed, view=view)
+    except discord.NotFound:
+        await settings_repo.upsert_settings(int(guild.id), who_can_jump_message_id=None)
+        settings["who_can_jump_message_id"] = None
+        retry = await _ensure_who_can_jump_panel_message(guild=guild, settings_repo=settings_repo, settings=settings)
+        if retry is None:
+            return
+        await retry.edit(content=None, embed=embed, view=view)
+
+
+async def register_persistent_who_can_jump_views() -> None:
+    db = get_database()
+    repo = GuildSettingsRepository(db)
+    async with acquire_conn(db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT guild_id, who_can_jump_message_id, COALESCE(who_can_jump_page_index, 0) AS who_can_jump_page_index
+            FROM public.guild_settings
+            WHERE who_can_jump_channel_id IS NOT NULL
+              AND who_can_jump_message_id IS NOT NULL
+            """
+        )
+    for row in rows:
+        guild_id = int(row.get("guild_id") or 0)
+        message_id = int(row.get("who_can_jump_message_id") or 0)
+        page_index = int(row.get("who_can_jump_page_index") or 0)
+        if guild_id <= 0 or message_id <= 0:
+            continue
+        bot.add_view(WhoCanJumpPanelView(guild_id, page_index=page_index, total_pages=1), message_id=message_id)
+        try:
+            await _refresh_who_can_jump_panel_for_guild(guild_id)
+        except Exception:
+            log.exception("Failed initial who-can-jump refresh guild_id=%s", guild_id)
+
+
+@tasks.loop(seconds=60)
+async def who_can_jump_panel_worker():
+    if not await _worker_db_ready("who_can_jump_panel_worker"):
+        return
+    db = get_database()
+    async with acquire_conn(db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
+        rows = await conn.fetch(
+            "SELECT guild_id FROM public.guild_settings WHERE who_can_jump_channel_id IS NOT NULL"
+        )
+    for row in rows:
+        guild_id = int(row.get("guild_id") or 0)
+        if guild_id <= 0:
+            continue
+        try:
+            await _refresh_who_can_jump_panel_for_guild(guild_id)
+        except Exception:
+            log.exception("who_can_jump_panel_worker guild refresh failed guild_id=%s", guild_id)
+
+
+@who_can_jump_panel_worker.before_loop
+async def before_who_can_jump_panel_worker():
+    await bot.wait_until_ready()
+    await wait_until_initialized(timeout=30.0)
+    await sleep_startup_jitter("who_can_jump_panel_worker")
 
 
 async def _build_jump_transition_notification(
