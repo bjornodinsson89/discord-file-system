@@ -153,7 +153,6 @@ def test_refresh_preserves_current_page_and_recreates_deleted_message(monkeypatc
         monkeypatch.setattr(events, "GuildSettingsRepository", FakeSettingsRepo)
         monkeypatch.setattr(events, "get_database", lambda: SimpleNamespace(pool=object()))
         monkeypatch.setattr(events, "UsersRepository", lambda _pool: object())
-        monkeypatch.setattr(events, "JumpsRepository", lambda _pool: object())
 
         calls = {"count": 0}
 
@@ -210,5 +209,177 @@ def test_who_can_jump_worker_continues_when_one_guild_fails(monkeypatch):
 
         await events.who_can_jump_panel_worker.coro()
         assert called == [1, 2]
+
+    asyncio.run(_run())
+
+
+def test_collect_rows_uses_live_helper_not_snapshot_path(monkeypatch):
+    async def _run():
+        class _Member:
+            def __init__(self, mid, name, bot=False):
+                self.id = mid
+                self.display_name = name
+                self.bot = bot
+
+        class _Role:
+            def __init__(self, members):
+                self.members = members
+
+        guild = SimpleNamespace(id=99, get_role=lambda _rid: _Role([_Member(11, "Host A"), _Member(12, "Bot", bot=True)]))
+
+        calls = {"live": 0}
+
+        async def fake_live(*, users_repo, discord_id, guild_id):
+            calls["live"] += 1
+            return {
+                "has_api_key": True,
+                "torn_name": "Alpha",
+                "torn_user_id": 101,
+                "energy": 1000,
+                "energy_max": 1000,
+                "drug_cooldown": 0,
+                "booster_cooldown": 0,
+                "status_text": "ok",
+            }
+
+        async def forbidden_snapshot(**_kwargs):
+            raise AssertionError("snapshot helper must not be used for who-can-jump")
+
+        monkeypatch.setattr(events, "_fetch_who_can_jump_readiness", fake_live)
+        monkeypatch.setattr(events, "_fetch_and_upsert_user_readiness_snapshot", forbidden_snapshot)
+
+        rows, state = await events._collect_who_can_jump_rows(
+            guild=guild,
+            settings={"host99k_role_id": 1},
+            users_repo=object(),
+        )
+        assert state is None
+        assert calls["live"] == 1
+        assert len(rows) == 1
+        assert rows[0]["status"] == "Ready Now"
+
+    asyncio.run(_run())
+
+
+def test_fetch_who_can_jump_readiness_success_and_no_upsert(monkeypatch):
+    async def _run():
+        class _UsersRepo:
+            async def get_user_api_key(self, _discord_id):
+                return {"encrypted_key": "enc", "torn_name": "Stored", "torn_user_id": 123}
+
+        class _Security:
+            def decrypt_api_key(self, value):
+                assert value == "enc"
+                return "plain"
+
+        class _Torn:
+            async def get_user_data(self, *_args, **_kwargs):
+                return {
+                    "profile": {"id": 999, "name": "LiveName"},
+                    "bars": {"energy": {"current": 1200, "maximum": 1500}},
+                    "cooldowns": {"drug": 0, "booster": 15},
+                }
+
+        async def forbidden_upsert(**_kwargs):
+            raise AssertionError("upsert_readiness_snapshot should not be called")
+
+        monkeypatch.setattr(events, "get_security_manager", lambda: _Security())
+        monkeypatch.setattr(events, "get_torn_api", lambda: _Torn())
+        monkeypatch.setattr(events.JumpsRepository, "upsert_readiness_snapshot", forbidden_upsert)
+
+        payload = await events._fetch_who_can_jump_readiness(
+            users_repo=_UsersRepo(),
+            discord_id=1,
+            guild_id=5,
+        )
+        assert payload["has_api_key"] is True
+        assert payload["torn_name"] == "LiveName"
+        assert payload["torn_user_id"] == 999
+        assert payload["energy"] == 1200
+        assert payload["energy_max"] == 1500
+        assert payload["drug_cooldown"] == 0
+        assert payload["booster_cooldown"] == 15
+
+    asyncio.run(_run())
+
+
+def test_fetch_who_can_jump_readiness_error_mapping(monkeypatch):
+    async def _run():
+        class _UsersRepo:
+            def __init__(self, row):
+                self.row = row
+
+            async def get_user_api_key(self, _discord_id):
+                return self.row
+
+        class _Security:
+            def __init__(self, should_fail=False):
+                self.should_fail = should_fail
+
+            def decrypt_api_key(self, _value):
+                if self.should_fail:
+                    raise RuntimeError("decrypt failed")
+                return "plain"
+
+        class _TornPerm:
+            async def get_user_data(self, *_args, **_kwargs):
+                raise events.TornAPIPermissionError("missing permissions")
+
+        class _TornRate:
+            async def get_user_data(self, *_args, **_kwargs):
+                raise events.TornAPIRateLimitError("rate limited")
+
+        missing = await events._fetch_who_can_jump_readiness(users_repo=_UsersRepo(None), discord_id=1, guild_id=1)
+        assert missing["status_text"] == "API key missing"
+        assert missing["has_api_key"] is False
+
+        monkeypatch.setattr(events, "get_security_manager", lambda: _Security())
+        monkeypatch.setattr(events, "get_torn_api", lambda: _TornPerm())
+        perm = await events._fetch_who_can_jump_readiness(
+            users_repo=_UsersRepo({"encrypted_key": "enc"}),
+            discord_id=1,
+            guild_id=1,
+        )
+        assert perm["status_text"] == "API permissions missing"
+
+        monkeypatch.setattr(events, "get_torn_api", lambda: _TornRate())
+        unavailable = await events._fetch_who_can_jump_readiness(
+            users_repo=_UsersRepo({"encrypted_key": "enc"}),
+            discord_id=1,
+            guild_id=1,
+        )
+        assert unavailable["status_text"] == "API unavailable"
+
+        monkeypatch.setattr(events, "get_security_manager", lambda: _Security(should_fail=True))
+        decrypt_fail = await events._fetch_who_can_jump_readiness(
+            users_repo=_UsersRepo({"encrypted_key": "enc"}),
+            discord_id=1,
+            guild_id=1,
+        )
+        assert decrypt_fail["status_text"] == "API unavailable"
+
+    asyncio.run(_run())
+
+
+def test_refresh_guard_blocks_overlapping_refreshes(monkeypatch):
+    async def _run():
+        events._WHO_CAN_JUMP_REFRESH_LOCKS.clear()
+        started = asyncio.Event()
+        unblock = asyncio.Event()
+        calls = {"count": 0}
+
+        async def fake_locked(guild_id, *, requested_page_index=None):
+            calls["count"] += 1
+            started.set()
+            await unblock.wait()
+
+        monkeypatch.setattr(events, "_refresh_who_can_jump_panel_for_guild_locked", fake_locked)
+
+        first = asyncio.create_task(events._refresh_who_can_jump_panel_for_guild(77))
+        await started.wait()
+        await events._refresh_who_can_jump_panel_for_guild(77)
+        unblock.set()
+        await first
+        assert calls["count"] == 1
 
     asyncio.run(_run())
