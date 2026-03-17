@@ -339,12 +339,15 @@ class EngagementCog(commands.Cog):
         xp_total = int(p.get("xp_total") or 0)
         next_xp = required_total_xp(level + 1)
         left = max(0, next_xp - xp_total)
+        level_role, activity_roles = await self.role_rewards.describe_member_rewards(interaction.guild, target, p)
+        activity_text = ", ".join(activity_roles) if activity_roles else "None yet"
         await interaction.response.send_message(
             f"Level: **{level}**\n"
             f"XP Total: **{xp_total}**\n"
             f"Prize Token Balance: **{int(p.get('prize_token_balance') or 0)}**\n"
             f"XP needed for next level: **{left}**\n"
-            "Reward roles are not configured yet.",
+            f"Current level role: **{level_role or 'None yet'}**\n"
+            f"Earned activity/supporter roles: **{activity_text}**",
             ephemeral=True,
         )
 
@@ -538,9 +541,4 @@ class EngagementCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    cog = EngagementCog(bot)
-    await bot.add_cog(cog)
-    bot.tree.add_command(cog.profile)
-    bot.tree.add_command(cog.tokens)
-    bot.tree.add_command(cog.engagement)
-    bot.tree.add_command(cog.leaderboard)
+    await bot.add_cog(EngagementCog(bot))
