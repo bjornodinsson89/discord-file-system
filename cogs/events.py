@@ -99,6 +99,8 @@ _READINESS_PERMISSION_LOG_CACHE: dict[tuple[int, int], datetime] = {}
 _WORKER_DB_WAIT_LOGGED: set[str] = set()
 _READINESS_SESSION_NEXT_DUE: dict[int, datetime] = {}
 _JUMP_AUTOMATION_STATE: dict[int, dict[str, object]] = {}
+_WHO_CAN_JUMP_REFRESH_LOCKS: dict[int, asyncio.Lock] = {}
+_WHO_CAN_JUMP_LAST_RENDER: dict[int, dict[str, object]] = {}
 
 
 def _automation_state(session_id: int) -> dict[str, object]:
@@ -2366,7 +2368,7 @@ class WhoCanJumpPanelView(discord.ui.View):
 
 
 async def _collect_who_can_jump_rows(
-    *, guild: discord.Guild, settings: dict, users_repo: UsersRepository, jumps_repo: JumpsRepository
+    *, guild: discord.Guild, settings: dict, users_repo: UsersRepository
 ) -> tuple[list[dict], str | None]:
     host_role_id = int(settings.get("host99k_role_id") or 0)
     if host_role_id <= 0:
@@ -2381,37 +2383,31 @@ async def _collect_who_can_jump_rows(
         if member.bot:
             continue
 
-        has_api_key = False
-        torn_name = None
-        torn_user_id = None
-        energy = None
-        drug_cd = None
-        booster_cd = None
-        status_text = None
         try:
-            key_row = await users_repo.get_user_api_key(int(member.id))
-            if key_row:
-                has_api_key = bool((key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted"))
-                torn_name = str((key_row or {}).get("torn_name") or "").strip() or None
-                torn_user_id = int((key_row or {}).get("torn_user_id") or 0) or None
-
-            snapshot = await _fetch_and_upsert_user_readiness_snapshot(
-                repo=jumps_repo,
+            readiness = await _fetch_who_can_jump_readiness(
                 users_repo=users_repo,
-                session_id=0,
-                guild_id=int(guild.id),
                 discord_id=int(member.id),
+                guild_id=int(guild.id),
             )
-            if snapshot:
-                energy = int(snapshot.get("energy") or 0)
-                drug_cd = int(snapshot.get("drug_cooldown") or 0)
-                booster_cd = int(snapshot.get("booster_cooldown") or 0)
-                status_text = str(snapshot.get("status_text") or "")
-            elif has_api_key:
-                status_text = "API unavailable"
         except Exception:
             log.exception("Failed who-can-jump row guild_id=%s discord_id=%s", guild.id, member.id)
-            status_text = "API unavailable"
+            readiness = {
+                "has_api_key": True,
+                "torn_name": None,
+                "torn_user_id": None,
+                "energy": None,
+                "drug_cooldown": None,
+                "booster_cooldown": None,
+                "status_text": "API unavailable",
+            }
+
+        has_api_key = bool(readiness.get("has_api_key"))
+        torn_name = str(readiness.get("torn_name") or "").strip() or None
+        torn_user_id = int(readiness.get("torn_user_id") or 0) or None
+        energy = readiness.get("energy")
+        drug_cd = readiness.get("drug_cooldown")
+        booster_cd = readiness.get("booster_cooldown")
+        status_text = str(readiness.get("status_text") or "")
 
         status = _classify_jump_readiness(
             energy=energy,
@@ -2446,6 +2442,86 @@ async def _collect_who_can_jump_rows(
     }
     rows.sort(key=lambda r: (status_rank.get(r["status"], 9), str(r["identity"]).lower()))
     return rows, None
+
+
+async def _fetch_who_can_jump_readiness(
+    *,
+    users_repo: UsersRepository,
+    discord_id: int,
+    guild_id: int,
+) -> dict:
+    key_row = await users_repo.get_user_api_key(int(discord_id))
+    encrypted_key = (key_row or {}).get("encrypted_key") or (key_row or {}).get("api_key_encrypted")
+    torn_name = str((key_row or {}).get("torn_name") or "").strip() or None
+    torn_user_id = int((key_row or {}).get("torn_user_id") or 0) or None
+    if not encrypted_key:
+        return {
+            "has_api_key": False,
+            "torn_name": torn_name,
+            "torn_user_id": torn_user_id,
+            "energy": None,
+            "energy_max": None,
+            "drug_cooldown": None,
+            "booster_cooldown": None,
+            "status_text": "API key missing",
+        }
+
+    try:
+        api_key = get_security_manager().decrypt_api_key(encrypted_key)
+        user_data = await get_torn_api().get_user_data(
+            api_key,
+            audit_discord_id=int(discord_id),
+            audit_torn_id=torn_user_id,
+            audit_context="who_can_jump",
+            audit_query_meta={"guild_id": int(guild_id)},
+        )
+        profile = (user_data or {}).get("profile") or {}
+        torn_name = str(profile.get("name") or torn_name or "").strip() or None
+        torn_user_id = int(profile.get("id") or torn_user_id or 0) or None
+        return {
+            "has_api_key": True,
+            "torn_name": torn_name,
+            "torn_user_id": torn_user_id,
+            "energy": int((user_data or {}).get("bars", {}).get("energy", {}).get("current", 0) or 0),
+            "energy_max": int((user_data or {}).get("bars", {}).get("energy", {}).get("maximum", 0) or 0),
+            "drug_cooldown": int((user_data or {}).get("cooldowns", {}).get("drug", 0) or 0),
+            "booster_cooldown": int((user_data or {}).get("cooldowns", {}).get("booster", 0) or 0),
+            "status_text": "ok",
+        }
+    except TornAPIPermissionError:
+        return {
+            "has_api_key": True,
+            "torn_name": torn_name,
+            "torn_user_id": torn_user_id,
+            "energy": None,
+            "energy_max": None,
+            "drug_cooldown": None,
+            "booster_cooldown": None,
+            "status_text": "API permissions missing",
+        }
+    except (TornAPIRateLimitError, TornAPIError):
+        return {
+            "has_api_key": True,
+            "torn_name": torn_name,
+            "torn_user_id": torn_user_id,
+            "energy": None,
+            "energy_max": None,
+            "drug_cooldown": None,
+            "booster_cooldown": None,
+            "status_text": "API unavailable",
+        }
+    except Exception:
+        log.exception("Who-can-jump readiness fetch failed guild_id=%s discord_id=%s", guild_id, discord_id)
+        return {
+            "has_api_key": True,
+            "torn_name": torn_name,
+            "torn_user_id": torn_user_id,
+            "energy": None,
+            "energy_max": None,
+            "drug_cooldown": None,
+            "booster_cooldown": None,
+            "status_text": "API unavailable",
+        }
 
 
 def _build_who_can_jump_embed(
@@ -2535,6 +2611,16 @@ async def _ensure_who_can_jump_panel_message(
 
 
 async def _refresh_who_can_jump_panel_for_guild(guild_id: int, *, requested_page_index: int | None = None) -> None:
+    guild_id = int(guild_id)
+    guild_lock = _WHO_CAN_JUMP_REFRESH_LOCKS.setdefault(guild_id, asyncio.Lock())
+    if guild_lock.locked():
+        return
+
+    async with guild_lock:
+        await _refresh_who_can_jump_panel_for_guild_locked(guild_id, requested_page_index=requested_page_index)
+
+
+async def _refresh_who_can_jump_panel_for_guild_locked(guild_id: int, *, requested_page_index: int | None = None) -> None:
     guild = bot.get_guild(int(guild_id))
     if guild is None:
         return
@@ -2549,12 +2635,10 @@ async def _refresh_who_can_jump_panel_for_guild(guild_id: int, *, requested_page
         return
 
     users_repo = UsersRepository(db.pool)
-    jumps_repo = JumpsRepository(db.pool)
     rows, state = await _collect_who_can_jump_rows(
         guild=guild,
         settings=settings,
         users_repo=users_repo,
-        jumps_repo=jumps_repo,
     )
 
     stored_page_index = int(settings.get("who_can_jump_page_index") or 0)
@@ -2574,8 +2658,28 @@ async def _refresh_who_can_jump_panel_for_guild(guild_id: int, *, requested_page
         await settings_repo.upsert_settings(int(guild.id), **updates)
         settings.update(updates)
 
+    render_signature = json.dumps(
+        {
+            "state": state,
+            "rows": rows,
+            "page": clamped_page_index,
+            "total_pages": total_pages,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    now = datetime.now(timezone.utc)
+    previous_render = _WHO_CAN_JUMP_LAST_RENDER.get(int(guild.id), {})
+    if (
+        previous_render.get("signature") == render_signature
+        and isinstance(previous_render.get("edited_at"), datetime)
+        and (now - previous_render["edited_at"]).total_seconds() < 10
+    ):
+        return
+
     try:
         await message.edit(content=None, embed=embed, view=view)
+        _WHO_CAN_JUMP_LAST_RENDER[int(guild.id)] = {"signature": render_signature, "edited_at": now}
     except discord.NotFound:
         await settings_repo.upsert_settings(int(guild.id), who_can_jump_message_id=None)
         settings["who_can_jump_message_id"] = None
@@ -2583,6 +2687,7 @@ async def _refresh_who_can_jump_panel_for_guild(guild_id: int, *, requested_page
         if retry is None:
             return
         await retry.edit(content=None, embed=embed, view=view)
+        _WHO_CAN_JUMP_LAST_RENDER[int(guild.id)] = {"signature": render_signature, "edited_at": now}
 
 
 async def register_persistent_who_can_jump_views() -> None:
