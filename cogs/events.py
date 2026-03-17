@@ -2238,20 +2238,24 @@ async def _build_jump_transition_notification(
     roster_rows: list[dict],
     previous_discord_id: int,
     next_discord_id: int,
+    guild: discord.Guild | None = None,
 ) -> str:
-    host_discord_id = int(session.get("host_discord_id") or 0)
     roster_by_discord_id: dict[int, dict] = {
         int(row.get("discord_id") or 0): row
         for row in roster_rows
     }
+    identity_cache: dict[int, str] = {}
 
     async def _resolve_torn_identity(discord_id: int) -> str:
-        fallback_name = f"User {int(discord_id)}"
+        resolved = identity_cache.get(int(discord_id))
+        if resolved is not None:
+            return resolved
+
         roster_row = roster_by_discord_id.get(int(discord_id), {})
         torn_name = str(roster_row.get("participant_torn_name") or "").strip() or None
         torn_user_id = int(roster_row.get("participant_torn_user_id") or roster_row.get("torn_user_id") or 0)
 
-        if (not torn_name or torn_user_id <= 0) and int(discord_id) == host_discord_id:
+        if not torn_name or torn_user_id <= 0:
             user_row = await users_repo.get_user_api_key(int(discord_id))
             if user_row:
                 if not torn_name:
@@ -2259,11 +2263,26 @@ async def _build_jump_transition_notification(
                 if torn_user_id <= 0:
                     torn_user_id = int(user_row.get("torn_user_id") or 0)
 
-        return _format_jump_torn_identity(
+        human_fallback_name = f"<@{int(discord_id)}>"
+        if guild is not None:
+            member = guild.get_member(int(discord_id))
+            if member is None:
+                try:
+                    member = await guild.fetch_member(int(discord_id))
+                except Exception:
+                    member = None
+            if member is not None:
+                human_fallback_name = str(member.display_name or "").strip() or human_fallback_name
+        if not human_fallback_name:
+            human_fallback_name = "Unknown user"
+
+        identity = _format_jump_torn_identity(
             torn_name=torn_name,
-            torn_user_id=torn_user_id,
-            fallback_name=fallback_name,
+            torn_user_id=torn_user_id if torn_user_id > 0 else None,
+            fallback_name=human_fallback_name,
         )
+        identity_cache[int(discord_id)] = identity
+        return identity
 
     previous_identity = await _resolve_torn_identity(int(previous_discord_id))
     next_identity = await _resolve_torn_identity(int(next_discord_id))
@@ -2757,13 +2776,21 @@ async def _list_removable_signups(*, repo: JumpsRepository, session: dict) -> li
 
 
 def _removable_signup_option_label(row: dict) -> tuple[str, str]:
-    torn_name = str(row.get("participant_torn_name") or "").strip()
-    display_name = torn_name or f"User {int(row.get('discord_id') or 0)}"
+    torn_name = str(row.get("participant_torn_name") or "").strip() or None
+    torn_user_id = int(row.get("participant_torn_user_id") or row.get("torn_user_id") or 0)
+    display_name = str(row.get("display_name") or "").strip() or None
+    discord_id = int(row.get("discord_id") or 0)
+    fallback_name = display_name or (f"<@{discord_id}>" if discord_id > 0 else "Unknown user")
+    base_name = _format_jump_torn_identity(
+        torn_name=torn_name,
+        torn_user_id=torn_user_id if torn_user_id > 0 else None,
+        fallback_name=fallback_name,
+    )
     if bool(row.get("is_priority")):
-        display_name = f"{display_name} [Priority]"
+        base_name = f"{base_name} [Priority]"
     status = str(row.get("status") or "paid").lower()
     description = f"Status: {status}"
-    return display_name[:100], description[:100]
+    return base_name[:100], description[:100]
 
 
 class Jump99kManualAddPickerView(discord.ui.View):
@@ -3361,7 +3388,14 @@ class Jump99kUserControlsView(discord.ui.View):
                     signup_id=int(signup["id"]),
                 )
 
-            updated = await repo.mark_signup_payment_verified(session_id=self.session_id, discord_id=interaction.user.id)
+            payer_torn = int((key_row or {}).get("torn_user_id") or 0) or None
+            payer_torn_name = str((key_row or {}).get("torn_name") or "").strip() or None
+            updated = await repo.mark_signup_payment_verified(
+                session_id=self.session_id,
+                discord_id=interaction.user.id,
+                torn_user_id=payer_torn,
+                torn_name=payer_torn_name,
+            )
             if not updated:
                 await interaction.followup.send("Your signup is not in a payable state. If already verified, you are good to go.", ephemeral=True)
                 log_event(
@@ -3375,7 +3409,6 @@ class Jump99kUserControlsView(discord.ui.View):
                     result="no_state_change",
                 )
                 return
-            payer_torn = int(key_row.get("torn_user_id") or 0) or None
             receipts = PaymentReceiptService(db.pool)
             await receipts.create_and_verify(
             featureType="jump_99k",
@@ -3488,12 +3521,14 @@ class Jump99kSignupView(discord.ui.View):
             timeout_minutes = int(settings.get("reservation_timeout_minutes") or config.DEFAULT_RESERVATION_TIMEOUT)
             reserved_until = datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
 
-            torn_user_id = int(key_row["torn_user_id"]) if key_row.get("torn_user_id") else None
+            torn_user_id = int(key_row["torn_user_id"]) if key_row and key_row.get("torn_user_id") else None
+            torn_name = str((key_row or {}).get("torn_name") or "").strip() or None
             await repo.create_or_restore_signup(
                 session_id=self.session_id,
                 guild_id=interaction.guild_id,
                 discord_id=interaction.user.id,
                 torn_user_id=torn_user_id,
+                torn_name=torn_name,
                 reserved_until=reserved_until,
             )
             log_event(
@@ -4892,6 +4927,7 @@ async def jump_automation_worker():
                             roster_rows=roster_rows,
                             previous_discord_id=active_discord_id,
                             next_discord_id=int(next_id),
+                            guild=guild,
                         )
                         await safe_send_channel(guild, int(channel_id), content=content)
             else:
@@ -4995,7 +5031,12 @@ async def auto_verify_99k_payments():
                     )
                     finalized_priority += 1
 
-                updated = await repo.mark_signup_payment_verified(session_id=session_id, discord_id=participant_id)
+                updated = await repo.mark_signup_payment_verified(
+                    session_id=session_id,
+                    discord_id=participant_id,
+                    torn_user_id=int((key_row or {}).get("torn_user_id") or 0) or None,
+                    torn_name=str((key_row or {}).get("torn_name") or "").strip() or None,
+                )
                 if not updated:
                     log_event(
                         log,

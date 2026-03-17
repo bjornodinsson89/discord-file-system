@@ -492,22 +492,28 @@ class JumpsRepository(RepositoryBase):
         guild_id: int,
         discord_id: int,
         torn_user_id: Optional[int],
+        torn_name: Optional[str] = None,
         status: str,
         reserved_until: Optional[datetime] = None,
     ) -> None:
         normalized_status = validate_status(status)
+        normalized_torn_name = str(torn_name or "").strip() or None
         try:
             await conn.execute(
                 """
-                INSERT INTO jump_99k_signups (session_id, guild_id, participant_discord_id, participant_torn_user_id, status, reserved_until)
-                VALUES ($1,$2,$3,$4,$5,$6)
+                INSERT INTO jump_99k_signups (session_id, guild_id, participant_discord_id, participant_torn_user_id, participant_torn_name, status, reserved_until)
+                VALUES ($1,$2,$3,$4,$5,$6,$7)
                 ON CONFLICT (session_id, participant_discord_id)
-                DO UPDATE SET status = EXCLUDED.status, participant_torn_user_id = EXCLUDED.participant_torn_user_id, reserved_until = EXCLUDED.reserved_until
+                DO UPDATE SET status = EXCLUDED.status,
+                              reserved_until = EXCLUDED.reserved_until,
+                              participant_torn_user_id = EXCLUDED.participant_torn_user_id,
+                              participant_torn_name = COALESCE(NULLIF(EXCLUDED.participant_torn_name, ''), jump_99k_signups.participant_torn_name)
                 """,
                 session_id,
                 guild_id,
                 discord_id,
                 torn_user_id,
+                normalized_torn_name,
                 normalized_status,
                 reserved_until,
             )
@@ -518,7 +524,16 @@ class JumpsRepository(RepositoryBase):
         except Exception as exc:
             _raise_reserved_until_migration_error(exc)
 
-    async def create_or_restore_signup(self, *, session_id: int, guild_id: int, discord_id: int, torn_user_id: Optional[int], reserved_until: Optional[datetime] = None) -> None:
+    async def create_or_restore_signup(
+        self,
+        *,
+        session_id: int,
+        guild_id: int,
+        discord_id: int,
+        torn_user_id: Optional[int],
+        torn_name: Optional[str] = None,
+        reserved_until: Optional[datetime] = None,
+    ) -> None:
         async with self.acquire() as conn:
             await self._create_or_restore_signup_on_conn(
                 conn,
@@ -526,6 +541,7 @@ class JumpsRepository(RepositoryBase):
                 guild_id=guild_id,
                 discord_id=discord_id,
                 torn_user_id=torn_user_id,
+                torn_name=torn_name,
                 status=SIGNUP_STATUS_RESERVED,
                 reserved_until=reserved_until,
             )
@@ -1094,6 +1110,7 @@ class JumpsRepository(RepositoryBase):
                     guild_id=guild_id,
                     discord_id=user_discord_id,
                     torn_user_id=torn_user_id,
+                    torn_name=torn_name,
                     status=SIGNUP_STATUS_PAID,
                     reserved_until=None,
                 )
@@ -1265,7 +1282,15 @@ class JumpsRepository(RepositoryBase):
             reason=reason,
         )
 
-    async def mark_signup_payment_verified(self, *, session_id: int, discord_id: int) -> bool:
+    async def mark_signup_payment_verified(
+        self,
+        *,
+        session_id: int,
+        discord_id: int,
+        torn_user_id: int | None = None,
+        torn_name: str | None = None,
+    ) -> bool:
+        normalized_torn_name = str(torn_name or "").strip() or None
         async with self.acquire() as conn:
             column_rows = await conn.fetch(
                 """
@@ -1275,7 +1300,7 @@ class JumpsRepository(RepositoryBase):
                   AND table_name = 'jump_99k_signups'
                   AND column_name = ANY($1::text[])
                 """,
-                ["payment_source"],
+                ["payment_source", "participant_torn_name", "participant_torn_user_id"],
             )
             existing_columns = {str(row["column_name"]) for row in column_rows}
 
@@ -1285,14 +1310,22 @@ class JumpsRepository(RepositoryBase):
                 f"status='{SIGNUP_STATUS_PAID}'",
                 "reserved_until=NULL",
             ]
+            params: list[Any] = [session_id, discord_id, [SIGNUP_STATUS_RESERVED, SIGNUP_STATUS_PAID]]
+            next_param = 4
+            if "participant_torn_user_id" in existing_columns:
+                set_parts.append(f"participant_torn_user_id=COALESCE(${next_param}, participant_torn_user_id)")
+                params.append(torn_user_id)
+                next_param += 1
+            if "participant_torn_name" in existing_columns:
+                set_parts.append(f"participant_torn_name=COALESCE(NULLIF(${next_param}, ''), participant_torn_name)")
+                params.append(normalized_torn_name)
+                next_param += 1
             if "payment_source" in existing_columns:
                 set_parts.append("payment_source='auto'")
 
             row = await conn.fetchrow(
                 f"UPDATE jump_99k_signups SET {', '.join(set_parts)} WHERE session_id=$1 AND participant_discord_id=$2 AND status = ANY($3::text[]) RETURNING id",
-                session_id,
-                discord_id,
-                [SIGNUP_STATUS_RESERVED, SIGNUP_STATUS_PAID],
+                *params,
             )
             return row is not None
 
