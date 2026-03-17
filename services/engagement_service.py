@@ -43,6 +43,7 @@ class EngagementService:
         xp_delta: int,
         payload: dict | None = None,
         increments: dict[str, int] | None = None,
+        on_level_up=None,
     ) -> bool:
         applied = await self.repo.insert_event_ledger(
             guild_id=guild_id,
@@ -63,13 +64,20 @@ class EngagementService:
             await self.repo.update_level(guild_id, user_id, new_level)
             for level in range(old_level + 1, new_level + 1):
                 await self.prize_tokens.grant_level_up_token(guild_id, user_id, level)
+                if on_level_up is not None:
+                    await on_level_up(guild_id, user_id, level)
         return True
 
     async def process_paid_raffle_purchase(self, payload: dict) -> bool:
+        guild_id = int(payload.get("guild_id") or 0)
         ticket_count = max(0, int(payload.get("ticket_count") or 0))
-        xp = min(50, 15 + (2 * ticket_count))
+        settings = await self.repo.get_or_create_guild_settings(guild_id)
+        base = int(settings.get("paid_raffle_purchase_xp_base") or 15)
+        per_ticket = int(settings.get("paid_raffle_purchase_xp_per_ticket") or 2)
+        cap = int(settings.get("paid_raffle_purchase_xp_cap") or 50)
+        xp = min(cap, base + (per_ticket * ticket_count))
         return await self.award_xp(
-            guild_id=int(payload.get("guild_id") or 0),
+            guild_id=guild_id,
             user_id=int(payload.get("user_id") or 0),
             event_name="paid_raffle_purchase_verified",
             source_type="raffle",
@@ -85,10 +93,15 @@ class EngagementService:
         )
 
     async def process_raffle_prize_token_purchase_confirmed(self, payload: dict) -> bool:
+        guild_id = int(payload.get("guild_id") or 0)
         ticket_count = max(0, int(payload.get("ticket_count") or 0))
-        xp = min(50, 15 + (2 * ticket_count))
+        settings = await self.repo.get_or_create_guild_settings(guild_id)
+        base = int(settings.get("paid_raffle_purchase_xp_base") or 15)
+        per_ticket = int(settings.get("paid_raffle_purchase_xp_per_ticket") or 2)
+        cap = int(settings.get("paid_raffle_purchase_xp_cap") or 50)
+        xp = min(cap, base + (per_ticket * ticket_count))
         return await self.award_xp(
-            guild_id=int(payload.get("guild_id") or 0),
+            guild_id=guild_id,
             user_id=int(payload.get("user_id") or 0),
             event_name="raffle_prize_token_purchase_confirmed",
             source_type="raffle",
@@ -100,9 +113,11 @@ class EngagementService:
         )
 
     async def process_jump_purchase_verified(self, payload: dict) -> bool:
-        xp = 40
+        guild_id = int(payload.get("guild_id") or 0)
+        settings = await self.repo.get_or_create_guild_settings(guild_id)
+        xp = int(settings.get("jump_purchase_xp") or 40)
         return await self.award_xp(
-            guild_id=int(payload.get("guild_id") or 0),
+            guild_id=guild_id,
             user_id=int(payload.get("user_id") or 0),
             event_name="jump_99k_purchase_verified",
             source_type="jump_99k",
@@ -114,9 +129,11 @@ class EngagementService:
         )
 
     async def process_jump_completed(self, payload: dict) -> bool:
-        xp = 75
+        guild_id = int(payload.get("guild_id") or 0)
+        settings = await self.repo.get_or_create_guild_settings(guild_id)
+        xp = int(settings.get("jump_completion_xp") or 75)
         return await self.award_xp(
-            guild_id=int(payload.get("guild_id") or 0),
+            guild_id=guild_id,
             user_id=int(payload.get("user_id") or 0),
             event_name="jump_99k_completed",
             source_type="jump_99k",
@@ -125,6 +142,42 @@ class EngagementService:
             xp_delta=xp,
             payload=payload,
             increments={"jump_completion_xp_total": xp, "jump_99k_completed_count": 1},
+        )
+
+
+    async def voice_xp_if_eligible(
+        self,
+        *,
+        guild_id: int,
+        user_id: int,
+        channel_id: int,
+        role_ids: list[int],
+        category_id: int | None,
+        minute_bucket: int,
+        on_level_up=None,
+    ) -> bool:
+        settings = await self.repo.get_or_create_guild_settings(guild_id)
+        if not settings.get("enabled") or not settings.get("voice_xp_enabled"):
+            return False
+        if channel_id in set(settings.get("ignored_channel_ids_json") or []):
+            return False
+        if category_id and category_id in set(settings.get("ignored_category_ids_json") or []):
+            return False
+        ignored_roles = set(settings.get("ignored_role_ids_json") or [])
+        if any(r in ignored_roles for r in role_ids):
+            return False
+        xp_amount = int(settings.get("voice_xp_per_minute") or 5)
+        return await self.award_xp(
+            guild_id=guild_id,
+            user_id=user_id,
+            event_name="voice",
+            source_type="voice",
+            source_id=str(channel_id),
+            dedupe_key=f"voice:{guild_id}:{user_id}:{minute_bucket}",
+            xp_delta=xp_amount,
+            payload={"channel_id": channel_id, "minute_bucket": minute_bucket},
+            increments={"voice_xp_total": xp_amount},
+            on_level_up=on_level_up,
         )
 
     async def message_xp_if_eligible(
@@ -137,6 +190,7 @@ class EngagementService:
         role_ids: list[int],
         category_id: int | None,
         now: datetime | None = None,
+        on_level_up=None,
     ) -> bool:
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         if not settings.get("enabled") or not settings.get("message_xp_enabled"):
@@ -176,6 +230,7 @@ class EngagementService:
             xp_delta=int(settings.get("message_xp_amount") or 12),
             payload={"channel_id": channel_id},
             increments={"message_xp_total": int(settings.get("message_xp_amount") or 12)},
+            on_level_up=on_level_up,
         )
         if applied:
             await self.repo.upsert_message_state(
@@ -194,6 +249,7 @@ class EngagementService:
         reactor_user_id: int,
         target_user_id: int,
         message_id: int,
+        on_level_up=None,
     ) -> bool:
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         if not settings.get("enabled") or not settings.get("reaction_xp_enabled"):
@@ -216,4 +272,5 @@ class EngagementService:
             xp_delta=xp_amount,
             payload={"reactor_user_id": reactor_user_id},
             increments={"reaction_xp_total": xp_amount},
+            on_level_up=on_level_up,
         )
