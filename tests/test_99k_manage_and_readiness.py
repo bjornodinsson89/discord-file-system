@@ -6,6 +6,7 @@ from cogs.events import (
     _list_removable_signups,
     _apply_energy_poll,
     _build_jump_transition_notification,
+    _removable_signup_option_label,
 )
 from repositories.jumps import JumpsRepository
 
@@ -575,6 +576,25 @@ class _TransitionFakeUsersRepo:
         return self.rows_by_discord_id.get(int(discord_id))
 
 
+class _FakeMember:
+    def __init__(self, display_name: str):
+        self.display_name = display_name
+
+
+class _FakeGuild:
+    def __init__(self, member_map: dict[int, _FakeMember] | None = None):
+        self.member_map = member_map or {}
+
+    def get_member(self, discord_id: int):
+        return self.member_map.get(int(discord_id))
+
+    async def fetch_member(self, discord_id: int):
+        member = self.member_map.get(int(discord_id))
+        if member is None:
+            raise RuntimeError("not found")
+        return member
+
+
 def test_jump_transition_notification_uses_required_torn_identity_and_ping():
     session = {"host_discord_id": 10}
     roster_rows = [
@@ -594,24 +614,19 @@ def test_jump_transition_notification_uses_required_torn_identity_and_ping():
             roster_rows=roster_rows,
             previous_discord_id=10,
             next_discord_id=11,
+            guild=_FakeGuild(),
         )
     )
 
     assert "BjornOdinnsson89[3666214] is finished" in message
     assert "<@11>" in message
     assert "Papanad[1234567]" in message
-    assert "use poison mistletoe on BjornOdinnsson89[3666214] and begin your jump" in message
 
 
-def test_jump_transition_notification_falls_back_when_torn_fields_missing():
+def test_jump_transition_notification_recovers_non_host_identity_from_api_key():
     session = {"host_discord_id": 10}
-    roster_rows = [
-        {"discord_id": 10},
-        {"discord_id": 11, "participant_torn_name": "NextOnlyName"},
-    ]
-    users_repo = _TransitionFakeUsersRepo(
-        rows_by_discord_id={10: {"torn_name": "HostFromApi", "torn_user_id": 999}}
-    )
+    roster_rows = [{"discord_id": 10, "participant_torn_name": "HostOnlyName"}, {"discord_id": 11}]
+    users_repo = _TransitionFakeUsersRepo(rows_by_discord_id={11: {"torn_name": "Recovered", "torn_user_id": 5678}})
 
     message = asyncio.run(
         _build_jump_transition_notification(
@@ -620,9 +635,82 @@ def test_jump_transition_notification_falls_back_when_torn_fields_missing():
             roster_rows=roster_rows,
             previous_discord_id=10,
             next_discord_id=11,
+            guild=_FakeGuild(),
         )
     )
 
-    assert "HostFromApi[999] is finished" in message
-    assert "<@11>" in message
-    assert "NextOnlyName use poison mistletoe" in message
+    assert "Recovered[5678]" in message
+    assert "User 11" not in message
+
+
+def test_jump_transition_notification_uses_display_name_with_torn_id_when_name_missing():
+    session = {"host_discord_id": 10}
+    roster_rows = [{"discord_id": 10, "participant_torn_user_id": 999}, {"discord_id": 11, "participant_torn_user_id": 7777}]
+
+    message = asyncio.run(
+        _build_jump_transition_notification(
+            users_repo=_TransitionFakeUsersRepo(),
+            session=session,
+            roster_rows=roster_rows,
+            previous_discord_id=10,
+            next_discord_id=11,
+            guild=_FakeGuild({10: _FakeMember("PrevName"), 11: _FakeMember("NextDisplay")}),
+        )
+    )
+
+    assert "PrevName[999] is finished" in message
+    assert "NextDisplay[7777]" in message
+
+
+def test_jump_transition_notification_uses_name_only_when_only_torn_name_exists():
+    message = asyncio.run(
+        _build_jump_transition_notification(
+            users_repo=_TransitionFakeUsersRepo(),
+            session={"host_discord_id": 10},
+            roster_rows=[{"discord_id": 10, "participant_torn_name": "OnlyHostName"}, {"discord_id": 11, "participant_torn_name": "NextOnlyName"}],
+            previous_discord_id=10,
+            next_discord_id=11,
+            guild=_FakeGuild(),
+        )
+    )
+    assert "OnlyHostName is finished" in message
+    assert "NextOnlyName" in message
+
+
+def test_jump_transition_notification_falls_back_to_display_name_or_mention_not_user_id():
+    message_display = asyncio.run(
+        _build_jump_transition_notification(
+            users_repo=_TransitionFakeUsersRepo(),
+            session={"host_discord_id": 10},
+            roster_rows=[{"discord_id": 10}, {"discord_id": 11}],
+            previous_discord_id=10,
+            next_discord_id=11,
+            guild=_FakeGuild({10: _FakeMember("PrevDisplay"), 11: _FakeMember("NextDisplay")}),
+        )
+    )
+    assert "PrevDisplay is finished" in message_display
+    assert "NextDisplay" in message_display
+    assert "User 10" not in message_display
+    assert "User 11" not in message_display
+
+    message_mention = asyncio.run(
+        _build_jump_transition_notification(
+            users_repo=_TransitionFakeUsersRepo(),
+            session={"host_discord_id": 10},
+            roster_rows=[{"discord_id": 10}, {"discord_id": 11}],
+            previous_discord_id=10,
+            next_discord_id=11,
+            guild=_FakeGuild(),
+        )
+    )
+    assert "<@10> is finished" in message_mention
+    assert "<@11>" in message_mention
+
+
+def test_removable_signup_option_label_never_uses_raw_discord_id():
+    label, _ = _removable_signup_option_label({"discord_id": 240380367066890240, "participant_torn_user_id": 3747168, "display_name": "Display"})
+    assert label == "Display[3747168]"
+
+    label_name, _ = _removable_signup_option_label({"discord_id": 240380367066890240, "participant_torn_name": "TornName"})
+    assert label_name.startswith("TornName")
+    assert "User 240380367066890240" not in label_name
