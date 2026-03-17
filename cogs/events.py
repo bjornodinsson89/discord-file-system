@@ -11,6 +11,7 @@ import logging
 import ssl
 import asyncio
 import json
+import math
 import re
 import uuid
 from urllib.parse import urlparse
@@ -101,6 +102,8 @@ _READINESS_SESSION_NEXT_DUE: dict[int, datetime] = {}
 _JUMP_AUTOMATION_STATE: dict[int, dict[str, object]] = {}
 _WHO_CAN_JUMP_REFRESH_LOCKS: dict[int, asyncio.Lock] = {}
 _WHO_CAN_JUMP_LAST_RENDER: dict[int, dict[str, object]] = {}
+_WHO_CAN_JUMP_LAST_MANUAL_REFRESH: dict[int, datetime] = {}
+_WHO_CAN_JUMP_MANUAL_REFRESH_COOLDOWN_SECONDS = 60
 
 
 def _automation_state(session_id: int) -> dict[str, object]:
@@ -2320,6 +2323,16 @@ def _format_who_can_jump_identity(*, torn_name: str | None, torn_user_id: int | 
     )
 
 
+def _get_who_can_jump_manual_refresh_wait_seconds(guild_id: int) -> int:
+    last_refresh = _WHO_CAN_JUMP_LAST_MANUAL_REFRESH.get(int(guild_id))
+    if not isinstance(last_refresh, datetime):
+        return 0
+    remaining = _WHO_CAN_JUMP_MANUAL_REFRESH_COOLDOWN_SECONDS - (
+        datetime.now(timezone.utc) - last_refresh
+    ).total_seconds()
+    return max(0, int(math.ceil(remaining)))
+
+
 class WhoCanJumpPanelView(discord.ui.View):
     def __init__(self, guild_id: int, *, page_index: int, total_pages: int):
         super().__init__(timeout=None)
@@ -2363,6 +2376,24 @@ class WhoCanJumpPanelView(discord.ui.View):
         await _refresh_who_can_jump_panel_for_guild(self.guild_id, requested_page_index=self.page_index + 1)
 
     async def _on_refresh(self, interaction: discord.Interaction):
+        guild_lock = _WHO_CAN_JUMP_REFRESH_LOCKS.setdefault(self.guild_id, asyncio.Lock())
+        if guild_lock.locked():
+            if interaction.response.is_done():
+                await interaction.followup.send("A refresh is already in progress.", ephemeral=True)
+            else:
+                await interaction.response.send_message("A refresh is already in progress.", ephemeral=True)
+            return
+
+        wait_seconds = _get_who_can_jump_manual_refresh_wait_seconds(self.guild_id)
+        if wait_seconds > 0:
+            message = f"This panel was refreshed recently. Try again in {wait_seconds}s."
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        _WHO_CAN_JUMP_LAST_MANUAL_REFRESH[self.guild_id] = datetime.now(timezone.utc)
         await interaction.response.defer()
         await _refresh_who_can_jump_panel_for_guild(self.guild_id, requested_page_index=self.page_index)
 
