@@ -197,7 +197,7 @@ def test_redeem_blocks_on_insufficient_tokens():
         user = _Member(8)
         try:
             await service.redeem_item(guild=guild, user=user, item_id=12)
-            assert False, "expected insufficient balance error"
+            raise AssertionError("expected insufficient balance error")
         except ValueError as exc:
             assert "insufficient" in str(exc)
 
