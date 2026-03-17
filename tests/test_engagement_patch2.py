@@ -38,7 +38,9 @@ class _FakeRepo:
         return True
 
     async def apply_xp_delta(self, guild_id: int, user_id: int, xp_delta: int, increments: dict):
-        p = self.profiles.setdefault((guild_id, user_id), {"xp_total": 0, "level": 0, "voice_xp_total": 0})
+        p = self.profiles.setdefault(
+            (guild_id, user_id), {"xp_total": 0, "level": 0, "voice_xp_total": 0}
+        )
         p["xp_total"] += int(xp_delta)
         p["voice_xp_total"] += int(increments.get("voice_xp_total", 0))
         return p
@@ -48,7 +50,9 @@ class _FakeRepo:
 
 
 class _FakeMember:
-    def __init__(self, member_id: int, *, bot: bool = False, self_mute: bool = False, self_deaf: bool = False):
+    def __init__(
+        self, member_id: int, *, bot: bool = False, self_mute: bool = False, self_deaf: bool = False
+    ):
         self.id = member_id
         self.bot = bot
         self.roles = []
