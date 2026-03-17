@@ -23,6 +23,8 @@ class RafflesRepository(RepositoryBase):
         admin_comments: Optional[str] = None,
         is_bundle: bool = False,
         bundle_text: Optional[str] = None,
+        allow_prize_token_purchase: bool = False,
+        prize_token_cost_per_ticket: Optional[int] = None,
     ) -> int:
         """Create a new raffle."""
         async with self.acquire() as conn:
@@ -38,8 +40,9 @@ class RafflesRepository(RepositoryBase):
                     guild_id, creator_discord_id, creator_torn_id, prize, ticket_payment_type,
                     ticket_price, tickets_available, max_tickets_per_user,
                     end_time, end_trigger, hours_after_sold_out, status, is_free,
-                    tickets_sold, is_bundle, bundle_text, admin_comments, created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $12, 0, $13, $14, $15, NOW())
+                    tickets_sold, is_bundle, bundle_text, admin_comments,
+                    allow_prize_token_purchase, prize_token_cost_per_ticket, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $12, 0, $13, $14, $15, $16, $17, NOW())
                 RETURNING raffle_id
                 """,
                 guild_id,
@@ -57,6 +60,8 @@ class RafflesRepository(RepositoryBase):
                 is_bundle,
                 bundle_text,
                 admin_comments,
+                bool(allow_prize_token_purchase),
+                int(prize_token_cost_per_ticket) if prize_token_cost_per_ticket is not None else None,
             )
             return int(row["raffle_id"])
 
@@ -204,7 +209,7 @@ class RafflesRepository(RepositoryBase):
         async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT raffle_id, purchase_panel_channel_id, purchase_panel_message_id
+                SELECT raffle_id, purchase_panel_channel_id, purchase_panel_message_id, allow_prize_token_purchase
                 FROM raffles
                 WHERE status = 'active'
                   AND purchase_panel_channel_id IS NOT NULL
@@ -416,6 +421,7 @@ class RafflesRepository(RepositoryBase):
                     e.reserved_until,
                     e.payment_verified,
                     e.created_at,
+                    r.guild_id,
                     r.creator_discord_id,
                     r.creator_torn_id,
                     COALESCE(r.creator_torn_id, u.torn_user_id) AS effective_creator_torn_id,
@@ -526,7 +532,7 @@ class RafflesRepository(RepositoryBase):
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT raffle_id, purchase_panel_channel_id, purchase_panel_message_id
+                SELECT raffle_id, purchase_panel_channel_id, purchase_panel_message_id, allow_prize_token_purchase
                 FROM raffles
                 WHERE raffle_id = $1
                 """,

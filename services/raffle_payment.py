@@ -88,7 +88,7 @@ class RafflePaymentService:
                 return False, None, "Entry not found"
 
             if entry.get("payment_verified"):
-                return True, None, None
+                return False, None, "Entry already verified."
 
             if str(entry.get("status")) != "active":
                 return False, None, "Raffle is no longer active."
