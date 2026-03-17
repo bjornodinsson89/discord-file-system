@@ -92,6 +92,8 @@ def test_buttons_disable_correctly_at_edges():
 
 def test_next_prev_and_refresh_callbacks_use_expected_page(monkeypatch):
     async def _run():
+        events._WHO_CAN_JUMP_REFRESH_LOCKS.clear()
+        events._WHO_CAN_JUMP_LAST_MANUAL_REFRESH.clear()
         called = []
 
         async def fake_refresh(guild_id, *, requested_page_index=None):
@@ -100,10 +102,25 @@ def test_next_prev_and_refresh_callbacks_use_expected_page(monkeypatch):
         monkeypatch.setattr(events, "_refresh_who_can_jump_panel_for_guild", fake_refresh)
 
         class _Resp:
+            def __init__(self):
+                self._done = False
+
             async def defer(self):
+                self._done = True
                 return None
 
-        interaction = SimpleNamespace(response=_Resp())
+            async def send_message(self, *_args, **_kwargs):
+                self._done = True
+                return None
+
+            def is_done(self):
+                return self._done
+
+        class _Followup:
+            async def send(self, *_args, **_kwargs):
+                return None
+
+        interaction = SimpleNamespace(response=_Resp(), followup=_Followup())
         view = events.WhoCanJumpPanelView(guild_id=7, page_index=1, total_pages=5)
 
         await view._on_prev(interaction)
@@ -111,6 +128,196 @@ def test_next_prev_and_refresh_callbacks_use_expected_page(monkeypatch):
         await view._on_refresh(interaction)
 
         assert called == [(7, 0), (7, 2), (7, 1)]
+
+    asyncio.run(_run())
+
+
+def test_manual_refresh_second_press_within_cooldown_is_blocked(monkeypatch):
+    async def _run():
+        events._WHO_CAN_JUMP_REFRESH_LOCKS.clear()
+        events._WHO_CAN_JUMP_LAST_MANUAL_REFRESH.clear()
+        called = []
+
+        async def fake_refresh(guild_id, *, requested_page_index=None):
+            called.append((guild_id, requested_page_index))
+
+        monkeypatch.setattr(events, "_refresh_who_can_jump_panel_for_guild", fake_refresh)
+
+        class _Resp:
+            def __init__(self):
+                self._done = False
+                self.messages = []
+
+            async def defer(self):
+                self._done = True
+
+            async def send_message(self, message, ephemeral=False):
+                self._done = True
+                self.messages.append((message, ephemeral))
+
+            def is_done(self):
+                return self._done
+
+        class _Followup:
+            def __init__(self):
+                self.messages = []
+
+            async def send(self, message, ephemeral=False):
+                self.messages.append((message, ephemeral))
+
+        interaction = SimpleNamespace(response=_Resp(), followup=_Followup())
+        view = events.WhoCanJumpPanelView(guild_id=77, page_index=0, total_pages=1)
+
+        await view._on_refresh(interaction)
+        await view._on_refresh(interaction)
+
+        assert called == [(77, 0)]
+        assert interaction.followup.messages
+        message, ephemeral = interaction.followup.messages[0]
+        assert ephemeral is True
+        assert message.startswith("This panel was refreshed recently. Try again in ")
+        assert message.endswith("s.")
+
+    asyncio.run(_run())
+
+
+def test_manual_refresh_when_lock_held_returns_in_progress(monkeypatch):
+    async def _run():
+        events._WHO_CAN_JUMP_REFRESH_LOCKS.clear()
+        events._WHO_CAN_JUMP_LAST_MANUAL_REFRESH.clear()
+
+        called = []
+
+        async def fake_refresh(guild_id, *, requested_page_index=None):
+            called.append((guild_id, requested_page_index))
+
+        monkeypatch.setattr(events, "_refresh_who_can_jump_panel_for_guild", fake_refresh)
+
+        class _Resp:
+            def __init__(self):
+                self._done = False
+                self.messages = []
+
+            async def defer(self):
+                self._done = True
+
+            async def send_message(self, message, ephemeral=False):
+                self._done = True
+                self.messages.append((message, ephemeral))
+
+            def is_done(self):
+                return self._done
+
+        class _Followup:
+            def __init__(self):
+                self.messages = []
+
+            async def send(self, message, ephemeral=False):
+                self.messages.append((message, ephemeral))
+
+        interaction = SimpleNamespace(response=_Resp(), followup=_Followup())
+        view = events.WhoCanJumpPanelView(guild_id=88, page_index=0, total_pages=1)
+
+        guild_lock = events._WHO_CAN_JUMP_REFRESH_LOCKS.setdefault(88, asyncio.Lock())
+        await guild_lock.acquire()
+        try:
+            await view._on_refresh(interaction)
+        finally:
+            guild_lock.release()
+
+        assert called == []
+        assert interaction.response.messages == [("A refresh is already in progress.", True)]
+
+    asyncio.run(_run())
+
+
+def test_manual_cooldown_does_not_block_worker(monkeypatch):
+    async def _run():
+        events._WHO_CAN_JUMP_LAST_MANUAL_REFRESH.clear()
+        events._WHO_CAN_JUMP_LAST_MANUAL_REFRESH[1] = events.datetime.now(events.timezone.utc)
+
+        class _Conn:
+            async def fetch(self, _query):
+                return [{"guild_id": 1}]
+
+        class _Acquire:
+            async def __aenter__(self):
+                return _Conn()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class _Pool:
+            def acquire(self):
+                return _Acquire()
+
+        monkeypatch.setattr(events, "get_database", lambda: SimpleNamespace(pool=_Pool()))
+
+        async def fake_db_ready(_name):
+            return True
+
+        monkeypatch.setattr(events, "_worker_db_ready", fake_db_ready)
+
+        called = []
+
+        async def fake_refresh(guild_id, *, requested_page_index=None):
+            called.append((guild_id, requested_page_index))
+
+        monkeypatch.setattr(events, "_refresh_who_can_jump_panel_for_guild", fake_refresh)
+
+        await events.who_can_jump_panel_worker.coro()
+        assert called == [(1, None)]
+
+    asyncio.run(_run())
+
+
+def test_duplicate_render_suppression_remains_intact(monkeypatch):
+    async def _run():
+        events._WHO_CAN_JUMP_LAST_RENDER.clear()
+
+        class _Message:
+            def __init__(self):
+                self.edits = 0
+
+            async def edit(self, **_kwargs):
+                self.edits += 1
+
+        fake_message = _Message()
+        fake_guild = SimpleNamespace(id=101)
+        monkeypatch.setattr(events.bot, "get_guild", lambda _gid: fake_guild)
+
+        class FakeSettingsRepo:
+            def __init__(self, _db):
+                self.settings = {
+                    "who_can_jump_channel_id": 1,
+                    "who_can_jump_message_id": 2,
+                    "who_can_jump_page_index": 0,
+                    "host99k_role_id": 1,
+                }
+
+            async def get_settings(self, _gid):
+                return dict(self.settings)
+
+            async def upsert_settings(self, _gid, **fields):
+                self.settings.update(fields)
+
+        monkeypatch.setattr(events, "GuildSettingsRepository", FakeSettingsRepo)
+        monkeypatch.setattr(events, "get_database", lambda: SimpleNamespace(pool=object()))
+        monkeypatch.setattr(events, "UsersRepository", lambda _pool: object())
+
+        async def fake_ensure(**_kwargs):
+            return fake_message
+
+        async def fake_collect(**_kwargs):
+            return ([_row("Host A")], None)
+
+        monkeypatch.setattr(events, "_ensure_who_can_jump_panel_message", fake_ensure)
+        monkeypatch.setattr(events, "_collect_who_can_jump_rows", fake_collect)
+
+        await events._refresh_who_can_jump_panel_for_guild(101)
+        await events._refresh_who_can_jump_panel_for_guild(101)
+
+        assert fake_message.edits == 1
 
     asyncio.run(_run())
 
