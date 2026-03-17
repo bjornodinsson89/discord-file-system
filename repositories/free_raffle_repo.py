@@ -89,6 +89,58 @@ class FreeRaffleRepository(RepositoryBase):
             )
             return result.endswith("1")
 
+
+
+    async def add_entry_with_source(
+        self,
+        raffle_id: int,
+        discord_id: int,
+        *,
+        entry_source: str,
+        entry_weight: int,
+        dedupe_key: str | None,
+    ) -> bool:
+        async with self.acquire() as conn:
+            result = await conn.execute(
+                """
+                INSERT INTO free_raffle_entries (raffle_id, discord_id, entry_source, entry_weight, dedupe_key)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (raffle_id, discord_id) DO NOTHING
+                """,
+                raffle_id,
+                discord_id,
+                entry_source,
+                max(1, int(entry_weight)),
+                dedupe_key,
+            )
+            return result.endswith("1")
+
+    async def user_has_entry(self, raffle_id: int, discord_id: int) -> bool:
+        async with self.acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT 1 FROM free_raffle_entries WHERE raffle_id = $1 AND discord_id = $2",
+                raffle_id,
+                discord_id,
+            )
+            return value is not None
+
+    async def list_active_auto_entry_raffles(self, guild_id: int | None = None) -> list[dict]:
+        async with self.acquire() as conn:
+            if guild_id is None:
+                rows = await conn.fetch(
+                    "SELECT * FROM free_raffles WHERE status = 'active' AND COALESCE(auto_entry_enabled, FALSE) = TRUE"
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM free_raffles
+                    WHERE status = 'active'
+                      AND guild_id = $1
+                      AND COALESCE(auto_entry_enabled, FALSE) = TRUE
+                    """,
+                    guild_id,
+                )
+            return [dict(r) for r in rows]
     async def get_entry_count(self, raffle_id: int) -> int:
         async with self.acquire() as conn:
             value = await conn.fetchval(
@@ -188,16 +240,32 @@ class FreeRaffleRepository(RepositoryBase):
                 if raffle_row is None:
                     return None
 
+                raffle_data = dict(raffle_row)
+                weighted_mode = bool(raffle_data.get("weighted_odds_enabled", False))
                 entry_rows = await conn.fetch(
-                    "SELECT discord_id FROM free_raffle_entries WHERE raffle_id = $1",
+                    "SELECT discord_id, entry_weight FROM free_raffle_entries WHERE raffle_id = $1",
                     raffle_id,
                 )
-                entrant_ids = [int(row["discord_id"]) for row in entry_rows]
+                entrants = [
+                    (int(row["discord_id"]), max(1, int(row.get("entry_weight") or 1)))
+                    for row in entry_rows
+                ]
                 winner_id: int | None = None
-                if entrant_ids:
+                if entrants:
                     import secrets
 
-                    winner_id = int(secrets.choice(entrant_ids))
+                    if weighted_mode:
+                        total = sum(weight for _, weight in entrants)
+                        pick = secrets.randbelow(total) + 1
+                        running = 0
+                        for entrant_id, weight in entrants:
+                            running += weight
+                            if running >= pick:
+                                winner_id = entrant_id
+                                break
+                    else:
+                        entrant_ids = [entrant_id for entrant_id, _weight in entrants]
+                        winner_id = int(secrets.choice(entrant_ids))
 
                 updated_row = await conn.fetchrow(
                     """
@@ -234,7 +302,7 @@ class FreeRaffleRepository(RepositoryBase):
                 return {
                     "raffle": dict(updated_row),
                     "winner_id": winner_id,
-                    "entries_count": len(entrant_ids),
+                    "entries_count": len(entrants),
                 }
 
     async def backfill_missing_ends_at(self) -> int:

@@ -296,3 +296,161 @@ class EngagementRepository(RepositoryBase):
                 user_id,
             )
             return int(value or 0)
+
+    async def list_level_role_rewards(self, guild_id: int) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM engagement_role_rewards
+                WHERE guild_id = $1
+                ORDER BY level_required ASC, id ASC
+                """,
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+
+    async def list_prize_roles(self, guild_id: int) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM engagement_prize_roles
+                WHERE guild_id = $1
+                ORDER BY milestone_type ASC, milestone_value ASC, id ASC
+                """,
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+
+    async def seed_default_reward_ladders(self, guild_id: int) -> None:
+        async with self.acquire() as conn:
+            async with conn.transaction():
+                level_exists = await conn.fetchval(
+                    "SELECT 1 FROM engagement_role_rewards WHERE guild_id = $1 LIMIT 1", guild_id
+                )
+                if not level_exists:
+                    for level in [5, 10, 20, 35, 50]:
+                        await conn.execute(
+                            """
+                            INSERT INTO engagement_role_rewards (guild_id, level_required, role_id, remove_lower_tiers)
+                            VALUES ($1, $2, 0, TRUE)
+                            """,
+                            guild_id,
+                            level,
+                        )
+
+                prize_exists = await conn.fetchval(
+                    "SELECT 1 FROM engagement_prize_roles WHERE guild_id = $1 LIMIT 1", guild_id
+                )
+                if not prize_exists:
+                    defaults = [
+                        ("lifetime_tokens_earned", 5),
+                        ("lifetime_tokens_earned", 15),
+                        ("jump_completions", 5),
+                        ("raffle_purchases", 10),
+                    ]
+                    for milestone_type, milestone_value in defaults:
+                        await conn.execute(
+                            """
+                            INSERT INTO engagement_prize_roles (guild_id, milestone_type, milestone_value, role_id)
+                            VALUES ($1, $2, $3, 0)
+                            """,
+                            guild_id,
+                            milestone_type,
+                            milestone_value,
+                        )
+
+    async def list_profiles_for_guild(self, guild_id: int) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM engagement_profiles WHERE guild_id = $1", guild_id)
+            return [dict(r) for r in rows]
+
+    async def reverse_event_by_dedupe_key(self, guild_id: int, dedupe_key: str) -> dict | None:
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE engagement_event_ledger
+                SET reversed_at = NOW(), reversal_reason = 'admin_reverse_event'
+                WHERE guild_id = $1 AND dedupe_key = $2 AND reversed_at IS NULL
+                RETURNING *
+                """,
+                guild_id,
+                dedupe_key,
+            )
+            return dict(row) if row else None
+
+    async def rebuild_profile_from_ledgers(self, guild_id: int, user_id: int) -> dict:
+        async with self.acquire() as conn:
+            async with conn.transaction():
+                profile = await conn.fetchrow(
+                    """
+                    SELECT
+                        COALESCE(SUM(CASE WHEN reversed_at IS NULL THEN xp_delta ELSE 0 END), 0) AS xp_total,
+                        COALESCE(SUM(CASE WHEN reversed_at IS NULL AND event_name='message' THEN xp_delta ELSE 0 END), 0) AS message_xp_total,
+                        COALESCE(SUM(CASE WHEN reversed_at IS NULL AND event_name='reaction_received' THEN xp_delta ELSE 0 END), 0) AS reaction_xp_total,
+                        COALESCE(SUM(CASE WHEN reversed_at IS NULL AND event_name='voice' THEN xp_delta ELSE 0 END), 0) AS voice_xp_total,
+                        COALESCE(SUM(CASE WHEN reversed_at IS NULL AND event_name IN ('paid_raffle_purchase_verified','raffle_prize_token_purchase_confirmed') THEN xp_delta ELSE 0 END), 0) AS paid_raffle_xp_total,
+                        COALESCE(SUM(CASE WHEN reversed_at IS NULL AND event_name='jump_99k_purchase_verified' THEN xp_delta ELSE 0 END), 0) AS jump_purchase_xp_total,
+                        COALESCE(SUM(CASE WHEN reversed_at IS NULL AND event_name='jump_99k_completed' THEN xp_delta ELSE 0 END), 0) AS jump_completion_xp_total,
+                        COALESCE(COUNT(*) FILTER (WHERE reversed_at IS NULL AND event_name='paid_raffle_purchase_verified'), 0) AS paid_raffle_purchases_count,
+                        COALESCE(SUM(CASE WHEN reversed_at IS NULL AND event_name='paid_raffle_purchase_verified' THEN COALESCE((payload_json->>'ticket_count')::INT, 0) ELSE 0 END), 0) AS paid_raffle_tickets_count,
+                        COALESCE(COUNT(*) FILTER (WHERE reversed_at IS NULL AND event_name='jump_99k_purchase_verified'), 0) AS jump_99k_purchases_count,
+                        COALESCE(COUNT(*) FILTER (WHERE reversed_at IS NULL AND event_name='jump_99k_completed'), 0) AS jump_99k_completed_count
+                    FROM engagement_event_ledger
+                    WHERE guild_id = $1 AND user_id = $2
+                    """,
+                    guild_id,
+                    user_id,
+                )
+                tokens = await conn.fetchrow(
+                    """
+                    SELECT
+                        COALESCE(SUM(CASE WHEN reversed_at IS NULL THEN amount ELSE 0 END), 0) AS prize_token_balance,
+                        COALESCE(SUM(CASE WHEN reversed_at IS NULL AND amount > 0 THEN amount ELSE 0 END), 0) AS prize_token_lifetime_earned,
+                        COALESCE(SUM(CASE WHEN reversed_at IS NULL AND amount < 0 THEN ABS(amount) ELSE 0 END), 0) AS prize_token_lifetime_spent
+                    FROM prize_token_transactions
+                    WHERE guild_id = $1 AND user_id = $2
+                    """,
+                    guild_id,
+                    user_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO engagement_profiles (guild_id, user_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT (guild_id, user_id) DO NOTHING
+                    """,
+                    guild_id,
+                    user_id,
+                )
+                row = await conn.fetchrow(
+                    """
+                    UPDATE engagement_profiles
+                    SET xp_total=$3, message_xp_total=$4, reaction_xp_total=$5, voice_xp_total=$6,
+                        paid_raffle_xp_total=$7, jump_purchase_xp_total=$8, jump_completion_xp_total=$9,
+                        paid_raffle_purchases_count=$10, paid_raffle_tickets_count=$11,
+                        jump_99k_purchases_count=$12, jump_99k_completed_count=$13,
+                        prize_token_balance=$14, prize_token_lifetime_earned=$15, prize_token_lifetime_spent=$16,
+                        updated_at=NOW()
+                    WHERE guild_id=$1 AND user_id=$2
+                    RETURNING *
+                    """,
+                    guild_id,
+                    user_id,
+                    int(profile["xp_total"]),
+                    int(profile["message_xp_total"]),
+                    int(profile["reaction_xp_total"]),
+                    int(profile["voice_xp_total"]),
+                    int(profile["paid_raffle_xp_total"]),
+                    int(profile["jump_purchase_xp_total"]),
+                    int(profile["jump_completion_xp_total"]),
+                    int(profile["paid_raffle_purchases_count"]),
+                    int(profile["paid_raffle_tickets_count"]),
+                    int(profile["jump_99k_purchases_count"]),
+                    int(profile["jump_99k_completed_count"]),
+                    int(tokens["prize_token_balance"]),
+                    int(tokens["prize_token_lifetime_earned"]),
+                    int(tokens["prize_token_lifetime_spent"]),
+                )
+                return dict(row)
