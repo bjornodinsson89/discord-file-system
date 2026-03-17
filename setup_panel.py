@@ -9,6 +9,7 @@ import discord
 from utils import GuildSettingsRepository, get_security_manager, get_torn_api
 from repositories.audit import AuditRepository
 from repositories.engagement import EngagementRepository
+from repositories.store import StoreRepository
 from utils.database import MissingDatabaseColumnError
 from utils.discord_channels import resolve_guild_channel
 from utils.embeds import create_error_embed, create_info_embed, create_success_embed
@@ -440,6 +441,13 @@ class SetupPanelView(OwnerView):
             f"Profile cards enabled: `{bool(es.get('profile_cards_enabled', True))}`\n"
             f"Message/Reaction/Voice XP: `{bool(es.get('message_xp_enabled', True))}` / `{bool(es.get('reaction_xp_enabled', True))}` / `{bool(es.get('voice_xp_enabled', True))}`"
         ), inline=False)
+        ss = getattr(self, "store_settings", {})
+        embed.add_field(name="Store", value=(
+            f"Enabled: `{bool(ss.get('enabled', False))}`\n"
+            f"Fulfillment channel: `{ss.get('fulfillment_channel_id') or 'Not set'}`\n"
+            f"Torn item store enabled: `{bool(ss.get('torn_item_store_enabled', True))}`\n"
+            f"Discord perk store enabled: `{bool(ss.get('discord_perk_store_enabled', True))}`"
+        ), inline=False)
         embed.add_field(name="Session placeholders", value=SUPPORTED_PLACEHOLDERS, inline=False)
         embed.add_field(name="Welcome placeholders", value=WELCOME_SUPPORTED_PLACEHOLDERS, inline=False)
         return embed
@@ -448,7 +456,9 @@ class SetupPanelView(OwnerView):
         super().__init__(owner_id=owner_id, db=db, settings=settings)
         self.guild = guild
         self.engagement_repo = EngagementRepository(self.db.pool) if getattr(self.db, "pool", None) is not None else None
+        self.store_repo = StoreRepository(self.db.pool) if getattr(self.db, "pool", None) is not None else None
         self.engagement_settings = engagement_settings or {}
+        self.store_settings: dict[str, Any] = {}
 
     async def save_changes(self, interaction: discord.Interaction, changes: dict[str, Any]) -> None:
         old_values = {k: self.settings.get(k) for k in changes}
@@ -494,6 +504,14 @@ class SetupPanelView(OwnerView):
         if self.engagement_repo is None:
             return
         self.engagement_settings = await self.engagement_repo.upsert_guild_settings(interaction.guild_id, **changes)
+        await _send_or_edit(interaction, self._build_embed(), self)
+
+    async def save_store_changes(self, interaction: discord.Interaction, changes: dict[str, Any]) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=False)
+        if self.store_repo is None:
+            return
+        self.store_settings = await self.store_repo.upsert_guild_settings(interaction.guild_id, **changes)
         await _send_or_edit(interaction, self._build_embed(), self)
 
     async def _resolve_real_channel(self, interaction: discord.Interaction, selected: Any) -> discord.abc.GuildChannel | None:
@@ -598,6 +616,13 @@ class SetupPanelView(OwnerView):
     async def engagement_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Configure engagement system settings."), EngagementCoreView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="Store", style=discord.ButtonStyle.primary)
+    async def store_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await _send_or_edit(interaction, create_info_embed("Store Setup", "Configure prize token store settings."), StoreSetupView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
@@ -1639,6 +1664,7 @@ async def send_setup_panel(interaction: discord.Interaction, db) -> None:
 
     engagement_settings = await EngagementRepository(db.pool).get_or_create_guild_settings(interaction.guild.id)
     panel = SetupPanelView(owner_id=interaction.user.id, db=db, settings=settings, guild=interaction.guild, engagement_settings=engagement_settings)
+    panel.store_settings = await StoreRepository(db.pool).get_or_create_guild_settings(interaction.guild.id)
     await interaction.response.send_message(embed=panel._build_embed(), view=panel, ephemeral=True)
 
 
@@ -1664,3 +1690,46 @@ class EngagementRolesView(BackView):
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def custom_back(self, interaction: discord.Interaction, _: discord.ui.Button):
         await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Event XP settings"), EngagementEventXPView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+
+
+class StoreFulfillmentChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, panel: SetupPanelView):
+        super().__init__(
+            placeholder="Set store fulfillment/admin channel",
+            min_values=0,
+            max_values=1,
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            row=0,
+        )
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        value = self.values[0].id if self.values else None
+        await self.panel.save_store_changes(interaction, {"fulfillment_channel_id": value})
+
+
+class StoreSetupView(BackView):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.add_item(StoreFulfillmentChannelSelect(self.panel))
+
+    @discord.ui.button(label="Toggle store enabled", style=discord.ButtonStyle.primary, row=1)
+    async def toggle_store(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self.panel.save_store_changes(
+            interaction,
+            {"enabled": not bool(self.panel.store_settings.get("enabled", False))},
+        )
+
+    @discord.ui.button(label="Toggle Torn item store", style=discord.ButtonStyle.primary, row=2)
+    async def toggle_torn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self.panel.save_store_changes(
+            interaction,
+            {"torn_item_store_enabled": not bool(self.panel.store_settings.get("torn_item_store_enabled", True))},
+        )
+
+    @discord.ui.button(label="Toggle Discord perk store", style=discord.ButtonStyle.primary, row=3)
+    async def toggle_discord_perk(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self.panel.save_store_changes(
+            interaction,
+            {"discord_perk_store_enabled": not bool(self.panel.store_settings.get("discord_perk_store_enabled", True))},
+        )

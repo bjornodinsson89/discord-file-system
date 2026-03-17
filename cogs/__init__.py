@@ -10,4 +10,5 @@ EXTENSIONS = [
     "cogs.bank",
     "cogs.jewelry_alert",
     "cogs.engagement",
+    "cogs.store",
 ]

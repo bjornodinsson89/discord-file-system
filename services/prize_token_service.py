@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncpg
+
 from repositories.prize_tokens import PrizeTokensRepository
 
 
@@ -33,7 +35,6 @@ class PrizeTokenService:
         )
         return tx is not None
 
-
     async def spend_auto_entry_token(self, guild_id: int, user_id: int, giveaway_id: int) -> bool:
         tx = await self.repo.apply_transaction(
             guild_id=guild_id,
@@ -44,5 +45,53 @@ class PrizeTokenService:
             source_id=str(giveaway_id),
             dedupe_key=f"giveaway_auto_entry:{giveaway_id}:{user_id}",
             metadata={"giveaway_id": giveaway_id},
+        )
+        return tx is not None
+
+    async def spend_store_tokens(
+        self,
+        *,
+        guild_id: int,
+        user_id: int,
+        amount: int,
+        source_id: str,
+        dedupe_key: str,
+        metadata: dict | None = None,
+        conn: asyncpg.Connection | None = None,
+    ) -> bool:
+        tx = await self.repo.apply_transaction(
+            guild_id=guild_id,
+            user_id=user_id,
+            transaction_type="store_spend",
+            amount=-abs(int(amount)),
+            source_type="store",
+            source_id=source_id,
+            dedupe_key=dedupe_key,
+            metadata=metadata or {},
+            conn=conn,
+        )
+        return tx is not None
+
+    async def refund_store_tokens(
+        self,
+        *,
+        guild_id: int,
+        user_id: int,
+        amount: int,
+        source_id: str,
+        dedupe_key: str,
+        metadata: dict | None = None,
+        conn: asyncpg.Connection | None = None,
+    ) -> bool:
+        tx = await self.repo.apply_transaction(
+            guild_id=guild_id,
+            user_id=user_id,
+            transaction_type="store_refund",
+            amount=abs(int(amount)),
+            source_type="store",
+            source_id=source_id,
+            dedupe_key=dedupe_key,
+            metadata=metadata or {},
+            conn=conn,
         )
         return tx is not None
