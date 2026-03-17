@@ -20,6 +20,42 @@ class EngagementRepository(RepositoryBase):
             )
             return dict(row)
 
+
+    async def upsert_guild_settings(self, guild_id: int, **changes: Any) -> dict:
+        if not changes:
+            return await self.get_or_create_guild_settings(guild_id)
+        allowed = {
+            "enabled",
+            "levelup_channel_id",
+            "leaderboard_enabled",
+            "profile_cards_enabled",
+            "message_xp_enabled",
+            "reaction_xp_enabled",
+            "voice_xp_enabled",
+            "paid_raffle_purchase_xp_base",
+            "paid_raffle_purchase_xp_per_ticket",
+            "paid_raffle_purchase_xp_cap",
+            "jump_purchase_xp",
+            "jump_completion_xp",
+            "auto_entry_giveaways_enabled",
+            "ignored_channel_ids_json",
+            "ignored_category_ids_json",
+            "ignored_role_ids_json",
+        }
+        keys = [k for k in changes if k in allowed]
+        if not keys:
+            return await self.get_or_create_guild_settings(guild_id)
+        await self.get_or_create_guild_settings(guild_id)
+        sets = [f"{k} = ${idx + 2}" for idx, k in enumerate(keys)]
+        values = [changes[k] for k in keys]
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                f"UPDATE engagement_guild_settings SET {', '.join(sets)}, updated_at = NOW() WHERE guild_id = $1 RETURNING *",
+                guild_id,
+                *values,
+            )
+            return dict(row)
+
     async def get_or_create_profile(self, guild_id: int, user_id: int) -> dict:
         async with self.acquire() as conn:
             row = await conn.fetchrow(
@@ -47,6 +83,7 @@ class EngagementRepository(RepositoryBase):
                     xp_total,
                     message_xp_total,
                     reaction_xp_total,
+                    voice_xp_total,
                     paid_raffle_xp_total,
                     jump_purchase_xp_total,
                     jump_completion_xp_total,
@@ -55,11 +92,12 @@ class EngagementRepository(RepositoryBase):
                     jump_99k_purchases_count,
                     jump_99k_completed_count
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 ON CONFLICT (guild_id, user_id) DO UPDATE
                 SET xp_total = engagement_profiles.xp_total + EXCLUDED.xp_total,
                     message_xp_total = engagement_profiles.message_xp_total + EXCLUDED.message_xp_total,
                     reaction_xp_total = engagement_profiles.reaction_xp_total + EXCLUDED.reaction_xp_total,
+                    voice_xp_total = engagement_profiles.voice_xp_total + EXCLUDED.voice_xp_total,
                     paid_raffle_xp_total = engagement_profiles.paid_raffle_xp_total + EXCLUDED.paid_raffle_xp_total,
                     jump_purchase_xp_total = engagement_profiles.jump_purchase_xp_total + EXCLUDED.jump_purchase_xp_total,
                     jump_completion_xp_total = engagement_profiles.jump_completion_xp_total + EXCLUDED.jump_completion_xp_total,
@@ -75,6 +113,7 @@ class EngagementRepository(RepositoryBase):
                 xp_delta,
                 int(increments.get("message_xp_total", 0)),
                 int(increments.get("reaction_xp_total", 0)),
+                int(increments.get("voice_xp_total", 0)),
                 int(increments.get("paid_raffle_xp_total", 0)),
                 int(increments.get("jump_purchase_xp_total", 0)),
                 int(increments.get("jump_completion_xp_total", 0)),
@@ -84,6 +123,25 @@ class EngagementRepository(RepositoryBase):
                 int(increments.get("jump_99k_completed_count", 0)),
             )
             return dict(row)
+
+    async def get_leaderboard(self, guild_id: int, board: str, limit: int = 10) -> list[dict]:
+        order_map = {
+            "xp": "xp_total DESC, user_id ASC",
+            "levels": "level DESC, xp_total DESC, user_id ASC",
+            "tokens": "prize_token_lifetime_earned DESC, user_id ASC",
+            "jumps": "jump_99k_completed_count DESC, user_id ASC",
+            "raffles": "paid_raffle_tickets_count DESC, user_id ASC",
+        }
+        order_by = order_map.get(board)
+        if not order_by:
+            raise ValueError(f"unsupported leaderboard type: {board}")
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT * FROM engagement_profiles WHERE guild_id=$1 ORDER BY {order_by} LIMIT $2",
+                guild_id,
+                limit,
+            )
+            return [dict(r) for r in rows]
 
     async def update_level(self, guild_id: int, user_id: int, level: int) -> None:
         async with self.acquire() as conn:
