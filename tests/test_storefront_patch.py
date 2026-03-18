@@ -157,10 +157,11 @@ def test_store_commands_removed_from_source_and_storefront_controls_present():
     assert "Refresh Storefront" in src
 
 
-def test_setup_channels_include_store_channel_selector():
+def test_store_channel_selector_lives_in_store_setup():
     src = Path("setup_panel.py").read_text(encoding="utf-8")
-    assert 'ChannelSelect(self.panel, "store_channel_id", "Set Store channel"' in src
-    assert "Store channel" in src
+    assert 'class StoreChannelSelect(discord.ui.ChannelSelect):' in src
+    assert 'self.add_item(StoreChannelSelect(self.panel))' in src
+    assert 'ChannelSelect(self.panel, "store_channel_id", "Set Store channel"' not in src
 
 
 def test_storefront_sync_creates_hub_admin_and_item_messages_without_duplicates():

@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from setup_panel import ChannelsViewPage4, SetupPanelView, _channels_embed
+from setup_panel import ChannelsViewPage4, SetupPanelView, StoreSetupView, _channels_embed
 
 
 class _Guild:
@@ -18,6 +18,7 @@ class _Guild:
 def test_channels_embed_mentions_who_can_jump_panel_channel():
     embed = _channels_embed()
     assert "Who Can Jump panel channel" in (embed.description or "")
+    assert "Store channel" not in (embed.description or "")
 
 
 def test_setup_summary_includes_who_can_jump_channel_line():
@@ -40,7 +41,7 @@ def test_setup_summary_includes_who_can_jump_channel_line():
     asyncio.run(_run())
 
 
-def test_channels_view_page4_has_store_channel_selector():
+def test_channels_view_page4_no_longer_has_store_channel_selector():
     async def _run():
         page = ChannelsViewPage4(
             owner_id=1,
@@ -52,7 +53,28 @@ def test_channels_view_page4_has_store_channel_selector():
         selectors = [
             child for child in page.children if child.__class__.__name__ == "ChannelSelect"
         ]
-        assert len(selectors) == 4
+        assert len(selectors) == 3
+        assert not any(getattr(child, "placeholder", "") == "Set Store channel" for child in selectors)
+
+    asyncio.run(_run())
+
+
+def test_store_setup_view_has_store_channel_selector():
+    async def _run():
+        panel = SetupPanelView(
+            owner_id=1,
+            db=SimpleNamespace(pool=None),
+            settings={},
+            guild=_Guild(),
+        )
+        page = StoreSetupView(
+            owner_id=1,
+            db=SimpleNamespace(pool=None),
+            settings={},
+            guild=_Guild(),
+            panel=panel,
+        )
+        selectors = [child for child in page.children if isinstance(getattr(child, "placeholder", None), str)]
         assert any(getattr(child, "placeholder", "") == "Set Store channel" for child in selectors)
 
     asyncio.run(_run())
