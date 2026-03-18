@@ -18,7 +18,6 @@ from utils.database import get_pool
 class EngagementCog(commands.Cog):
     profile = app_commands.Group(name="profile", description="View engagement profiles")
     tokens = app_commands.Group(name="tokens", description="Prize token commands")
-    engagement = app_commands.Group(name="engagement", description="Engagement admin tools")
     leaderboard = app_commands.Group(name="leaderboard", description="Engagement leaderboards")
 
     def __init__(self, bot: commands.Bot):
@@ -130,6 +129,7 @@ class EngagementCog(commands.Cog):
         for guild in list(self.bot.guilds):
             try:
                 await self.role_rewards.seed_default_ladders_if_missing(guild.id)
+                await self.role_rewards.ensure_reward_roles(guild)
                 profiles = await self.repo.list_profiles_for_guild(guild.id)
                 for p in profiles:
                     await self._sync_roles_for_member(guild.id, int(p["user_id"]))
@@ -431,113 +431,9 @@ class EngagementCog(commands.Cog):
             interaction, "raffles", "Raffles Leaderboard", "paid_raffle_tickets_count"
         )
 
-    @engagement.command(name="debug", description="Debug engagement state")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def engagement_debug(
-        self, interaction: discord.Interaction, member: discord.Member | None = None
-    ):
-        if interaction.guild is None:
-            await interaction.response.send_message("Guild only.", ephemeral=True)
-            return
-        target = member or interaction.user
-        p = await self._profile_for(interaction.guild.id, target.id)
-        message_state = await self.repo.get_message_state(interaction.guild.id, target.id)
-        events = await self.repo.get_recent_event_rows(interaction.guild.id, target.id, limit=5)
-        txs = await self.token_repo.get_recent_transactions(
-            interaction.guild.id, target.id, limit=5
-        )
-        await interaction.response.send_message(
-            f"Profile: {p}\nMessage state: {message_state}\nRecent events: {events}\nRecent token tx: {txs}",
-            ephemeral=True,
-        )
 
-    @engagement.command(name="config", description="Show engagement config")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def engagement_config(self, interaction: discord.Interaction):
-        if interaction.guild is None:
-            await interaction.response.send_message("Guild only.", ephemeral=True)
-            return
-        s = await self.repo.get_or_create_guild_settings(interaction.guild.id)
-        await interaction.response.send_message(
-            "\n".join(
-                [
-                    "**Engagement Config**",
-                    f"Enabled: `{bool(s.get('enabled'))}`",
-                    f"Level-up channel: `{s.get('levelup_channel_id') or 'Not set'}`",
-                    f"Leaderboards enabled: `{bool(s.get('leaderboard_enabled'))}`",
-                    f"Profile cards enabled: `{bool(s.get('profile_cards_enabled'))}`",
-                    f"Message XP: `{bool(s.get('message_xp_enabled'))}`",
-                    f"Reaction XP: `{bool(s.get('reaction_xp_enabled'))}`",
-                    f"Voice XP: `{bool(s.get('voice_xp_enabled'))}`",
-                    f"Ignored channels: `{s.get('ignored_channel_ids_json') or []}`",
-                    f"Ignored categories: `{s.get('ignored_category_ids_json') or []}`",
-                    f"Ignored roles: `{s.get('ignored_role_ids_json') or []}`",
-                ]
-            ),
-            ephemeral=True,
-        )
 
-    @engagement.command(name="sync_roles", description="Sync engagement reward roles")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def engagement_sync_roles(
-        self, interaction: discord.Interaction, member: discord.Member | None = None
-    ):
-        if interaction.guild is None:
-            await interaction.response.send_message("Guild only.", ephemeral=True)
-            return
-        await self.role_rewards.seed_default_ladders_if_missing(interaction.guild.id)
-        if member is not None:
-            result = await self._sync_roles_for_member(interaction.guild.id, member.id)
-            await interaction.response.send_message(
-                f"Synced roles for {member.mention}: {result}", ephemeral=True
-            )
-            return
-        profiles = await self.repo.list_profiles_for_guild(interaction.guild.id)
-        total = {"granted": 0, "removed": 0, "failed": 0}
-        for p in profiles:
-            r = await self._sync_roles_for_member(interaction.guild.id, int(p["user_id"]))
-            for k in total:
-                total[k] += int(r.get(k, 0))
-        await interaction.response.send_message(
-            f"Synced all eligible members: {total}", ephemeral=True
-        )
 
-    @engagement.command(name="reverse_event", description="Reverse one event by dedupe key")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def engagement_reverse_event(self, interaction: discord.Interaction, dedupe_key: str):
-        if interaction.guild is None:
-            await interaction.response.send_message("Guild only.", ephemeral=True)
-            return
-        row = await self.repo.reverse_event_by_dedupe_key(interaction.guild.id, dedupe_key)
-        if not row:
-            await interaction.response.send_message(
-                "No unreversed event found for that dedupe key.", ephemeral=True
-            )
-            return
-        user_id = int(row.get("user_id") or 0)
-        rebuilt = await self.repo.rebuild_profile_from_ledgers(interaction.guild.id, user_id)
-        lvl = level_from_total_xp(int(rebuilt.get("xp_total") or 0))
-        await self.repo.update_level(interaction.guild.id, user_id, lvl)
-        await self._sync_roles_for_member(interaction.guild.id, user_id)
-        await interaction.response.send_message(
-            f"Reversed event for <@{user_id}> and rebuilt profile.", ephemeral=True
-        )
-
-    @engagement.command(name="rebuild_profile", description="Rebuild one profile from ledgers")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def engagement_rebuild_profile(
-        self, interaction: discord.Interaction, member: discord.Member
-    ):
-        if interaction.guild is None:
-            await interaction.response.send_message("Guild only.", ephemeral=True)
-            return
-        rebuilt = await self.repo.rebuild_profile_from_ledgers(interaction.guild.id, member.id)
-        lvl = level_from_total_xp(int(rebuilt.get("xp_total") or 0))
-        await self.repo.update_level(interaction.guild.id, member.id, lvl)
-        await self._sync_roles_for_member(interaction.guild.id, member.id)
-        await interaction.response.send_message(
-            f"Rebuilt engagement profile for {member.mention}.", ephemeral=True
-        )
 
 
 async def setup(bot: commands.Bot):
