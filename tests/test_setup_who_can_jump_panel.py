@@ -40,7 +40,7 @@ def test_setup_summary_includes_who_can_jump_channel_line():
     asyncio.run(_run())
 
 
-def test_channels_view_page4_has_three_selectors_only():
+def test_channels_view_page4_has_store_channel_selector():
     async def _run():
         page = ChannelsViewPage4(
             owner_id=1,
@@ -52,6 +52,7 @@ def test_channels_view_page4_has_three_selectors_only():
         selectors = [
             child for child in page.children if child.__class__.__name__ == "ChannelSelect"
         ]
-        assert len(selectors) == 3
+        assert len(selectors) == 4
+        assert any(getattr(child, "placeholder", "") == "Set Store channel" for child in selectors)
 
     asyncio.run(_run())

@@ -135,7 +135,6 @@ def test_removed_and_kept_command_surface_source_markers():
         '@leaderboard.command(name="tokens"',
         '@leaderboard.command(name="jumps"',
         '@leaderboard.command(name="raffles"',
-        '@app_commands.command(name="store"',
         '@app_commands.command(name="raffle_create"',
         '@raffle.command(name="controls"',
     ]:
