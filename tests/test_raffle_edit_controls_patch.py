@@ -25,7 +25,9 @@ class _FakeResponse:
 
     async def send_message(self, content=None, *, ephemeral=False, embed=None, view=None):
         self.done = True
-        self.messages.append({"content": content, "ephemeral": ephemeral, "embed": embed, "view": view})
+        self.messages.append(
+            {"content": content, "ephemeral": ephemeral, "embed": embed, "view": view}
+        )
 
     async def send_modal(self, modal):
         self.done = True
@@ -37,7 +39,13 @@ class _FakeFollowup:
         self.messages = []
 
     async def send(self, content=None, *, ephemeral=False, embed=None, view=None, wait=False):
-        payload = {"content": content, "ephemeral": ephemeral, "embed": embed, "view": view, "wait": wait}
+        payload = {
+            "content": content,
+            "ephemeral": ephemeral,
+            "embed": embed,
+            "view": view,
+            "wait": wait,
+        }
         self.messages.append(payload)
         return SimpleNamespace(**payload)
 
@@ -129,7 +137,11 @@ def test_edit_comment_updates_stored_comment_and_refreshes_panel(monkeypatch):
         interaction = _FakeInteraction(user_id=111, cog=cog)
         monkeypatch.setattr(raffle_module, "RafflesRepository", _FakeRepo)
         monkeypatch.setattr(raffle_module, "get_pool", lambda: object())
-        monkeypatch.setattr(raffle_module, "_can_manage_raffle_edit", lambda interaction, raffle: asyncio.sleep(0, result=True))
+        monkeypatch.setattr(
+            raffle_module,
+            "_can_manage_raffle_edit",
+            lambda interaction, raffle: asyncio.sleep(0, result=True),
+        )
 
         modal = raffle_module.RaffleEditCommentModal(42, 111, "Old note")
         modal.comment._value = "New admin note"
@@ -159,7 +171,11 @@ def test_add_photo_updates_stored_image_and_refreshes_panel(monkeypatch):
         interaction = _FakeInteraction(user_id=111, cog=cog)
         monkeypatch.setattr(raffle_module, "RafflesRepository", _FakeRepo)
         monkeypatch.setattr(raffle_module, "get_pool", lambda: object())
-        monkeypatch.setattr(raffle_module, "_can_manage_raffle_edit", lambda interaction, raffle: asyncio.sleep(0, result=True))
+        monkeypatch.setattr(
+            raffle_module,
+            "_can_manage_raffle_edit",
+            lambda interaction, raffle: asyncio.sleep(0, result=True),
+        )
 
         modal = raffle_module.RaffleEditImageUrlModal(42, 111, None)
         modal.prize_image_url._value = "https://imgur.com/new-image.png"
@@ -180,25 +196,38 @@ def test_unauthorized_users_cannot_use_edit_actions(monkeypatch):
         _FakeRepo.instances.clear()
         monkeypatch.setattr(raffle_module, "RafflesRepository", _FakeRepo)
         monkeypatch.setattr(raffle_module, "get_pool", lambda: object())
-        monkeypatch.setattr(raffle_module, "_can_manage_raffle_edit", lambda interaction, raffle: asyncio.sleep(0, result=False))
+        monkeypatch.setattr(
+            raffle_module,
+            "_can_manage_raffle_edit",
+            lambda interaction, raffle: asyncio.sleep(0, result=False),
+        )
 
         comment_interaction = _FakeInteraction(user_id=999)
         modal = raffle_module.RaffleEditCommentModal(42, 111, "Old note")
         modal.comment._value = "Blocked"
         await modal.on_submit(comment_interaction)
         assert _FakeRepo.instances[-1].comment_updates == []
-        assert comment_interaction.followup.messages[-1]["content"] == "Only the raffle host or a raffle admin can edit this raffle."
+        assert (
+            comment_interaction.followup.messages[-1]["content"]
+            == "Only the raffle host or a raffle admin can edit this raffle."
+        )
 
         photo_interaction = _FakeInteraction(user_id=999)
         photo_modal = raffle_module.RaffleEditImageUrlModal(42, 111, None)
         photo_modal.prize_image_url._value = "https://imgur.com/nope.png"
         await photo_modal.on_submit(photo_interaction)
         assert _FakeRepo.instances[-1].image_updates == []
-        assert photo_interaction.followup.messages[-1]["content"] == "Only the raffle host or a raffle admin can edit this raffle."
+        assert (
+            photo_interaction.followup.messages[-1]["content"]
+            == "Only the raffle host or a raffle admin can edit this raffle."
+        )
 
         edit_view = raffle_module.RaffleEditView(42, 111)
         edit_interaction = _FakeInteraction(user_id=999)
         await _button(edit_view, "Edit Comment").callback(edit_interaction)
-        assert edit_interaction.response.messages[-1]["content"] == "Only the raffle host or a raffle admin can edit this raffle."
+        assert (
+            edit_interaction.response.messages[-1]["content"]
+            == "Only the raffle host or a raffle admin can edit this raffle."
+        )
 
     asyncio.run(_run())
