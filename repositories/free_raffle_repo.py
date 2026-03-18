@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import asyncpg
+
 from .base import RepositoryBase
 
 
@@ -18,6 +20,7 @@ class FreeRaffleRepository(RepositoryBase):
         button_join_enabled: bool = True,
         auto_entry_enabled: bool = False,
         weighted_enabled: bool = False,
+        auto_entry_max_per_user: int = 1,
     ) -> dict:
         async with self.acquire() as conn:
             row = await conn.fetchrow(
@@ -31,10 +34,11 @@ class FreeRaffleRepository(RepositoryBase):
                     button_join_enabled,
                     auto_entry_enabled,
                     weighted_odds_enabled,
+                    auto_entry_max_per_user,
                     status,
                     ends_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', $10)
                 RETURNING *
                 """,
                 guild_id,
@@ -45,6 +49,7 @@ class FreeRaffleRepository(RepositoryBase):
                 bool(button_join_enabled),
                 bool(auto_entry_enabled),
                 bool(weighted_enabled),
+                max(1, int(auto_entry_max_per_user)),
                 ends_at,
             )
             return dict(row)
@@ -110,11 +115,38 @@ class FreeRaffleRepository(RepositoryBase):
         dedupe_key: str | None,
     ) -> bool:
         async with self.acquire() as conn:
+            return await self._upsert_entry_with_conn(
+                conn,
+                raffle_id=raffle_id,
+                discord_id=discord_id,
+                entry_source=entry_source,
+                entry_weight=entry_weight,
+                dedupe_key=dedupe_key,
+                accumulate=False,
+            )
+
+    async def _upsert_entry_with_conn(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        raffle_id: int,
+        discord_id: int,
+        entry_source: str,
+        entry_weight: int,
+        dedupe_key: str | None,
+        accumulate: bool,
+    ) -> bool:
+        if accumulate:
             result = await conn.execute(
                 """
                 INSERT INTO free_raffle_entries (raffle_id, discord_id, entry_source, entry_weight, dedupe_key)
                 VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (raffle_id, discord_id) DO NOTHING
+                ON CONFLICT (raffle_id, discord_id) DO UPDATE
+                SET entry_weight = free_raffle_entries.entry_weight + EXCLUDED.entry_weight,
+                    entry_source = EXCLUDED.entry_source,
+                    dedupe_key = EXCLUDED.dedupe_key,
+                    created_at = free_raffle_entries.created_at
+                WHERE free_raffle_entries.dedupe_key IS DISTINCT FROM EXCLUDED.dedupe_key
                 """,
                 raffle_id,
                 discord_id,
@@ -122,22 +154,36 @@ class FreeRaffleRepository(RepositoryBase):
                 max(1, int(entry_weight)),
                 dedupe_key,
             )
-            return result.endswith("1")
+            return not result.endswith("0")
+        result = await conn.execute(
+            """
+            INSERT INTO free_raffle_entries (raffle_id, discord_id, entry_source, entry_weight, dedupe_key)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (raffle_id, discord_id) DO NOTHING
+            """,
+            raffle_id,
+            discord_id,
+            entry_source,
+            max(1, int(entry_weight)),
+            dedupe_key,
+        )
+        return result.endswith("1")
 
-    async def auto_enter_once_with_token_spend(
+    async def increment_auto_entry_progress(
         self,
         *,
         guild_id: int,
         raffle_id: int,
         user_id: int,
         entry_weight: int,
-        dedupe_key: str,
-    ) -> bool:
+        qualifying_messages: int = 1,
+        progress_dedupe_key: str,
+    ) -> dict:
         async with self.acquire() as conn:
             async with conn.transaction():
                 raffle = await conn.fetchrow(
                     """
-                    SELECT id
+                    SELECT *
                     FROM free_raffles
                     WHERE id = $1
                       AND guild_id = $2
@@ -149,7 +195,7 @@ class FreeRaffleRepository(RepositoryBase):
                     guild_id,
                 )
                 if raffle is None:
-                    return False
+                    return {"awarded": False, "entries_granted": 0, "auto_entries_granted": 0, "qualifying_message_count": 0}
 
                 await conn.execute(
                     """
@@ -170,52 +216,56 @@ class FreeRaffleRepository(RepositoryBase):
                     guild_id,
                     user_id,
                 )
-                balance = int(profile.get("prize_token_balance") or 0)
-                if balance < 1:
-                    return False
-                next_balance = balance - 1
+                if int(profile.get("prize_token_balance") or 0) < 1:
+                    return {"awarded": False, "entries_granted": 0, "auto_entries_granted": 0, "qualifying_message_count": 0}
 
-                tx_row = await conn.fetchrow(
+                progress = await conn.fetchrow(
                     """
-                    WITH inserted_entry AS (
-                        INSERT INTO free_raffle_entries (raffle_id, discord_id, entry_source, entry_weight, dedupe_key)
-                        VALUES ($1, $2, 'auto_token', $3, $4)
-                        ON CONFLICT (raffle_id, discord_id) DO NOTHING
-                        RETURNING raffle_id
-                    )
-                    INSERT INTO prize_token_transactions (
-                        guild_id, user_id, transaction_type, amount, balance_after,
-                        source_type, source_id, dedupe_key, metadata_json
-                    )
-                    SELECT $5, $2, 'auto_entry_spend', -1, $6,
-                           'giveaway', $1::TEXT, $4, jsonb_build_object('giveaway_id', $1)
-                    FROM inserted_entry
-                    ON CONFLICT (guild_id, dedupe_key) DO NOTHING
-                    RETURNING id
+                    INSERT INTO giveaway_auto_progress (raffle_id, guild_id, user_id, qualifying_message_count, auto_entries_granted, last_award_dedupe_key)
+                    VALUES ($1, $2, $3, $4, 0, NULL)
+                    ON CONFLICT (raffle_id, user_id) DO UPDATE
+                    SET qualifying_message_count = giveaway_auto_progress.qualifying_message_count + EXCLUDED.qualifying_message_count,
+                        updated_at = NOW()
+                    RETURNING *
                     """,
-                    raffle_id,
-                    user_id,
-                    max(1, int(entry_weight)),
-                    dedupe_key,
-                    guild_id,
-                    next_balance,
+                    raffle_id, guild_id, user_id, max(0, int(qualifying_messages))
                 )
-                if tx_row is None:
-                    return False
+                progress = dict(progress)
+                max_entries = max(1, int(raffle.get('auto_entry_max_per_user') or 1))
+                granted = int(progress.get('auto_entries_granted') or 0)
+                banked = int(progress.get('qualifying_message_count') or 0)
+                entries_to_award = min(max_entries - granted, banked // 15)
+                if entries_to_award <= 0:
+                    return {"awarded": False, "entries_granted": 0, "auto_entries_granted": granted, "qualifying_message_count": banked}
+
+                consumed = entries_to_award * 15
+                new_granted = granted + entries_to_award
+                new_banked = banked - consumed
+                dedupe_key = progress_dedupe_key if entries_to_award == 1 else f"{progress_dedupe_key}:x{entries_to_award}"
+                applied = await self._upsert_entry_with_conn(
+                    conn,
+                    raffle_id=raffle_id,
+                    discord_id=user_id,
+                    entry_source='auto_messages',
+                    entry_weight=max(1, int(entry_weight)) * entries_to_award,
+                    dedupe_key=dedupe_key,
+                    accumulate=True,
+                )
+                if not applied:
+                    return {"awarded": False, "entries_granted": 0, "auto_entries_granted": granted, "qualifying_message_count": banked}
 
                 await conn.execute(
                     """
-                    UPDATE engagement_profiles
-                    SET prize_token_balance = $3,
-                        prize_token_lifetime_spent = prize_token_lifetime_spent + 1,
+                    UPDATE giveaway_auto_progress
+                    SET qualifying_message_count = $4,
+                        auto_entries_granted = $5,
+                        last_award_dedupe_key = $6,
                         updated_at = NOW()
-                    WHERE guild_id = $1 AND user_id = $2
+                    WHERE raffle_id = $1 AND guild_id = $2 AND user_id = $3
                     """,
-                    guild_id,
-                    user_id,
-                    next_balance,
+                    raffle_id, guild_id, user_id, new_banked, new_granted, dedupe_key
                 )
-                return True
+                return {"awarded": True, "entries_granted": entries_to_award, "auto_entries_granted": new_granted, "qualifying_message_count": new_banked}
 
     async def user_has_entry(self, raffle_id: int, discord_id: int) -> bool:
         async with self.acquire() as conn:
@@ -267,7 +317,7 @@ class FreeRaffleRepository(RepositoryBase):
                 SELECT discord_id, entry_source, entry_weight, created_at
                 FROM free_raffle_entries
                 WHERE raffle_id = $1
-                ORDER BY created_at ASC, discord_id ASC
+                ORDER BY COALESCE(created_at, NOW()) ASC, discord_id ASC
                 """,
                 raffle_id,
             )

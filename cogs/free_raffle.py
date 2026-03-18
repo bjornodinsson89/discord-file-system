@@ -82,6 +82,7 @@ class FreeRaffleModal(discord.ui.Modal, title="Giveaway"):
         style=discord.TextStyle.paragraph,
         max_length=500,
     )
+    auto_entry_max = discord.ui.TextInput(label="Auto-entry max per user", required=False, default="1", max_length=3)
 
     def __init__(self, cog: "FreeRaffleCog"):
         super().__init__()
@@ -106,6 +107,11 @@ class FreeRaffleModal(discord.ui.Modal, title="Giveaway"):
 
         settings = await GuildSettingsRepository(get_database()).get_or_create(int(interaction.guild_id))
         default_channel_id = GuildSettingsRepository.resolve_raffle_giveaway_purchase_channel_id(settings) or int(interaction.channel_id)
+        auto_entry_max_raw = str(self.auto_entry_max.value).strip() or "1"
+        if not auto_entry_max_raw.isdigit() or int(auto_entry_max_raw) < 1:
+            await interaction.response.send_message("❌ Auto-entry max per user must be a whole number of at least 1.", ephemeral=True)
+            return
+
         draft = {
             "guild_id": int(interaction.guild_id),
             "request_channel_id": int(interaction.channel_id),
@@ -114,6 +120,7 @@ class FreeRaffleModal(discord.ui.Modal, title="Giveaway"):
             "prize_text": str(self.prize.value).strip(),
             "note_text": (str(self.note.value).strip() or None),
             "duration_days": duration_days,
+            "auto_entry_max_per_user": int(auto_entry_max_raw),
         }
         self.cog.store_create_draft(int(interaction.user.id), draft)
         await interaction.response.defer(ephemeral=True, thinking=False)
@@ -346,6 +353,7 @@ class FreeRaffleCog(commands.Cog):
                 button_join_enabled=bool(mode["button_join_enabled"]),
                 auto_entry_enabled=bool(mode["auto_entry_enabled"]),
                 weighted_enabled=bool(mode["weighted_enabled"]),
+                auto_entry_max_per_user=int(draft.get("auto_entry_max_per_user") or 1),
             )
             raffle_id = int(raffle["id"])
             embed = await self.build_raffle_embed(raffle)
@@ -454,7 +462,10 @@ class FreeRaffleCog(commands.Cog):
         if button_join_enabled:
             how_to_play.append("✅ Click **🎟️ Enter Giveaway**")
         if auto_entry_enabled:
-            how_to_play.append("✅ Auto-entry giveaway: eligible users are entered automatically")
+            auto_max = max(1, int(raffle.get("auto_entry_max_per_user") or 1))
+            how_to_play.append("✅ Keep at least **1 coin** to stay eligible for message-based auto entry")
+            how_to_play.append("✅ Every **15 qualifying chat messages** grants **1 giveaway entry**")
+            how_to_play.append(f"✅ Auto-entry cap: **{auto_max}** per user for this giveaway")
         how_to_play.append(f"✅ {'Weighted odds are enabled' if weighted_enabled else 'Equal odds for all entrants'}")
         how_to_play.append("✅ Winner announced automatically")
         embed.add_field(
@@ -481,7 +492,7 @@ class FreeRaffleCog(commands.Cog):
 
         channel_id = raffle.get("channel_id")
         message_id = raffle.get("message_id")
-        if not channel_id or not message_id:
+        if not channel_id:
             return
 
         channel = self.bot.get_channel(int(channel_id))
@@ -511,7 +522,6 @@ class FreeRaffleCog(commands.Cog):
             return
 
         try:
-            message = channel.get_partial_message(int(message_id))
             embed = await self.build_raffle_embed(raffle)
             view = self.build_free_raffle_view(
                 raffle_id=int(raffle["id"]),
@@ -519,13 +529,23 @@ class FreeRaffleCog(commands.Cog):
                 status=str(raffle.get("status") or ""),
                 button_join_enabled=bool(raffle.get("button_join_enabled", False)),
             )
-            await PANEL_EDIT_SAFETY.request_edit(
-                message,
-                embed=embed,
-                view=view,
-                min_interval_seconds=5,
-                force=str(raffle.get("status") or "").lower() != "active",
-            )
+            if message_id:
+                try:
+                    message = await channel.fetch_message(int(message_id))
+                except Exception:
+                    message = await channel.send(embed=embed, view=view)
+                    await repo.set_message_id(raffle_id, int(message.id))
+                    return
+                await PANEL_EDIT_SAFETY.request_edit(
+                    message,
+                    embed=embed,
+                    view=view,
+                    min_interval_seconds=5,
+                    force=str(raffle.get("status") or "").lower() != "active",
+                )
+                return
+            message = await channel.send(embed=embed, view=view)
+            await repo.set_message_id(raffle_id, int(message.id))
         except Exception as exc:
             log.error(
                 "Failed refreshing free raffle message: raffle_id=%s channel_id=%s message_id=%s error_type=%s error=%s",
@@ -663,14 +683,17 @@ class FreeRaffleCog(commands.Cog):
             await interaction.followup.send("❌ Failed to end giveaway right now.", ephemeral=True)
 
     async def handle_refresh_controls(self, interaction: discord.Interaction, raffle_id: int) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=False)
         repo = FreeRaffleRepository(get_pool())
         raffle = await repo.get_raffle(raffle_id)
         if not await self._assert_host(interaction, raffle):
             return
         await self.refresh_public_message(raffle_id)
-        await self._host_controls_response(interaction, "🔄 Giveaway panel refreshed.", raffle)
+        refreshed = await repo.get_raffle(raffle_id) or raffle
+        await self._host_controls_response(interaction, "🔄 Giveaway panel refreshed.", refreshed)
 
     async def handle_view_entrants(self, interaction: discord.Interaction, raffle_id: int) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=False)
         repo = FreeRaffleRepository(get_pool())
         raffle = await repo.get_raffle(raffle_id)
         if not await self._assert_host(interaction, raffle):

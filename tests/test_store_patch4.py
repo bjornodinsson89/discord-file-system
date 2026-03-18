@@ -164,14 +164,14 @@ class _FakeTokenSvc:
         self.refunded = 0
         self.events = events if events is not None else []
 
-    async def spend_store_tokens(self, *, amount: int, **_kwargs):
+    async def spend_store_hjd(self, *, amount: int, **_kwargs):
         self.events.append("spend")
         if not self.allow_spend:
-            raise ValueError("insufficient prize token balance")
+            raise ValueError("insufficient HJD balance")
         self.spent += amount
         return True
 
-    async def refund_store_tokens(self, *, amount: int, **_kwargs):
+    async def refund_store_hjd(self, *, amount: int, **_kwargs):
         self.events.append("refund")
         self.refunded += amount
         return True
@@ -413,7 +413,7 @@ def test_discord_role_redemption_charges_before_role_grant_and_refunds_on_grant_
 
         redemption, err = await service.redeem_item(guild=guild, user=member, item_id=1)
         assert redemption is None
-        assert "no tokens were charged" in str(err).lower()
+        assert "no hjd were charged" in str(err).lower()
         assert events[0] == "spend"
         assert events[1] == "add_role"
         assert events[2] == "refund"
@@ -590,7 +590,9 @@ def test_blank_store_item_description_falls_back_to_torn_metadata_on_create():
             fulfillment_type="admin_manual",
             created_by=7,
         )
-        assert repo.created_payload["description"] == "Restores happiness and reduces hospital time."
+        assert (
+            repo.created_payload["description"] == "Restores happiness and reduces hospital time."
+        )
         assert item["description"] == "Restores happiness and reduces hospital time."
 
     asyncio.run(_run())
@@ -630,8 +632,12 @@ def test_store_embed_description_fallback_order():
         repo.torn_description = "Torn fallback description."
         service = StoreService(repo, _FakeTokenSvc())
 
-        own = await service.resolve_description({"description": "Store description", "category": "torn_item"})
-        torn = await service.resolve_description({"description": "", "category": "torn_item", "torn_item_id": 123})
+        own = await service.resolve_description(
+            {"description": "Store description", "category": "torn_item"}
+        )
+        torn = await service.resolve_description(
+            {"description": "", "category": "torn_item", "torn_item_id": 123}
+        )
         empty = await service.resolve_description({"description": "", "category": "discord_perk"})
 
         assert own == "Store description"

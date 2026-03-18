@@ -8,8 +8,10 @@ from discord.ext import commands, tasks
 
 from repositories.engagement import EngagementRepository
 from repositories.prize_tokens import PrizeTokensRepository
+from repositories.happy_jump_dollars import HappyJumpDollarRepository
 from repositories.free_raffle_repo import FreeRaffleRepository
 from services.engagement_service import EngagementService, level_from_total_xp, required_total_xp
+from services.happy_jump_dollar_service import HappyJumpDollarService
 from services.prize_token_service import PrizeTokenService
 from services.role_reward_service import RoleRewardService
 from utils.database import get_pool
@@ -29,16 +31,16 @@ class EngagementCog(commands.Cog):
         pool = get_pool()
         self.repo = EngagementRepository(pool)
         self.token_repo = PrizeTokensRepository(pool)
+        self.hjd_repo = HappyJumpDollarRepository(pool)
         self.token_service = PrizeTokenService(self.token_repo)
-        self.service = EngagementService(self.repo, self.token_service)
+        self.hjd_service = HappyJumpDollarService(self.hjd_repo)
+        self.service = EngagementService(self.repo, self.token_service, self.hjd_service)
         self.role_rewards = RoleRewardService(self.repo)
         self.voice_xp_worker.start()
-        self.auto_entry_reconciliation_worker.start()
         self.role_repair_worker.start()
 
     def cog_unload(self):
         self.voice_xp_worker.cancel()
-        self.auto_entry_reconciliation_worker.cancel()
         self.role_repair_worker.cancel()
 
     async def _profile_for(self, guild_id: int, user_id: int) -> dict:
@@ -60,7 +62,7 @@ class EngagementCog(commands.Cog):
             if channel is None or not hasattr(channel, "send"):
                 return
             await channel.send(
-                f"🎉 {member.mention} reached Level {level} and earned 1 Prize Token."
+                f"🎉 {member.mention} reached Level {level} and earned 1 coin and 100 HJD."
             )
         except Exception:
             return
@@ -75,58 +77,31 @@ class EngagementCog(commands.Cog):
         profile = await self.repo.get_or_create_profile(guild_id, user_id)
         return await self.role_rewards.sync_member_roles(guild, member, profile)
 
-    async def _maybe_auto_enter_user_for_giveaway(self, giveaway: dict, user_id: int) -> bool:
-        guild_id = int(giveaway.get("guild_id") or 0)
-        giveaway_id = int(giveaway.get("id") or 0)
-        if guild_id <= 0 or giveaway_id <= 0:
-            return False
+    async def _process_message_auto_entries(self, guild_id: int, user_id: int) -> int:
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         if not bool(settings.get("auto_entry_giveaways_enabled", True)):
-            return False
-
+            return 0
         raffle_repo = FreeRaffleRepository(get_pool())
+        giveaways = await raffle_repo.list_active_auto_entry_raffles(guild_id)
+        if not giveaways:
+            return 0
         profile = await self.repo.get_or_create_profile(guild_id, user_id)
+        if int(profile.get("prize_token_balance") or 0) < 1:
+            return 0
         weight = self.role_rewards.giveaway_weight_for_level(int(profile.get("level") or 0))
-        return await raffle_repo.auto_enter_once_with_token_spend(
-            guild_id=guild_id,
-            raffle_id=giveaway_id,
-            user_id=user_id,
-            entry_weight=weight,
-            dedupe_key=f"giveaway_auto_entry:{giveaway_id}:{user_id}",
-        )
-
-    async def _auto_entry_reconcile_guild(self, guild_id: int) -> int:
-        settings = await self.repo.get_or_create_guild_settings(guild_id)
-        if not bool(settings.get("auto_entry_giveaways_enabled", True)):
-            return 0
-        raffle_repo = FreeRaffleRepository(get_pool())
-        giveaways = await raffle_repo.list_active_raffles(guild_id)
-        auto = [g for g in giveaways if bool(g.get("auto_entry_enabled", False))]
-        if not auto:
-            return 0
-        count = 0
-        profiles = await self.repo.list_profiles_for_guild(guild_id)
-        for p in profiles:
-            if int(p.get("prize_token_balance") or 0) < 1:
-                continue
-            for giveaway in auto:
-                inserted = await self._maybe_auto_enter_user_for_giveaway(
-                    giveaway, int(p["user_id"])
-                )
-                count += 1 if inserted else 0
-        return count
-
-    @tasks.loop(minutes=5)
-    async def auto_entry_reconciliation_worker(self):
-        for guild in list(self.bot.guilds):
-            try:
-                await self._auto_entry_reconcile_guild(guild.id)
-            except Exception:
-                continue
-
-    @auto_entry_reconciliation_worker.before_loop
-    async def before_auto_entry_reconciliation_worker(self):
-        await self.bot.wait_until_ready()
+        awarded = 0
+        bucket = int(datetime.now(timezone.utc).timestamp())
+        for giveaway in giveaways:
+            result = await raffle_repo.increment_auto_entry_progress(
+                guild_id=guild_id,
+                raffle_id=int(giveaway["id"]),
+                user_id=user_id,
+                entry_weight=weight,
+                progress_dedupe_key=f"giveaway_auto_entry:{int(giveaway['id'])}:{user_id}:{bucket}",
+            )
+            if result.get("awarded"):
+                awarded += int(result.get("entries_granted") or 0)
+        return awarded
 
     @tasks.loop(minutes=10)
     async def role_repair_worker(self):
@@ -193,7 +168,7 @@ class EngagementCog(commands.Cog):
             return
         if _message_has_interaction_origin(message) or message.content.strip().startswith("/"):
             return
-        await self.service.message_xp_if_eligible(
+        applied = await self.service.message_xp_if_eligible(
             guild_id=message.guild.id,
             user_id=message.author.id,
             content=message.content,
@@ -203,6 +178,8 @@ class EngagementCog(commands.Cog):
             on_level_up=self._post_levelup_announcement,
             on_role_sync_needed=self._sync_roles_for_member,
         )
+        if applied:
+            await self._process_message_auto_entries(message.guild.id, message.author.id)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -267,25 +244,10 @@ class EngagementCog(commands.Cog):
         user_id = int(payload.get("user_id") or 0)
         if guild_id and user_id:
             await self._sync_roles_for_member(guild_id, user_id)
-            raffle_repo = FreeRaffleRepository(get_pool())
-            for giveaway in await raffle_repo.list_active_raffles(guild_id):
-                if bool(giveaway.get("auto_entry_enabled", False)):
-                    await self._maybe_auto_enter_user_for_giveaway(giveaway, user_id)
 
     @commands.Cog.listener()
     async def on_giveaway_started(self, payload: dict):
-        guild_id = int(payload.get("guild_id") or 0)
-        giveaway_id = int(payload.get("giveaway_id") or payload.get("id") or 0)
-        if guild_id <= 0 or giveaway_id <= 0:
-            return
-        raffle_repo = FreeRaffleRepository(get_pool())
-        giveaway = await raffle_repo.get_raffle(giveaway_id)
-        if not giveaway or not bool(giveaway.get("auto_entry_enabled", False)):
-            return
-        profiles = await self.repo.list_profiles_for_guild(guild_id)
-        for p in profiles:
-            if int(p.get("prize_token_balance") or 0) >= 1:
-                await self._maybe_auto_enter_user_for_giveaway(giveaway, int(p["user_id"]))
+        return
 
     @profile.command(name="view", description="View detailed profile stats")
     async def profile_view(
@@ -304,8 +266,10 @@ class EngagementCog(commands.Cog):
             f"Level: **{level}**",
             f"XP Total: **{xp_total}**",
             f"XP to Next: **{left}**",
-            f"Prize Tokens: **{int(p.get('prize_token_balance') or 0)}**",
-            f"Lifetime Earned/Spent: **{int(p.get('prize_token_lifetime_earned') or 0)} / {int(p.get('prize_token_lifetime_spent') or 0)}**",
+            f"Coins: **{int(p.get('prize_token_balance') or 0)}**",
+            f"Coin Lifetime Earned/Spent: **{int(p.get('prize_token_lifetime_earned') or 0)} / {int(p.get('prize_token_lifetime_spent') or 0)}**",
+            f"HJD Balance: **{int(p.get('hjd_balance') or 0)}**",
+            f"HJD Lifetime Earned/Spent: **{int(p.get('hjd_lifetime_earned') or 0)} / {int(p.get('hjd_lifetime_spent') or 0)}**",
             f"Message XP: **{int(p.get('message_xp_total') or 0)}**",
             f"Reaction XP: **{int(p.get('reaction_xp_total') or 0)}**",
             f"Voice XP: **{int(p.get('voice_xp_total') or 0)}**",
@@ -335,7 +299,7 @@ class EngagementCog(commands.Cog):
         bar_fill = max(0, min(10, int(pct / 10)))
         bar = "█" * bar_fill + "░" * (10 - bar_fill)
         await interaction.response.send_message(
-            f"Rank #{rank} • L{level} • `{bar}` {pct}%\nXP: {xp_total} • Tokens: {int(p.get('prize_token_balance') or 0)}",
+            f"Rank #{rank} • L{level} • `{bar}` {pct}%\nXP: {xp_total} • Coins: {int(p.get('prize_token_balance') or 0)} • HJD: {int(p.get('hjd_balance') or 0)}",
             ephemeral=True,
         )
 
@@ -357,7 +321,8 @@ class EngagementCog(commands.Cog):
         await interaction.response.send_message(
             f"Level: **{level}**\n"
             f"XP Total: **{xp_total}**\n"
-            f"Prize Token Balance: **{int(p.get('prize_token_balance') or 0)}**\n"
+            f"Coin Balance: **{int(p.get('prize_token_balance') or 0)}**\n"
+            f"HJD Balance: **{int(p.get('hjd_balance') or 0)}**\n"
             f"XP needed for next level: **{left}**\n"
             f"Current level role: **{level_role or 'None yet'}**\n"
             f"Earned activity/supporter roles: **{activity_text}**",

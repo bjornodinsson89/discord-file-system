@@ -90,9 +90,12 @@ class EngagementRepository(RepositoryBase):
                     paid_raffle_purchases_count,
                     paid_raffle_tickets_count,
                     jump_99k_purchases_count,
-                    jump_99k_completed_count
+                    jump_99k_completed_count,
+                    hjd_balance,
+                    hjd_lifetime_earned,
+                    hjd_lifetime_spent
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, 0, 0)
                 ON CONFLICT (guild_id, user_id) DO UPDATE
                 SET xp_total = engagement_profiles.xp_total + EXCLUDED.xp_total,
                     message_xp_total = engagement_profiles.message_xp_total + EXCLUDED.message_xp_total,
@@ -506,6 +509,7 @@ class EngagementRepository(RepositoryBase):
                         paid_raffle_purchases_count=$10, paid_raffle_tickets_count=$11,
                         jump_99k_purchases_count=$12, jump_99k_completed_count=$13,
                         prize_token_balance=$14, prize_token_lifetime_earned=$15, prize_token_lifetime_spent=$16,
+                        hjd_balance=$17, hjd_lifetime_earned=$18, hjd_lifetime_spent=$19,
                         updated_at=NOW()
                     WHERE guild_id=$1 AND user_id=$2
                     RETURNING *
@@ -526,6 +530,9 @@ class EngagementRepository(RepositoryBase):
                     int(tokens["prize_token_balance"]),
                     int(tokens["prize_token_lifetime_earned"]),
                     int(tokens["prize_token_lifetime_spent"]),
+                    int((await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM happy_jump_dollar_transactions WHERE guild_id = $1 AND user_id = $2 AND reversed_at IS NULL", guild_id, user_id)) or 0),
+                    int((await conn.fetchval("SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) FROM happy_jump_dollar_transactions WHERE guild_id = $1 AND user_id = $2 AND reversed_at IS NULL", guild_id, user_id)) or 0),
+                    int((await conn.fetchval("SELECT COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) FROM happy_jump_dollar_transactions WHERE guild_id = $1 AND user_id = $2 AND reversed_at IS NULL", guild_id, user_id)) or 0),
                 )
                 return dict(row)
 

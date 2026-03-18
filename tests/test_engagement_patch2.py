@@ -151,7 +151,7 @@ def test_patch2_commands_and_setup_pages_exist():
         '@leaderboard.command(name="raffles"',
         '@tokens.command(name="history"',
         'Group(name="engagement"',
-        "reached Level {level} and earned 1 Prize Token",
+        "reached Level {level} and earned 1 coin and 100 HJD",
     ]:
         if expected == 'Group(name="engagement"':
             assert expected not in engagement_src

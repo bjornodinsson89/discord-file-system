@@ -6,13 +6,13 @@ import discord
 
 from repositories.store import StoreRepository
 from repositories.torn_items import TornItemLookupError, TornItemsRepository
-from services.prize_token_service import PrizeTokenService
+from services.happy_jump_dollar_service import HappyJumpDollarService
 
 
 class StoreService:
-    def __init__(self, repo: StoreRepository, token_service: PrizeTokenService, torn_items_repo: TornItemsRepository | None = None, cog=None):
+    def __init__(self, repo: StoreRepository, hjd_service: HappyJumpDollarService, torn_items_repo: TornItemsRepository | None = None, cog=None):
         self.repo = repo
-        self.token_service = token_service
+        self.hjd_service = hjd_service
         self.torn_items_repo = torn_items_repo
         self.cog = cog
 
@@ -169,7 +169,7 @@ class StoreService:
                     notes=None,
                 )
 
-                spent = await self.token_service.spend_store_tokens(
+                spent = await self.hjd_service.spend_store_hjd(
                     guild_id=guild.id,
                     user_id=user.id,
                     amount=int(item.get("token_cost") or 0),
@@ -218,7 +218,7 @@ class StoreService:
                 actor_user_id=user.id,
                 reason="Auto-refund: Discord role assignment failed",
             )
-            return None, "Failed to grant role. No tokens were charged."
+            return None, "Failed to grant role. No HJD were charged."
 
         updated, err = await self.fulfill_redemption(
             guild_id=guild.id,
@@ -285,7 +285,7 @@ class StoreService:
                 if item and item.get("stock") is not None:
                     await self.repo.adjust_stock(guild_id, int(item["id"]), +1, conn=conn)
 
-                refunded = await self.token_service.refund_store_tokens(
+                refunded = await self.hjd_service.refund_store_hjd(
                     guild_id=guild_id,
                     user_id=int(redemption["user_id"]),
                     amount=int(redemption.get("token_cost") or 0),
@@ -323,7 +323,7 @@ class StoreService:
                 f"🧾 Store Redemption #{redemption['id']}\n"
                 f"User: <@{redemption['user_id']}>\n"
                 f"Item: {item.get('name')}\n"
-                f"Cost: {redemption.get('token_cost')} tokens\n"
+                f"Cost: {redemption.get('token_cost')} HJD\n"
                 f"Created: <t:{int(redemption['created_at'].timestamp())}:F>"
             )
             await self.repo.update_redemption(
@@ -352,7 +352,7 @@ class StoreService:
             colour=discord.Colour.green(),
             timestamp=datetime.now(timezone.utc),
         )
-        embed.add_field(name="Token cost", value=str(item["token_cost"]))
+        embed.add_field(name="Price", value=f"{item['token_cost']} HJD")
         embed.add_field(name="Stock", value="Unlimited" if item.get("stock") is None else str(item.get("stock")))
         embed.add_field(name="Category", value="Torn Items" if item.get("category") == "torn_item" else "Discord Perks")
         embed.add_field(name="Fulfillment", value=str(item.get("fulfillment_type") or "admin_manual").replace("_", " ").title(), inline=False)
@@ -394,16 +394,16 @@ class StoreService:
         hub_message = await _ensure_message(
             settings.get("store_hub_message_id"),
             embed=discord.Embed(
-                title="Prize Token Store",
+                title="Happy Jump Dollar Store",
                 description=(
-                    "Spend Prize Tokens on premium server rewards. Browse **Torn Items** and **Discord Perks**, "
+                    "Spend Happy Jump Dollars (HJD) on premium server rewards. Browse **Torn Items** and **Discord Perks**, "
                     "then scroll below to view and redeem items directly from this storefront channel."
                 ),
                 colour=discord.Colour.gold(),
                 timestamp=datetime.now(timezone.utc),
             ).add_field(
                 name="How it works",
-                value="Earn Prize Tokens through the community, then spend them here on live rewards.",
+                value="Earn 100 HJD on every level-up, then spend HJD here on live rewards.",
                 inline=False,
             ).add_field(name="Available rewards", value="• Torn Items\n• Discord Perks", inline=False).set_footer(
                 text="Scroll below to browse the live storefront items."

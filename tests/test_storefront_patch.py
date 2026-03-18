@@ -157,8 +157,8 @@ def test_store_commands_removed_from_source_and_storefront_controls_present():
 
 def test_store_channel_selector_lives_in_store_setup():
     src = Path("setup_panel.py").read_text(encoding="utf-8")
-    assert 'class StoreChannelSelect(discord.ui.ChannelSelect):' in src
-    assert 'self.add_item(StoreChannelSelect(self.panel))' in src
+    assert "class StoreChannelSelect(discord.ui.ChannelSelect):" in src
+    assert "self.add_item(StoreChannelSelect(self.panel))" in src
     assert 'ChannelSelect(self.panel, "store_channel_id", "Set Store channel"' not in src
 
 
@@ -176,7 +176,9 @@ def test_storefront_sync_creates_hub_admin_and_item_messages_without_duplicates(
         assert repo.all_items[0]["storefront_message_id"]
         assert len(channel.sent) == 3
         assert channel.sent[0].view is None
-        assert channel.sent[0].embed.footer.text == "Scroll below to browse the live storefront items."
+        assert (
+            channel.sent[0].embed.footer.text == "Scroll below to browse the live storefront items."
+        )
         assert channel.sent[1].view.name == "admin"
         assert channel.sent[1].embed.title == "Store Controls"
         assert str(channel.sent[2].embed.thumbnail.url) == "https://img.example/xanax.png"
