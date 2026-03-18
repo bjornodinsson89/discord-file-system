@@ -468,6 +468,7 @@ class SetupPanelView(OwnerView):
         ss = getattr(self, "store_settings", {})
         embed.add_field(name="Store", value=(
             f"Enabled: `{bool(ss.get('enabled', False))}`\n"
+            f"Store channel: `{ss.get('store_channel_id') or 'Not set'}`\n"
             f"Fulfillment channel: `{ss.get('fulfillment_channel_id') or 'Not set'}`\n"
             f"Torn item store enabled: `{bool(ss.get('torn_item_store_enabled', True))}`\n"
             f"Discord perk store enabled: `{bool(ss.get('discord_perk_store_enabled', True))}`"
@@ -536,6 +537,9 @@ class SetupPanelView(OwnerView):
         if self.store_repo is None:
             return
         self.store_settings = await self.store_repo.upsert_guild_settings(interaction.guild_id, **changes)
+        store_cog = interaction.client.get_cog("StoreCog") if getattr(interaction, "client", None) else None
+        if store_cog is not None and interaction.guild is not None and any(key in changes for key in {"store_channel_id", "enabled", "torn_item_store_enabled", "discord_perk_store_enabled"}):
+            await store_cog.sync_storefront(interaction.guild)
         await _send_or_edit(interaction, self._build_embed(), self)
 
     async def _resolve_real_channel(self, interaction: discord.Interaction, selected: Any) -> discord.abc.GuildChannel | None:
@@ -726,7 +730,7 @@ def _channels_embed() -> discord.Embed:
         "- **Raffle announcement channel**: where new raffle announcements are posted.\n"
         "- **Raffle purchase panel channel**: where paid raffle purchase panels are posted.\n"
         "- **Raffle giveaway purchase panel channel**: where giveaway raffle panels are posted (falls back to raffle purchase panel channel).\n"
-        "- **Jewelry alert channel**: where the bot posts “Jewlery store wide open” shoplifting window alerts.\n- **Who Can Jump panel channel**: where the bot maintains the live host readiness board.",
+        "- **Jewelry alert channel**: where the bot posts “Jewlery store wide open” shoplifting window alerts.\n- **Store channel**: where the bot manages the live prize token storefront.\n- **Who Can Jump panel channel**: where the bot maintains the live host readiness board.",
     )
 
 
@@ -822,6 +826,7 @@ class ChannelsViewPage4(BackView):
         self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Set insurance requests channel", row=0))
         self.add_item(ChannelSelect(self.panel, "jewelry_alert_channel_id", "Set jewelry alert channel", row=1))
         self.add_item(ChannelSelect(self.panel, "who_can_jump_channel_id", "Set Who Can Jump panel channel", row=2))
+        self.add_item(ChannelSelect(self.panel, "store_channel_id", "Set Store channel", row=3))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -1945,7 +1950,7 @@ class StoreFulfillmentPageView(BackView):
         settings = await store_repo.get_or_create_guild_settings(interaction.guild_id)
         pending = await store_repo.list_pending_redemptions(interaction.guild_id, limit=1)
         await interaction.response.send_message(
-            f"Store enabled: `{bool(settings.get('enabled', False))}`\nTorn item store enabled: `{bool(settings.get('torn_item_store_enabled', True))}`\nDiscord perk store enabled: `{bool(settings.get('discord_perk_store_enabled', True))}`\nFulfillment channel: `{settings.get('fulfillment_channel_id') or 'Not set'}`\nPending redemptions: `{len(pending)}`",
+            f"Store enabled: `{bool(settings.get('enabled', False))}`\nStore channel: `{settings.get('store_channel_id') or 'Not set'}`\nTorn item store enabled: `{bool(settings.get('torn_item_store_enabled', True))}`\nDiscord perk store enabled: `{bool(settings.get('discord_perk_store_enabled', True))}`\nFulfillment channel: `{settings.get('fulfillment_channel_id') or 'Not set'}`\nPending redemptions: `{len(pending)}`",
             ephemeral=True,
         )
 

@@ -10,10 +10,11 @@ from services.prize_token_service import PrizeTokenService
 
 
 class StoreService:
-    def __init__(self, repo: StoreRepository, token_service: PrizeTokenService, torn_items_repo: TornItemsRepository | None = None):
+    def __init__(self, repo: StoreRepository, token_service: PrizeTokenService, torn_items_repo: TornItemsRepository | None = None, cog=None):
         self.repo = repo
         self.token_service = token_service
         self.torn_items_repo = torn_items_repo
+        self.cog = cog
 
     async def resolve_thumbnail(self, item: dict) -> str | None:
         if item.get("thumbnail_url"):
@@ -319,3 +320,130 @@ class StoreService:
             return None
         except Exception:
             return "Failed to post redemption message to fulfillment channel."
+
+
+    def _storefront_channel(self, guild: discord.Guild, channel_id: int | None):
+        if not channel_id:
+            return None
+        channel = guild.get_channel(int(channel_id))
+        if channel is None or not hasattr(channel, "send"):
+            return None
+        return channel
+
+    async def build_storefront_item_embed(self, item: dict) -> discord.Embed:
+        embed = discord.Embed(
+            title=item["name"],
+            description=item.get("description") or "No description provided.",
+            colour=discord.Colour.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Token cost", value=str(item["token_cost"]))
+        embed.add_field(name="Stock", value="Unlimited" if item.get("stock") is None else str(item.get("stock")))
+        embed.add_field(name="Category", value="Torn Items" if item.get("category") == "torn_item" else "Discord Perks")
+        embed.add_field(name="Fulfillment", value=str(item.get("fulfillment_type") or "admin_manual").replace("_", " ").title(), inline=False)
+        thumb = await self.resolve_thumbnail(item)
+        if thumb:
+            embed.set_thumbnail(url=thumb)
+        return embed
+
+    async def sync_storefront(self, guild: discord.Guild) -> dict[str, int | None]:
+        settings = await self.repo.get_or_create_guild_settings(guild.id)
+        channel_id = settings.get("store_channel_id")
+        previous_channel = self._storefront_channel(guild, settings.get("storefront_channel_id"))
+        channel = self._storefront_channel(guild, channel_id)
+        if channel is None:
+            return {"channel_id": None, "hub_message_id": None, "admin_message_id": None}
+
+        async def _delete_previous_message(target_channel, message_id: int | None):
+            if target_channel is None or not message_id or target_channel.id == channel.id:
+                return
+            try:
+                message = await target_channel.fetch_message(int(message_id))
+                await message.delete()
+            except Exception:
+                return
+
+        await _delete_previous_message(previous_channel, settings.get("store_hub_message_id"))
+        await _delete_previous_message(previous_channel, settings.get("store_admin_message_id"))
+
+        async def _ensure_message(message_id: int | None, *, embed: discord.Embed, view=None):
+            if message_id:
+                try:
+                    message = await channel.fetch_message(int(message_id))
+                    await message.edit(embed=embed, view=view)
+                    return message
+                except Exception:
+                    pass
+            return await channel.send(embed=embed, view=view)
+
+        hub_message = await _ensure_message(
+            settings.get("store_hub_message_id"),
+            embed=discord.Embed(
+                title="Prize Token Store",
+                description=(
+                    "Spend Prize Tokens on premium server rewards. Browse **Torn Items** and **Discord Perks**, "
+                    "then redeem directly from this storefront channel."
+                ),
+                colour=discord.Colour.gold(),
+                timestamp=datetime.now(timezone.utc),
+            ).add_field(
+                name="How it works",
+                value="Earn Prize Tokens through the community, then spend them here on live rewards.",
+                inline=False,
+            ).add_field(name="Available rewards", value="• Torn Items\n• Discord Perks", inline=False),
+            view=self.cog.build_store_browse_view() if hasattr(self, "cog") else None,
+        )
+        admin_message = await _ensure_message(
+            settings.get("store_admin_message_id"),
+            embed=discord.Embed(
+                title="Store Admin Controls",
+                description="Admins can manage the live storefront from here. Non-admin button presses are denied privately.",
+                colour=discord.Colour.dark_gold(),
+                timestamp=datetime.now(timezone.utc),
+            ).add_field(name="Inventory", value="Add, edit, restock, disable, and refresh storefront items.", inline=False).add_field(
+                name="Redemptions", value="View pending redemptions, fulfill rewards, or issue refunds.", inline=False
+            ),
+            view=self.cog.build_admin_storefront_view() if hasattr(self, "cog") else None,
+        )
+
+        await self.repo.upsert_guild_settings(
+            guild.id,
+            storefront_channel_id=channel.id,
+            store_hub_message_id=hub_message.id,
+            store_admin_message_id=admin_message.id,
+        )
+
+        active_items = await self.repo.get_storefront_items(guild.id)
+        active_ids = {int(item["id"]) for item in active_items}
+        all_items = await self.repo.list_all_guild_items(guild.id)
+
+        for item in all_items:
+            msg_id = item.get("storefront_message_id")
+            if int(item["id"]) not in active_ids:
+                target_channel = channel if int(item.get("storefront_channel_id") or channel.id) == channel.id else self._storefront_channel(guild, item.get("storefront_channel_id"))
+                if msg_id and target_channel is not None:
+                    try:
+                        old_message = await target_channel.fetch_message(int(msg_id))
+                        await old_message.delete()
+                    except Exception:
+                        pass
+                await self.repo.update_item(guild.id, int(item["id"]), storefront_channel_id=None, storefront_message_id=None)
+                continue
+
+            embed = await self.build_storefront_item_embed(item)
+            if msg_id:
+                try:
+                    if int(item.get("storefront_channel_id") or channel.id) != channel.id:
+                        previous_item_channel = self._storefront_channel(guild, item.get("storefront_channel_id"))
+                        await _delete_previous_message(previous_item_channel, msg_id)
+                        raise LookupError("storefront channel changed")
+                    msg = await channel.fetch_message(int(msg_id))
+                    await msg.edit(embed=embed, view=self.cog.build_redeem_view(int(item["id"])))
+                    await self.repo.update_item(guild.id, int(item["id"]), storefront_channel_id=channel.id)
+                    continue
+                except Exception:
+                    pass
+            msg = await channel.send(embed=embed, view=self.cog.build_redeem_view(int(item["id"])))
+            await self.repo.update_item(guild.id, int(item["id"]), storefront_channel_id=channel.id, storefront_message_id=msg.id)
+
+        return {"channel_id": channel.id, "hub_message_id": hub_message.id, "admin_message_id": admin_message.id}

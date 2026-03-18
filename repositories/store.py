@@ -104,6 +104,23 @@ class StoreRepository(RepositoryBase):
             )
             return [dict(r) for r in rows]
 
+
+    async def list_all_guild_items(self, guild_id: int) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM reward_store_items WHERE guild_id = $1 ORDER BY id ASC",
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_storefront_items(self, guild_id: int) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM reward_store_items WHERE guild_id = $1 AND is_active = TRUE ORDER BY id ASC",
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+
     async def update_item(self, guild_id: int, item_id: int, **changes: Any) -> dict | None:
         if not changes:
             return await self.get_item(guild_id, item_id)
