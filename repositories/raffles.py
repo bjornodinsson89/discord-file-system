@@ -586,6 +586,30 @@ class RafflesRepository(RepositoryBase):
                 url,
             )
 
+    async def update_raffle_image(self, raffle_id: int, image_url: str) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE raffles
+                SET prize_image_url = $2
+                WHERE raffle_id = $1
+                """,
+                raffle_id,
+                image_url,
+            )
+
+    async def update_raffle_comment(self, raffle_id: int, comment: Optional[str]) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE raffles
+                SET admin_comments = $2
+                WHERE raffle_id = $1
+                """,
+                raffle_id,
+                comment,
+            )
+
     async def cancel_expired_reservation(self, entry_id: int):
         async with self.acquire() as conn:
             await conn.execute(
