@@ -5,7 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import setup_panel
-from setup_panel import EngagementMaintenanceView, EngagementRolesStatusView, StoreAdminPageView, StoreFulfillmentPageView
+from setup_panel import (
+    EngagementMaintenanceView,
+    EngagementRolesStatusView,
+    StoreAdminPageView,
+    StoreFulfillmentPageView,
+)
 
 
 class _FakeResponse:
@@ -13,7 +18,9 @@ class _FakeResponse:
         self.messages = []
 
     async def send_message(self, content=None, *, ephemeral=False, embed=None, view=None):
-        self.messages.append({"content": content, "ephemeral": ephemeral, "embed": embed, "view": view})
+        self.messages.append(
+            {"content": content, "ephemeral": ephemeral, "embed": embed, "view": view}
+        )
 
     async def send_modal(self, modal):
         self.messages.append({"modal": modal})
@@ -25,7 +32,9 @@ class _FakeInteraction:
         self.guild_id = guild.id
         self.user = SimpleNamespace(id=1)
         self.response = _FakeResponse()
-        self.client = SimpleNamespace(get_cog=lambda name: SimpleNamespace() if name == "StoreCog" else None)
+        self.client = SimpleNamespace(
+            get_cog=lambda name: SimpleNamespace() if name == "StoreCog" else None
+        )
 
 
 class _FakeGuild:
@@ -89,10 +98,10 @@ class _FakeRoleRewardService:
         return {"granted": 1, "removed": 0, "failed": 0}
 
 
-
 def _labels(view):
-    return {getattr(child, "label", None) for child in view.children if getattr(child, "label", None)}
-
+    return {
+        getattr(child, "label", None) for child in view.children if getattr(child, "label", None)
+    }
 
 
 def test_removed_and_kept_command_surface_source_markers():
@@ -131,10 +140,15 @@ def test_removed_and_kept_command_surface_source_markers():
         assert kept in engagement_src + store_src + raffle_src
 
 
-
 def test_setup_pages_expose_expected_admin_actions():
     async def _run():
-        common = dict(owner_id=1, db=SimpleNamespace(pool=object()), settings={}, guild=SimpleNamespace(), panel=SimpleNamespace())
+        common = dict(
+            owner_id=1,
+            db=SimpleNamespace(pool=object()),
+            settings={},
+            guild=SimpleNamespace(),
+            panel=SimpleNamespace(),
+        )
         assert _labels(EngagementRolesStatusView(**common)) >= {
             "Create/Repair Reward Roles",
             "Sync Reward Roles",
@@ -163,16 +177,25 @@ def test_setup_pages_expose_expected_admin_actions():
     asyncio.run(_run())
 
 
-
 def test_create_repair_reward_roles_reports_created_and_repaired(monkeypatch):
     async def _run():
         monkeypatch.setattr(setup_panel, "EngagementRepository", _FakeRepo)
         monkeypatch.setattr(setup_panel, "RoleRewardService", _FakeRoleRewardService)
         _FakeRepo.instances.clear()
         _FakeRoleRewardService.instances.clear()
-        view = EngagementRolesStatusView(owner_id=1, db=SimpleNamespace(pool=object()), settings={}, guild=SimpleNamespace(), panel=SimpleNamespace())
+        view = EngagementRolesStatusView(
+            owner_id=1,
+            db=SimpleNamespace(pool=object()),
+            settings={},
+            guild=SimpleNamespace(),
+            panel=SimpleNamespace(),
+        )
         interaction = _FakeInteraction(_FakeGuild())
-        button = next(child for child in view.children if getattr(child, "label", None) == "Create/Repair Reward Roles")
+        button = next(
+            child
+            for child in view.children
+            if getattr(child, "label", None) == "Create/Repair Reward Roles"
+        )
         await button.callback(interaction)
         service = _FakeRoleRewardService.instances[-1]
         assert service.calls[:2] == ["seed_default_ladders_if_missing", "ensure_reward_roles"]
@@ -182,16 +205,23 @@ def test_create_repair_reward_roles_reports_created_and_repaired(monkeypatch):
     asyncio.run(_run())
 
 
-
 def test_sync_reward_roles_calls_create_repair_first(monkeypatch):
     async def _run():
         monkeypatch.setattr(setup_panel, "EngagementRepository", _FakeRepo)
         monkeypatch.setattr(setup_panel, "RoleRewardService", _FakeRoleRewardService)
         _FakeRepo.instances.clear()
         _FakeRoleRewardService.instances.clear()
-        view = EngagementRolesStatusView(owner_id=1, db=SimpleNamespace(pool=object()), settings={}, guild=SimpleNamespace(), panel=SimpleNamespace())
+        view = EngagementRolesStatusView(
+            owner_id=1,
+            db=SimpleNamespace(pool=object()),
+            settings={},
+            guild=SimpleNamespace(),
+            panel=SimpleNamespace(),
+        )
         interaction = _FakeInteraction(_FakeGuild())
-        button = next(child for child in view.children if getattr(child, "label", None) == "Sync Reward Roles")
+        button = next(
+            child for child in view.children if getattr(child, "label", None) == "Sync Reward Roles"
+        )
         await button.callback(interaction)
         service = _FakeRoleRewardService.instances[-1]
         assert service.calls[:2] == ["seed_default_ladders_if_missing", "ensure_reward_roles"]
@@ -200,11 +230,10 @@ def test_sync_reward_roles_calls_create_repair_first(monkeypatch):
     asyncio.run(_run())
 
 
-
 def test_raffle_controls_command_and_panel_source_markers_exist():
     raffle_src = Path("cogs/raffles.py").read_text(encoding="utf-8")
     assert 'raffle = app_commands.Group(name="raffle"' in raffle_src
     assert '@raffle.command(name="controls"' in raffle_src
-    assert 'class RaffleControlsView' in raffle_src
-    assert 'Refresh Active Raffles' in raffle_src
-    assert 'View Active Raffles' in raffle_src
+    assert "class RaffleControlsView" in raffle_src
+    assert "Refresh Active Raffles" in raffle_src
+    assert "View Active Raffles" in raffle_src
