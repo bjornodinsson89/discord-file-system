@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
-
 import discord
 from discord.ext import commands
 
@@ -328,9 +326,10 @@ class StoreCog(commands.Cog):
             self.torn_items_repo,
             cog=self,
         )
-        self.bot.add_view(StoreBrowseView(self))
-        self.bot.add_view(AdminStorefrontView(self))
+        self._register_persistent_views()
 
+    def _register_persistent_views(self) -> None:
+        self.bot.add_view(AdminStorefrontView(self))
 
     def build_store_browse_view(self) -> StoreBrowseView:
         return StoreBrowseView(self)
