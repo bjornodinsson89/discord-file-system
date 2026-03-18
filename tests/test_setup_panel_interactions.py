@@ -94,7 +94,9 @@ async def _run_sync_reward_roles(monkeypatch):
 
     interaction = _build_interaction()
     view = _build_view()
-    button = next(child for child in view.children if getattr(child, "label", None) == "Sync Reward Roles")
+    button = next(
+        child for child in view.children if getattr(child, "label", None) == "Sync Reward Roles"
+    )
 
     await button.callback(interaction)
 
