@@ -113,7 +113,12 @@ class _Cog:
         return SimpleNamespace(name="admin")
 
     def build_redeem_view(self, item_id: int):
-        return SimpleNamespace(item_id=item_id)
+        from cogs.store import StoreItemActionView
+
+        return StoreItemActionView(self, item_id)
+
+    async def send_item_detail(self, interaction, item_id: int):
+        return None
 
 
 class _Perms:
@@ -130,9 +135,13 @@ class _Role:
 class _Response:
     def __init__(self):
         self.message = None
+        self.modal = None
 
     async def send_message(self, content=None, *, ephemeral=False, embed=None, view=None):
         self.message = {"content": content, "ephemeral": ephemeral, "embed": embed, "view": view}
+
+    async def send_modal(self, modal):
+        self.modal = modal
 
     def is_done(self):
         return False
@@ -141,6 +150,7 @@ class _Response:
 class _Interaction:
     def __init__(self, *, guild, member):
         self.guild = guild
+        self.guild_id = getattr(guild, "id", None)
         self.user = member
         self.response = _Response()
         self.followup = SimpleNamespace(send=self.response.send_message)
@@ -221,5 +231,44 @@ def test_storefront_admin_controls_deny_non_admin_users():
         assert allowed is False
         assert interaction.response.message["ephemeral"] is True
         assert "admins" in interaction.response.message["content"].lower()
+
+    asyncio.run(_run())
+
+
+def test_storefront_item_messages_include_admin_edit_button():
+    async def _run():
+        repo = _Repo()
+        channel = _Channel(10)
+        guild = _Guild([channel])
+        service = StoreService(repo, SimpleNamespace(), cog=_Cog())
+
+        await service.sync_storefront(guild)
+        labels = {child.label for child in channel.sent[2].view.children}
+        assert labels == {"Redeem", "Edit Item"}
+
+    asyncio.run(_run())
+
+
+def test_store_item_edit_button_denies_unauthorized_users():
+    async def _run():
+        from cogs.store import StoreItemActionView
+
+        class _RepoWithItem:
+            async def get_item(self, _guild_id, item_id):
+                return {"id": item_id, "name": "Xanax", "token_cost": 5, "stock": 3}
+
+        cog = SimpleNamespace(store_repo=_RepoWithItem())
+        view = StoreItemActionView(cog, 1)
+        guild = _Guild([_Channel(10)])
+        member = SimpleNamespace(
+            id=22,
+            guild_permissions=_Perms(administrator=False, manage_guild=False),
+        )
+        interaction = _Interaction(guild=guild, member=member)
+
+        await view.edit_item.callback(interaction)
+        assert interaction.response.message["ephemeral"] is True
+        assert "admins" in interaction.response.message["content"].lower()
+        assert interaction.response.modal is None
 
     asyncio.run(_run())
