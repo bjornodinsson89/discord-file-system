@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
+
 import discord
 from discord.ext import commands
 
@@ -29,6 +31,19 @@ async def deny_unauthorized(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("Only server admins can use these store controls.", ephemeral=True)
 
 
+def parse_int_input(value: str | None, *, allow_blank: bool = False) -> int | None:
+    raw = str(value or "").strip()
+    if not raw:
+        if allow_blank:
+            return None
+        raise ValueError("Please enter a valid whole number. Commas are allowed.")
+
+    normalized = raw.replace(",", "")
+    if not re.fullmatch(r"\d+", normalized):
+        raise ValueError("Please enter a valid whole number. Commas are allowed.")
+    return int(normalized)
+
+
 class ConfirmRedeemView(discord.ui.View):
     def __init__(self, cog: "StoreCog", item_id: int):
         super().__init__(timeout=180)
@@ -55,7 +70,7 @@ class ConfirmRedeemView(discord.ui.View):
         )
 
 
-class RedeemButtonView(discord.ui.View):
+class StoreItemActionView(discord.ui.View):
     def __init__(self, cog: "StoreCog", item_id: int):
         super().__init__(timeout=None)
         self.cog = cog
@@ -64,6 +79,21 @@ class RedeemButtonView(discord.ui.View):
     @discord.ui.button(label="Redeem", style=discord.ButtonStyle.success, custom_id=f"{STORE_ITEM_CUSTOM_ID}:redeem")
     async def redeem(self, interaction: discord.Interaction, _: discord.ui.Button):
         await self.cog.send_item_detail(interaction, self.item_id)
+
+    @discord.ui.button(label="Edit Item", style=discord.ButtonStyle.secondary)
+    async def edit_item(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await deny_unauthorized(interaction)
+            return
+        if not _member_is_store_admin(interaction.user, interaction.guild):
+            await deny_unauthorized(interaction)
+            return
+
+        item = await self.cog.store_repo.get_item(interaction.guild.id, self.item_id)
+        if not item:
+            await interaction.response.send_message("Item not found.", ephemeral=True)
+            return
+        await interaction.response.send_modal(UpdateItemModal(self.cog, item=item))
 
 
 class DiscordRoleConfigModal(discord.ui.Modal, title="Discord Role Details"):
@@ -132,10 +162,10 @@ class AddStoreItemModal(discord.ui.Modal, title="Add Store Item"):
                 name=str(self.name.value).strip(),
                 description=str(self.description.value).strip() or None,
                 category=category,
-                token_cost=int(str(self.token_cost.value).strip()),
-                stock=int(stock_raw) if stock_raw else None,
+                token_cost=parse_int_input(self.token_cost.value),
+                stock=parse_int_input(stock_raw, allow_blank=True),
                 fulfillment_type=fulfillment_type,
-                discord_role_id=int(role_id_raw) if role_id_raw else None,
+                discord_role_id=parse_int_input(role_id_raw, allow_blank=True),
                 created_by=interaction.user.id,
             )
         except ValueError as exc:
@@ -156,21 +186,26 @@ class UpdateItemModal(discord.ui.Modal, title="Edit Store Item"):
     token_cost = discord.ui.TextInput(label="New price (HJD)")
     stock = discord.ui.TextInput(label="New stock (blank = unlimited)", required=False)
 
-    def __init__(self, cog: "StoreCog"):
+    def __init__(self, cog: "StoreCog", *, item: dict | None = None):
         super().__init__()
         self.cog = cog
+        if item is not None:
+            self.item_id.default = str(item["id"])
+            self.name.default = str(item.get("name") or "")
+            self.token_cost.default = str(item.get("token_cost") or "")
+            self.stock.default = "" if item.get("stock") is None else str(item.get("stock"))
 
     async def on_submit(self, interaction: discord.Interaction):
-        iid = int(str(self.item_id.value).strip())
-        stock_raw = str(self.stock.value).strip()
-        name_raw = str(self.name.value).strip()
         try:
+            iid = parse_int_input(self.item_id.value)
+            stock_raw = str(self.stock.value).strip()
+            name_raw = str(self.name.value).strip()
             updated, admin_note = await self.cog.store_service.update_store_item(
                 guild_id=interaction.guild_id,
                 item_id=iid,
                 name=name_raw or None,
-                token_cost=int(str(self.token_cost.value).strip()),
-                stock=int(stock_raw) if stock_raw else None,
+                token_cost=parse_int_input(self.token_cost.value),
+                stock=parse_int_input(stock_raw, allow_blank=True),
             )
         except ValueError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
@@ -197,13 +232,22 @@ class StockAdjustModal(discord.ui.Modal):
         self.disable = disable
 
     async def on_submit(self, interaction: discord.Interaction):
-        item_id = int(str(self.item_id.value).strip())
+        try:
+            item_id = parse_int_input(self.item_id.value)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
         if self.disable:
             row = await self.cog.store_repo.update_item(interaction.guild_id, item_id, is_active=False)
             await self.cog.sync_storefront(interaction.guild)
             await interaction.response.send_message("Item disabled." if row else "Item not found.", ephemeral=True)
             return
-        row = await self.cog.store_repo.adjust_stock(interaction.guild_id, item_id, int(str(self.amount.value).strip() or "0"))
+        try:
+            amount = parse_int_input(self.amount.value or "0")
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        row = await self.cog.store_repo.adjust_stock(interaction.guild_id, item_id, amount)
         await self.cog.sync_storefront(interaction.guild)
         await interaction.response.send_message("Stock updated." if row else "Item not found.", ephemeral=True)
 
@@ -257,10 +301,6 @@ class AdminStorefrontView(discord.ui.View):
     async def add_item(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.send_modal(AddStoreItemModal(self.cog))
 
-    @discord.ui.button(label="Edit Item", style=discord.ButtonStyle.secondary, custom_id=f"{STORE_ADMIN_CUSTOM_ID}:edit")
-    async def edit_item(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(UpdateItemModal(self.cog))
-
     @discord.ui.button(label="Restock Item", style=discord.ButtonStyle.secondary, custom_id=f"{STORE_ADMIN_CUSTOM_ID}:restock")
     async def restock_item(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.send_modal(StockAdjustModal(self.cog, title="Restock Item"))
@@ -287,8 +327,8 @@ class StoreCog(commands.Cog):
     def build_admin_storefront_view(self) -> AdminStorefrontView:
         return AdminStorefrontView(self)
 
-    def build_redeem_view(self, item_id: int) -> RedeemButtonView:
-        return RedeemButtonView(self, item_id)
+    def build_redeem_view(self, item_id: int) -> StoreItemActionView:
+        return StoreItemActionView(self, item_id)
 
     def build_store_hub_embed(self) -> discord.Embed:
         embed = discord.Embed(
