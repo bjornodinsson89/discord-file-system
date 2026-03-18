@@ -74,14 +74,21 @@ def _build_paid_raffle_panel_embed(raffle: dict) -> discord.Embed:
         created_at = created_at.replace(tzinfo=timezone.utc)
     if isinstance(end_time, datetime) and end_time.tzinfo is None:
         end_time = end_time.replace(tzinfo=timezone.utc)
-    duration = int((end_time - created_at).total_seconds()) if isinstance(end_time, datetime) and isinstance(created_at, datetime) else 0
-    elapsed = int((now - created_at).total_seconds()) if isinstance(end_time, datetime) and isinstance(created_at, datetime) else 0
+    has_real_end_time = isinstance(end_time, datetime) and isinstance(created_at, datetime)
+    duration = int((end_time - created_at).total_seconds()) if has_real_end_time else 0
+    elapsed = int((now - created_at).total_seconds()) if has_real_end_time else 0
     time_percent = clamp_percent((elapsed / duration) * 100) if duration > 0 else 0
     tickets_display = "Unlimited" if tickets_available <= 0 else str(tickets_available)
-    draw_text = "30 seconds after sellout" if raffle.get("end_trigger") == "tickets_sold" else (f"<t:{int(end_time.timestamp())}:R>" if isinstance(end_time, datetime) else "Unknown")
+    draw_text = "30 seconds after sellout" if raffle.get("end_trigger") == "tickets_sold" else (f"<t:{int(end_time.timestamp())}:R>" if isinstance(end_time, datetime) else "Manual / no timer")
     price_text = _payment_text(str(raffle.get("ticket_payment_type") or ""), int(raffle.get("ticket_price") or 0))
     embed = discord.Embed(title=f"🎟️ Raffle #{raffle_id}: {raffle.get('prize')}", description="Use the buttons below to buy tickets or check your entry.", color=discord.Color.blurple())
-    embed.add_field(name="LIVE STATS", value=f"Tickets: `{render_text_progress_bar(ticket_percent)}`\nTime: `{render_text_progress_bar(time_percent)}`\nSold / Available: **{tickets_sold}/{tickets_display}**", inline=False)
+    live_stats_lines = [
+        f"Tickets: `{render_text_progress_bar(ticket_percent)}`",
+        f"Sold / Available: **{tickets_sold}/{tickets_display}**",
+    ]
+    if has_real_end_time and duration > 0:
+        live_stats_lines.insert(1, f"Time: `{render_text_progress_bar(time_percent)}`")
+    embed.add_field(name="LIVE STATS", value="\n".join(live_stats_lines), inline=False)
     embed.add_field(name="PRIZE", value=f"🎁 {raffle.get('prize')}", inline=False)
     embed.add_field(name="RAFFLE INFO", value=f"Ticket price: **{price_text}**\nHost: <@{int(raffle.get('creator_discord_id') or 0)}>\nDraw: {draw_text}", inline=False)
     if raffle.get("admin_comments"):
@@ -90,7 +97,7 @@ def _build_paid_raffle_panel_embed(raffle: dict) -> discord.Embed:
     image_url = str(raffle.get("prize_image_url") or "").strip()
     if image_url:
         embed.set_image(url=image_url)
-    embed.set_footer(text=f"Last updated: {format_remaining_time(end_time, now)} remaining")
+    embed.set_footer(text=(f"Last updated: {format_remaining_time(end_time, now)} remaining" if has_real_end_time else "Last updated just now"))
     return embed
 
 def _compute_panel_tickets_value(raffle: dict) -> str:
@@ -1278,6 +1285,47 @@ class RafflePurchasePanelView(discord.ui.View):
                 await interaction.response.send_message("Something went wrong opening raffle management.", ephemeral=True)
 
 
+class RaffleActionConfirmView(discord.ui.View):
+    def __init__(self, manage_view: "RaffleManageView", *, action: str, owner_user_id: int):
+        super().__init__(timeout=180)
+        self.manage_view = manage_view
+        self.action = action
+        self.owner_user_id = int(owner_user_id)
+
+        if action == "draw":
+            confirm_label = "Confirm Draw"
+            back_label = "Keep Open / Back"
+        else:
+            confirm_label = "Confirm Cancel"
+            back_label = "Keep Active / Back"
+
+        confirm_button = discord.ui.Button(label=confirm_label, style=discord.ButtonStyle.danger)
+        confirm_button.callback = self._confirm
+        self.add_item(confirm_button)
+
+        back_button = discord.ui.Button(label=back_label, style=discord.ButtonStyle.secondary)
+        back_button.callback = self._back
+        self.add_item(back_button)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_user_id:
+            await interaction.response.send_message("Only the admin who opened this confirmation can use it.", ephemeral=True)
+            return False
+        return True
+
+    async def _confirm(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=False)
+        if not await self.manage_view._ensure_admin(interaction):
+            return
+        if self.action == "draw":
+            await self.manage_view._perform_draw(interaction)
+        else:
+            await self.manage_view._perform_cancel(interaction)
+
+    async def _back(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("No changes made.", ephemeral=True)
+
+
 class RaffleManageView(discord.ui.View):
     def __init__(self, raffle_id: int):
         super().__init__(timeout=300)
@@ -1298,13 +1346,8 @@ class RaffleManageView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Draw", style=discord.ButtonStyle.success)
-    async def draw(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def _perform_draw(self, interaction: discord.Interaction) -> None:
         try:
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True, thinking=False)
-            if not await self._ensure_admin(interaction):
-                return
             repo = RafflesRepository(get_pool())
             result = await repo.draw_raffle_winner(self.raffle_id)
             if not result:
@@ -1321,13 +1364,8 @@ class RaffleManageView(discord.ui.View):
             log.exception("Raffle draw manage callback failed raffle_id=%s", self.raffle_id)
             await interaction.followup.send("Unable to draw raffle right now.", ephemeral=True)
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
-    async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def _perform_cancel(self, interaction: discord.Interaction) -> None:
         try:
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True, thinking=False)
-            if not await self._ensure_admin(interaction):
-                return
             repo = RafflesRepository(get_pool())
             raffle_before = await repo.get_raffle(self.raffle_id)
             cancelled = await repo.cancel_active_raffle(self.raffle_id)
@@ -1344,6 +1382,36 @@ class RaffleManageView(discord.ui.View):
         except Exception:
             log.exception("Raffle cancel manage callback failed raffle_id=%s", self.raffle_id)
             await interaction.followup.send("Unable to cancel raffle right now.", ephemeral=True)
+
+    @discord.ui.button(label="Draw", style=discord.ButtonStyle.success)
+    async def draw(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+            if not await self._ensure_admin(interaction):
+                return
+            await interaction.followup.send(
+                "Draw raffle now?",
+                ephemeral=True,
+                view=RaffleActionConfirmView(self, action="draw", owner_user_id=int(interaction.user.id)),
+            )
+        except Exception:
+            log.exception("Raffle draw manage prompt failed raffle_id=%s", self.raffle_id)
+            await interaction.followup.send("Unable to open draw confirmation right now.", ephemeral=True)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+            if not await self._ensure_admin(interaction):
+                return
+            await interaction.followup.send(
+                "Cancel raffle?",
+                ephemeral=True,
+                view=RaffleActionConfirmView(self, action="cancel", owner_user_id=int(interaction.user.id)),
+            )
+        except Exception:
+            log.exception("Raffle cancel manage prompt failed raffle_id=%s", self.raffle_id)
+            await interaction.followup.send("Unable to open cancel confirmation right now.", ephemeral=True)
 
     @discord.ui.button(label="Verify Prize", style=discord.ButtonStyle.primary)
     async def verify_prize(self, interaction: discord.Interaction, _: discord.ui.Button):
