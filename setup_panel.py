@@ -153,6 +153,21 @@ def _missing_channel_perms(channel: discord.abc.GuildChannel, me: discord.Member
     return missing
 
 
+async def _send_setup_response(interaction: discord.Interaction, content: str, *, ephemeral: bool = True) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(content, ephemeral=ephemeral)
+    else:
+        await interaction.response.send_message(content, ephemeral=ephemeral)
+
+
+async def _send_setup_error_message(interaction: discord.Interaction, message: str) -> None:
+    embed = create_error_embed("Setup failed", message)
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 async def _respond_callback_error(interaction: discord.Interaction, error: Exception, error_code: str = "setup_callback_error"):
     log.exception(
         'Setup callback error guild_id=%s user_id=%s',
@@ -164,10 +179,7 @@ async def _respond_callback_error(interaction: discord.Interaction, error: Excep
         "Unexpected setup error. Please try again, or rerun /setup if this continues. "
         f"Check bot logs for: {error_code}"
     )
-    if interaction.response.is_done():
-        await interaction.followup.send(embed=create_error_embed('Setup failed', msg), ephemeral=True)
-    else:
-        await interaction.response.send_message(embed=create_error_embed('Setup failed', msg), ephemeral=True)
+    await _send_setup_error_message(interaction, msg)
 
 
 class OwnerView(discord.ui.View):
@@ -209,10 +221,7 @@ class OwnerView(discord.ui.View):
             "Something went wrong while saving this setup option. "
             "Please try again. If this keeps happening, re-run `/setup`."
         )
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=create_error_embed("Setup failed", message), ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=create_error_embed("Setup failed", message), ephemeral=True)
+        await _send_setup_error_message(interaction, message)
 
 
 class TemplateModal(discord.ui.Modal):
@@ -1748,18 +1757,22 @@ class ReverseEventModal(discord.ui.Modal, title="Reverse Event"):
 class EngagementRolesView(BackView):
     @discord.ui.button(label="Create/Repair Reward Roles", style=discord.ButtonStyle.primary, row=0)
     async def create_repair_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         repo = EngagementRepository(self.db.pool)
         service = RoleRewardService(repo)
         await service.seed_default_ladders_if_missing(interaction.guild.id)
         created, repaired = await service.ensure_reward_roles(interaction.guild)
         status = await service.rewards_status(interaction.guild.id, interaction.guild)
-        await interaction.response.send_message(
+        await _send_setup_response(
+            interaction,
             f"Reward roles checked. Created: {created}. Repaired: {repaired}. Linked and present: {status['linked']}/{status['total']}. Missing: {status['missing']}",
-            ephemeral=True,
         )
 
     @discord.ui.button(label="Sync Reward Roles", style=discord.ButtonStyle.primary, row=1)
     async def sync_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         repo = EngagementRepository(self.db.pool)
         service = RoleRewardService(repo)
         await service.seed_default_ladders_if_missing(interaction.guild.id)
@@ -1773,9 +1786,9 @@ class EngagementRolesView(BackView):
             result = await service.sync_member_roles(interaction.guild, member, profile)
             for key in totals:
                 totals[key] += int(result.get(key, 0))
-        await interaction.response.send_message(
+        await _send_setup_response(
+            interaction,
             f"Reward role sync completed. Created: {created}. Repaired: {repaired}. Member sync totals: {totals}",
-            ephemeral=True,
         )
 
     @discord.ui.button(label="View Engagement Config", style=discord.ButtonStyle.primary, row=2)
