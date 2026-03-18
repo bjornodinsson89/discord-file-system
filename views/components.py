@@ -70,7 +70,14 @@ class ApiKeyIntroView(ui.View):
 
 
 class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
-    api_key = ui.TextInput(label="Torn API key", placeholder="Paste a Full Access API key, or tap Create API Key to generate a scoped key for this bot.", min_length=16, max_length=16)
+    api_key = ui.TextInput(label="Torn API key", placeholder="Use the Create API Key button for the recommended custom scoped key, or paste a full access key with item log permissions.", min_length=16, max_length=16)
+
+    @staticmethod
+    def _missing_log_permissions_message() -> str:
+        return (
+            "This key does not have the required log permissions.\n"
+            "Please use the button below to create the custom scoped key, or enter a full access key."
+        )
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -82,6 +89,14 @@ class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
                 api_key,
                 audit_discord_id=int(interaction.user.id),
                 audit_context="api_key_check",
+            )
+            await torn_api.get_item_send_receive_logs(
+                api_key,
+                limit=1,
+                audit_discord_id=int(interaction.user.id),
+                audit_torn_id=torn_id,
+                audit_context="api_key_check",
+                audit_query_meta={"validation": "item_log_permissions"},
             )
 
             if discord_id_api != interaction.user.id:
@@ -115,8 +130,15 @@ class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
                     view=TimezonePromptView(),
                     ephemeral=True,
                 )
-        except TornAPIPermissionError as e:
-            await interaction.followup.send(embed=create_error_embed("Insufficient Permissions", str(e)), ephemeral=True)
+        except TornAPIPermissionError:
+            await interaction.followup.send(
+                embed=create_error_embed(
+                    "Insufficient Permissions",
+                    self._missing_log_permissions_message(),
+                ),
+                view=ApiKeyIntroView(),
+                ephemeral=True,
+            )
         except TornAPIError as e:
             message = str(e)
             lowered = message.lower()
