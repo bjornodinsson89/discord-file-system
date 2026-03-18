@@ -182,7 +182,8 @@ class AddStoreItemModal(discord.ui.Modal, title="Add Store Item"):
 
 
 class UpdateItemModal(discord.ui.Modal, title="Update Item"):
-    item_id = discord.ui.TextInput(label="Item ID")
+    item_id = discord.ui.TextInput(label="Store Item ID")
+    name = discord.ui.TextInput(label="New name (optional)", required=False, max_length=100)
     token_cost = discord.ui.TextInput(label="New token cost")
     stock = discord.ui.TextInput(label="New stock (blank = unlimited)", required=False)
 
@@ -193,13 +194,27 @@ class UpdateItemModal(discord.ui.Modal, title="Update Item"):
     async def on_submit(self, interaction: discord.Interaction):
         iid = int(str(self.item_id.value).strip())
         stock_raw = str(self.stock.value).strip()
-        updated = await self.cog.store_repo.update_item(
-            interaction.guild_id,
-            iid,
-            token_cost=int(str(self.token_cost.value).strip()),
-            stock=int(stock_raw) if stock_raw else None,
-        )
-        await interaction.response.send_message(f"Updated item #{updated['id']}." if updated else "Item not found.", ephemeral=True)
+        name_raw = str(self.name.value).strip()
+        try:
+            updated, admin_note = await self.cog.store_service.update_store_item(
+                guild_id=interaction.guild_id,
+                item_id=iid,
+                name=name_raw or None,
+                token_cost=int(str(self.token_cost.value).strip()),
+                stock=int(stock_raw) if stock_raw else None,
+            )
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        if not updated:
+            await interaction.response.send_message("Item not found.", ephemeral=True)
+            return
+        message = f"Updated item #{updated['id']}."
+        if admin_note:
+            message = f"{message}\n⚠️ {admin_note}"
+        elif updated.get("category") == "torn_item" and name_raw:
+            message = f"{message} Torn item metadata refreshed from the entered name."
+        await interaction.response.send_message(message, ephemeral=True)
 
 
 class StockAdjustModal(discord.ui.Modal):

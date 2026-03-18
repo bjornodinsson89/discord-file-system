@@ -417,8 +417,9 @@ class FreeRaffleCog(commands.Cog):
         if isinstance(created_at, datetime) and created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
         end_time = ends_at if isinstance(ends_at, datetime) else None
-        total_seconds = int((end_time - created_at).total_seconds()) if end_time and created_at else 0
-        elapsed_seconds = int((now - created_at).total_seconds()) if end_time and created_at else 0
+        has_real_end_time = isinstance(end_time, datetime) and isinstance(created_at, datetime)
+        total_seconds = int((end_time - created_at).total_seconds()) if has_real_end_time else 0
+        elapsed_seconds = int((now - created_at).total_seconds()) if has_real_end_time else 0
         time_percent = clamp_percent((elapsed_seconds / total_seconds) * 100) if total_seconds > 0 else 0
 
         embed = discord.Embed(
@@ -426,26 +427,27 @@ class FreeRaffleCog(commands.Cog):
             description="Join now for a chance to win.",
             color=color,
         )
+        live_stats_lines = [f"Entrants: **{entry_count}**", f"Status: **{status}**"]
+        if has_real_end_time and total_seconds > 0:
+            live_stats_lines.insert(1, f"Time: `{render_text_progress_bar(time_percent)}`")
         embed.add_field(
             name="LIVE STATS",
-            value=(
-                f"Entrants: **{entry_count}**\n"
-                f"Time: `{render_text_progress_bar(time_percent)}`\n"
-                f"Status: **{status}**"
-            ),
+            value="\n".join(live_stats_lines),
             inline=False,
         )
         embed.add_field(name="PRIZE", value=f"🪓 {prize_text}", inline=False)
+        giveaway_info_lines = [
+            f"Host: <@{int(raffle['host_discord_id'])}>",
+            f"Entry mode: **{entry_mode}**",
+            f"Weighted odds: **{'Enabled' if weighted_enabled else 'Disabled'}**",
+            f"Join button: **{'Available' if button_join_enabled else 'Disabled'}**",
+        ]
+        if ends_line:
+            giveaway_info_lines.insert(1, f"Ends: {ends_line.strip()}")
+            giveaway_info_lines.insert(2, f"Remaining: {format_remaining_time(end_time, now)}")
         embed.add_field(
             name="GIVEAWAY INFO",
-            value=(
-                f"Host: <@{int(raffle['host_discord_id'])}>\n"
-                f"Ends: {ends_line.strip() if ends_line else 'Unknown'}\n"
-                f"Remaining: {format_remaining_time(end_time, now)}\n"
-                f"Entry mode: **{entry_mode}**\n"
-                f"Weighted odds: **{'Enabled' if weighted_enabled else 'Disabled'}**\n"
-                f"Join button: **{'Available' if button_join_enabled else 'Disabled'}**"
-            ),
+            value="\n".join(giveaway_info_lines),
             inline=False,
         )
         how_to_play = []

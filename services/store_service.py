@@ -22,31 +22,60 @@ class StoreService:
             torn_item_id=item.get("torn_item_id"), torn_item_name=item.get("torn_item_name")
         )
 
-    async def create_store_item(self, **payload) -> tuple[dict, str | None]:
-        item_name = str(payload["name"]).strip()
+    async def _apply_torn_item_metadata(self, payload: dict, *, missing_note_prefix: str) -> str | None:
+        item_name = str(payload.get("name") or "").strip()
         payload["name"] = item_name
-        payload["category"] = str(payload["category"]).strip()
+        payload["category"] = str(payload.get("category") or "").strip()
         payload["fulfillment_type"] = str(payload.get("fulfillment_type") or "admin_manual").strip()
 
-        admin_note = None
-        if payload["category"] == "torn_item" and self.torn_items_repo is not None:
-            try:
-                match = await self.torn_items_repo.resolve_store_item_match_by_name(item_name)
-            except TornItemLookupError as exc:
-                raise ValueError(str(exc)) from exc
+        if payload["category"] != "torn_item" or self.torn_items_repo is None:
+            return None
 
-            if match is not None:
-                payload["torn_item_id"] = int(match["item_id"])
-                payload["torn_item_name"] = str(match["name"])
-                payload["thumbnail_url"] = match.get("image_url")
-            else:
-                admin_note = f"Added item, but no Torn image match was found for '{item_name}'."
-                payload.setdefault("torn_item_id", None)
-                payload.setdefault("torn_item_name", item_name)
-                payload.setdefault("thumbnail_url", None)
+        try:
+            match = await self.torn_items_repo.resolve_store_item_match_by_name(item_name)
+        except TornItemLookupError as exc:
+            raise ValueError(str(exc)) from exc
 
+        if match is not None:
+            payload["torn_item_id"] = int(match["item_id"])
+            payload["torn_item_name"] = str(match["name"])
+            payload["thumbnail_url"] = match.get("image_url")
+            payload["name"] = str(match["name"])
+            return None
+
+        payload["torn_item_id"] = None
+        payload["torn_item_name"] = item_name
+        payload["thumbnail_url"] = None
+        return f"{missing_note_prefix} no Torn image match was found for '{item_name}'."
+
+    async def create_store_item(self, **payload) -> tuple[dict, str | None]:
+        admin_note = await self._apply_torn_item_metadata(payload, missing_note_prefix="Added item, but")
         item = await self.repo.create_item(**payload)
         return item, admin_note
+
+    async def update_store_item(self, *, guild_id: int, item_id: int, **changes) -> tuple[dict | None, str | None]:
+        current = await self.repo.get_item(guild_id, item_id)
+        if not current:
+            return None, None
+
+        payload = dict(current)
+        payload.update({k: v for k, v in changes.items() if v is not None})
+        admin_note = await self._apply_torn_item_metadata(payload, missing_note_prefix="Updated item, but")
+
+        allowed_changes = {
+            "name": payload.get("name"),
+            "description": payload.get("description"),
+            "category": payload.get("category"),
+            "token_cost": payload.get("token_cost"),
+            "stock": payload.get("stock"),
+            "fulfillment_type": payload.get("fulfillment_type"),
+            "discord_role_id": payload.get("discord_role_id"),
+            "torn_item_name": payload.get("torn_item_name"),
+            "torn_item_id": payload.get("torn_item_id"),
+            "thumbnail_url": payload.get("thumbnail_url"),
+        }
+        updated = await self.repo.update_item(guild_id, item_id, **allowed_changes)
+        return updated, admin_note
 
     async def _refund_role_redemption_failure(
         self,

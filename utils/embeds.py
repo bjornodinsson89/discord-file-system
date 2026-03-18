@@ -266,12 +266,15 @@ def create_raffle_embed(raffle: Dict, entries: List[Dict]) -> discord.Embed:
     else:
         price = f"{raffle['ticket_price']}x Xanax"
     embed.add_field(name=f"{config.EMOJI_PILL} Ticket Price", value=price, inline=True)
-    end_time = raffle["end_time"]
+    end_time = raffle.get("end_time")
     if isinstance(end_time, str):
         end_time = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
-    embed.add_field(
-        name=f"{config.EMOJI_CLOCK} Ends", value=f"<t:{int(end_time.timestamp())}:R>", inline=True
-    )
+    if isinstance(end_time, datetime):
+        embed.add_field(
+            name=f"{config.EMOJI_CLOCK} Ends",
+            value=f"<t:{int(end_time.timestamp())}:R>",
+            inline=True,
+        )
     embed.add_field(name="Participants", value=f"{len(paid_entries)} users", inline=True)
     if reserved_tickets:
         embed.add_field(name="Reserved (Unpaid)", value=f"{reserved_tickets} tickets", inline=True)
