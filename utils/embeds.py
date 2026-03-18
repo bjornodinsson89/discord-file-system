@@ -386,10 +386,20 @@ def create_api_key_guide_embed() -> discord.Embed:
     embed = create_info_embed(
         "Set Up Your Torn API Key", "Register your API key to use Happy Jumper features."
     )
+    embed.description = (
+        "## 🚨 WARNING — READ THIS FIRST\n"
+        "> **DO NOT USE A PUBLIC API KEY.**\n"
+        "> **USE THE BUTTON BELOW TO CREATE A CUSTOM SCOPED KEY, OR INPUT A FULL ACCESS KEY.**\n"
+        "> **NO OTHER KEY WILL WORK.**\n"
+        "> **Your key must include the required Torn item log permissions (cat=85) or Happy Jumper will reject it.**\n\n"
+        "**Best option:** press **Create API Key** below and make the custom scoped key first."
+    )
     embed.add_field(
         name="Get an API Key",
-        value="Torn API keys are personal. Never share your key.\n"
-        "By registering it here, you consent to the bot using it only to check eligibility and verify payments via the Torn API.",
+        value="1. Press **Create API Key** below to generate the recommended custom scoped key.\n"
+        "2. If you prefer, you may enter a full access key instead.\n"
+        "3. The key must include the required Torn item log permissions so the bot can verify payments.\n"
+        "4. Torn API keys are personal. Never share your key.",
         inline=False,
     )
     embed.add_field(
