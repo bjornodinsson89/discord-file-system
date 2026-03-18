@@ -15,6 +15,10 @@ from services.role_reward_service import RoleRewardService
 from utils.database import get_pool
 
 
+def _message_has_interaction_origin(message: discord.Message) -> bool:
+    return getattr(message, "interaction_metadata", None) is not None
+
+
 class EngagementCog(commands.Cog):
     profile = app_commands.Group(name="profile", description="View engagement profiles")
     tokens = app_commands.Group(name="tokens", description="Prize token commands")
@@ -187,9 +191,7 @@ class EngagementCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.guild is None or message.author.bot:
             return
-        if getattr(message, "interaction", None) is not None or message.content.strip().startswith(
-            "/"
-        ):
+        if _message_has_interaction_origin(message) or message.content.strip().startswith("/"):
             return
         await self.service.message_xp_if_eligible(
             guild_id=message.guild.id,

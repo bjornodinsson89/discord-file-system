@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from cogs.engagement import EngagementCog
+from cogs.engagement import EngagementCog, _message_has_interaction_origin
 from services.engagement_service import EngagementService
 
 
@@ -180,3 +180,13 @@ def test_patch2_commands_and_setup_pages_exist():
         "Reseed Reward Definitions",
     ]:
         assert expected in setup_src
+
+
+def test_message_interaction_origin_uses_interaction_metadata_and_handles_absence():
+    message_with_metadata = SimpleNamespace(interaction_metadata=object())
+    message_without_metadata = SimpleNamespace(interaction_metadata=None)
+    plain_message = SimpleNamespace()
+
+    assert _message_has_interaction_origin(message_with_metadata) is True
+    assert _message_has_interaction_origin(message_without_metadata) is False
+    assert _message_has_interaction_origin(plain_message) is False
