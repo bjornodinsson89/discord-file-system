@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from repositories.prize_tokens import PrizeTokensRepository
 from repositories.store import StoreRepository
+from repositories.torn_items import TornItemsRepository
 from services.prize_token_service import PrizeTokenService
 from services.store_service import StoreService
 from utils.database import get_pool
@@ -97,42 +98,87 @@ class ConfirmRedeemView(discord.ui.View):
         )
 
 
+class DiscordRoleConfigModal(discord.ui.Modal, title="Discord Role Details"):
+    role_id = discord.ui.TextInput(label="Role ID", required=False, placeholder="Required for fulfillment type = discord_role")
+
+    def __init__(self, parent: "AddStoreItemModal"):
+        super().__init__()
+        self.parent = parent
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.parent.finish_submit(interaction, fulfillment_type="discord_role", role_id_raw=str(self.role_id.value).strip() or None)
+
+
+class FulfillmentTypeView(discord.ui.View):
+    def __init__(self, modal: "AddStoreItemModal", user_id: int):
+        super().__init__(timeout=180)
+        self.modal = modal
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Only the admin who started this flow can use it.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Admin Manual", style=discord.ButtonStyle.primary)
+    async def admin_manual(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self.modal.finish_submit(interaction, fulfillment_type="admin_manual")
+
+    @discord.ui.button(label="Discord Role", style=discord.ButtonStyle.secondary)
+    async def discord_role(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(DiscordRoleConfigModal(self.modal))
+
+
 class AddStoreItemModal(discord.ui.Modal, title="Add Store Item"):
     name = discord.ui.TextInput(label="Name", max_length=100)
     description = discord.ui.TextInput(label="Description", style=discord.TextStyle.paragraph, required=False, max_length=500)
     category = discord.ui.TextInput(label="Category", default="torn_item")
     token_cost = discord.ui.TextInput(label="Token cost", default="1")
-    extras = discord.ui.TextInput(
-        label="Extras (role_id,stock,torn_item_name)",
-        required=False,
-        placeholder="role_id=123;stock=5;torn_item_name=Xanax",
-    )
+    stock = discord.ui.TextInput(label="Stock", required=False, placeholder="Leave blank for unlimited")
 
     def __init__(self, cog: "StoreCog"):
         super().__init__()
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
-        extras = {}
-        for part in str(self.extras.value).split(";"):
-            if "=" not in part:
-                continue
-            k, v = part.split("=", 1)
-            extras[k.strip()] = v.strip()
-        item = await self.cog.store_repo.create_item(
-            guild_id=interaction.guild_id,
-            name=str(self.name.value).strip(),
-            description=str(self.description.value).strip() or None,
-            category=str(self.category.value).strip(),
-            token_cost=int(str(self.token_cost.value).strip()),
-            stock=int(extras["stock"]) if extras.get("stock") else None,
-            fulfillment_type=extras.get("fulfillment_type") or "admin_manual",
-            discord_role_id=int(extras["role_id"]) if extras.get("role_id") else None,
-            torn_item_name=extras.get("torn_item_name") or None,
-            max_per_user=int(extras["max_per_user"]) if extras.get("max_per_user") else None,
-            created_by=interaction.user.id,
-        )
-        await interaction.response.send_message(f"Added item #{item['id']}.", ephemeral=True)
+        category = str(self.category.value).strip().lower()
+        if category == "discord_perk":
+            await interaction.response.send_message(
+                "Choose a fulfillment type for this Discord perk.",
+                ephemeral=True,
+                view=FulfillmentTypeView(self, interaction.user.id),
+            )
+            return
+        await self.finish_submit(interaction, fulfillment_type="admin_manual")
+
+    async def finish_submit(self, interaction: discord.Interaction, *, fulfillment_type: str, role_id_raw: str | None = None):
+        category = str(self.category.value).strip().lower()
+        stock_raw = str(self.stock.value).strip()
+        if fulfillment_type == "discord_role" and not role_id_raw:
+            await interaction.response.send_message("Role ID is required for Discord role fulfillment.", ephemeral=True)
+            return
+        try:
+            item, admin_note = await self.cog.store_service.create_store_item(
+                guild_id=interaction.guild_id,
+                name=str(self.name.value).strip(),
+                description=str(self.description.value).strip() or None,
+                category=category,
+                token_cost=int(str(self.token_cost.value).strip()),
+                stock=int(stock_raw) if stock_raw else None,
+                fulfillment_type=fulfillment_type,
+                discord_role_id=int(role_id_raw) if role_id_raw else None,
+                created_by=interaction.user.id,
+            )
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        message = f"Added item #{item['id']}."
+        if admin_note:
+            message = f"{message}\n⚠️ {admin_note}"
+        elif category == "torn_item" and item.get("thumbnail_url"):
+            message = f"{message} Thumbnail resolved automatically from Torn item data."
+        await interaction.response.send_message(message, ephemeral=True)
 
 
 class UpdateItemModal(discord.ui.Modal, title="Update Item"):
@@ -210,47 +256,56 @@ class AdminStoreView(discord.ui.View):
         self.user_id = user_id
 
     async def _guard(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == self.user_id and isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Only the command user can use this panel.", ephemeral=True)
+            return False
+        return True
 
-    @discord.ui.button(label="Add Item", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Add Item", style=discord.ButtonStyle.success)
     async def add_item(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await self._guard(interaction):
-            await interaction.response.send_message("Manage Server permission required.", ephemeral=True)
             return
         await interaction.response.send_modal(AddStoreItemModal(self.cog))
 
-    @discord.ui.button(label="Edit Item", style=discord.ButtonStyle.primary, row=0)
-    async def edit_item(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if await self._guard(interaction):
-            await interaction.response.send_modal(UpdateItemModal(self.cog))
+    @discord.ui.button(label="Update Item", style=discord.ButtonStyle.secondary)
+    async def update_item(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await self._guard(interaction):
+            return
+        await interaction.response.send_modal(UpdateItemModal(self.cog))
 
-    @discord.ui.button(label="Restock Item", style=discord.ButtonStyle.primary, row=1)
-    async def restock_item(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if await self._guard(interaction):
-            await interaction.response.send_modal(StockAdjustModal(self.cog, "Restock Item"))
+    @discord.ui.button(label="Adjust Stock", style=discord.ButtonStyle.secondary)
+    async def adjust_stock(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not await self._guard(interaction):
+            return
+        await interaction.response.send_modal(StockAdjustModal(self.cog, title="Adjust Stock"))
 
-    @discord.ui.button(label="Disable Item", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Disable Item", style=discord.ButtonStyle.danger)
     async def disable_item(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if await self._guard(interaction):
-            await interaction.response.send_modal(StockAdjustModal(self.cog, "Disable Item", disable=True))
+        if not await self._guard(interaction):
+            return
+        await interaction.response.send_modal(StockAdjustModal(self.cog, title="Disable Item", disable=True))
 
-    @discord.ui.button(label="View Pending Redemptions", style=discord.ButtonStyle.primary, row=2)
-    async def pending(self, interaction: discord.Interaction, _: discord.ui.Button):
+    @discord.ui.button(label="Pending Queue", style=discord.ButtonStyle.primary)
+    async def pending_queue(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await self._guard(interaction):
             return
         rows = await self.cog.store_repo.list_pending_redemptions(interaction.guild_id, limit=10)
-        desc = "\n".join(f"#{r['id']} · {r['item_name']} · <@{r['user_id']}> · {r['token_cost']}" for r in rows) or "No pending redemptions."
-        await interaction.response.send_message(embed=discord.Embed(title="Pending Redemptions", description=desc), ephemeral=True)
+        body = "\n".join(
+            f"#{r['id']} · <@{r['user_id']}> · {r['item_name']} · {r['status']}" for r in rows
+        ) or "No pending redemptions."
+        await interaction.response.edit_message(embed=discord.Embed(title="Pending Redemptions", description=body), view=self)
 
-    @discord.ui.button(label="Fulfill Redemption", style=discord.ButtonStyle.success, row=3)
+    @discord.ui.button(label="Fulfill", style=discord.ButtonStyle.success)
     async def fulfill(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if await self._guard(interaction):
-            await interaction.response.send_modal(RedemptionActionModal(self.cog, action="fulfill"))
+        if not await self._guard(interaction):
+            return
+        await interaction.response.send_modal(RedemptionActionModal(self.cog, action="fulfill"))
 
-    @discord.ui.button(label="Refund Redemption", style=discord.ButtonStyle.danger, row=3)
+    @discord.ui.button(label="Refund", style=discord.ButtonStyle.danger)
     async def refund(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if await self._guard(interaction):
-            await interaction.response.send_modal(RedemptionActionModal(self.cog, action="refund"))
+        if not await self._guard(interaction):
+            return
+        await interaction.response.send_modal(RedemptionActionModal(self.cog, action="refund"))
 
 
 class StoreCog(commands.Cog):
@@ -258,7 +313,12 @@ class StoreCog(commands.Cog):
         self.bot = bot
         pool = get_pool()
         self.store_repo = StoreRepository(pool)
-        self.store_service = StoreService(self.store_repo, PrizeTokenService(PrizeTokensRepository(pool)))
+        self.torn_items_repo = TornItemsRepository(pool)
+        self.store_service = StoreService(
+            self.store_repo,
+            PrizeTokenService(PrizeTokensRepository(pool)),
+            self.torn_items_repo,
+        )
 
     async def send_item_browser(self, interaction: discord.Interaction, category: str):
         items = await self.store_repo.list_items(interaction.guild_id, category=category, active_only=True)
@@ -286,7 +346,6 @@ class StoreCog(commands.Cog):
             view=StoreHomeView(self, interaction.user.id),
             ephemeral=True,
         )
-
 
 
 async def setup(bot: commands.Bot):

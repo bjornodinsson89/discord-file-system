@@ -10,6 +10,11 @@ _NON_ALNUM_WS_RE = re.compile(r"[^a-z0-9\s]")
 _WS_RE = re.compile(r"\s+")
 
 
+class TornItemLookupError(ValueError):
+    """Raised when a Torn item name cannot be resolved deterministically."""
+
+
+
 def norm_name(s: str) -> str:
     value = (s or "").strip().lower()
     value = _CURLY_QUOTES_RE.sub("'", value)
@@ -122,6 +127,48 @@ class TornItemsRepository(RepositoryBase):
                 item_id,
             )
             return dict(row) if row else None
+
+    async def resolve_store_item_match_by_name(self, raw_name: str) -> dict | None:
+        lookup_name = (raw_name or "").strip()
+        if not lookup_name:
+            return None
+        normalized = norm_name(lookup_name)
+        if not normalized:
+            return None
+
+        async with self.acquire() as conn:
+            exact_rows = await conn.fetch(
+                """
+                SELECT item_id, name, norm_name, image_url
+                FROM torn_items
+                WHERE LOWER(name) = LOWER($1)
+                ORDER BY item_id ASC
+                """,
+                lookup_name,
+            )
+            if len(exact_rows) == 1:
+                return dict(exact_rows[0])
+            if len(exact_rows) > 1:
+                raise TornItemLookupError(
+                    f"Multiple Torn items match '{lookup_name}'. Please enter a more specific item name."
+                )
+
+            normalized_rows = await conn.fetch(
+                """
+                SELECT item_id, name, norm_name, image_url
+                FROM torn_items
+                WHERE norm_name = $1
+                ORDER BY item_id ASC
+                """,
+                normalized,
+            )
+            if len(normalized_rows) == 1:
+                return dict(normalized_rows[0])
+            if len(normalized_rows) > 1:
+                raise TornItemLookupError(
+                    f"Multiple Torn items match '{lookup_name}'. Please enter a more specific item name."
+                )
+        return None
 
     async def get_item_meta_by_name(self, raw_name: str) -> dict | None:
         item_id = await self.resolve_item_id(raw_name)
