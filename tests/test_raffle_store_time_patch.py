@@ -94,7 +94,10 @@ def test_draw_button_requires_confirmation_before_executing(monkeypatch):
         prompt = interaction.followup.messages[-1]
         assert prompt["content"] == "Draw raffle now?"
         assert isinstance(prompt["view"], RaffleActionConfirmView)
-        assert [child.label for child in prompt["view"].children] == ["Confirm Draw", "Keep Open / Back"]
+        assert [child.label for child in prompt["view"].children] == [
+            "Confirm Draw",
+            "Keep Open / Back",
+        ]
 
     asyncio.run(_run())
 
@@ -128,7 +131,10 @@ def test_cancel_button_requires_confirmation_before_executing(monkeypatch):
         assert view._perform_cancel.await_count == 0
         prompt = interaction.followup.messages[-1]
         assert prompt["content"] == "Cancel raffle?"
-        assert [child.label for child in prompt["view"].children] == ["Confirm Cancel", "Keep Active / Back"]
+        assert [child.label for child in prompt["view"].children] == [
+            "Confirm Cancel",
+            "Keep Active / Back",
+        ]
 
     asyncio.run(_run())
 
@@ -214,7 +220,9 @@ def test_store_update_reresolves_torn_metadata_when_name_changes():
         )
         service = StoreService(repo, _FakeTokenService(), torn_repo)
 
-        updated, note = await service.update_store_item(guild_id=1, item_id=99, name="Xanax", token_cost=10)
+        updated, note = await service.update_store_item(
+            guild_id=1, item_id=99, name="Xanax", token_cost=10
+        )
 
         assert note is None
         assert updated["name"] == "Xanax"
@@ -268,7 +276,9 @@ def test_giveaway_embed_hides_time_row_when_no_end_time_exists(monkeypatch):
     async def _run():
         cog = FreeRaffleCog.__new__(FreeRaffleCog)
         cog.resolve_thumbnail = AsyncMock(return_value=None)
-        repo = SimpleNamespace(get_winner=AsyncMock(return_value=None), get_entry_count=AsyncMock(return_value=4))
+        repo = SimpleNamespace(
+            get_winner=AsyncMock(return_value=None), get_entry_count=AsyncMock(return_value=4)
+        )
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
         monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
         embed = await FreeRaffleCog.build_raffle_embed(
@@ -299,7 +309,9 @@ def test_giveaway_embed_keeps_time_row_when_end_time_exists(monkeypatch):
     async def _run():
         cog = FreeRaffleCog.__new__(FreeRaffleCog)
         cog.resolve_thumbnail = AsyncMock(return_value=None)
-        repo = SimpleNamespace(get_winner=AsyncMock(return_value=None), get_entry_count=AsyncMock(return_value=4))
+        repo = SimpleNamespace(
+            get_winner=AsyncMock(return_value=None), get_entry_count=AsyncMock(return_value=4)
+        )
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
         monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
         now = datetime.now(timezone.utc)
@@ -330,4 +342,7 @@ def test_giveaway_embed_keeps_time_row_when_end_time_exists(monkeypatch):
 def test_store_add_flow_source_uses_name_field_without_manual_torn_item_id_prompt():
     src = Path("cogs/store.py").read_text(encoding="utf-8")
     assert 'label="Name"' in src
-    assert 'label="Item ID"' not in src.split("class AddStoreItemModal", 1)[1].split("class UpdateItemModal", 1)[0]
+    assert (
+        'label="Item ID"'
+        not in src.split("class AddStoreItemModal", 1)[1].split("class UpdateItemModal", 1)[0]
+    )

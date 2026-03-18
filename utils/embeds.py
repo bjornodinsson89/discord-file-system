@@ -271,7 +271,9 @@ def create_raffle_embed(raffle: Dict, entries: List[Dict]) -> discord.Embed:
         end_time = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
     if isinstance(end_time, datetime):
         embed.add_field(
-            name=f"{config.EMOJI_CLOCK} Ends", value=f"<t:{int(end_time.timestamp())}:R>", inline=True
+            name=f"{config.EMOJI_CLOCK} Ends",
+            value=f"<t:{int(end_time.timestamp())}:R>",
+            inline=True,
         )
     embed.add_field(name="Participants", value=f"{len(paid_entries)} users", inline=True)
     if reserved_tickets:
