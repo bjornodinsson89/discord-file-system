@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import setup_panel
 from setup_panel import (
     EngagementMaintenanceView,
+    EngagementEventXPView,
+    EngagementRolesView,
     EngagementRolesStatusView,
     StoreAdminPageView,
     StoreFulfillmentPageView,
@@ -173,6 +175,77 @@ def test_setup_pages_expose_expected_admin_actions():
             "Refund Redemption",
             "View Store Status",
         }
+
+    asyncio.run(_run())
+
+
+def test_engagement_roles_view_exists_and_exposes_reward_actions():
+    async def _run():
+        common = dict(
+            owner_id=1,
+            db=SimpleNamespace(pool=object()),
+            settings={},
+            guild=SimpleNamespace(),
+            panel=SimpleNamespace(),
+        )
+        labels = _labels(EngagementRolesView(**common))
+        assert labels >= {
+            "Create/Repair Reward Roles",
+            "Sync Reward Roles",
+            "View Engagement Config",
+            "View Reward Role Status",
+            "Next →",
+            "← Back",
+        }
+
+    asyncio.run(_run())
+
+
+def test_engagement_setup_navigation_moves_between_event_roles_and_maintenance(monkeypatch):
+    async def _run():
+        sent = []
+
+        async def _fake_send_or_edit(_interaction, _embed, view=None):
+            sent.append(view)
+
+        monkeypatch.setattr(setup_panel, "_send_or_edit", _fake_send_or_edit)
+        common = dict(
+            owner_id=1,
+            db=SimpleNamespace(pool=object()),
+            settings={},
+            guild=SimpleNamespace(id=123),
+            panel=SimpleNamespace(engagement_settings={}),
+        )
+        interaction = _FakeInteraction(_FakeGuild())
+
+        event_view = EngagementEventXPView(**common)
+        next_button = next(
+            child for child in event_view.children if getattr(child, "label", None) == "Next →"
+        )
+        await next_button.callback(interaction)
+        assert isinstance(sent[-1], EngagementRolesView)
+
+        roles_view = sent[-1]
+        next_button = next(
+            child for child in roles_view.children if getattr(child, "label", None) == "Next →"
+        )
+        await next_button.callback(interaction)
+        assert isinstance(sent[-1], EngagementMaintenanceView)
+
+        maintenance_view = sent[-1]
+        back_button = next(
+            child
+            for child in maintenance_view.children
+            if getattr(child, "label", None) == "← Back"
+        )
+        await back_button.callback(interaction)
+        assert isinstance(sent[-1], EngagementRolesView)
+
+        roles_back = next(
+            child for child in sent[-1].children if getattr(child, "label", None) == "← Back"
+        )
+        await roles_back.callback(interaction)
+        assert isinstance(sent[-1], EngagementEventXPView)
 
     asyncio.run(_run())
 

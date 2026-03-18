@@ -1745,7 +1745,7 @@ class ReverseEventModal(discord.ui.Modal, title="Reverse Event"):
         await interaction.response.send_message(f"Reversed event for <@{user_id}> and rebuilt profile.", ephemeral=True)
 
 
-class EngagementRolesStatusView(BackView):
+class EngagementRolesView(BackView):
     @discord.ui.button(label="Create/Repair Reward Roles", style=discord.ButtonStyle.primary, row=0)
     async def create_repair_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
         repo = EngagementRepository(self.db.pool)
@@ -1816,6 +1816,10 @@ class EngagementRolesStatusView(BackView):
         await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Event XP settings"), EngagementEventXPView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
 
 
+# Backwards-compatible alias for older imports/tests that referenced the original page name.
+EngagementRolesStatusView = EngagementRolesView
+
+
 class EngagementMaintenanceView(BackView):
     @discord.ui.button(label="Debug Member Engagement", style=discord.ButtonStyle.primary, row=0)
     async def debug_member(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -1837,7 +1841,7 @@ class EngagementMaintenanceView(BackView):
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def custom_back(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Roles and status"), EngagementRolesStatusView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+        await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Roles and status"), EngagementRolesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
 
 
 class StoreFulfillmentChannelSelect(discord.ui.ChannelSelect):
