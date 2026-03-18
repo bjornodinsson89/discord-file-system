@@ -115,8 +115,6 @@ class _FakeStoreRepo:
         return "https://img.example/x.png"
 
 
-
-
 class _FakeTornItemsRepo:
     def __init__(self, result=None, error: Exception | None = None):
         self.result = result
@@ -153,6 +151,7 @@ class _Interaction:
         self.guild_id = guild_id
         self.user = type("User", (), {"id": user_id})()
         self.response = _Response()
+
 
 class _FakeTokenSvc:
     def __init__(self, *, allow_spend: bool = True, events=None):
@@ -406,11 +405,13 @@ def test_discord_role_redemption_charges_before_role_grant_and_refunds_on_grant_
 def test_create_torn_item_resolves_thumbnail_and_persists_metadata():
     async def _run():
         repo = _FakeCreateItemRepo()
-        torn_repo = _FakeTornItemsRepo(result={
-            "item_id": 123,
-            "name": "Xanax",
-            "image_url": "https://img.example/xanax.png",
-        })
+        torn_repo = _FakeTornItemsRepo(
+            result={
+                "item_id": 123,
+                "name": "Xanax",
+                "image_url": "https://img.example/xanax.png",
+            }
+        )
         service = StoreService(repo, _FakeTokenSvc(), torn_repo)
         item, note = await service.create_store_item(
             guild_id=1,
@@ -435,11 +436,13 @@ def test_create_torn_item_resolves_thumbnail_and_persists_metadata():
 def test_create_torn_item_matches_case_insensitively():
     async def _run():
         repo = _FakeCreateItemRepo()
-        torn_repo = _FakeTornItemsRepo(result={
-            "item_id": 123,
-            "name": "Xanax",
-            "image_url": "https://img.example/xanax.png",
-        })
+        torn_repo = _FakeTornItemsRepo(
+            result={
+                "item_id": 123,
+                "name": "Xanax",
+                "image_url": "https://img.example/xanax.png",
+            }
+        )
         service = StoreService(repo, _FakeTokenSvc(), torn_repo)
         item, _note = await service.create_store_item(
             guild_id=1,
@@ -460,7 +463,11 @@ def test_create_torn_item_matches_case_insensitively():
 def test_create_torn_item_ambiguous_name_fails_cleanly():
     async def _run():
         repo = _FakeCreateItemRepo()
-        torn_repo = _FakeTornItemsRepo(error=TornItemLookupError("Multiple Torn items match 'Xan'. Please enter a more specific item name."))
+        torn_repo = _FakeTornItemsRepo(
+            error=TornItemLookupError(
+                "Multiple Torn items match 'Xan'. Please enter a more specific item name."
+            )
+        )
         service = StoreService(repo, _FakeTokenSvc(), torn_repo)
         try:
             await service.create_store_item(
@@ -537,6 +544,5 @@ def test_add_item_flow_no_longer_uses_extras_field_in_modal_source():
     src = Path("cogs/store.py").read_text(encoding="utf-8")
     assert "Extras (role_id,stock,torn_item_name)" not in src
     assert "role_id=123;stock=5;torn_item_name=Xanax" not in src
-    assert "label=\"Stock\"" in src
+    assert 'label="Stock"' in src
     assert "Choose a fulfillment type for this Discord perk." in src
-
