@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 from services.store_service import StoreService
+from repositories.torn_items import TornItemLookupError
 
 
 class _Tx:
@@ -112,6 +113,44 @@ class _FakeStoreRepo:
 
     async def lookup_torn_thumbnail(self, **_kwargs):
         return "https://img.example/x.png"
+
+
+class _FakeTornItemsRepo:
+    def __init__(self, result=None, error: Exception | None = None):
+        self.result = result
+        self.error = error
+        self.lookups = []
+
+    async def resolve_store_item_match_by_name(self, raw_name: str):
+        self.lookups.append(raw_name)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+class _FakeCreateItemRepo(_FakeStoreRepo):
+    def __init__(self):
+        super().__init__()
+        self.created_payload = None
+
+    async def create_item(self, **payload):
+        self.created_payload = dict(payload)
+        return {"id": 55, **payload}
+
+
+class _Response:
+    def __init__(self):
+        self.kwargs = None
+
+    async def send_message(self, *args, **kwargs):
+        self.kwargs = {"args": args, **kwargs}
+
+
+class _Interaction:
+    def __init__(self, guild_id: int = 1, user_id: int = 2):
+        self.guild_id = guild_id
+        self.user = type("User", (), {"id": user_id})()
+        self.response = _Response()
 
 
 class _FakeTokenSvc:
@@ -361,3 +400,149 @@ def test_discord_role_redemption_charges_before_role_grant_and_refunds_on_grant_
         assert token.refunded == 3
 
     asyncio.run(_run())
+
+
+def test_create_torn_item_resolves_thumbnail_and_persists_metadata():
+    async def _run():
+        repo = _FakeCreateItemRepo()
+        torn_repo = _FakeTornItemsRepo(
+            result={
+                "item_id": 123,
+                "name": "Xanax",
+                "image_url": "https://img.example/xanax.png",
+            }
+        )
+        service = StoreService(repo, _FakeTokenSvc(), torn_repo)
+        item, note = await service.create_store_item(
+            guild_id=1,
+            name="Xanax",
+            description="heal",
+            category="torn_item",
+            token_cost=5,
+            stock=3,
+            fulfillment_type="admin_manual",
+            created_by=7,
+        )
+        assert note is None
+        assert torn_repo.lookups == ["Xanax"]
+        assert repo.created_payload["torn_item_id"] == 123
+        assert repo.created_payload["torn_item_name"] == "Xanax"
+        assert repo.created_payload["thumbnail_url"] == "https://img.example/xanax.png"
+        assert item["thumbnail_url"] == "https://img.example/xanax.png"
+
+    asyncio.run(_run())
+
+
+def test_create_torn_item_matches_case_insensitively():
+    async def _run():
+        repo = _FakeCreateItemRepo()
+        torn_repo = _FakeTornItemsRepo(
+            result={
+                "item_id": 123,
+                "name": "Xanax",
+                "image_url": "https://img.example/xanax.png",
+            }
+        )
+        service = StoreService(repo, _FakeTokenSvc(), torn_repo)
+        item, _note = await service.create_store_item(
+            guild_id=1,
+            name="  xAnAx  ",
+            description=None,
+            category="torn_item",
+            token_cost=5,
+            stock=None,
+            fulfillment_type="admin_manual",
+            created_by=7,
+        )
+        assert torn_repo.lookups == ["xAnAx"]
+        assert item["torn_item_name"] == "Xanax"
+
+    asyncio.run(_run())
+
+
+def test_create_torn_item_ambiguous_name_fails_cleanly():
+    async def _run():
+        repo = _FakeCreateItemRepo()
+        torn_repo = _FakeTornItemsRepo(
+            error=TornItemLookupError(
+                "Multiple Torn items match 'Xan'. Please enter a more specific item name."
+            )
+        )
+        service = StoreService(repo, _FakeTokenSvc(), torn_repo)
+        try:
+            await service.create_store_item(
+                guild_id=1,
+                name="Xan",
+                description=None,
+                category="torn_item",
+                token_cost=5,
+                stock=None,
+                fulfillment_type="admin_manual",
+                created_by=7,
+            )
+            raise AssertionError("expected ambiguous-name error")
+        except ValueError as exc:
+            assert "more specific" in str(exc)
+        assert repo.created_payload is None
+
+    asyncio.run(_run())
+
+
+def test_create_torn_item_missing_match_creates_without_thumbnail():
+    async def _run():
+        repo = _FakeCreateItemRepo()
+        service = StoreService(repo, _FakeTokenSvc(), _FakeTornItemsRepo(result=None))
+        item, note = await service.create_store_item(
+            guild_id=1,
+            name="Mystery Pill",
+            description=None,
+            category="torn_item",
+            token_cost=5,
+            stock=None,
+            fulfillment_type="admin_manual",
+            created_by=7,
+        )
+        assert "no Torn image match" in note
+        assert item["thumbnail_url"] is None
+        assert item["torn_item_name"] == "Mystery Pill"
+
+    asyncio.run(_run())
+
+
+def test_store_detail_embed_uses_thumbnail_url():
+    from cogs.store import StoreCog
+
+    class _Repo(_FakeStoreRepo):
+        async def get_item(self, *_args, **_kwargs):
+            return {
+                "id": 9,
+                "name": "Xanax",
+                "description": "desc",
+                "token_cost": 5,
+                "stock": 3,
+                "fulfillment_type": "admin_manual",
+                "thumbnail_url": "https://img.example/xanax.png",
+            }
+
+    class _Svc:
+        async def resolve_thumbnail(self, item):
+            return item.get("thumbnail_url")
+
+    async def _run():
+        cog = StoreCog.__new__(StoreCog)
+        cog.store_repo = _Repo()
+        cog.store_service = _Svc()
+        interaction = _Interaction()
+        await StoreCog.send_item_detail(cog, interaction, 9)
+        embed = interaction.response.kwargs["embed"]
+        assert str(embed.thumbnail.url) == "https://img.example/xanax.png"
+
+    asyncio.run(_run())
+
+
+def test_add_item_flow_no_longer_uses_extras_field_in_modal_source():
+    src = Path("cogs/store.py").read_text(encoding="utf-8")
+    assert "Extras (role_id,stock,torn_item_name)" not in src
+    assert "role_id=123;stock=5;torn_item_name=Xanax" not in src
+    assert 'label="Stock"' in src
+    assert "Choose a fulfillment type for this Discord perk." in src

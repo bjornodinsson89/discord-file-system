@@ -5,13 +5,15 @@ from datetime import datetime, timezone
 import discord
 
 from repositories.store import StoreRepository
+from repositories.torn_items import TornItemLookupError, TornItemsRepository
 from services.prize_token_service import PrizeTokenService
 
 
 class StoreService:
-    def __init__(self, repo: StoreRepository, token_service: PrizeTokenService):
+    def __init__(self, repo: StoreRepository, token_service: PrizeTokenService, torn_items_repo: TornItemsRepository | None = None):
         self.repo = repo
         self.token_service = token_service
+        self.torn_items_repo = torn_items_repo
 
     async def resolve_thumbnail(self, item: dict) -> str | None:
         if item.get("thumbnail_url"):
@@ -19,6 +21,32 @@ class StoreService:
         return await self.repo.lookup_torn_thumbnail(
             torn_item_id=item.get("torn_item_id"), torn_item_name=item.get("torn_item_name")
         )
+
+    async def create_store_item(self, **payload) -> tuple[dict, str | None]:
+        item_name = str(payload["name"]).strip()
+        payload["name"] = item_name
+        payload["category"] = str(payload["category"]).strip()
+        payload["fulfillment_type"] = str(payload.get("fulfillment_type") or "admin_manual").strip()
+
+        admin_note = None
+        if payload["category"] == "torn_item" and self.torn_items_repo is not None:
+            try:
+                match = await self.torn_items_repo.resolve_store_item_match_by_name(item_name)
+            except TornItemLookupError as exc:
+                raise ValueError(str(exc)) from exc
+
+            if match is not None:
+                payload["torn_item_id"] = int(match["item_id"])
+                payload["torn_item_name"] = str(match["name"])
+                payload["thumbnail_url"] = match.get("image_url")
+            else:
+                admin_note = f"Added item, but no Torn image match was found for '{item_name}'."
+                payload.setdefault("torn_item_id", None)
+                payload.setdefault("torn_item_name", item_name)
+                payload.setdefault("thumbnail_url", None)
+
+        item = await self.repo.create_item(**payload)
+        return item, admin_note
 
     async def _refund_role_redemption_failure(
         self,
@@ -261,4 +289,4 @@ class StoreService:
             )
             return None
         except Exception:
-            return "Failed to post redemption to fulfillment channel."
+            return "Failed to post redemption message to fulfillment channel."
