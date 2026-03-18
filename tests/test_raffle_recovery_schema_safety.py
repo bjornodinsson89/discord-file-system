@@ -36,7 +36,8 @@ class _RecoveryConn:
                 and entry.get("recreated_from_entry_id") is None
                 and entry.get("refunded_at") is None
                 and not entry.get("is_refunded", False)
-                and entry.get("status", "verified") not in {"refunded", "cancelled", "invalidated", "failed", "pending"}
+                and entry.get("status", "verified")
+                not in {"refunded", "cancelled", "invalidated", "failed", "pending"}
                 and not entry.get("is_cancelled", False)
                 and not entry.get("is_invalidated", False)
             ]
@@ -174,10 +175,62 @@ def test_recreate_cancelled_raffle_is_schema_safe_without_updated_at_and_restore
             "superseded_by_raffle_id": None,
         },
         "entries": [
-            {"entry_id": 1, "raffle_id": 99, "discord_id": 10, "torn_user_id": 100, "num_tickets": 2, "payment_verified": True, "payment_verified_at": None, "is_refunded": False, "is_cancelled": False, "is_invalidated": False, "refunded_at": None, "status": "verified"},
-            {"entry_id": 2, "raffle_id": 99, "discord_id": 11, "torn_user_id": 101, "num_tickets": 3, "payment_verified": True, "payment_verified_at": None, "is_refunded": True, "is_cancelled": False, "is_invalidated": False, "refunded_at": None, "status": "verified"},
-            {"entry_id": 3, "raffle_id": 99, "discord_id": 12, "torn_user_id": 102, "num_tickets": 4, "payment_verified": False, "payment_verified_at": None, "is_refunded": False, "is_cancelled": False, "is_invalidated": False, "refunded_at": None, "status": "verified"},
-            {"entry_id": 4, "raffle_id": 99, "discord_id": 13, "torn_user_id": 103, "num_tickets": 5, "payment_verified": True, "payment_verified_at": None, "is_refunded": False, "is_cancelled": True, "is_invalidated": False, "refunded_at": None, "status": "verified"},
+            {
+                "entry_id": 1,
+                "raffle_id": 99,
+                "discord_id": 10,
+                "torn_user_id": 100,
+                "num_tickets": 2,
+                "payment_verified": True,
+                "payment_verified_at": None,
+                "is_refunded": False,
+                "is_cancelled": False,
+                "is_invalidated": False,
+                "refunded_at": None,
+                "status": "verified",
+            },
+            {
+                "entry_id": 2,
+                "raffle_id": 99,
+                "discord_id": 11,
+                "torn_user_id": 101,
+                "num_tickets": 3,
+                "payment_verified": True,
+                "payment_verified_at": None,
+                "is_refunded": True,
+                "is_cancelled": False,
+                "is_invalidated": False,
+                "refunded_at": None,
+                "status": "verified",
+            },
+            {
+                "entry_id": 3,
+                "raffle_id": 99,
+                "discord_id": 12,
+                "torn_user_id": 102,
+                "num_tickets": 4,
+                "payment_verified": False,
+                "payment_verified_at": None,
+                "is_refunded": False,
+                "is_cancelled": False,
+                "is_invalidated": False,
+                "refunded_at": None,
+                "status": "verified",
+            },
+            {
+                "entry_id": 4,
+                "raffle_id": 99,
+                "discord_id": 13,
+                "torn_user_id": 103,
+                "num_tickets": 5,
+                "payment_verified": True,
+                "payment_verified_at": None,
+                "is_refunded": False,
+                "is_cancelled": True,
+                "is_invalidated": False,
+                "refunded_at": None,
+                "status": "verified",
+            },
         ],
     }
     repo, conn = _repo_with_state(state)
@@ -192,14 +245,19 @@ def test_recreate_cancelled_raffle_is_schema_safe_without_updated_at_and_restore
     assert conn.inserted_entries[0]["discord_id"] == 10
     assert conn.inserted_entries[0]["recreated_from_entry_id"] == 1
     assert conn.inserted_entries[0]["status"] == "verified"
-    update_queries = [query for query, _params in conn.executed if query.startswith("UPDATE raffles SET")]
+    update_queries = [
+        query for query, _params in conn.executed if query.startswith("UPDATE raffles SET")
+    ]
     assert any("superseded_by_raffle_id = $3" in query for query in update_queries)
     assert all("updated_at = NOW()" not in query for query in update_queries)
 
 
 def test_recreate_cancelled_raffle_blocks_duplicate_recovery_once_superseded():
     state = {
-        "columns": {"raffles": {"raffle_id", "status", "superseded_by_raffle_id"}, "raffle_entries": set()},
+        "columns": {
+            "raffles": {"raffle_id", "status", "superseded_by_raffle_id"},
+            "raffle_entries": set(),
+        },
         "raffle": {"raffle_id": 77, "status": "cancelled", "superseded_by_raffle_id": 88},
         "entries": [],
     }
