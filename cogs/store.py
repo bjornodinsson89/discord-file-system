@@ -4,10 +4,10 @@ from datetime import datetime
 import discord
 from discord.ext import commands
 
-from repositories.prize_tokens import PrizeTokensRepository
+from repositories.happy_jump_dollars import HappyJumpDollarRepository
 from repositories.store import StoreRepository
 from repositories.torn_items import TornItemsRepository
-from services.prize_token_service import PrizeTokenService
+from services.happy_jump_dollar_service import HappyJumpDollarService
 from services.store_service import StoreService
 from utils.database import get_pool
 
@@ -50,7 +50,7 @@ class ConfirmRedeemView(discord.ui.View):
             warning = await self.cog.store_service.post_admin_redemption_message(interaction.guild, redemption, item)
         await self.cog.sync_storefront(interaction.guild)
         await interaction.response.send_message(
-            f"Redeemed successfully. Redemption #{redemption['id']}" + (f"\n⚠️ {warning}" if warning else ""),
+            f"Redeemed successfully for {redemption['token_cost']} HJD. Redemption #{redemption['id']}" + (f"\n⚠️ {warning}" if warning else ""),
             ephemeral=True,
         )
 
@@ -102,7 +102,7 @@ class AddStoreItemModal(discord.ui.Modal, title="Add Store Item"):
     name = discord.ui.TextInput(label="Name", max_length=100)
     description = discord.ui.TextInput(label="Description", style=discord.TextStyle.paragraph, required=False, max_length=500)
     category = discord.ui.TextInput(label="Category", default="torn_item")
-    token_cost = discord.ui.TextInput(label="Token cost", default="1")
+    token_cost = discord.ui.TextInput(label="Price (HJD)", default="1")
     stock = discord.ui.TextInput(label="Stock", required=False, placeholder="Leave blank for unlimited")
 
     def __init__(self, cog: "StoreCog"):
@@ -153,7 +153,7 @@ class AddStoreItemModal(discord.ui.Modal, title="Add Store Item"):
 class UpdateItemModal(discord.ui.Modal, title="Edit Store Item"):
     item_id = discord.ui.TextInput(label="Store Item ID")
     name = discord.ui.TextInput(label="New name (optional)", required=False, max_length=100)
-    token_cost = discord.ui.TextInput(label="New token cost")
+    token_cost = discord.ui.TextInput(label="New price (HJD)")
     stock = discord.ui.TextInput(label="New stock (blank = unlimited)", required=False)
 
     def __init__(self, cog: "StoreCog"):
@@ -272,9 +272,10 @@ class StoreCog(commands.Cog):
         pool = get_pool()
         self.store_repo = StoreRepository(pool)
         self.torn_items_repo = TornItemsRepository(pool)
+        self.hjd_repo = HappyJumpDollarRepository(pool)
         self.store_service = StoreService(
             self.store_repo,
-            PrizeTokenService(PrizeTokensRepository(pool)),
+            HappyJumpDollarService(self.hjd_repo),
             self.torn_items_repo,
             cog=self,
         )
@@ -291,15 +292,15 @@ class StoreCog(commands.Cog):
 
     def build_store_hub_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="Prize Token Store",
+            title="Happy Jump Dollar Store",
             description=(
-                "Spend Prize Tokens on premium server rewards. Browse **Torn Items** and **Discord Perks**, "
+                "Spend Happy Jump Dollars (HJD) on premium server rewards. Browse **Torn Items** and **Discord Perks**, "
                 "then scroll below to view and redeem items directly from this storefront channel."
             ),
             colour=discord.Colour.gold(),
             timestamp=datetime.utcnow(),
         )
-        embed.add_field(name="How it works", value="Earn Prize Tokens through the community, then spend them here on live rewards.", inline=False)
+        embed.add_field(name="How it works", value="Earn 100 HJD on every level-up, then spend HJD here on live rewards.", inline=False)
         embed.add_field(name="Available rewards", value="• Torn Items\n• Discord Perks", inline=False)
         embed.set_footer(text="Scroll below to browse the live storefront items.")
         return embed
@@ -316,7 +317,7 @@ class StoreCog(commands.Cog):
         items = await self.store_repo.list_items(interaction.guild_id, category=category, active_only=True)
         category_label = "Torn Items" if category == "torn_item" else "Discord Perks"
         desc = "\n".join(
-            f"`#{i['id']}` **{i['name']}** · {i['token_cost']} tokens · stock {i.get('stock', '∞')}" for i in items[:15]
+            f"`#{i['id']}` **{i['name']}** · {i['token_cost']} HJD · stock {i.get('stock', '∞')}" for i in items[:15]
         ) or "No items available."
         await interaction.response.send_message(
             embed=discord.Embed(title=category_label, description=desc, colour=discord.Colour.blurple()),
@@ -330,7 +331,7 @@ class StoreCog(commands.Cog):
             colour=discord.Colour.green(),
             timestamp=datetime.utcnow(),
         )
-        embed.add_field(name="Token cost", value=str(item["token_cost"]))
+        embed.add_field(name="Price", value=f"{item['token_cost']} HJD")
         embed.add_field(name="Stock", value="Unlimited" if item.get("stock") is None else str(item.get("stock")))
         embed.add_field(name="Category", value="Torn Items" if item.get("category") == "torn_item" else "Discord Perks")
         embed.add_field(name="Fulfillment", value=str(item.get("fulfillment_type") or "admin_manual").replace("_", " ").title(), inline=False)

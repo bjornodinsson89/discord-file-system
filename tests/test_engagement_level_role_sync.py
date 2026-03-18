@@ -163,7 +163,7 @@ class _Harness:
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         channel = self.bot.get_guild(guild_id).get_channel(int(settings["levelup_channel_id"]))
         member = self.bot.get_guild(guild_id).get_member(user_id)
-        await channel.send(f"🎉 {member.mention} reached Level {level} and earned 1 Prize Token.")
+        await channel.send(f"🎉 {member.mention} reached Level {level} and earned 1 coin and 100 HJD.")
 
 
 def test_level_up_triggers_immediate_role_sync_and_announcement():
@@ -199,7 +199,7 @@ def test_level_up_triggers_immediate_role_sync_and_announcement():
         assert harness.sync_calls == [(1, 42)]
         assert new_role in member.roles
         assert old_role not in member.roles
-        assert channel.messages == ["🎉 <@42> reached Level 2 and earned 1 Prize Token."]
+        assert channel.messages == ["🎉 <@42> reached Level 2 and earned 1 coin and 100 HJD."]
 
     asyncio.run(_run())
 

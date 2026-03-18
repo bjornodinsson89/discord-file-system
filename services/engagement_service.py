@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timezone
 
 from repositories.engagement import EngagementRepository
+from services.happy_jump_dollar_service import HappyJumpDollarService
 from services.prize_token_service import PrizeTokenService
 
 _WS_RE = re.compile(r"\s+")
@@ -27,9 +28,15 @@ def message_fingerprint(content: str) -> str:
 
 
 class EngagementService:
-    def __init__(self, repo: EngagementRepository, prize_tokens: PrizeTokenService):
+    def __init__(
+        self,
+        repo: EngagementRepository,
+        prize_tokens: PrizeTokenService,
+        hjd_service: HappyJumpDollarService | None = None,
+    ):
         self.repo = repo
         self.prize_tokens = prize_tokens
+        self.hjd_service = hjd_service
 
     async def award_xp(
         self,
@@ -65,6 +72,8 @@ class EngagementService:
             await self.repo.update_level(guild_id, user_id, new_level)
             for level in range(old_level + 1, new_level + 1):
                 await self.prize_tokens.grant_level_up_token(guild_id, user_id, level)
+                if self.hjd_service is not None:
+                    await self.hjd_service.grant_level_up_hjd(guild_id, user_id, level)
                 if on_level_up is not None:
                     await on_level_up(guild_id, user_id, level)
             if on_role_sync_needed is not None:
