@@ -590,7 +590,9 @@ def test_blank_store_item_description_falls_back_to_torn_metadata_on_create():
             fulfillment_type="admin_manual",
             created_by=7,
         )
-        assert repo.created_payload["description"] == "Restores happiness and reduces hospital time."
+        assert (
+            repo.created_payload["description"] == "Restores happiness and reduces hospital time."
+        )
         assert item["description"] == "Restores happiness and reduces hospital time."
 
     asyncio.run(_run())
@@ -630,8 +632,12 @@ def test_store_embed_description_fallback_order():
         repo.torn_description = "Torn fallback description."
         service = StoreService(repo, _FakeTokenSvc())
 
-        own = await service.resolve_description({"description": "Store description", "category": "torn_item"})
-        torn = await service.resolve_description({"description": "", "category": "torn_item", "torn_item_id": 123})
+        own = await service.resolve_description(
+            {"description": "Store description", "category": "torn_item"}
+        )
+        torn = await service.resolve_description(
+            {"description": "", "category": "torn_item", "torn_item_id": 123}
+        )
         empty = await service.resolve_description({"description": "", "category": "discord_perk"})
 
         assert own == "Store description"

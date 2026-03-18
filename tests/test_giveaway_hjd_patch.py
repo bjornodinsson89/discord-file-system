@@ -107,7 +107,11 @@ class _Acquire:
 
 class _StoreRepo:
     def __init__(self):
-        self.settings = {"enabled": True, "torn_item_store_enabled": True, "discord_perk_store_enabled": True}
+        self.settings = {
+            "enabled": True,
+            "torn_item_store_enabled": True,
+            "discord_perk_store_enabled": True,
+        }
         self.item = {
             "id": 5,
             "name": "Xanax",
@@ -169,7 +173,9 @@ class _Member:
 
 
 def test_hjd_migration_contains_currency_and_auto_entry_tables():
-    src = Path("migrations/2026_03_18_giveaway_hjd_message_auto_entry.sql").read_text(encoding="utf-8")
+    src = Path("migrations/2026_03_18_giveaway_hjd_message_auto_entry.sql").read_text(
+        encoding="utf-8"
+    )
     assert "ADD COLUMN IF NOT EXISTS auto_entry_max_per_user" in src
     assert "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ" in src
     assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_free_raffle_entries_raffle_user_unique" in src
@@ -219,7 +225,9 @@ def test_giveaway_embed_describes_message_based_auto_entry(monkeypatch):
     async def _run():
         cog = FreeRaffleCog.__new__(FreeRaffleCog)
         cog.resolve_thumbnail = AsyncMock(return_value=None)
-        repo = SimpleNamespace(get_winner=AsyncMock(return_value=None), get_entry_count=AsyncMock(return_value=7))
+        repo = SimpleNamespace(
+            get_winner=AsyncMock(return_value=None), get_entry_count=AsyncMock(return_value=7)
+        )
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
         monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
         embed = await FreeRaffleCog.build_raffle_embed(
@@ -286,14 +294,16 @@ def test_refresh_public_message_recreates_missing_message(monkeypatch):
         cog.build_raffle_embed = AsyncMock(return_value=SimpleNamespace())
         cog.build_free_raffle_view = lambda *args, **kwargs: SimpleNamespace()
         repo = SimpleNamespace(
-            get_raffle=AsyncMock(return_value={
-                "id": 3,
-                "channel_id": 1,
-                "message_id": 99,
-                "host_discord_id": 2,
-                "button_join_enabled": True,
-                "status": "active",
-            }),
+            get_raffle=AsyncMock(
+                return_value={
+                    "id": 3,
+                    "channel_id": 1,
+                    "message_id": 99,
+                    "host_discord_id": 2,
+                    "button_join_enabled": True,
+                    "status": "active",
+                }
+            ),
             set_message_id=AsyncMock(),
         )
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
