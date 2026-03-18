@@ -24,7 +24,7 @@ def norm_name(s: str) -> str:
 
 
 class TornItemsRepository(RepositoryBase):
-    async def upsert_items(self, rows: list[tuple[int, str, str, str]]) -> int:
+    async def upsert_items(self, rows: list[tuple[int, str, str, str, str | None]]) -> int:
         if not rows:
             return 0
 
@@ -32,23 +32,26 @@ class TornItemsRepository(RepositoryBase):
         names = [row[1] for row in rows]
         norm_names = [row[2] for row in rows]
         image_urls = [row[3] for row in rows]
+        descriptions = [row[4] for row in rows]
 
         async with self.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO torn_items(item_id, name, norm_name, image_url)
+                INSERT INTO torn_items(item_id, name, norm_name, image_url, description)
                 SELECT *
-                FROM unnest($1::int[], $2::text[], $3::text[], $4::text[])
+                FROM unnest($1::int[], $2::text[], $3::text[], $4::text[], $5::text[])
                 ON CONFLICT (item_id) DO UPDATE
                 SET name = EXCLUDED.name,
                     norm_name = EXCLUDED.norm_name,
                     image_url = EXCLUDED.image_url,
+                    description = EXCLUDED.description,
                     updated_at = NOW()
                 """,
                 item_ids,
                 names,
                 norm_names,
                 image_urls,
+                descriptions,
             )
         return len(rows)
 
@@ -120,7 +123,7 @@ class TornItemsRepository(RepositoryBase):
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT item_id, name, image_url
+                SELECT item_id, name, image_url, description
                 FROM torn_items
                 WHERE item_id = $1
                 """,
@@ -139,7 +142,7 @@ class TornItemsRepository(RepositoryBase):
         async with self.acquire() as conn:
             exact_rows = await conn.fetch(
                 """
-                SELECT item_id, name, norm_name, image_url
+                SELECT item_id, name, norm_name, image_url, description
                 FROM torn_items
                 WHERE LOWER(name) = LOWER($1)
                 ORDER BY item_id ASC
@@ -155,7 +158,7 @@ class TornItemsRepository(RepositoryBase):
 
             normalized_rows = await conn.fetch(
                 """
-                SELECT item_id, name, norm_name, image_url
+                SELECT item_id, name, norm_name, image_url, description
                 FROM torn_items
                 WHERE norm_name = $1
                 ORDER BY item_id ASC

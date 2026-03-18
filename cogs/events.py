@@ -1575,7 +1575,7 @@ async def refresh_item_icons(interaction: discord.Interaction):
             candidate = f"https://www.torn.com/images/items/{item_id}/large.png"
         return candidate
 
-    rows: list[tuple[int, str, str, str]] = []
+    rows: list[tuple[int, str, str, str, str | None]] = []
     name_to_item_id: dict[str, int] = {}
 
     if isinstance(items, dict):
@@ -1606,7 +1606,13 @@ async def refresh_item_icons(interaction: discord.Interaction):
             continue
 
         image_url = _pick_image_url(item, item_id)
-        rows.append((item_id, name, normalized, image_url))
+        description = item.get("description")
+        if isinstance(description, str):
+            description = description.strip() or None
+        else:
+            description = None
+
+        rows.append((item_id, name, normalized, image_url, description))
         if normalized not in name_to_item_id:
             name_to_item_id[normalized] = item_id
 

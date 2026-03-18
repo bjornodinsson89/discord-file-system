@@ -11,7 +11,6 @@ from services.prize_token_service import PrizeTokenService
 from services.store_service import StoreService
 from utils.database import get_pool
 
-STORE_HUB_CUSTOM_ID = "storefront:hub"
 STORE_ADMIN_CUSTOM_ID = "storefront:admin"
 STORE_ITEM_CUSTOM_ID = "storefront:item"
 
@@ -28,30 +27,6 @@ async def deny_unauthorized(interaction: discord.Interaction) -> None:
         await interaction.followup.send("Only server admins can use these store controls.", ephemeral=True)
     else:
         await interaction.response.send_message("Only server admins can use these store controls.", ephemeral=True)
-
-
-class StoreBrowseView(discord.ui.View):
-    def __init__(self, cog: "StoreCog", category: str | None = None):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.category = category
-
-    @discord.ui.button(label="Browse Torn Items", style=discord.ButtonStyle.primary, custom_id=f"{STORE_HUB_CUSTOM_ID}:torn")
-    async def torn_items(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.cog.send_item_browser(interaction, "torn_item")
-
-    @discord.ui.button(label="Browse Discord Perks", style=discord.ButtonStyle.primary, custom_id=f"{STORE_HUB_CUSTOM_ID}:perks")
-    async def perks(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.cog.send_item_browser(interaction, "discord_perk")
-
-    @discord.ui.button(label="My Redemptions", style=discord.ButtonStyle.secondary, custom_id=f"{STORE_HUB_CUSTOM_ID}:mine")
-    async def my_redemptions(self, interaction: discord.Interaction, _: discord.ui.Button):
-        rows = await self.cog.store_repo.list_user_redemptions(interaction.guild_id, interaction.user.id, limit=10)
-        body = "\n".join(
-            f"#{r['id']} · {r['item_name']} · {r['status']} · {r['token_cost']} tokens" for r in rows
-        ) or "No redemptions yet."
-        embed = discord.Embed(title="My Redemptions", description=body, colour=discord.Colour.blurple())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 class ConfirmRedeemView(discord.ui.View):
@@ -290,29 +265,6 @@ class AdminStorefrontView(discord.ui.View):
     async def restock_item(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.send_modal(StockAdjustModal(self.cog, title="Restock Item"))
 
-    @discord.ui.button(label="Disable Item", style=discord.ButtonStyle.danger, custom_id=f"{STORE_ADMIN_CUSTOM_ID}:disable")
-    async def disable_item(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(StockAdjustModal(self.cog, title="Disable Item", disable=True))
-
-    @discord.ui.button(label="View Pending Redemptions", style=discord.ButtonStyle.primary, custom_id=f"{STORE_ADMIN_CUSTOM_ID}:pending", row=1)
-    async def pending_queue(self, interaction: discord.Interaction, _: discord.ui.Button):
-        rows = await self.cog.store_repo.list_pending_redemptions(interaction.guild_id, limit=10)
-        body = "\n".join(f"#{r['id']} · <@{r['user_id']}> · {r['item_name']} · {r['status']}" for r in rows) or "No pending redemptions."
-        await interaction.response.send_message(embed=discord.Embed(title="Pending Redemptions", description=body), ephemeral=True)
-
-    @discord.ui.button(label="Fulfill Redemption", style=discord.ButtonStyle.success, custom_id=f"{STORE_ADMIN_CUSTOM_ID}:fulfill", row=1)
-    async def fulfill(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(RedemptionActionModal(self.cog, action="fulfill"))
-
-    @discord.ui.button(label="Refund Redemption", style=discord.ButtonStyle.danger, custom_id=f"{STORE_ADMIN_CUSTOM_ID}:refund", row=1)
-    async def refund(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(RedemptionActionModal(self.cog, action="refund"))
-
-    @discord.ui.button(label="Refresh Storefront", style=discord.ButtonStyle.primary, custom_id=f"{STORE_ADMIN_CUSTOM_ID}:refresh", row=2)
-    async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.cog.sync_storefront(interaction.guild)
-        await interaction.response.send_message("Storefront refreshed.", ephemeral=True)
-
 
 class StoreCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -331,9 +283,6 @@ class StoreCog(commands.Cog):
     def _register_persistent_views(self) -> None:
         self.bot.add_view(AdminStorefrontView(self))
 
-    def build_store_browse_view(self) -> StoreBrowseView:
-        return StoreBrowseView(self)
-
     def build_admin_storefront_view(self) -> AdminStorefrontView:
         return AdminStorefrontView(self)
 
@@ -345,25 +294,22 @@ class StoreCog(commands.Cog):
             title="Prize Token Store",
             description=(
                 "Spend Prize Tokens on premium server rewards. Browse **Torn Items** and **Discord Perks**, "
-                "then redeem directly from this storefront channel."
+                "then scroll below to view and redeem items directly from this storefront channel."
             ),
             colour=discord.Colour.gold(),
             timestamp=datetime.utcnow(),
         )
         embed.add_field(name="How it works", value="Earn Prize Tokens through the community, then spend them here on live rewards.", inline=False)
         embed.add_field(name="Available rewards", value="• Torn Items\n• Discord Perks", inline=False)
-        embed.set_footer(text="Use the buttons below to browse the storefront or review your redemption history.")
+        embed.set_footer(text="Scroll below to browse the live storefront items.")
         return embed
 
     def build_admin_controls_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="Store Admin Controls",
-            description="Admins can manage the live storefront from here. Non-admin button presses are denied privately.",
+            title="Store Controls",
             colour=discord.Colour.dark_gold(),
             timestamp=datetime.utcnow(),
         )
-        embed.add_field(name="Inventory", value="Add, edit, restock, disable, and refresh storefront items.", inline=False)
-        embed.add_field(name="Redemptions", value="View pending redemptions, fulfill rewards, or issue refunds.", inline=False)
         return embed
 
     async def send_item_browser(self, interaction: discord.Interaction, category: str):
@@ -380,7 +326,7 @@ class StoreCog(commands.Cog):
     async def build_item_embed(self, item: dict) -> discord.Embed:
         embed = discord.Embed(
             title=item["name"],
-            description=item.get("description") or "No description provided.",
+            description=await self.store_service.resolve_description(item),
             colour=discord.Colour.green(),
             timestamp=datetime.utcnow(),
         )
