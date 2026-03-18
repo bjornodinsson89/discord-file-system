@@ -287,16 +287,6 @@ class StoreCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="store_admin", description="Open store admin panel")
-    async def store_admin(self, interaction: discord.Interaction):
-        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
-            await interaction.response.send_message("Manage Server permission required.", ephemeral=True)
-            return
-        await interaction.response.send_message(
-            embed=discord.Embed(title="Store Admin", description="Manage store items and redemptions."),
-            view=AdminStoreView(self, interaction.user.id),
-            ephemeral=True,
-        )
 
 
 async def setup(bot: commands.Bot):

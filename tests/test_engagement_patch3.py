@@ -202,8 +202,8 @@ def test_patch3_sources_include_setup_role_actions_and_migration_metadata_column
     setup_src = Path("setup_panel.py").read_text(encoding="utf-8")
     for expected in [
         "Create/Repair Reward Roles",
-        "Sync All Reward Roles",
-        "Reseed Reward Role Definitions",
+        "Sync Reward Roles",
+        "Reseed Reward Definitions",
         "View Reward Role Status",
     ]:
         assert expected in setup_src

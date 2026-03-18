@@ -152,7 +152,8 @@ def test_store_setup_panel_and_commands_exist():
 
     cog_src = Path("cogs/store.py").read_text(encoding="utf-8")
     assert '@app_commands.command(name="store"' in cog_src
-    assert '@app_commands.command(name="store_admin"' in cog_src
+    assert '@app_commands.command(name="store_admin"' not in cog_src
+    assert 'class AdminStoreView' in cog_src
 
 
 def test_store_thumbnail_lookup_can_use_torn_items_data_source():

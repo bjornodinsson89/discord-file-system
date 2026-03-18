@@ -10,7 +10,10 @@ from utils import GuildSettingsRepository, get_security_manager, get_torn_api
 from repositories.audit import AuditRepository
 from repositories.engagement import EngagementRepository
 from repositories.store import StoreRepository
+from repositories.prize_tokens import PrizeTokensRepository
 from services.role_reward_service import RoleRewardService
+from services.engagement_service import level_from_total_xp
+from cogs.store import AddStoreItemModal, UpdateItemModal, StockAdjustModal, RedemptionActionModal
 from utils.database import MissingDatabaseColumnError
 from utils.discord_channels import resolve_guild_channel
 from utils.embeds import create_error_embed, create_info_embed, create_success_embed
@@ -1669,20 +1672,98 @@ async def send_setup_panel(interaction: discord.Interaction, db) -> None:
     await interaction.response.send_message(embed=panel._build_embed(), view=panel, ephemeral=True)
 
 
-class EngagementRolesView(BackView):
-    @discord.ui.button(label="Create/Repair Reward Roles", style=discord.ButtonStyle.primary, row=0)
-    async def create_repair_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        service = RoleRewardService(EngagementRepository(self.db.pool))
-        await service.seed_default_ladders_if_missing(interaction.guild.id)
-        created, repaired = await service.ensure_reward_roles(interaction.guild)
-        await interaction.response.send_message(f"Done. Created: {created}, repaired: {repaired}.", ephemeral=True)
+class DebugMemberEngagementModal(discord.ui.Modal, title="Debug Member Engagement"):
+    member_id = discord.ui.TextInput(label="Member mention or ID")
 
-    @discord.ui.button(label="Sync All Reward Roles", style=discord.ButtonStyle.primary, row=1)
-    async def sync_all_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        repo = EngagementRepository(self.db.pool)
+    def __init__(self, panel: SetupPanelView):
+        super().__init__()
+        self.panel = panel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        match = re.search(r"(\d{15,25})", str(self.member_id.value))
+        member_id = int(match.group(1)) if match else interaction.user.id
+        repo = EngagementRepository(self.panel.db.pool)
+        token_repo = PrizeTokensRepository(self.panel.db.pool)
+        profile = await repo.get_or_create_profile(interaction.guild.id, member_id)
+        message_state = await repo.get_message_state(interaction.guild.id, member_id)
+        events = await repo.get_recent_event_rows(interaction.guild.id, member_id, limit=5)
+        txs = await token_repo.get_recent_transactions(interaction.guild.id, member_id, limit=5)
+        await interaction.response.send_message(
+            f"Profile: {profile}\nMessage state: {message_state}\nRecent events: {events}\nRecent token tx: {txs}",
+            ephemeral=True,
+        )
+
+
+class RebuildMemberProfileModal(discord.ui.Modal, title="Rebuild Member Profile"):
+    member_id = discord.ui.TextInput(label="Member mention or ID")
+
+    def __init__(self, panel: SetupPanelView):
+        super().__init__()
+        self.panel = panel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        match = re.search(r"(\d{15,25})", str(self.member_id.value))
+        if not match:
+            await interaction.response.send_message("Enter a valid member mention or ID.", ephemeral=True)
+            return
+        member_id = int(match.group(1))
+        repo = EngagementRepository(self.panel.db.pool)
+        rebuilt = await repo.rebuild_profile_from_ledgers(interaction.guild.id, member_id)
+        await repo.update_level(interaction.guild.id, member_id, level_from_total_xp(int(rebuilt.get("xp_total") or 0)))
         service = RoleRewardService(repo)
         await service.seed_default_ladders_if_missing(interaction.guild.id)
         await service.ensure_reward_roles(interaction.guild)
+        member = interaction.guild.get_member(member_id)
+        sync_result = {"granted": 0, "removed": 0, "failed": 0}
+        if member is not None:
+            sync_result = await service.sync_member_roles(interaction.guild, member, rebuilt)
+        await interaction.response.send_message(f"Rebuilt profile for <@{member_id}>. Role sync: {sync_result}", ephemeral=True)
+
+
+class ReverseEventModal(discord.ui.Modal, title="Reverse Event"):
+    dedupe_key = discord.ui.TextInput(label="Dedupe key", max_length=200)
+
+    def __init__(self, panel: SetupPanelView):
+        super().__init__()
+        self.panel = panel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        repo = EngagementRepository(self.panel.db.pool)
+        row = await repo.reverse_event_by_dedupe_key(interaction.guild.id, str(self.dedupe_key.value).strip())
+        if not row:
+            await interaction.response.send_message("No unreversed event found for that dedupe key.", ephemeral=True)
+            return
+        user_id = int(row.get("user_id") or 0)
+        rebuilt = await repo.rebuild_profile_from_ledgers(interaction.guild.id, user_id)
+        await repo.update_level(interaction.guild.id, user_id, level_from_total_xp(int(rebuilt.get("xp_total") or 0)))
+        service = RoleRewardService(repo)
+        await service.seed_default_ladders_if_missing(interaction.guild.id)
+        await service.ensure_reward_roles(interaction.guild)
+        member = interaction.guild.get_member(user_id)
+        if member is not None:
+            await service.sync_member_roles(interaction.guild, member, rebuilt)
+        await interaction.response.send_message(f"Reversed event for <@{user_id}> and rebuilt profile.", ephemeral=True)
+
+
+class EngagementRolesStatusView(BackView):
+    @discord.ui.button(label="Create/Repair Reward Roles", style=discord.ButtonStyle.primary, row=0)
+    async def create_repair_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
+        repo = EngagementRepository(self.db.pool)
+        service = RoleRewardService(repo)
+        await service.seed_default_ladders_if_missing(interaction.guild.id)
+        created, repaired = await service.ensure_reward_roles(interaction.guild)
+        status = await service.rewards_status(interaction.guild.id, interaction.guild)
+        await interaction.response.send_message(
+            f"Reward roles checked. Created: {created}. Repaired: {repaired}. Linked and present: {status['linked']}/{status['total']}. Missing: {status['missing']}",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Sync Reward Roles", style=discord.ButtonStyle.primary, row=1)
+    async def sync_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
+        repo = EngagementRepository(self.db.pool)
+        service = RoleRewardService(repo)
+        await service.seed_default_ladders_if_missing(interaction.guild.id)
+        created, repaired = await service.ensure_reward_roles(interaction.guild)
         profiles = await repo.list_profiles_for_guild(interaction.guild.id)
         totals = {"granted": 0, "removed": 0, "failed": 0}
         for profile in profiles:
@@ -1692,13 +1773,30 @@ class EngagementRolesView(BackView):
             result = await service.sync_member_roles(interaction.guild, member, profile)
             for key in totals:
                 totals[key] += int(result.get(key, 0))
-        await interaction.response.send_message(f"Sync completed: {totals}", ephemeral=True)
+        await interaction.response.send_message(
+            f"Reward role sync completed. Created: {created}. Repaired: {repaired}. Member sync totals: {totals}",
+            ephemeral=True,
+        )
 
-    @discord.ui.button(label="Reseed Reward Role Definitions", style=discord.ButtonStyle.primary, row=2)
-    async def reseed_reward_definitions(self, interaction: discord.Interaction, _: discord.ui.Button):
-        repo = EngagementRepository(self.db.pool)
-        await repo.seed_default_reward_ladders(interaction.guild.id)
-        await interaction.response.send_message("Reward role definitions reseeded.", ephemeral=True)
+    @discord.ui.button(label="View Engagement Config", style=discord.ButtonStyle.primary, row=2)
+    async def view_engagement_config(self, interaction: discord.Interaction, _: discord.ui.Button):
+        s = await EngagementRepository(self.db.pool).get_or_create_guild_settings(interaction.guild.id)
+        await interaction.response.send_message(
+            "\n".join([
+                "**Engagement Config**",
+                f"Enabled: `{bool(s.get('enabled'))}`",
+                f"Level-up channel: `{s.get('levelup_channel_id') or 'Not set'}`",
+                f"Leaderboards enabled: `{bool(s.get('leaderboard_enabled'))}`",
+                f"Profile cards enabled: `{bool(s.get('profile_cards_enabled'))}`",
+                f"Message XP: `{bool(s.get('message_xp_enabled'))}`",
+                f"Reaction XP: `{bool(s.get('reaction_xp_enabled'))}`",
+                f"Voice XP: `{bool(s.get('voice_xp_enabled'))}`",
+                f"Ignored channels: `{s.get('ignored_channel_ids_json') or []}`",
+                f"Ignored categories: `{s.get('ignored_category_ids_json') or []}`",
+                f"Ignored roles: `{s.get('ignored_role_ids_json') or []}`",
+            ]),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="View Reward Role Status", style=discord.ButtonStyle.primary, row=3)
     async def view_reward_role_status(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -1709,20 +1807,42 @@ class EngagementRolesView(BackView):
             ephemeral=True,
         )
 
+    @discord.ui.button(label="Next →", style=discord.ButtonStyle.secondary, row=4)
+    async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Maintenance actions"), EngagementMaintenanceView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def custom_back(self, interaction: discord.Interaction, _: discord.ui.Button):
         await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Event XP settings"), EngagementEventXPView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
 
 
+class EngagementMaintenanceView(BackView):
+    @discord.ui.button(label="Debug Member Engagement", style=discord.ButtonStyle.primary, row=0)
+    async def debug_member(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(DebugMemberEngagementModal(self.panel))
+
+    @discord.ui.button(label="Rebuild Member Profile", style=discord.ButtonStyle.primary, row=1)
+    async def rebuild_member(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(RebuildMemberProfileModal(self.panel))
+
+    @discord.ui.button(label="Reverse Event", style=discord.ButtonStyle.primary, row=2)
+    async def reverse_event(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(ReverseEventModal(self.panel))
+
+    @discord.ui.button(label="Reseed Reward Definitions", style=discord.ButtonStyle.primary, row=3)
+    async def reseed_reward_definitions(self, interaction: discord.Interaction, _: discord.ui.Button):
+        repo = EngagementRepository(self.db.pool)
+        await repo.seed_default_reward_ladders(interaction.guild.id)
+        await interaction.response.send_message("Reward role definitions reseeded.", ephemeral=True)
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
+    async def custom_back(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Roles and status"), EngagementRolesStatusView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+
+
 class StoreFulfillmentChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, panel: SetupPanelView):
-        super().__init__(
-            placeholder="Set store fulfillment/admin channel",
-            min_values=0,
-            max_values=1,
-            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
-            row=0,
-        )
+        super().__init__(placeholder="Set store fulfillment/admin channel", min_values=0, max_values=1, channel_types=[discord.ChannelType.text, discord.ChannelType.news], row=0)
         self.panel = panel
 
     async def callback(self, interaction: discord.Interaction):
@@ -1737,21 +1857,72 @@ class StoreSetupView(BackView):
 
     @discord.ui.button(label="Toggle store enabled", style=discord.ButtonStyle.primary, row=1)
     async def toggle_store(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.panel.save_store_changes(
-            interaction,
-            {"enabled": not bool(self.panel.store_settings.get("enabled", False))},
-        )
+        await self.panel.save_store_changes(interaction, {"enabled": not bool(self.panel.store_settings.get("enabled", False))})
 
     @discord.ui.button(label="Toggle Torn item store", style=discord.ButtonStyle.primary, row=2)
     async def toggle_torn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.panel.save_store_changes(
-            interaction,
-            {"torn_item_store_enabled": not bool(self.panel.store_settings.get("torn_item_store_enabled", True))},
-        )
+        await self.panel.save_store_changes(interaction, {"torn_item_store_enabled": not bool(self.panel.store_settings.get("torn_item_store_enabled", True))})
 
     @discord.ui.button(label="Toggle Discord perk store", style=discord.ButtonStyle.primary, row=3)
     async def toggle_discord_perk(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.panel.save_store_changes(
-            interaction,
-            {"discord_perk_store_enabled": not bool(self.panel.store_settings.get("discord_perk_store_enabled", True))},
+        await self.panel.save_store_changes(interaction, {"discord_perk_store_enabled": not bool(self.panel.store_settings.get("discord_perk_store_enabled", True))})
+
+    @discord.ui.button(label="Next →", style=discord.ButtonStyle.secondary, row=4)
+    async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(interaction, create_info_embed("Store Setup", "Store admin actions"), StoreAdminPageView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+
+
+class StoreAdminPageView(BackView):
+    @discord.ui.button(label="Add Item", style=discord.ButtonStyle.primary, row=0)
+    async def add_item(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(AddStoreItemModal(interaction.client.get_cog("StoreCog")))
+
+    @discord.ui.button(label="Edit Item", style=discord.ButtonStyle.primary, row=1)
+    async def edit_item(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(UpdateItemModal(interaction.client.get_cog("StoreCog")))
+
+    @discord.ui.button(label="Restock Item", style=discord.ButtonStyle.primary, row=2)
+    async def restock_item(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(StockAdjustModal(interaction.client.get_cog("StoreCog"), "Restock Item"))
+
+    @discord.ui.button(label="Disable Item", style=discord.ButtonStyle.primary, row=3)
+    async def disable_item(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(StockAdjustModal(interaction.client.get_cog("StoreCog"), "Disable Item", disable=True))
+
+    @discord.ui.button(label="Next →", style=discord.ButtonStyle.secondary, row=4)
+    async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(interaction, create_info_embed("Store Setup", "Store fulfillment actions"), StoreFulfillmentPageView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
+    async def custom_back(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(interaction, create_info_embed("Store Setup", "Configure prize token store settings."), StoreSetupView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+
+
+class StoreFulfillmentPageView(BackView):
+    @discord.ui.button(label="View Pending Redemptions", style=discord.ButtonStyle.primary, row=0)
+    async def pending(self, interaction: discord.Interaction, _: discord.ui.Button):
+        rows = await StoreRepository(self.db.pool).list_pending_redemptions(interaction.guild_id, limit=10)
+        desc = "\n".join(f"#{r['id']} · {r['item_name']} · <@{r['user_id']}> · {r['token_cost']}" for r in rows) or "No pending redemptions."
+        await interaction.response.send_message(embed=discord.Embed(title="Pending Redemptions", description=desc), ephemeral=True)
+
+    @discord.ui.button(label="Fulfill Redemption", style=discord.ButtonStyle.primary, row=1)
+    async def fulfill(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(RedemptionActionModal(interaction.client.get_cog("StoreCog"), action="fulfill"))
+
+    @discord.ui.button(label="Refund Redemption", style=discord.ButtonStyle.primary, row=2)
+    async def refund(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(RedemptionActionModal(interaction.client.get_cog("StoreCog"), action="refund"))
+
+    @discord.ui.button(label="View Store Status", style=discord.ButtonStyle.primary, row=3)
+    async def view_status(self, interaction: discord.Interaction, _: discord.ui.Button):
+        store_repo = StoreRepository(self.db.pool)
+        settings = await store_repo.get_or_create_guild_settings(interaction.guild_id)
+        pending = await store_repo.list_pending_redemptions(interaction.guild_id, limit=1)
+        await interaction.response.send_message(
+            f"Store enabled: `{bool(settings.get('enabled', False))}`\nTorn item store enabled: `{bool(settings.get('torn_item_store_enabled', True))}`\nDiscord perk store enabled: `{bool(settings.get('discord_perk_store_enabled', True))}`\nFulfillment channel: `{settings.get('fulfillment_channel_id') or 'Not set'}`\nPending redemptions: `{len(pending)}`",
+            ephemeral=True,
         )
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
+    async def custom_back(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(interaction, create_info_embed("Store Setup", "Store admin actions"), StoreAdminPageView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
