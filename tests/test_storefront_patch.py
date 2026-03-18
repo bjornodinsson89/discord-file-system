@@ -4,7 +4,6 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-import discord
 
 from cogs.store import AdminStorefrontView
 from services.store_service import StoreService
