@@ -44,6 +44,7 @@ class EngagementService:
         payload: dict | None = None,
         increments: dict[str, int] | None = None,
         on_level_up=None,
+        on_role_sync_needed=None,
     ) -> bool:
         applied = await self.repo.insert_event_ledger(
             guild_id=guild_id,
@@ -66,9 +67,11 @@ class EngagementService:
                 await self.prize_tokens.grant_level_up_token(guild_id, user_id, level)
                 if on_level_up is not None:
                     await on_level_up(guild_id, user_id, level)
+            if on_role_sync_needed is not None:
+                await on_role_sync_needed(guild_id, user_id)
         return True
 
-    async def process_paid_raffle_purchase(self, payload: dict) -> bool:
+    async def process_paid_raffle_purchase(self, payload: dict, on_role_sync_needed=None) -> bool:
         guild_id = int(payload.get("guild_id") or 0)
         ticket_count = max(0, int(payload.get("ticket_count") or 0))
         settings = await self.repo.get_or_create_guild_settings(guild_id)
@@ -90,9 +93,10 @@ class EngagementService:
                 "paid_raffle_purchases_count": 1,
                 "paid_raffle_tickets_count": ticket_count,
             },
+            on_role_sync_needed=on_role_sync_needed,
         )
 
-    async def process_raffle_prize_token_purchase_confirmed(self, payload: dict) -> bool:
+    async def process_raffle_prize_token_purchase_confirmed(self, payload: dict, on_role_sync_needed=None) -> bool:
         guild_id = int(payload.get("guild_id") or 0)
         ticket_count = max(0, int(payload.get("ticket_count") or 0))
         settings = await self.repo.get_or_create_guild_settings(guild_id)
@@ -110,9 +114,10 @@ class EngagementService:
             xp_delta=xp,
             payload=payload,
             increments={"paid_raffle_xp_total": xp},
+            on_role_sync_needed=on_role_sync_needed,
         )
 
-    async def process_jump_purchase_verified(self, payload: dict) -> bool:
+    async def process_jump_purchase_verified(self, payload: dict, on_role_sync_needed=None) -> bool:
         guild_id = int(payload.get("guild_id") or 0)
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         xp = int(settings.get("jump_purchase_xp") or 40)
@@ -126,9 +131,10 @@ class EngagementService:
             xp_delta=xp,
             payload=payload,
             increments={"jump_purchase_xp_total": xp, "jump_99k_purchases_count": 1},
+            on_role_sync_needed=on_role_sync_needed,
         )
 
-    async def process_jump_completed(self, payload: dict) -> bool:
+    async def process_jump_completed(self, payload: dict, on_role_sync_needed=None) -> bool:
         guild_id = int(payload.get("guild_id") or 0)
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         xp = int(settings.get("jump_completion_xp") or 75)
@@ -142,6 +148,7 @@ class EngagementService:
             xp_delta=xp,
             payload=payload,
             increments={"jump_completion_xp_total": xp, "jump_99k_completed_count": 1},
+            on_role_sync_needed=on_role_sync_needed,
         )
 
 
@@ -155,6 +162,7 @@ class EngagementService:
         category_id: int | None,
         minute_bucket: int,
         on_level_up=None,
+        on_role_sync_needed=None,
     ) -> bool:
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         if not settings.get("enabled") or not settings.get("voice_xp_enabled"):
@@ -178,6 +186,7 @@ class EngagementService:
             payload={"channel_id": channel_id, "minute_bucket": minute_bucket},
             increments={"voice_xp_total": xp_amount},
             on_level_up=on_level_up,
+            on_role_sync_needed=on_role_sync_needed,
         )
 
     async def message_xp_if_eligible(
@@ -191,6 +200,7 @@ class EngagementService:
         category_id: int | None,
         now: datetime | None = None,
         on_level_up=None,
+        on_role_sync_needed=None,
     ) -> bool:
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         if not settings.get("enabled") or not settings.get("message_xp_enabled"):
@@ -231,6 +241,7 @@ class EngagementService:
             payload={"channel_id": channel_id},
             increments={"message_xp_total": int(settings.get("message_xp_amount") or 12)},
             on_level_up=on_level_up,
+            on_role_sync_needed=on_role_sync_needed,
         )
         if applied:
             await self.repo.upsert_message_state(
@@ -250,6 +261,7 @@ class EngagementService:
         target_user_id: int,
         message_id: int,
         on_level_up=None,
+        on_role_sync_needed=None,
     ) -> bool:
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         if not settings.get("enabled") or not settings.get("reaction_xp_enabled"):
@@ -273,4 +285,5 @@ class EngagementService:
             payload={"reactor_user_id": reactor_user_id},
             increments={"reaction_xp_total": xp_amount},
             on_level_up=on_level_up,
+            on_role_sync_needed=on_role_sync_needed,
         )

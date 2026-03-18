@@ -170,6 +170,7 @@ class EngagementCog(commands.Cog):
                             category_id=getattr(getattr(channel, "category", None), "id", None),
                             minute_bucket=minute_bucket,
                             on_level_up=self._post_levelup_announcement,
+                            on_role_sync_needed=self._sync_roles_for_member,
                         )
             except Exception:
                 continue
@@ -198,6 +199,7 @@ class EngagementCog(commands.Cog):
             role_ids=[r.id for r in getattr(message.author, "roles", [])],
             category_id=getattr(getattr(message.channel, "category", None), "id", None),
             on_level_up=self._post_levelup_announcement,
+            on_role_sync_needed=self._sync_roles_for_member,
         )
 
     @commands.Cog.listener()
@@ -226,23 +228,32 @@ class EngagementCog(commands.Cog):
             target_user_id=target.id,
             message_id=payload.message_id,
             on_level_up=self._post_levelup_announcement,
+            on_role_sync_needed=self._sync_roles_for_member,
         )
 
     @commands.Cog.listener()
     async def on_paid_raffle_purchase_verified(self, payload: dict):
-        await self.service.process_paid_raffle_purchase(payload)
+        await self.service.process_paid_raffle_purchase(
+            payload, on_role_sync_needed=self._sync_roles_for_member
+        )
 
     @commands.Cog.listener()
     async def on_raffle_prize_token_purchase_confirmed(self, payload: dict):
-        await self.service.process_raffle_prize_token_purchase_confirmed(payload)
+        await self.service.process_raffle_prize_token_purchase_confirmed(
+            payload, on_role_sync_needed=self._sync_roles_for_member
+        )
 
     @commands.Cog.listener()
     async def on_jump_99k_purchase_verified(self, payload: dict):
-        await self.service.process_jump_purchase_verified(payload)
+        await self.service.process_jump_purchase_verified(
+            payload, on_role_sync_needed=self._sync_roles_for_member
+        )
 
     @commands.Cog.listener()
     async def on_jump_99k_completed(self, payload: dict):
-        await self.service.process_jump_completed(payload)
+        await self.service.process_jump_completed(
+            payload, on_role_sync_needed=self._sync_roles_for_member
+        )
 
     @commands.Cog.listener()
     async def on_giveaway_joined(self, _payload: dict):
