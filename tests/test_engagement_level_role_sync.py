@@ -30,7 +30,12 @@ class _FakeRepo:
         self.profiles: dict[tuple[int, int], dict] = {}
         self.msg_state: dict[tuple[int, int], dict] = {}
         self.level_rewards = [
-            {"level_required": 1, "role_id": 100, "role_name": "Pickpocket", "role_color": "95A5A6"},
+            {
+                "level_required": 1,
+                "role_id": 100,
+                "role_name": "Pickpocket",
+                "role_color": "95A5A6",
+            },
             {"level_required": 2, "role_id": 101, "role_name": "Mugger", "role_color": "7F8C8D"},
         ]
         self.prize_rewards: list[dict] = []
@@ -75,7 +80,9 @@ class _FakeRepo:
             if int(reward["level_required"]) == level_required:
                 reward["role_id"] = role_id
 
-    async def set_prize_reward_role_id(self, _guild_id: int, milestone_type: str, milestone_value: int, role_id: int):
+    async def set_prize_reward_role_id(
+        self, _guild_id: int, milestone_type: str, milestone_value: int, role_id: int
+    ):
         return None
 
     async def get_or_create_profile(self, guild_id: int, user_id: int) -> dict:
@@ -112,7 +119,9 @@ class _FakeChannel:
 
 
 class _FakeGuild:
-    def __init__(self, guild_id: int, member: _FakeMember, roles: list[_FakeRole], channel: _FakeChannel):
+    def __init__(
+        self, guild_id: int, member: _FakeMember, roles: list[_FakeRole], channel: _FakeChannel
+    ):
         self.id = guild_id
         self._member = member
         self._roles = {role.id: role for role in roles}
@@ -211,7 +220,9 @@ def test_message_xp_without_level_change_skips_role_sync():
             channel_id=321,
             role_ids=[],
             category_id=None,
-            on_level_up=lambda guild_id, user_id, level: levelups.append((guild_id, user_id, level)),
+            on_level_up=lambda guild_id, user_id, level: levelups.append(
+                (guild_id, user_id, level)
+            ),
             on_role_sync_needed=lambda guild_id, user_id: sync_calls.append((guild_id, user_id)),
         )
 
