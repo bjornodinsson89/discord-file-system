@@ -466,7 +466,7 @@ class SetupPanelView(OwnerView):
             f"Message/Reaction/Voice XP: `{bool(es.get('message_xp_enabled', True))}` / `{bool(es.get('reaction_xp_enabled', True))}` / `{bool(es.get('voice_xp_enabled', True))}`"
         ), inline=False)
         ss = getattr(self, "store_settings", {})
-        store_channel_id = ss.get('store_channel_id') or s.get('store_channel_id')
+        store_channel_id = ss.get('store_channel_id')
         embed.add_field(name="Store", value=(
             f"Enabled: `{bool(ss.get('enabled', False))}`\n"
             f"Store channel: `{store_channel_id or 'Not set'}`\n"
@@ -731,7 +731,7 @@ def _channels_embed() -> discord.Embed:
         "- **Raffle announcement channel**: where new raffle announcements are posted.\n"
         "- **Raffle purchase panel channel**: where paid raffle purchase panels are posted.\n"
         "- **Raffle giveaway purchase panel channel**: where giveaway raffle panels are posted (falls back to raffle purchase panel channel).\n"
-        "- **Jewelry alert channel**: where the bot posts “Jewlery store wide open” shoplifting window alerts.\n- **Store channel**: where the bot manages the live prize token storefront.\n- **Who Can Jump panel channel**: where the bot maintains the live host readiness board.",
+        "- **Jewelry alert channel**: where the bot posts “Jewlery store wide open” shoplifting window alerts.\n- **Who Can Jump panel channel**: where the bot maintains the live host readiness board.",
     )
 
 
@@ -827,7 +827,6 @@ class ChannelsViewPage4(BackView):
         self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Set insurance requests channel", row=0))
         self.add_item(ChannelSelect(self.panel, "jewelry_alert_channel_id", "Set jewelry alert channel", row=1))
         self.add_item(ChannelSelect(self.panel, "who_can_jump_channel_id", "Set Who Can Jump panel channel", row=2))
-        self.add_item(ChannelSelect(self.panel, "store_channel_id", "Set Store channel", row=3))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -1874,7 +1873,7 @@ class EngagementMaintenanceView(BackView):
 
 class StoreFulfillmentChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, panel: SetupPanelView):
-        super().__init__(placeholder="Set store fulfillment/admin channel", min_values=0, max_values=1, channel_types=[discord.ChannelType.text, discord.ChannelType.news], row=0)
+        super().__init__(placeholder="Set store fulfillment/admin channel", min_values=0, max_values=1, channel_types=[discord.ChannelType.text, discord.ChannelType.news], row=1)
         self.panel = panel
 
     async def callback(self, interaction: discord.Interaction):
@@ -1882,16 +1881,64 @@ class StoreFulfillmentChannelSelect(discord.ui.ChannelSelect):
         await self.panel.save_store_changes(interaction, {"fulfillment_channel_id": value})
 
 
+class StoreChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, panel: SetupPanelView):
+        super().__init__(
+            placeholder="Set Store channel",
+            min_values=0,
+            max_values=1,
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            row=0,
+        )
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.values:
+            await self.panel.save_store_changes(interaction, {"store_channel_id": None})
+            return
+
+        resolved = await self.panel._resolve_real_channel(interaction, self.values[0])
+        if resolved is None:
+            await interaction.response.send_message(
+                embed=create_error_embed(
+                    "Channel unavailable",
+                    "Couldn't resolve that channel. Try again, or check bot permissions.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        me = self.panel._resolve_bot_member(interaction)
+        if me is None:
+            await interaction.response.send_message(
+                embed=create_error_embed("Bot member unavailable", "Unable to validate my permissions right now. Please try again."),
+                ephemeral=True,
+            )
+            return
+
+        missing = _missing_channel_perms(resolved, me)
+        if missing:
+            mention = getattr(resolved, "mention", f"<#{resolved.id}>")
+            await interaction.response.send_message(
+                embed=create_error_embed("Missing permissions", f"Missing in {mention}: **{', '.join(missing)}**."),
+                ephemeral=True,
+            )
+            return
+
+        await self.panel.save_store_changes(interaction, {"store_channel_id": resolved.id})
+
+
 class StoreSetupView(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.add_item(StoreChannelSelect(self.panel))
         self.add_item(StoreFulfillmentChannelSelect(self.panel))
 
-    @discord.ui.button(label="Toggle store enabled", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Toggle store enabled", style=discord.ButtonStyle.primary, row=2)
     async def toggle_store(self, interaction: discord.Interaction, _: discord.ui.Button):
         await self.panel.save_store_changes(interaction, {"enabled": not bool(self.panel.store_settings.get("enabled", False))})
 
-    @discord.ui.button(label="Toggle Torn item store", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="Toggle Torn item store", style=discord.ButtonStyle.primary, row=3)
     async def toggle_torn(self, interaction: discord.Interaction, _: discord.ui.Button):
         await self.panel.save_store_changes(interaction, {"torn_item_store_enabled": not bool(self.panel.store_settings.get("torn_item_store_enabled", True))})
 
