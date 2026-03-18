@@ -84,7 +84,12 @@ def _build_paid_raffle_panel_embed(raffle: dict) -> discord.Embed:
     embed.add_field(name="LIVE STATS", value=f"Tickets: `{render_text_progress_bar(ticket_percent)}`\nTime: `{render_text_progress_bar(time_percent)}`\nSold / Available: **{tickets_sold}/{tickets_display}**", inline=False)
     embed.add_field(name="PRIZE", value=f"🎁 {raffle.get('prize')}", inline=False)
     embed.add_field(name="RAFFLE INFO", value=f"Ticket price: **{price_text}**\nHost: <@{int(raffle.get('creator_discord_id') or 0)}>\nDraw: {draw_text}", inline=False)
+    if raffle.get("admin_comments"):
+        embed.add_field(name="📌 Notes", value=str(raffle["admin_comments"])[:1024], inline=False)
     embed.add_field(name="HOW TO PLAY", value="1) Click **🎟️ Buy Tickets**\n2) Send payment in Torn\n3) Verify payment", inline=False)
+    image_url = str(raffle.get("prize_image_url") or "").strip()
+    if image_url:
+        embed.set_image(url=image_url)
     embed.set_footer(text=f"Last updated: {format_remaining_time(end_time, now)} remaining")
     return embed
 
@@ -213,6 +218,12 @@ async def _is_raffle_admin(interaction: discord.Interaction) -> bool:
         return False
     settings = await GuildSettingsRepository(get_database()).get_or_create(interaction.guild.id)
     return can_manage_paid_raffles(interaction.user, settings)
+
+
+async def _can_manage_raffle_edit(interaction: discord.Interaction, raffle: dict | None) -> bool:
+    if raffle and int(raffle.get("creator_discord_id") or 0) == int(interaction.user.id):
+        return True
+    return await _is_raffle_admin(interaction)
 
 
 def _resolve_purchase_panel_channel_id(settings: dict, *, is_giveaway: bool) -> tuple[int | None, str | None, str | None]:
@@ -1280,6 +1291,13 @@ class RaffleManageView(discord.ui.View):
             return False
         return True
 
+    async def _ensure_can_edit(self, interaction: discord.Interaction, raffle: dict | None = None) -> bool:
+        if not await _can_manage_raffle_edit(interaction, raffle):
+            log.info("Raffle edit denied user_id=%s raffle_id=%s", interaction.user.id, self.raffle_id)
+            await interaction.followup.send("Only the raffle host or a raffle admin can edit this raffle.", ephemeral=True)
+            return False
+        return True
+
     @discord.ui.button(label="Draw", style=discord.ButtonStyle.success)
     async def draw(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
@@ -1378,6 +1396,27 @@ class RaffleManageView(discord.ui.View):
             log.exception("Raffle recovery preview failed raffle_id=%s", self.raffle_id)
             await interaction.followup.send("Unable to open raffle recovery right now.", ephemeral=True)
 
+    @discord.ui.button(label="Edit Raffle", style=discord.ButtonStyle.primary, row=1)
+    async def edit_raffle(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            repo = RafflesRepository(get_pool())
+            raffle = await repo.get_raffle(self.raffle_id)
+            if not raffle:
+                await interaction.followup.send("❌ Raffle not found.", ephemeral=True)
+                return
+            if not await self._ensure_can_edit(interaction, raffle):
+                return
+            await interaction.followup.send(
+                "Edit raffle options:",
+                view=RaffleEditView(self.raffle_id, int(interaction.user.id)),
+                ephemeral=True,
+            )
+        except Exception:
+            log.exception("Raffle edit view failed raffle_id=%s", self.raffle_id)
+            await interaction.followup.send("Unable to open raffle editing right now.", ephemeral=True)
+
     async def on_timeout(self) -> None:
         for child in self.children:
             child.disabled = True
@@ -1435,6 +1474,174 @@ class RaffleControlsView(discord.ui.View):
             return
         embed = self.cog._build_raffle_controls_embed(raffle)
         await interaction.response.send_message(embed=embed, view=RaffleManageView(int(raffle_id)), ephemeral=True)
+
+
+class RaffleEditCommentModal(discord.ui.Modal):
+    comment = discord.ui.TextInput(
+        label="Raffle Comment / Note",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1000,
+    )
+
+    def __init__(self, raffle_id: int, editor_user_id: int, current_comment: str | None):
+        super().__init__(title="Edit Raffle Comment")
+        self.raffle_id = int(raffle_id)
+        self.editor_user_id = int(editor_user_id)
+        self.comment.default = current_comment or ""
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            repo = RafflesRepository(get_pool())
+            raffle = await repo.get_raffle(self.raffle_id)
+            if not raffle:
+                await interaction.followup.send("❌ Raffle not found.", ephemeral=True)
+                return
+            if int(interaction.user.id) != self.editor_user_id or not await _can_manage_raffle_edit(interaction, raffle):
+                await interaction.followup.send("Only the raffle host or a raffle admin can edit this raffle.", ephemeral=True)
+                return
+            comment = str(self.comment.value or "").strip() or None
+            await repo.update_raffle_comment(self.raffle_id, comment)
+            cog = interaction.client.get_cog("RafflesCog") if interaction.client else None
+            if cog:
+                await cog.refresh_raffle_public_panel(self.raffle_id)
+            await interaction.followup.send("✅ Raffle comment updated.", ephemeral=True)
+        except Exception:
+            log.exception("Failed to update raffle comment raffle_id=%s", self.raffle_id)
+            await interaction.followup.send("❌ Failed to update raffle comment. Please try again.", ephemeral=True)
+
+
+class RaffleEditImageUrlModal(discord.ui.Modal):
+    prize_image_url = discord.ui.TextInput(
+        label="Prize Image URL",
+        placeholder="https://i.imgur.com/example.png (Tip: use image2url.com to upload)",
+        required=True,
+        max_length=1000,
+    )
+
+    def __init__(self, raffle_id: int, editor_user_id: int, current_image_url: str | None):
+        super().__init__(title="Add Photo")
+        self.raffle_id = int(raffle_id)
+        self.editor_user_id = int(editor_user_id)
+        self.prize_image_url.default = current_image_url or ""
+
+    @staticmethod
+    def _is_valid_url(url: str) -> bool:
+        normalized = url.strip().lower()
+        if not (normalized.startswith("http://") or normalized.startswith("https://")):
+            return False
+        return normalized.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")) or "imgur.com" in normalized
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            repo = RafflesRepository(get_pool())
+            raffle = await repo.get_raffle(self.raffle_id)
+            if not raffle:
+                await interaction.followup.send("❌ Raffle not found.", ephemeral=True)
+                return
+            if int(interaction.user.id) != self.editor_user_id or not await _can_manage_raffle_edit(interaction, raffle):
+                await interaction.followup.send("Only the raffle host or a raffle admin can edit this raffle.", ephemeral=True)
+                return
+            if raffle.get("is_bundle"):
+                await interaction.followup.send(
+                    embed=create_error_embed("Not Allowed", "Bundle raffles do not support large prize images."),
+                    ephemeral=True,
+                )
+                return
+            image_url = str(self.prize_image_url.value or "").strip()
+            if not self._is_valid_url(image_url):
+                await interaction.followup.send(
+                    "❌ Invalid image URL. Use http(s) and either an image extension or imgur.com URL.",
+                    ephemeral=True,
+                )
+                return
+            await repo.update_raffle_image(self.raffle_id, image_url)
+            cog = interaction.client.get_cog("RafflesCog") if interaction.client else None
+            if cog:
+                await cog.refresh_raffle_public_panel(self.raffle_id)
+            await interaction.followup.send("✅ Raffle photo updated.", ephemeral=True)
+        except Exception:
+            log.exception("Failed to update raffle image raffle_id=%s", self.raffle_id)
+            await interaction.followup.send("❌ Failed to update raffle photo. Please try again.", ephemeral=True)
+
+
+class RaffleEditPhotoPromptView(discord.ui.View):
+    def __init__(self, raffle_id: int, editor_user_id: int, current_image_url: str | None):
+        super().__init__(timeout=300)
+        self.raffle_id = int(raffle_id)
+        self.editor_user_id = int(editor_user_id)
+        self.current_image_url = current_image_url or ""
+        self.add_item(
+            discord.ui.Button(
+                label="Create img url",
+                style=discord.ButtonStyle.link,
+                url="https://www.image2url.com/",
+                emoji="🔗",
+            )
+        )
+
+    @discord.ui.button(label="Open image URL form", style=discord.ButtonStyle.primary)
+    async def open_image_url_form(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if int(interaction.user.id) != self.editor_user_id:
+            await interaction.response.send_message("Only the raffle host or a raffle admin can edit this raffle.", ephemeral=True)
+            return
+        await interaction.response.send_modal(
+            RaffleEditImageUrlModal(self.raffle_id, self.editor_user_id, self.current_image_url)
+        )
+
+
+class RaffleEditView(discord.ui.View):
+    def __init__(self, raffle_id: int, owner_user_id: int):
+        super().__init__(timeout=300)
+        self.raffle_id = int(raffle_id)
+        self.owner_user_id = int(owner_user_id)
+
+    async def _load_raffle_for_editor(self, interaction: discord.Interaction) -> dict | None:
+        repo = RafflesRepository(get_pool())
+        raffle = await repo.get_raffle(self.raffle_id)
+        if not raffle:
+            await interaction.followup.send("❌ Raffle not found.", ephemeral=True)
+            return None
+        if int(interaction.user.id) != self.owner_user_id or not await _can_manage_raffle_edit(interaction, raffle):
+            await interaction.followup.send("Only the raffle host or a raffle admin can edit this raffle.", ephemeral=True)
+            return None
+        return raffle
+
+    @discord.ui.button(label="Add Photo", style=discord.ButtonStyle.primary)
+    async def add_photo(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=False)
+        raffle = await self._load_raffle_for_editor(interaction)
+        if not raffle:
+            return
+        await interaction.followup.send(
+            "Use **Create img url** to upload and get a direct link, then click **Open image URL form**.",
+            view=RaffleEditPhotoPromptView(
+                self.raffle_id,
+                self.owner_user_id,
+                str(raffle.get("prize_image_url") or "").strip() or None,
+            ),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Edit Comment", style=discord.ButtonStyle.secondary)
+    async def edit_comment(self, interaction: discord.Interaction, _: discord.ui.Button):
+        repo = RafflesRepository(get_pool())
+        raffle = await repo.get_raffle(self.raffle_id)
+        if not raffle:
+            await interaction.response.send_message("❌ Raffle not found.", ephemeral=True)
+            return
+        if int(interaction.user.id) != self.owner_user_id or not await _can_manage_raffle_edit(interaction, raffle):
+            await interaction.response.send_message("Only the raffle host or a raffle admin can edit this raffle.", ephemeral=True)
+            return
+        await interaction.response.send_modal(
+            RaffleEditCommentModal(
+                raffle_id=self.raffle_id,
+                editor_user_id=self.owner_user_id,
+                current_comment=str(raffle.get("admin_comments") or "").strip() or None,
+            )
+        )
 
     @discord.ui.button(label="Refresh Active Raffles", style=discord.ButtonStyle.primary, row=1)
     async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -2224,8 +2431,6 @@ class RafflesCog(commands.Cog):
             if not created_raffle:
                 raise RuntimeError("Failed to load created raffle")
             purchase_panel_embed = _build_paid_raffle_panel_embed(created_raffle)
-            if draft.get("admin_comments"):
-                purchase_panel_embed.add_field(name="📌 Notes", value=str(draft["admin_comments"])[:1024], inline=False)
             prize_thumbnail_url = await self._get_single_prize_thumbnail_url(draft["prize"], is_bundle)
             if prize_thumbnail_url:
                 purchase_panel_embed.set_thumbnail(url=prize_thumbnail_url)
@@ -2318,8 +2523,6 @@ class RafflesCog(commands.Cog):
         if purchase_channel is None:
             return None, None
         embed = _build_paid_raffle_panel_embed(raffle)
-        if raffle.get("admin_comments"):
-            embed.add_field(name="📌 Notes", value=str(raffle["admin_comments"])[:1024], inline=False)
         panel_message = await purchase_channel.send(
             embed=embed,
             view=RafflePurchasePanelView(
@@ -2366,8 +2569,6 @@ class RafflesCog(commands.Cog):
             channel = guild.get_channel(int(repost_channel_id))
             if channel and hasattr(channel, "send"):
                 embed = _build_paid_raffle_panel_embed(new_raffle)
-                if new_raffle.get("admin_comments"):
-                    embed.add_field(name="📌 Notes", value=str(new_raffle["admin_comments"])[:1024], inline=False)
                 panel_message = await channel.send(
                     embed=embed,
                     view=RafflePurchasePanelView(
@@ -2521,6 +2722,13 @@ class RafflesCog(commands.Cog):
         embed.add_field(name="Payment", value=_payment_text(str(raffle.get('ticket_payment_type') or ''), int(raffle.get('ticket_price') or 0)), inline=True)
         embed.add_field(name="Draw", value=draw_text, inline=False)
         return embed
+
+    async def refresh_raffle_public_panel(self, raffle_id: int) -> None:
+        repo = RafflesRepository(get_pool())
+        raffle = await repo.get_raffle(int(raffle_id))
+        if not raffle:
+            return
+        await _update_raffle_purchase_panel_counts(self.bot, repo, int(raffle_id))
 
     async def _send_raffle_controls_panel(self, interaction: discord.Interaction, *, edit_existing: bool = False) -> None:
         repo = RafflesRepository(get_pool())
