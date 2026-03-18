@@ -26,6 +26,15 @@ from utils.discord_safe_send import safe_send_channel
 from utils.discord_perms import can_manage_paid_raffles
 from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
 from utils.panel_edit_safety import PANEL_EDIT_SAFETY
+
+
+def _format_admin_safe_error(exc: Exception) -> str:
+    message = " ".join(str(exc).split()).strip()
+    if not message:
+        return type(exc).__name__
+    return f"{type(exc).__name__}: {message}"
+
+
 log = logging.getLogger("happy_jumper.raffles")
 _PACK_WORD_RE = re.compile(r"\bpack\b", re.IGNORECASE)
 _CURLY_QUOTES_RE = re.compile(r"[’‘]")
@@ -2338,9 +2347,12 @@ class RafflesCog(commands.Cog):
         except ValueError as exc:
             await interaction.followup.send(f"❌ {exc}", ephemeral=True)
             return
-        except Exception:
+        except Exception as exc:
             log.exception("Raffle recovery failed raffle_id=%s", raffle_id)
-            await interaction.followup.send("❌ Failed to recreate the canceled raffle.", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ Failed to recreate raffle: {_format_admin_safe_error(exc)}",
+                ephemeral=True,
+            )
             return
 
         new_raffle = await repo.get_raffle(int(result["new_raffle_id"]))

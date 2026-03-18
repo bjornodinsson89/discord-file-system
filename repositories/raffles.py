@@ -898,8 +898,11 @@ class RafflesRepository(RepositoryBase):
                     restored_entries += 1
                     restored_tickets += int(entry.get("num_tickets") or 0)
 
+                update_old = ["tickets_sold = $2", "superseded_by_raffle_id = $3"]
+                if "updated_at" in raffle_columns:
+                    update_old.append("updated_at = NOW()")
                 await conn.execute(
-                    "UPDATE raffles SET tickets_sold = $2, superseded_by_raffle_id = $3, updated_at = NOW() WHERE raffle_id = $1",
+                    f"UPDATE raffles SET {', '.join(update_old)} WHERE raffle_id = $1",
                     raffle_id,
                     int(current.get("tickets_sold") or 0),
                     new_raffle_id,
