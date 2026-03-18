@@ -8,6 +8,19 @@ from .base import RepositoryBase
 
 
 class RafflesRepository(RepositoryBase):
+    async def _get_column_names(self, table_name: str) -> set[str]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = $1
+                """,
+                table_name,
+            )
+            return {str(row["column_name"]) for row in rows}
+
     async def create_raffle(
         self,
         guild_id: int,
@@ -64,6 +77,27 @@ class RafflesRepository(RepositoryBase):
                 int(prize_token_cost_per_ticket) if prize_token_cost_per_ticket is not None else None,
             )
             return int(row["raffle_id"])
+
+    async def get_raffles_for_admin_controls(self, guild_id: int) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    r.*,
+                    COALESCE(
+                        (SELECT SUM(num_tickets)
+                         FROM raffle_entries
+                         WHERE raffle_id = r.raffle_id AND payment_verified = TRUE), 0
+                    ) AS tickets_sold
+                FROM raffles r
+                WHERE r.guild_id = $1
+                  AND r.status IN ('active', 'cancelled', 'completed')
+                ORDER BY r.created_at DESC
+                LIMIT 25
+                """,
+                guild_id,
+            )
+            return [dict(row) for row in rows]
 
     async def reserve_entry(self, raffle_id: int, discord_id: int, torn_user_id: int, num_tickets: int, reserved_until: datetime):
         async with self.acquire() as conn:
@@ -711,3 +745,183 @@ class RafflesRepository(RepositoryBase):
                 guild_id,
             )
             return {int(r["discord_id"]) for r in rows if int(r["discord_id"] or 0) > 0}
+
+    async def get_recovery_preview(self, raffle_id: int) -> dict | None:
+        raffle = await self.get_raffle(raffle_id)
+        if not raffle:
+            return None
+        if str(raffle.get("status") or "").lower() != "cancelled":
+            return {"blocked_reason": "Raffle is not cancelled.", "raffle": raffle}
+        if raffle.get("superseded_by_raffle_id"):
+            return {"blocked_reason": "This cancelled raffle already has a replacement.", "raffle": raffle}
+
+        entry_columns = await self._get_column_names("raffle_entries")
+        filters = ["raffle_id = $1", "payment_verified = TRUE"]
+        if "recreated_from_entry_id" in entry_columns:
+            filters.append("recreated_from_entry_id IS NULL")
+        if "refunded_at" in entry_columns:
+            filters.append("refunded_at IS NULL")
+        if "is_refunded" in entry_columns:
+            filters.append("COALESCE(is_refunded, FALSE) = FALSE")
+        if "status" in entry_columns:
+            filters.append("COALESCE(status, 'verified') NOT IN ('refunded', 'cancelled', 'invalidated', 'failed', 'pending')")
+        if "is_cancelled" in entry_columns:
+            filters.append("COALESCE(is_cancelled, FALSE) = FALSE")
+        if "is_invalidated" in entry_columns:
+            filters.append("COALESCE(is_invalidated, FALSE) = FALSE")
+
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                SELECT COUNT(*) AS restored_entry_count,
+                       COALESCE(SUM(num_tickets), 0) AS restored_ticket_count
+                FROM raffle_entries
+                WHERE {' AND '.join(filters)}
+                """,
+                raffle_id,
+            )
+            return {
+                "raffle": raffle,
+                "restored_entry_count": int(row["restored_entry_count"] or 0),
+                "restored_ticket_count": int(row["restored_ticket_count"] or 0),
+            }
+
+    async def recreate_cancelled_raffle(self, raffle_id: int) -> dict:
+        raffle_columns = await self._get_column_names("raffles")
+        entry_columns = await self._get_column_names("raffle_entries")
+        preview = await self.get_recovery_preview(raffle_id)
+        if not preview:
+            raise ValueError("Raffle not found.")
+        if preview.get("blocked_reason"):
+            raise ValueError(str(preview["blocked_reason"]))
+
+        source = dict(preview["raffle"])
+        restore_filters = ["raffle_id = $1", "payment_verified = TRUE"]
+        if "recreated_from_entry_id" in entry_columns:
+            restore_filters.append("recreated_from_entry_id IS NULL")
+        if "refunded_at" in entry_columns:
+            restore_filters.append("refunded_at IS NULL")
+        if "is_refunded" in entry_columns:
+            restore_filters.append("COALESCE(is_refunded, FALSE) = FALSE")
+        if "status" in entry_columns:
+            restore_filters.append("COALESCE(status, 'verified') NOT IN ('refunded', 'cancelled', 'invalidated', 'failed', 'pending')")
+        if "is_cancelled" in entry_columns:
+            restore_filters.append("COALESCE(is_cancelled, FALSE) = FALSE")
+        if "is_invalidated" in entry_columns:
+            restore_filters.append("COALESCE(is_invalidated, FALSE) = FALSE")
+
+        async with self.acquire() as conn:
+            async with conn.transaction():
+                current = await conn.fetchrow("SELECT * FROM raffles WHERE raffle_id = $1 FOR UPDATE", raffle_id)
+                if current is None:
+                    raise ValueError("Raffle not found.")
+                if str(current.get("status") or "").lower() != "cancelled":
+                    raise ValueError("Raffle is not cancelled.")
+                if current.get("superseded_by_raffle_id") is not None:
+                    raise ValueError("This cancelled raffle already has a replacement.")
+
+                creator_torn_id = current.get("creator_torn_id")
+                if creator_torn_id is None and current.get("creator_discord_id") is not None:
+                    creator = await conn.fetchrow(
+                        "SELECT torn_user_id FROM user_api_keys WHERE discord_id = $1",
+                        int(current["creator_discord_id"]),
+                    )
+                    creator_torn_id = creator["torn_user_id"] if creator else None
+
+                insert_map = {
+                    "guild_id": int(current["guild_id"]),
+                    "creator_discord_id": int(current["creator_discord_id"]),
+                    "creator_torn_id": creator_torn_id,
+                    "prize": current.get("prize"),
+                    "ticket_payment_type": current.get("ticket_payment_type"),
+                    "ticket_price": int(current.get("ticket_price") or 0),
+                    "tickets_available": int(current.get("tickets_available") or 0),
+                    "max_tickets_per_user": int(current.get("max_tickets_per_user") or 0),
+                    "end_time": current.get("end_time"),
+                    "end_trigger": current.get("end_trigger"),
+                    "hours_after_sold_out": current.get("hours_after_sold_out"),
+                    "status": "active",
+                    "is_free": bool(current.get("is_free")),
+                    "tickets_sold": 0,
+                    "is_bundle": bool(current.get("is_bundle")),
+                    "bundle_text": current.get("bundle_text"),
+                    "admin_comments": current.get("admin_comments"),
+                    "allow_prize_token_purchase": bool(current.get("allow_prize_token_purchase")),
+                    "prize_token_cost_per_ticket": current.get("prize_token_cost_per_ticket"),
+                    "created_at": datetime.now(),
+                    "recreated_from_raffle_id": raffle_id,
+                }
+                for optional_column in ("prize_item_id", "prize_quantity", "prize_image_url"):
+                    if optional_column in raffle_columns:
+                        insert_map[optional_column] = current.get(optional_column)
+                columns = [column for column in insert_map if column in raffle_columns]
+                values = [insert_map[column] for column in columns]
+                placeholders = ", ".join(f"${idx}" for idx in range(1, len(values) + 1))
+                new_row = await conn.fetchrow(
+                    f"INSERT INTO raffles ({', '.join(columns)}) VALUES ({placeholders}) RETURNING raffle_id",
+                    *values,
+                )
+                new_raffle_id = int(new_row["raffle_id"])
+
+                source_entries = await conn.fetch(
+                    f"SELECT * FROM raffle_entries WHERE {' AND '.join(restore_filters)} ORDER BY entry_id ASC",
+                    raffle_id,
+                )
+                restored_entries = 0
+                restored_tickets = 0
+                for entry in source_entries:
+                    columns = [
+                        "raffle_id", "discord_id", "torn_user_id", "num_tickets",
+                        "reserved_until", "payment_verified", "payment_verified_at", "created_at",
+                    ]
+                    values = [
+                        new_raffle_id,
+                        entry.get("discord_id"),
+                        entry.get("torn_user_id"),
+                        int(entry.get("num_tickets") or 0),
+                        None,
+                        True,
+                        entry.get("payment_verified_at") or datetime.now(),
+                        datetime.now(),
+                    ]
+                    if "recreated_from_entry_id" in entry_columns:
+                        columns.append("recreated_from_entry_id")
+                        values.append(int(entry["entry_id"]))
+                    if "status" in entry_columns:
+                        columns.append("status")
+                        values.append("verified")
+                    placeholders = ", ".join(f"${idx}" for idx in range(1, len(values) + 1))
+                    await conn.execute(
+                        f"INSERT INTO raffle_entries ({', '.join(columns)}) VALUES ({placeholders})",
+                        *values,
+                    )
+                    restored_entries += 1
+                    restored_tickets += int(entry.get("num_tickets") or 0)
+
+                await conn.execute(
+                    "UPDATE raffles SET tickets_sold = $2, superseded_by_raffle_id = $3, updated_at = NOW() WHERE raffle_id = $1",
+                    raffle_id,
+                    int(current.get("tickets_sold") or 0),
+                    new_raffle_id,
+                )
+                update_new = ["tickets_sold = $2"]
+                args = [new_raffle_id, restored_tickets]
+                if "purchase_panel_channel_id" in raffle_columns:
+                    update_new.append("purchase_panel_channel_id = NULL")
+                if "purchase_panel_message_id" in raffle_columns:
+                    update_new.append("purchase_panel_message_id = NULL")
+                if "purchase_channel_id" in raffle_columns:
+                    update_new.append("purchase_channel_id = NULL")
+                if "purchase_message_id" in raffle_columns:
+                    update_new.append("purchase_message_id = NULL")
+                await conn.execute(
+                    f"UPDATE raffles SET {', '.join(update_new)} WHERE raffle_id = $1",
+                    *args,
+                )
+                return {
+                    "old_raffle_id": raffle_id,
+                    "new_raffle_id": new_raffle_id,
+                    "restored_entry_count": restored_entries,
+                    "restored_ticket_count": restored_tickets,
+                    "raffle": source,
+                }
