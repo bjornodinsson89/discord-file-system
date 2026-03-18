@@ -109,9 +109,6 @@ class _Repo:
 
 
 class _Cog:
-    def build_store_browse_view(self):
-        return SimpleNamespace(name="hub")
-
     def build_admin_storefront_view(self):
         return SimpleNamespace(name="admin")
 
@@ -154,7 +151,8 @@ def test_store_commands_removed_from_source_and_storefront_controls_present():
     assert '@app_commands.command(name="store"' not in src
     assert 'name="store_admin"' not in src
     assert "class AdminStorefrontView" in src
-    assert "Refresh Storefront" in src
+    assert 'title="Store Controls"' in src
+    assert "Refresh Storefront" not in src
 
 
 def test_store_channel_selector_lives_in_store_setup():
@@ -177,6 +175,10 @@ def test_storefront_sync_creates_hub_admin_and_item_messages_without_duplicates(
         assert repo.settings["store_admin_message_id"]
         assert repo.all_items[0]["storefront_message_id"]
         assert len(channel.sent) == 3
+        assert channel.sent[0].view is None
+        assert channel.sent[0].embed.footer.text == "Scroll below to browse the live storefront items."
+        assert channel.sent[1].view.name == "admin"
+        assert channel.sent[1].embed.title == "Store Controls"
         assert str(channel.sent[2].embed.thumbnail.url) == "https://img.example/xanax.png"
 
         result2 = await service.sync_storefront(guild)

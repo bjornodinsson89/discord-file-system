@@ -288,6 +288,32 @@ class StoreRepository(RepositoryBase):
                     return str(row["image_url"])
         return None
 
+    async def lookup_torn_description(
+        self, *, torn_item_id: int | None = None, torn_item_name: str | None = None
+    ) -> str | None:
+        async with self.acquire() as conn:
+            if torn_item_id:
+                description = await conn.fetchval(
+                    "SELECT description FROM torn_items WHERE item_id = $1",
+                    int(torn_item_id),
+                )
+                if description:
+                    return str(description)
+            if torn_item_name:
+                row = await conn.fetchrow(
+                    """
+                    SELECT description
+                    FROM torn_items
+                    WHERE norm_name = LOWER($1)
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    str(torn_item_name).strip(),
+                )
+                if row and row.get("description"):
+                    return str(row["description"])
+        return None
+
     async def cleanup_departed_member(self, guild_id: int, user_id: int) -> dict[str, int]:
         async with self.acquire() as conn:
             result = await conn.execute(

@@ -23,6 +23,19 @@ class StoreService:
             torn_item_id=item.get("torn_item_id"), torn_item_name=item.get("torn_item_name")
         )
 
+    async def resolve_description(self, item: dict) -> str:
+        description = str(item.get("description") or "").strip()
+        if description:
+            return description
+        if item.get("category") == "torn_item":
+            fallback = await self.repo.lookup_torn_description(
+                torn_item_id=item.get("torn_item_id"),
+                torn_item_name=item.get("torn_item_name") or item.get("name"),
+            )
+            if fallback:
+                return fallback
+        return "No description provided."
+
     async def _apply_torn_item_metadata(self, payload: dict, *, missing_note_prefix: str) -> str | None:
         item_name = str(payload.get("name") or "").strip()
         payload["name"] = item_name
@@ -42,6 +55,8 @@ class StoreService:
             payload["torn_item_name"] = str(match["name"])
             payload["thumbnail_url"] = match.get("image_url")
             payload["name"] = str(match["name"])
+            if not str(payload.get("description") or "").strip() and match.get("description"):
+                payload["description"] = str(match["description"]).strip()
             return None
 
         payload["torn_item_id"] = None
@@ -333,7 +348,7 @@ class StoreService:
     async def build_storefront_item_embed(self, item: dict) -> discord.Embed:
         embed = discord.Embed(
             title=item["name"],
-            description=item.get("description") or "No description provided.",
+            description=await self.resolve_description(item),
             colour=discord.Colour.green(),
             timestamp=datetime.now(timezone.utc),
         )
@@ -382,7 +397,7 @@ class StoreService:
                 title="Prize Token Store",
                 description=(
                     "Spend Prize Tokens on premium server rewards. Browse **Torn Items** and **Discord Perks**, "
-                    "then redeem directly from this storefront channel."
+                    "then scroll below to view and redeem items directly from this storefront channel."
                 ),
                 colour=discord.Colour.gold(),
                 timestamp=datetime.now(timezone.utc),
@@ -390,18 +405,17 @@ class StoreService:
                 name="How it works",
                 value="Earn Prize Tokens through the community, then spend them here on live rewards.",
                 inline=False,
-            ).add_field(name="Available rewards", value="• Torn Items\n• Discord Perks", inline=False),
-            view=self.cog.build_store_browse_view() if hasattr(self, "cog") else None,
+            ).add_field(name="Available rewards", value="• Torn Items\n• Discord Perks", inline=False).set_footer(
+                text="Scroll below to browse the live storefront items."
+            ),
+            view=None,
         )
         admin_message = await _ensure_message(
             settings.get("store_admin_message_id"),
             embed=discord.Embed(
-                title="Store Admin Controls",
-                description="Admins can manage the live storefront from here. Non-admin button presses are denied privately.",
+                title="Store Controls",
                 colour=discord.Colour.dark_gold(),
                 timestamp=datetime.now(timezone.utc),
-            ).add_field(name="Inventory", value="Add, edit, restock, disable, and refresh storefront items.", inline=False).add_field(
-                name="Redemptions", value="View pending redemptions, fulfill rewards, or issue refunds.", inline=False
             ),
             view=self.cog.build_admin_storefront_view() if hasattr(self, "cog") else None,
         )

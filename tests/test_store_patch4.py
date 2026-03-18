@@ -66,6 +66,7 @@ class _FakeStoreRepo:
         self.item = item
         self.redemptions = []
         self.stock_delta = 0
+        self.torn_description = None
 
     def acquire(self):
         return _Acquire()
@@ -113,6 +114,9 @@ class _FakeStoreRepo:
 
     async def lookup_torn_thumbnail(self, **_kwargs):
         return "https://img.example/x.png"
+
+    async def lookup_torn_description(self, **_kwargs):
+        return self.torn_description
 
 
 class _FakeTornItemsRepo:
@@ -355,7 +359,24 @@ def test_torn_items_repository_semantics_unchanged_and_store_uses_read_only_look
     assert "upsert_items" in torn_src
     store_src = Path("repositories/store.py").read_text(encoding="utf-8")
     assert "lookup_torn_thumbnail" in store_src
+    assert "lookup_torn_description" in store_src
     assert "SELECT image_url FROM torn_items" in store_src
+    assert "SELECT description FROM torn_items" in store_src
+
+
+def test_torn_items_description_migration_exists():
+    src = Path("migrations/2026_03_18_add_torn_item_descriptions.sql").read_text(encoding="utf-8")
+    assert "ALTER TABLE public.torn_items" in src
+    assert "ADD COLUMN IF NOT EXISTS description TEXT NULL" in src
+
+
+def test_torn_item_sync_and_repository_persist_descriptions_in_source():
+    repo_src = Path("repositories/torn_items.py").read_text(encoding="utf-8")
+    events_src = Path("cogs/events.py").read_text(encoding="utf-8")
+    assert "INSERT INTO torn_items(item_id, name, norm_name, image_url, description)" in repo_src
+    assert "description = EXCLUDED.description" in repo_src
+    assert 'description = item.get("description")' in events_src
+    assert "rows.append((item_id, name, normalized, image_url, description))" in events_src
 
 
 def test_setup_store_persistence_path_uses_store_guild_settings():
@@ -410,6 +431,7 @@ def test_create_torn_item_resolves_thumbnail_and_persists_metadata():
                 "item_id": 123,
                 "name": "Xanax",
                 "image_url": "https://img.example/xanax.png",
+                "description": "A potent painkiller.",
             }
         )
         service = StoreService(repo, _FakeTokenSvc(), torn_repo)
@@ -428,6 +450,7 @@ def test_create_torn_item_resolves_thumbnail_and_persists_metadata():
         assert repo.created_payload["torn_item_id"] == 123
         assert repo.created_payload["torn_item_name"] == "Xanax"
         assert repo.created_payload["thumbnail_url"] == "https://img.example/xanax.png"
+        assert repo.created_payload["description"] == "heal"
         assert item["thumbnail_url"] == "https://img.example/xanax.png"
 
     asyncio.run(_run())
@@ -441,6 +464,7 @@ def test_create_torn_item_matches_case_insensitively():
                 "item_id": 123,
                 "name": "Xanax",
                 "image_url": "https://img.example/xanax.png",
+                "description": "A potent painkiller.",
             }
         )
         service = StoreService(repo, _FakeTokenSvc(), torn_repo)
@@ -456,6 +480,7 @@ def test_create_torn_item_matches_case_insensitively():
         )
         assert torn_repo.lookups == ["xAnAx"]
         assert item["torn_item_name"] == "Xanax"
+        assert item["description"] == "A potent painkiller."
 
     asyncio.run(_run())
 
@@ -525,6 +550,9 @@ def test_store_detail_embed_uses_thumbnail_url():
             }
 
     class _Svc:
+        async def resolve_description(self, item):
+            return item.get("description") or "No description provided."
+
         async def resolve_thumbnail(self, item):
             return item.get("thumbnail_url")
 
@@ -536,6 +564,79 @@ def test_store_detail_embed_uses_thumbnail_url():
         await StoreCog.send_item_detail(cog, interaction, 9)
         embed = interaction.response.kwargs["embed"]
         assert str(embed.thumbnail.url) == "https://img.example/xanax.png"
+
+    asyncio.run(_run())
+
+
+def test_blank_store_item_description_falls_back_to_torn_metadata_on_create():
+    async def _run():
+        repo = _FakeCreateItemRepo()
+        torn_repo = _FakeTornItemsRepo(
+            result={
+                "item_id": 123,
+                "name": "Xanax",
+                "image_url": "https://img.example/xanax.png",
+                "description": "Restores happiness and reduces hospital time.",
+            }
+        )
+        service = StoreService(repo, _FakeTokenSvc(), torn_repo)
+        item, _note = await service.create_store_item(
+            guild_id=1,
+            name="Xanax",
+            description=None,
+            category="torn_item",
+            token_cost=5,
+            stock=3,
+            fulfillment_type="admin_manual",
+            created_by=7,
+        )
+        assert repo.created_payload["description"] == "Restores happiness and reduces hospital time."
+        assert item["description"] == "Restores happiness and reduces hospital time."
+
+    asyncio.run(_run())
+
+
+def test_custom_store_item_description_is_preserved():
+    async def _run():
+        repo = _FakeCreateItemRepo()
+        torn_repo = _FakeTornItemsRepo(
+            result={
+                "item_id": 123,
+                "name": "Xanax",
+                "image_url": "https://img.example/xanax.png",
+                "description": "Torn metadata description.",
+            }
+        )
+        service = StoreService(repo, _FakeTokenSvc(), torn_repo)
+        item, _note = await service.create_store_item(
+            guild_id=1,
+            name="Xanax",
+            description="Custom storefront copy.",
+            category="torn_item",
+            token_cost=5,
+            stock=3,
+            fulfillment_type="admin_manual",
+            created_by=7,
+        )
+        assert repo.created_payload["description"] == "Custom storefront copy."
+        assert item["description"] == "Custom storefront copy."
+
+    asyncio.run(_run())
+
+
+def test_store_embed_description_fallback_order():
+    async def _run():
+        repo = _FakeStoreRepo()
+        repo.torn_description = "Torn fallback description."
+        service = StoreService(repo, _FakeTokenSvc())
+
+        own = await service.resolve_description({"description": "Store description", "category": "torn_item"})
+        torn = await service.resolve_description({"description": "", "category": "torn_item", "torn_item_id": 123})
+        empty = await service.resolve_description({"description": "", "category": "discord_perk"})
+
+        assert own == "Store description"
+        assert torn == "Torn fallback description."
+        assert empty == "No description provided."
 
     asyncio.run(_run())
 
