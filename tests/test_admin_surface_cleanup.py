@@ -179,8 +179,6 @@ def test_setup_pages_expose_expected_admin_actions():
     asyncio.run(_run())
 
 
-
-
 def test_engagement_roles_view_exists_and_exposes_reward_actions():
     async def _run():
         common = dict(
@@ -221,25 +219,36 @@ def test_engagement_setup_navigation_moves_between_event_roles_and_maintenance(m
         interaction = _FakeInteraction(_FakeGuild())
 
         event_view = EngagementEventXPView(**common)
-        next_button = next(child for child in event_view.children if getattr(child, "label", None) == "Next →")
+        next_button = next(
+            child for child in event_view.children if getattr(child, "label", None) == "Next →"
+        )
         await next_button.callback(interaction)
         assert isinstance(sent[-1], EngagementRolesView)
 
         roles_view = sent[-1]
-        next_button = next(child for child in roles_view.children if getattr(child, "label", None) == "Next →")
+        next_button = next(
+            child for child in roles_view.children if getattr(child, "label", None) == "Next →"
+        )
         await next_button.callback(interaction)
         assert isinstance(sent[-1], EngagementMaintenanceView)
 
         maintenance_view = sent[-1]
-        back_button = next(child for child in maintenance_view.children if getattr(child, "label", None) == "← Back")
+        back_button = next(
+            child
+            for child in maintenance_view.children
+            if getattr(child, "label", None) == "← Back"
+        )
         await back_button.callback(interaction)
         assert isinstance(sent[-1], EngagementRolesView)
 
-        roles_back = next(child for child in sent[-1].children if getattr(child, "label", None) == "← Back")
+        roles_back = next(
+            child for child in sent[-1].children if getattr(child, "label", None) == "← Back"
+        )
         await roles_back.callback(interaction)
         assert isinstance(sent[-1], EngagementEventXPView)
 
     asyncio.run(_run())
+
 
 def test_create_repair_reward_roles_reports_created_and_repaired(monkeypatch):
     async def _run():
