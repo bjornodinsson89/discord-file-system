@@ -15,6 +15,9 @@ class FreeRaffleRepository(RepositoryBase):
         prize_text: str,
         note_text: str | None,
         ends_at: datetime,
+        button_join_enabled: bool = True,
+        auto_entry_enabled: bool = False,
+        weighted_enabled: bool = False,
     ) -> dict:
         async with self.acquire() as conn:
             row = await conn.fetchrow(
@@ -25,10 +28,13 @@ class FreeRaffleRepository(RepositoryBase):
                     host_discord_id,
                     prize_text,
                     note_text,
+                    button_join_enabled,
+                    auto_entry_enabled,
+                    weighted_odds_enabled,
                     status,
                     ends_at
                 )
-                VALUES ($1, $2, $3, $4, $5, 'active', $6)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9)
                 RETURNING *
                 """,
                 guild_id,
@@ -36,6 +42,9 @@ class FreeRaffleRepository(RepositoryBase):
                 host_discord_id,
                 prize_text,
                 note_text,
+                bool(button_join_enabled),
+                bool(auto_entry_enabled),
+                bool(weighted_enabled),
                 ends_at,
             )
             return dict(row)
@@ -251,6 +260,19 @@ class FreeRaffleRepository(RepositoryBase):
             )
             return [int(row["discord_id"]) for row in rows]
 
+    async def list_entries(self, raffle_id: int) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT discord_id, entry_source, entry_weight, created_at
+                FROM free_raffle_entries
+                WHERE raffle_id = $1
+                ORDER BY created_at ASC, discord_id ASC
+                """,
+                raffle_id,
+            )
+            return [dict(row) for row in rows]
+
     async def create_winner(self, raffle_id: int, discord_id: int) -> None:
         async with self.acquire() as conn:
             await conn.execute(
@@ -264,6 +286,151 @@ class FreeRaffleRepository(RepositoryBase):
                 raffle_id,
                 discord_id,
             )
+
+    async def draw_raffle_now(self, raffle_id: int, *, now: datetime | None = None) -> dict | None:
+        draw_time = now or datetime.now(timezone.utc)
+        async with self.acquire() as conn:
+            async with conn.transaction():
+                raffle_row = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM free_raffles
+                    WHERE id = $1
+                      AND status = 'active'
+                    FOR UPDATE
+                    """,
+                    raffle_id,
+                )
+                if raffle_row is None:
+                    return None
+
+                raffle_data = dict(raffle_row)
+                weighted_mode = bool(
+                    raffle_data.get("weighted_odds_enabled", raffle_data.get("weighted_enabled", False))
+                )
+                entry_rows = await conn.fetch(
+                    "SELECT discord_id, entry_weight FROM free_raffle_entries WHERE raffle_id = $1",
+                    raffle_id,
+                )
+                entrants = [
+                    (int(row["discord_id"]), max(1, int(row.get("entry_weight") or 1)))
+                    for row in entry_rows
+                ]
+                winner_id: int | None = None
+                if entrants:
+                    import secrets
+
+                    if weighted_mode:
+                        total = sum(weight for _, weight in entrants)
+                        pick = secrets.randbelow(total) + 1
+                        running = 0
+                        for entrant_id, weight in entrants:
+                            running += weight
+                            if running >= pick:
+                                winner_id = entrant_id
+                                break
+                    else:
+                        entrant_ids = [entrant_id for entrant_id, _weight in entrants]
+                        winner_id = int(secrets.choice(entrant_ids))
+
+                updated_row = await conn.fetchrow(
+                    """
+                    UPDATE free_raffles
+                    SET status = 'ended',
+                        winner_discord_id = $3,
+                        drawn_at = $2,
+                        ended_at = COALESCE(ended_at, $2),
+                        updated_at = NOW()
+                    WHERE id = $1
+                      AND status = 'active'
+                    RETURNING *
+                    """,
+                    raffle_id,
+                    draw_time,
+                    str(winner_id) if winner_id is not None else None,
+                )
+                if updated_row is None:
+                    return None
+                if winner_id is not None:
+                    await conn.execute(
+                        """
+                        INSERT INTO free_raffle_winners (raffle_id, discord_id)
+                        VALUES ($1, $2)
+                        ON CONFLICT (raffle_id) DO UPDATE
+                        SET discord_id = EXCLUDED.discord_id,
+                            created_at = NOW()
+                        """,
+                        raffle_id,
+                        winner_id,
+                    )
+                return {
+                    "raffle": dict(updated_row),
+                    "winner_id": winner_id,
+                    "entries_count": len(entrants),
+                }
+
+    async def reroll_winner(self, raffle_id: int) -> int | None:
+        async with self.acquire() as conn:
+            async with conn.transaction():
+                raffle_row = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM free_raffles
+                    WHERE id = $1
+                      AND status = 'ended'
+                    FOR UPDATE
+                    """,
+                    raffle_id,
+                )
+                if raffle_row is None:
+                    return None
+                weighted_mode = bool(raffle_row.get("weighted_odds_enabled", False))
+                rows = await conn.fetch(
+                    "SELECT discord_id, entry_weight FROM free_raffle_entries WHERE raffle_id = $1",
+                    raffle_id,
+                )
+                entrants = [
+                    (int(row["discord_id"]), max(1, int(row.get("entry_weight") or 1)))
+                    for row in rows
+                ]
+                if not entrants:
+                    return None
+                import secrets
+
+                if weighted_mode:
+                    total = sum(weight for _, weight in entrants)
+                    pick = secrets.randbelow(total) + 1
+                    running = 0
+                    winner_id: int | None = None
+                    for entrant_id, weight in entrants:
+                        running += weight
+                        if running >= pick:
+                            winner_id = entrant_id
+                            break
+                else:
+                    winner_id = int(secrets.choice([entrant_id for entrant_id, _weight in entrants]))
+                await conn.execute(
+                    """
+                    UPDATE free_raffles
+                    SET winner_discord_id = $2,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    raffle_id,
+                    str(winner_id),
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO free_raffle_winners (raffle_id, discord_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT (raffle_id) DO UPDATE
+                    SET discord_id = EXCLUDED.discord_id,
+                        created_at = NOW()
+                    """,
+                    raffle_id,
+                    winner_id,
+                )
+                return winner_id
 
     async def get_winner(self, raffle_id: int) -> int | None:
         async with self.acquire() as conn:
@@ -321,85 +488,20 @@ class FreeRaffleRepository(RepositoryBase):
         draw_time = now or datetime.now(timezone.utc)
         async with self.acquire() as conn:
             async with conn.transaction():
-                raffle_row = await conn.fetchrow(
+                can_draw = await conn.fetchrow(
                     """
-                    SELECT *
+                    SELECT id
                     FROM free_raffles
                     WHERE id = $1
                       AND status = 'active'
                       AND ends_at <= $2
-                    FOR UPDATE
                     """,
                     raffle_id,
                     draw_time,
                 )
-                if raffle_row is None:
+                if can_draw is None:
                     return None
-
-                raffle_data = dict(raffle_row)
-                weighted_mode = bool(raffle_data.get("weighted_odds_enabled", False))
-                entry_rows = await conn.fetch(
-                    "SELECT discord_id, entry_weight FROM free_raffle_entries WHERE raffle_id = $1",
-                    raffle_id,
-                )
-                entrants = [
-                    (int(row["discord_id"]), max(1, int(row.get("entry_weight") or 1)))
-                    for row in entry_rows
-                ]
-                winner_id: int | None = None
-                if entrants:
-                    import secrets
-
-                    if weighted_mode:
-                        total = sum(weight for _, weight in entrants)
-                        pick = secrets.randbelow(total) + 1
-                        running = 0
-                        for entrant_id, weight in entrants:
-                            running += weight
-                            if running >= pick:
-                                winner_id = entrant_id
-                                break
-                    else:
-                        entrant_ids = [entrant_id for entrant_id, _weight in entrants]
-                        winner_id = int(secrets.choice(entrant_ids))
-
-                updated_row = await conn.fetchrow(
-                    """
-                    UPDATE free_raffles
-                    SET status = 'ended',
-                        winner_discord_id = $3,
-                        drawn_at = $2,
-                        ended_at = COALESCE(ended_at, $2),
-                        updated_at = NOW()
-                    WHERE id = $1
-                      AND status = 'active'
-                    RETURNING *
-                    """,
-                    raffle_id,
-                    draw_time,
-                    str(winner_id) if winner_id is not None else None,
-                )
-                if updated_row is None:
-                    return None
-
-                if winner_id is not None:
-                    await conn.execute(
-                        """
-                        INSERT INTO free_raffle_winners (raffle_id, discord_id)
-                        VALUES ($1, $2)
-                        ON CONFLICT (raffle_id) DO UPDATE
-                        SET discord_id = EXCLUDED.discord_id,
-                            created_at = NOW()
-                        """,
-                        raffle_id,
-                        winner_id,
-                    )
-
-                return {
-                    "raffle": dict(updated_row),
-                    "winner_id": winner_id,
-                    "entries_count": len(entrants),
-                }
+        return await self.draw_raffle_now(raffle_id, now=draw_time)
 
     async def backfill_missing_ends_at(self) -> int:
         async with self.acquire() as conn:

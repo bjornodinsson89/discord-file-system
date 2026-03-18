@@ -10,38 +10,113 @@ HostHandler = Callable[[discord.Interaction, int], Awaitable[None]]
 
 
 class EnterRaffleView(discord.ui.View):
-    def __init__(self, raffle_id: int, on_enter: EnterHandler, *, disabled: bool = False):
+    def __init__(
+        self,
+        raffle_id: int,
+        on_enter: EnterHandler,
+        *,
+        disabled: bool = False,
+        show_join_button: bool = True,
+    ):
         super().__init__(timeout=None)
         self.raffle_id = raffle_id
         self.on_enter = on_enter
-        button = discord.ui.Button(
-            label="🎟️ Enter",
-            style=discord.ButtonStyle.green,
-            custom_id=f"fr_enter:{raffle_id}",
-            disabled=disabled,
-        )
-        button.callback = self._on_enter
-        self.add_item(button)
+        if show_join_button:
+            button = discord.ui.Button(
+                label="🎟️ Enter Giveaway",
+                style=discord.ButtonStyle.green,
+                custom_id=f"fr_enter:{raffle_id}",
+                disabled=disabled,
+            )
+            button.callback = self._on_enter
+            self.add_item(button)
 
     async def _on_enter(self, interaction: discord.Interaction) -> None:
         await self.on_enter(interaction, self.raffle_id)
 
 
 class HostControlsView(discord.ui.View):
-    def __init__(self, raffle_id: int, on_cancel: HostHandler, *, disabled: bool = False):
+    def __init__(
+        self,
+        raffle_id: int,
+        *,
+        on_end_now: HostHandler,
+        on_cancel: HostHandler,
+        on_refresh: HostHandler,
+        on_view_entrants: HostHandler,
+        on_reroll: HostHandler,
+        disabled: bool = False,
+        can_reroll: bool = False,
+    ):
         super().__init__(timeout=None)
         self.raffle_id = raffle_id
+        self.on_end_now = on_end_now
         self.on_cancel = on_cancel
+        self.on_refresh = on_refresh
+        self.on_view_entrants = on_view_entrants
+        self.on_reroll = on_reroll
+
+        end_button = discord.ui.Button(
+            label="⏹️ End Giveaway Now",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"fr_end:{raffle_id}",
+            disabled=disabled,
+            row=0,
+        )
+        end_button.callback = self._on_end_now
+        self.add_item(end_button)
 
         cancel_button = discord.ui.Button(
-            label="❌ Cancel",
+            label="❌ Cancel Giveaway",
             style=discord.ButtonStyle.red,
             custom_id=f"fr_cancel:{raffle_id}",
             disabled=disabled,
+            row=0,
         )
         cancel_button.callback = self._on_cancel
         self.add_item(cancel_button)
 
+        refresh_button = discord.ui.Button(
+            label="🔄 Refresh Panel",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"fr_refresh:{raffle_id}",
+            disabled=False,
+            row=1,
+        )
+        refresh_button.callback = self._on_refresh
+        self.add_item(refresh_button)
+
+        entrants_button = discord.ui.Button(
+            label="📋 View Entrants",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"fr_entrants:{raffle_id}",
+            disabled=False,
+            row=1,
+        )
+        entrants_button.callback = self._on_view_entrants
+        self.add_item(entrants_button)
+
+        reroll_button = discord.ui.Button(
+            label="🎲 Reroll Winner",
+            style=discord.ButtonStyle.success,
+            custom_id=f"fr_reroll:{raffle_id}",
+            disabled=disabled or not can_reroll,
+            row=2,
+        )
+        reroll_button.callback = self._on_reroll
+        self.add_item(reroll_button)
+
+    async def _on_end_now(self, interaction: discord.Interaction) -> None:
+        await self.on_end_now(interaction, self.raffle_id)
 
     async def _on_cancel(self, interaction: discord.Interaction) -> None:
         await self.on_cancel(interaction, self.raffle_id)
+
+    async def _on_refresh(self, interaction: discord.Interaction) -> None:
+        await self.on_refresh(interaction, self.raffle_id)
+
+    async def _on_view_entrants(self, interaction: discord.Interaction) -> None:
+        await self.on_view_entrants(interaction, self.raffle_id)
+
+    async def _on_reroll(self, interaction: discord.Interaction) -> None:
+        await self.on_reroll(interaction, self.raffle_id)

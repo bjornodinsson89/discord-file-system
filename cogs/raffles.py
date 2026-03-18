@@ -1334,6 +1334,41 @@ class RaffleManageView(discord.ui.View):
             log.exception("Raffle verify prize manage callback failed raffle_id=%s", self.raffle_id)
             await interaction.followup.send("Unable to verify prize right now.", ephemeral=True)
 
+    @discord.ui.button(label="Recreate Canceled Raffle", style=discord.ButtonStyle.secondary)
+    async def recreate_cancelled(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            if not await self._ensure_admin(interaction):
+                return
+            repo = RafflesRepository(get_pool())
+            preview = await repo.get_recovery_preview(self.raffle_id)
+            if not preview:
+                await interaction.followup.send("❌ Raffle not found.", ephemeral=True)
+                return
+            if preview.get("blocked_reason"):
+                await interaction.followup.send(f"❌ {preview['blocked_reason']}", ephemeral=True)
+                return
+            raffle = preview["raffle"]
+            channel_id, _key, _error = _resolve_purchase_panel_channel_id(
+                await GuildSettingsRepository(get_database()).get_or_create(int(interaction.guild_id or 0)),
+                is_giveaway=str(raffle.get("ticket_payment_type") or "").lower() == "free",
+            )
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Recreate canceled raffle?",
+                    description=str(raffle.get("prize") or "Raffle"),
+                    color=discord.Color.orange(),
+                ).add_field(name="Restored entries", value=str(preview["restored_entry_count"]), inline=True)
+                 .add_field(name="Restored tickets", value=str(preview["restored_ticket_count"]), inline=True)
+                 .add_field(name="Repost channel", value=f"<#{channel_id}>" if channel_id else "Unresolved", inline=False),
+                view=RaffleRecoveryConfirmView(self.raffle_id, channel_id),
+                ephemeral=True,
+            )
+        except Exception:
+            log.exception("Raffle recovery preview failed raffle_id=%s", self.raffle_id)
+            await interaction.followup.send("Unable to open raffle recovery right now.", ephemeral=True)
+
     async def on_timeout(self) -> None:
         for child in self.children:
             child.disabled = True
@@ -1403,9 +1438,32 @@ class RaffleControlsView(discord.ui.View):
         if not await self._guard(interaction):
             return
         repo = RafflesRepository(get_pool())
-        raffles = await repo.get_active_raffles(interaction.guild_id)
+        raffles = await repo.get_raffles_for_admin_controls(interaction.guild_id)
         embed = self.cog._build_raffle_controls_list_embed(raffles)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class RaffleRecoveryConfirmView(discord.ui.View):
+    def __init__(self, raffle_id: int, repost_channel_id: int | None):
+        super().__init__(timeout=300)
+        self.raffle_id = int(raffle_id)
+        self.repost_channel_id = int(repost_channel_id) if repost_channel_id else None
+
+    @discord.ui.button(label="Confirm Recreation", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await _is_raffle_admin(interaction):
+            await interaction.followup.send("You need the Admin role or the Paid Raffle Admin role to use this.", ephemeral=True)
+            return
+        cog = interaction.client.get_cog("RafflesCog") if interaction.client else None
+        if cog is None:
+            await interaction.followup.send("Raffle system unavailable.", ephemeral=True)
+            return
+        await cog.recreate_cancelled_raffle(interaction, self.raffle_id, repost_channel_id=self.repost_channel_id)
+
+    @discord.ui.button(label="Keep Cancelled", style=discord.ButtonStyle.secondary)
+    async def keep_cancelled(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_message("Cancelled raffle left unchanged.", ephemeral=True)
 
 class PaymentVerificationView(discord.ui.View):
     """View for manually verifying raffle payment."""
@@ -2234,6 +2292,93 @@ class RafflesCog(commands.Cog):
             else:
                 await interaction.response.send_message("❌ Failed to create raffle", ephemeral=True)
 
+    async def _post_raffle_purchase_panel(self, guild: discord.Guild | None, raffle: dict) -> tuple[discord.abc.Messageable | None, discord.Message | None]:
+        settings = await GuildSettingsRepository(get_database()).get_or_create(int(raffle["guild_id"]))
+        is_giveaway = str(raffle.get("ticket_payment_type") or "").lower() == "free"
+        purchase_channel_id, _key, _error = _resolve_purchase_panel_channel_id(settings, is_giveaway=is_giveaway)
+        if not purchase_channel_id or guild is None:
+            return None, None
+        purchase_channel = guild.get_channel(int(purchase_channel_id))
+        if purchase_channel is None:
+            try:
+                fetched = await guild.fetch_channel(int(purchase_channel_id))
+                if hasattr(fetched, "send"):
+                    purchase_channel = fetched
+            except Exception:
+                purchase_channel = None
+        if purchase_channel is None:
+            return None, None
+        embed = _build_paid_raffle_panel_embed(raffle)
+        if raffle.get("admin_comments"):
+            embed.add_field(name="📌 Notes", value=str(raffle["admin_comments"])[:1024], inline=False)
+        panel_message = await purchase_channel.send(
+            embed=embed,
+            view=RafflePurchasePanelView(
+                raffle_id=int(raffle["raffle_id"]),
+                allow_prize_token_purchase=bool(raffle.get("allow_prize_token_purchase")),
+            ),
+        )
+        await RafflesRepository(get_pool()).set_purchase_panel_ref(
+            raffle_id=int(raffle["raffle_id"]),
+            channel_id=int(purchase_channel.id),
+            message_id=int(panel_message.id),
+        )
+        return purchase_channel, panel_message
+
+    async def recreate_cancelled_raffle(
+        self,
+        interaction: discord.Interaction,
+        raffle_id: int,
+        *,
+        repost_channel_id: int | None = None,
+    ) -> None:
+        repo = RafflesRepository(get_pool())
+        try:
+            result = await repo.recreate_cancelled_raffle(raffle_id)
+        except ValueError as exc:
+            await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+            return
+        except Exception:
+            log.exception("Raffle recovery failed raffle_id=%s", raffle_id)
+            await interaction.followup.send("❌ Failed to recreate the canceled raffle.", ephemeral=True)
+            return
+
+        new_raffle = await repo.get_raffle(int(result["new_raffle_id"]))
+        if not new_raffle:
+            await interaction.followup.send("❌ Recreation completed but the new raffle could not be loaded.", ephemeral=True)
+            return
+        guild = interaction.guild
+        channel = None
+        panel_message = None
+        if repost_channel_id and guild is not None:
+            channel = guild.get_channel(int(repost_channel_id))
+            if channel and hasattr(channel, "send"):
+                embed = _build_paid_raffle_panel_embed(new_raffle)
+                if new_raffle.get("admin_comments"):
+                    embed.add_field(name="📌 Notes", value=str(new_raffle["admin_comments"])[:1024], inline=False)
+                panel_message = await channel.send(
+                    embed=embed,
+                    view=RafflePurchasePanelView(
+                        raffle_id=int(new_raffle["raffle_id"]),
+                        allow_prize_token_purchase=bool(new_raffle.get("allow_prize_token_purchase")),
+                    ),
+                )
+                await repo.set_purchase_panel_ref(int(new_raffle["raffle_id"]), int(channel.id), int(panel_message.id))
+        if panel_message is None:
+            channel, panel_message = await self._post_raffle_purchase_panel(guild, new_raffle)
+
+        await interaction.followup.send(
+            (
+                "✅ Cancelled raffle recreated.\n"
+                f"Old raffle id: **{result['old_raffle_id']}**\n"
+                f"New raffle id: **{result['new_raffle_id']}**\n"
+                f"Restored entry count: **{result['restored_entry_count']}**\n"
+                f"Restored ticket count: **{result['restored_ticket_count']}**\n"
+                f"Repost channel: {channel.mention if channel else ('<#{repost_channel_id}>' if repost_channel_id else 'Unavailable')}"
+            ),
+            ephemeral=True,
+        )
+
     async def _disable_message_buttons(self, channel_id: int | None, message_id: int | None, view: discord.ui.View | None = None, status_text: str | None = None):
         if not channel_id or not message_id:
             return
@@ -2344,7 +2489,7 @@ class RafflesCog(commands.Cog):
 
     def _build_raffle_controls_list_embed(self, raffles: list[dict]) -> discord.Embed:
         if not raffles:
-            return discord.Embed(title="Raffle Controls", description="No active raffles.", color=discord.Color.blue())
+            return discord.Embed(title="Raffle Controls", description="No active or cancelled raffles.", color=discord.Color.blue())
         embed = discord.Embed(title="Raffle Controls", description="Select a raffle below or use the management buttons after inspecting one.", color=discord.Color.blue())
         for raffle in raffles[:10]:
             tickets_total = "Unlimited" if int(raffle.get("tickets_available") or 0) == 0 else str(raffle["tickets_available"])
@@ -2367,7 +2512,7 @@ class RafflesCog(commands.Cog):
 
     async def _send_raffle_controls_panel(self, interaction: discord.Interaction, *, edit_existing: bool = False) -> None:
         repo = RafflesRepository(get_pool())
-        raffles = await repo.get_active_raffles(interaction.guild_id)
+        raffles = await repo.get_raffles_for_admin_controls(interaction.guild_id)
         embed = self._build_raffle_controls_list_embed(raffles)
         view = RaffleControlsView(self, interaction.user.id, raffles)
         if edit_existing:
