@@ -466,9 +466,10 @@ class SetupPanelView(OwnerView):
             f"Message/Reaction/Voice XP: `{bool(es.get('message_xp_enabled', True))}` / `{bool(es.get('reaction_xp_enabled', True))}` / `{bool(es.get('voice_xp_enabled', True))}`"
         ), inline=False)
         ss = getattr(self, "store_settings", {})
+        store_channel_id = ss.get('store_channel_id') or s.get('store_channel_id')
         embed.add_field(name="Store", value=(
             f"Enabled: `{bool(ss.get('enabled', False))}`\n"
-            f"Store channel: `{ss.get('store_channel_id') or 'Not set'}`\n"
+            f"Store channel: `{store_channel_id or 'Not set'}`\n"
             f"Fulfillment channel: `{ss.get('fulfillment_channel_id') or 'Not set'}`\n"
             f"Torn item store enabled: `{bool(ss.get('torn_item_store_enabled', True))}`\n"
             f"Discord perk store enabled: `{bool(ss.get('discord_perk_store_enabled', True))}`"

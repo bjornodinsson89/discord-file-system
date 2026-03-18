@@ -202,6 +202,17 @@ def test_repo_normalizes_disable_99k_announcements_bool_values():
     assert normalized["disable_99k_announcements"] is True
 
 
+def test_repo_supports_store_channel_id():
+    repo = GuildSettingsRepository(_DB())
+
+    normalized = repo._normalize_updates({"store_channel_id": "12345"})
+    assert normalized["store_channel_id"] == 12345
+
+    merged = repo._merge_defaults({}, guild_id=9002)
+    assert "store_channel_id" in merged
+    assert merged["store_channel_id"] is None
+
+
 def test_repo_supports_who_can_jump_panel_fields():
     repo = GuildSettingsRepository(_DB())
     normalized = repo._normalize_updates(

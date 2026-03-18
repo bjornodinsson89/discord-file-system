@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import setup_panel
 from setup_panel import EngagementRolesView, _respond_callback_error
@@ -141,3 +142,67 @@ def test_setup_callback_error_uses_followup_after_acknowledgement():
 
 def test_setup_callback_error_uses_initial_response_before_acknowledgement():
     asyncio.run(_run_callback_error_when_not_done())
+
+
+async def _run_save_changes_accepts_store_channel_id(monkeypatch):
+    class _FakeGuildSettingsRepo:
+        def __init__(self, _db):
+            self.calls = []
+
+        async def insert_or_get_guild_settings(self, guild_id):
+            self.calls.append(("insert", guild_id, None))
+            return {"guild_id": guild_id}
+
+        async def upsert_settings(self, guild_id, **changes):
+            self.calls.append(("upsert", guild_id, changes))
+            return {"guild_id": guild_id, **changes}
+
+    fake_repo = _FakeGuildSettingsRepo(None)
+    monkeypatch.setattr(setup_panel, "GuildSettingsRepository", lambda db: fake_repo)
+    monkeypatch.setattr(setup_panel, "AuditRepository", lambda _pool: SimpleNamespace(log_audit=AsyncMock()))
+    monkeypatch.setattr(setup_panel, "_send_or_edit", AsyncMock())
+
+    panel = setup_panel.SetupPanelView(
+        owner_id=55,
+        db=SimpleNamespace(pool=object()),
+        settings={},
+        guild=SimpleNamespace(),
+    )
+    monkeypatch.setattr(panel, "_build_embed", lambda: "embed")
+
+    interaction = SimpleNamespace(
+        guild_id=77,
+        user=SimpleNamespace(id=55),
+        response=_Response(done=False),
+        followup=_Followup(),
+    )
+
+    await panel.save_changes(interaction, {"store_channel_id": 4321})
+
+    assert fake_repo.calls == [
+        ("insert", 77, None),
+        ("upsert", 77, {"store_channel_id": 4321}),
+    ]
+    assert panel.settings["store_channel_id"] == 4321
+
+
+def test_setup_save_changes_accepts_store_channel_id(monkeypatch):
+    asyncio.run(_run_save_changes_accepts_store_channel_id(monkeypatch))
+
+
+async def _run_setup_summary_renders_store_channel_from_guild_settings():
+    panel = setup_panel.SetupPanelView(
+        owner_id=55,
+        db=SimpleNamespace(pool=None),
+        settings={"store_channel_id": 4321},
+        guild=SimpleNamespace(),
+    )
+
+    embed = panel._build_embed()
+    store_field = next(field for field in embed.fields if field.name == "Store")
+
+    assert "Store channel: `4321`" in store_field.value
+
+
+def test_setup_summary_renders_store_channel_from_guild_settings():
+    asyncio.run(_run_setup_summary_renders_store_channel_from_guild_settings())
