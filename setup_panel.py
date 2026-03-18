@@ -153,8 +153,19 @@ def _missing_channel_perms(channel: discord.abc.GuildChannel, me: discord.Member
     return missing
 
 
+def _interaction_response_is_done(interaction: discord.Interaction) -> bool:
+    is_done = getattr(interaction.response, "is_done", None)
+    return bool(is_done()) if callable(is_done) else False
+
+
+async def _maybe_defer_setup_response(interaction: discord.Interaction) -> None:
+    defer = getattr(interaction.response, "defer", None)
+    if callable(defer) and not _interaction_response_is_done(interaction):
+        await defer(ephemeral=True)
+
+
 async def _send_setup_response(interaction: discord.Interaction, content: str, *, ephemeral: bool = True) -> None:
-    if interaction.response.is_done():
+    if _interaction_response_is_done(interaction):
         await interaction.followup.send(content, ephemeral=ephemeral)
     else:
         await interaction.response.send_message(content, ephemeral=ephemeral)
@@ -162,7 +173,7 @@ async def _send_setup_response(interaction: discord.Interaction, content: str, *
 
 async def _send_setup_error_message(interaction: discord.Interaction, message: str) -> None:
     embed = create_error_embed("Setup failed", message)
-    if interaction.response.is_done():
+    if _interaction_response_is_done(interaction):
         await interaction.followup.send(embed=embed, ephemeral=True)
     else:
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -1757,8 +1768,7 @@ class ReverseEventModal(discord.ui.Modal, title="Reverse Event"):
 class EngagementRolesView(BackView):
     @discord.ui.button(label="Create/Repair Reward Roles", style=discord.ButtonStyle.primary, row=0)
     async def create_repair_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
+        await _maybe_defer_setup_response(interaction)
         repo = EngagementRepository(self.db.pool)
         service = RoleRewardService(repo)
         await service.seed_default_ladders_if_missing(interaction.guild.id)
@@ -1771,8 +1781,7 @@ class EngagementRolesView(BackView):
 
     @discord.ui.button(label="Sync Reward Roles", style=discord.ButtonStyle.primary, row=1)
     async def sync_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
+        await _maybe_defer_setup_response(interaction)
         repo = EngagementRepository(self.db.pool)
         service = RoleRewardService(repo)
         await service.seed_default_ladders_if_missing(interaction.guild.id)
