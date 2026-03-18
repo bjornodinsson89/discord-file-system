@@ -150,19 +150,32 @@ def test_patch2_commands_and_setup_pages_exist():
         '@leaderboard.command(name="jumps"',
         '@leaderboard.command(name="raffles"',
         '@tokens.command(name="history"',
-        '@engagement.command(name="config"',
+        'Group(name="engagement"',
         "reached Level {level} and earned 1 Prize Token",
     ]:
-        assert expected in engagement_src
+        if expected == 'Group(name="engagement"':
+            assert expected not in engagement_src
+        else:
+            assert expected in engagement_src
 
     setup_src = open("setup_panel.py", encoding="utf-8").read()
     for expected in [
         "class EngagementCoreView",
         "class EngagementChatVoiceReactionView",
         "class EngagementEventXPView",
+        "class EngagementRolesStatusView",
+        "class EngagementMaintenanceView",
         'label="Engagement"',
         "ignored_channel_ids_json",
         "ignored_category_ids_json",
         "ignored_role_ids_json",
+        "Create/Repair Reward Roles",
+        "Sync Reward Roles",
+        "View Engagement Config",
+        "View Reward Role Status",
+        "Debug Member Engagement",
+        "Rebuild Member Profile",
+        "Reverse Event",
+        "Reseed Reward Definitions",
     ]:
         assert expected in setup_src

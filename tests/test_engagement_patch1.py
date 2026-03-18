@@ -107,7 +107,8 @@ def test_command_groups_and_commands_present():
     assert '@profile.command(name="view"' in src
     assert '@profile.command(name="rank"' in src
     assert '@tokens.command(name="balance"' in src
-    assert '@engagement.command(name="debug"' in src
+    assert 'Group(name="engagement"' not in src
+    assert '@engagement.command(name="debug"' not in src
 
 
 def test_message_xp_cooldown_and_similarity():
