@@ -11,7 +11,12 @@ async def _noop(*_args, **_kwargs):
 
 
 def test_giveaway_entry_modes_include_required_modes():
-    assert set(GIVEAWAY_ENTRY_MODE_CHOICES) == {"button", "auto", "button_weighted", "auto_weighted"}
+    assert set(GIVEAWAY_ENTRY_MODE_CHOICES) == {
+        "button",
+        "auto",
+        "button_weighted",
+        "auto_weighted",
+    }
     assert GIVEAWAY_ENTRY_MODE_CHOICES["button"]["button_join_enabled"] is True
     assert GIVEAWAY_ENTRY_MODE_CHOICES["auto"]["auto_entry_enabled"] is True
     assert GIVEAWAY_ENTRY_MODE_CHOICES["button_weighted"]["weighted_enabled"] is True
@@ -24,6 +29,7 @@ def test_button_join_mode_shows_join_button_and_auto_only_hides_it():
         hidden = EnterRaffleView(raffle_id=1, on_enter=_noop, show_join_button=False)
         assert any(getattr(child, "custom_id", "") == "fr_enter:1" for child in shown.children)
         assert all(getattr(child, "custom_id", "") != "fr_enter:1" for child in hidden.children)
+
     asyncio.run(_build())
 
 
@@ -44,6 +50,7 @@ def test_host_controls_include_required_actions_and_reroll_state():
         assert "🔄 Refresh Panel" in labels
         assert "📋 View Entrants" in labels
         assert labels["🎲 Reroll Winner"].disabled is True
+
     asyncio.run(_build())
 
 
@@ -60,7 +67,9 @@ def test_giveaway_creation_and_channel_resolution_wired_in_source():
 def test_raffle_recovery_controls_and_repository_wired_in_source():
     cog_src = Path("cogs/raffles.py").read_text(encoding="utf-8")
     repo_src = Path("repositories/raffles.py").read_text(encoding="utf-8")
-    migration_src = Path("migrations/2026_03_18_giveaway_and_raffle_recovery.sql").read_text(encoding="utf-8")
+    migration_src = Path("migrations/2026_03_18_giveaway_and_raffle_recovery.sql").read_text(
+        encoding="utf-8"
+    )
 
     assert "Recreate Canceled Raffle" in cog_src
     assert "recreate_cancelled_raffle" in cog_src
