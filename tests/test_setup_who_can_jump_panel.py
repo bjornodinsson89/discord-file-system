@@ -1,7 +1,13 @@
 import asyncio
 from types import SimpleNamespace
 
-from setup_panel import ChannelConfigView, ChannelsDashboardView, SetupPanelView, StoreSetupView, build_channels_dashboard_embed
+from setup_panel import (
+    ChannelConfigView,
+    ChannelsDashboardView,
+    SetupPanelView,
+    StoreSetupView,
+    build_channels_dashboard_embed,
+)
 
 
 class _Guild:
@@ -21,6 +27,7 @@ def test_channels_embed_mentions_who_can_jump_and_store_channels():
         embed = build_channels_dashboard_embed(panel)
         assert "Who Can Jump" in embed.fields[0].value
         assert "Store Channel" in embed.fields[0].value
+
     asyncio.run(_run())
 
 

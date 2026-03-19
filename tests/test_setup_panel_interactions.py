@@ -249,6 +249,7 @@ def test_setup_landing_page_shows_new_dashboard_sections():
             "Welcome",
             "Maintenance",
         ]
+
     asyncio.run(_run())
 
 
@@ -260,6 +261,7 @@ def test_channels_section_embed_uses_plain_english_labels():
         assert "Giveaway Channel" in text
         assert "Store Channel" in text
         assert "Who Can Jump" in text
+
     asyncio.run(_run())
 
 
@@ -270,6 +272,7 @@ def test_reward_roles_view_uses_plain_labels():
         assert "Create / Repair Roles" in labels
         assert "Reward Role Status" in labels
         assert "View Engagement Config" not in labels
+
     asyncio.run(_run())
 
 
@@ -283,4 +286,5 @@ def test_dangerous_confirm_view_requires_confirmation():
         view = ConfirmActionView(owner_id=55, on_confirm=_on_confirm)
         labels = [child.label for child in view.children if getattr(child, "label", None)]
         assert labels == ["Confirm", "Cancel"]
+
     asyncio.run(_run())
