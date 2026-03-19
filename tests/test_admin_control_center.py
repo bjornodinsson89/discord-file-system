@@ -115,15 +115,15 @@ def test_setup_dashboard_embed_and_sections():
 
         assert embed.title.endswith("Admin Control Center")
         assert labels[:8] == [
-        "Channels",
-        "Roles",
-        "Engagement",
-        "Raffles",
-        "Giveaways",
-        "Store",
-        "Welcome",
-        "Maintenance",
-    ]
+            "Channels",
+            "Roles",
+            "Engagement",
+            "Raffles",
+            "Giveaways",
+            "Store",
+            "Welcome",
+            "Maintenance",
+        ]
         assert "Close" in labels
 
     asyncio.run(_run())
@@ -131,7 +131,10 @@ def test_setup_dashboard_embed_and_sections():
 
 def test_setup_entrypoint_source_uses_send_setup_panel():
     src = Path("cogs/events.py").read_text(encoding="utf-8")
-    assert '@bot.tree.command(name="setup", description="Open the interactive server setup panel")' in src
+    assert (
+        '@bot.tree.command(name="setup", description="Open the interactive server setup panel")'
+        in src
+    )
     assert "await send_setup_panel(interaction, db)" in src
 
 
@@ -141,9 +144,27 @@ def test_section_views_stay_within_component_limits():
         panel.store_settings = {"store_channel_id": 555, "enabled": True}
         views = [
             panel,
-            ChannelsHubView(owner_id=1, db=SimpleNamespace(pool=None), settings={}, guild=panel.guild, panel=panel),
-            StoreHubView(owner_id=1, db=SimpleNamespace(pool=None), settings={}, guild=panel.guild, panel=panel),
-            MaintenanceHubView(owner_id=1, db=SimpleNamespace(pool=None), settings={}, guild=panel.guild, panel=panel),
+            ChannelsHubView(
+                owner_id=1,
+                db=SimpleNamespace(pool=None),
+                settings={},
+                guild=panel.guild,
+                panel=panel,
+            ),
+            StoreHubView(
+                owner_id=1,
+                db=SimpleNamespace(pool=None),
+                settings={},
+                guild=panel.guild,
+                panel=panel,
+            ),
+            MaintenanceHubView(
+                owner_id=1,
+                db=SimpleNamespace(pool=None),
+                settings={},
+                guild=panel.guild,
+                panel=panel,
+            ),
         ]
         for view in views:
             rows = {}
@@ -179,11 +200,17 @@ def test_back_and_home_navigation(monkeypatch):
             sent.append((embed.title, view.__class__.__name__))
 
         monkeypatch.setattr(setup_panel, "_send_or_edit", _fake_send_or_edit)
-        interaction = SimpleNamespace(response=_FakeResponse(), guild=panel.guild, guild_id=123, user=SimpleNamespace(id=1))
+        interaction = SimpleNamespace(
+            response=_FakeResponse(), guild=panel.guild, guild_id=123, user=SimpleNamespace(id=1)
+        )
 
-        channels = next(child for child in panel.children if getattr(child, "label", None) == "Channels")
+        channels = next(
+            child for child in panel.children if getattr(child, "label", None) == "Channels"
+        )
         await channels.callback(interaction)
-        hub = ChannelsHubView(owner_id=1, db=SimpleNamespace(pool=None), settings={}, guild=panel.guild, panel=panel)
+        hub = ChannelsHubView(
+            owner_id=1, db=SimpleNamespace(pool=None), settings={}, guild=panel.guild, panel=panel
+        )
         back = next(child for child in hub.children if getattr(child, "label", None) == "Back")
         home = next(child for child in hub.children if getattr(child, "label", None) == "Home")
         await back.callback(interaction)
@@ -199,19 +226,31 @@ def test_back_and_home_navigation(monkeypatch):
 def test_dangerous_actions_require_confirmation(monkeypatch):
     async def _run():
         panel = _build_panel()
-        interaction = SimpleNamespace(response=_FakeResponse(), guild=panel.guild, guild_id=123, user=SimpleNamespace(id=1))
+        interaction = SimpleNamespace(
+            response=_FakeResponse(), guild=panel.guild, guild_id=123, user=SimpleNamespace(id=1)
+        )
         sent = []
 
         async def _fake_send_or_edit(_interaction, embed, view=None):
             sent.append((embed.title, view))
 
         monkeypatch.setattr(setup_panel, "_send_or_edit", _fake_send_or_edit)
-        maintenance = MaintenanceHubView(owner_id=1, db=SimpleNamespace(pool=None), settings={}, guild=panel.guild, panel=panel)
-        rebuild_tools = next(child for child in maintenance.children if getattr(child, "label", None) == "Rebuild Tools")
+        maintenance = MaintenanceHubView(
+            owner_id=1, db=SimpleNamespace(pool=None), settings={}, guild=panel.guild, panel=panel
+        )
+        rebuild_tools = next(
+            child
+            for child in maintenance.children
+            if getattr(child, "label", None) == "Rebuild Tools"
+        )
         await rebuild_tools.callback(interaction)
         confirm_view = sent[-1][1]
         assert isinstance(confirm_view, setup_panel.RebuildToolsView)
-        rebuild_profile = next(child for child in confirm_view.children if getattr(child, "label", None) == "Rebuild Profile")
+        rebuild_profile = next(
+            child
+            for child in confirm_view.children
+            if getattr(child, "label", None) == "Rebuild Profile"
+        )
         await rebuild_profile.callback(interaction)
         assert isinstance(sent[-1][1], ConfirmActionView)
 
