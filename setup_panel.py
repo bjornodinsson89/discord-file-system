@@ -11,8 +11,6 @@ from repositories.audit import AuditRepository
 from repositories.engagement import EngagementRepository
 from repositories.store import StoreRepository
 from repositories.prize_tokens import PrizeTokensRepository
-from repositories.free_raffle_repo import FreeRaffleRepository
-from repositories.raffles import RafflesRepository
 from services.role_reward_service import RoleRewardService
 from services.engagement_service import level_from_total_xp
 from cogs.store import AddStoreItemModal, UpdateItemModal, StockAdjustModal, RedemptionActionModal
@@ -385,41 +383,99 @@ class SetupPanelView(OwnerView):
         me = interaction.guild.me or interaction.guild.get_member(interaction.client.user.id)
         return me
 
-    def _status_text(self, enabled: bool | None, *, set_label: str = "set", unset_label: str = "not set") -> str:
-        return set_label if enabled else unset_label
-
-    def _channel_status(self, key: str) -> str:
-        channel_id = self.settings.get(key)
-        return "set" if channel_id else "not set"
-
-    def _store_channel_status(self) -> str:
-        return "set" if self.store_settings.get("store_channel_id") else "not set"
-
     def _build_embed(self) -> discord.Embed:
-        reward_status = self.reward_role_status or {}
-        store_status = self.storefront_status or {}
-        raffle_status = self.raffle_status or {}
-        giveaway_status = self.giveaway_status or {}
-        embed = create_info_embed(
-            "Admin Control Center",
-            "Premium setup dashboard for channels, roles, engagement, giveaways, raffles, store, welcome, and maintenance.",
-        )
-        summary_lines = [
-            f"Channels ready: **{sum(1 for key in ('jump_99k_channel_id', 'raffle_purchase_channel_id', 'raffle_giveaway_purchase_channel_id', 'welcome_channel_id') if self.settings.get(key))}/4**",
-            f"Reward roles: **{'healthy' if not reward_status.get('missing') else 'missing'}**",
-            f"Storefront: **{'live' if store_status.get('live') else 'missing'}**",
-            f"Active raffles: **{raffle_status.get('active_count', 0)}**",
-            f"Active giveaways: **{giveaway_status.get('active_count', 0)}**",
-        ]
-        embed.add_field(name="Server Status", value="\n".join(summary_lines), inline=False)
-        embed.add_field(name="Channels", value=f"Jump: **{self._channel_status('jump_99k_channel_id')}**\nRaffle: **{self._channel_status('raffle_purchase_channel_id')}**\nGiveaway: **{self._channel_status('raffle_giveaway_purchase_channel_id')}**\nStore: **{self._store_channel_status()}**", inline=True)
-        embed.add_field(name="Roles", value=f"Admin Roles: **{'set' if self.settings.get('admin_role_ids') else 'not set'}**\nHost Role: **{'set' if self.settings.get('raffle_host_role_id') else 'not set'}**\nReward Roles: **{'healthy' if not reward_status.get('missing') else 'missing'}**", inline=True)
-        embed.add_field(name="Engagement", value=f"XP: **{'enabled' if self.engagement_settings.get('enabled', False) else 'disabled'}**\nCoins: **enabled**\nHJD: **enabled**\nAuto Entry: **{'enabled' if self.engagement_settings.get('auto_entry_giveaways_enabled', True) else 'disabled'}**", inline=True)
-        embed.add_field(name="Raffles", value=f"Panel Channel: **{self._channel_status('raffle_purchase_channel_id')}**\nActive Raffles: **{raffle_status.get('active_count', 0)}**\nRecovery Tools: **enabled**", inline=True)
-        embed.add_field(name="Giveaways", value=f"Giveaway Channel: **{self._channel_status('raffle_giveaway_purchase_channel_id')}**\nActive Giveaways: **{giveaway_status.get('active_count', 0)}**\nWeighted Mode: **available**", inline=True)
-        embed.add_field(name="Store", value=f"Store Channel: **{self._store_channel_status()}**\nCurrency: **HJD**\nStorefront: **{'live' if store_status.get('live') else 'missing'}**", inline=True)
-        embed.add_field(name="Welcome", value=f"Welcome Channel: **{self._channel_status('welcome_channel_id')}**\nAPI Key Onboarding: **enabled**\nApplications: **{'enabled' if self.settings.get('applications_admin_inbox_channel_id') else 'setup needed'}**", inline=True)
-        embed.add_field(name="Maintenance", value=f"Reward Roles: **{'healthy' if not reward_status.get('missing') else 'missing'}**\nStorefront: **{'healthy' if store_status.get('live') else 'missing'}**\nGiveaway Panels: **{'healthy' if giveaway_status.get('active_count', 0) >= 0 else 'unknown'}**", inline=True)
+        s = self.settings
+        guild = self.guild
+        def channel_name(key: str):
+            cid = s.get(key)
+            ch = guild.get_channel(cid) if cid else None
+            return ch.mention if ch else "Not set"
+
+        def role_name(rid: int | None):
+            role = guild.get_role(rid) if rid else None
+            return role.mention if role else "Not set"
+
+        admin_mentions = []
+        for rid in (s.get("admin_role_ids") or []):
+            role = guild.get_role(int(rid)) if str(rid).isdigit() else None
+            if role:
+                admin_mentions.append(role.mention)
+        embed = create_info_embed("Setup Panel", "Configure channels, roles, templates, toggles, and tests from one place.")
+        embed.add_field(name="Channels", value=(
+            f"Jump: {channel_name('jump_99k_channel_id')}\n"
+            f"Jump announcement: {channel_name('jump_announce_channel_id')}\n"
+            f"Raffle announcement: {channel_name('raffle_announcement_channel_id')}\n"
+            f"Raffle purchase panel: {channel_name('raffle_purchase_channel_id')}\n"
+            f"Raffle giveaway purchase panel: {channel_name('raffle_giveaway_purchase_channel_id')}\n"
+            f"Jewelry alert: {channel_name('jewelry_alert_channel_id')}\n"
+            f"Who Can Jump panel: {channel_name('who_can_jump_channel_id')}\n"
+            f"Insurance: {channel_name('insurance_channel_id')}\n"
+            f"Applications category: {channel_name('applications_category_id')}\n"
+            f"Applications admin inbox: {channel_name('applications_admin_inbox_channel_id')}\n"
+            f"Welcome: {channel_name('welcome_channel_id')}\n"
+            f"Pools management: {channel_name('pool_channel_id')}\n"
+            f"Pools purchase panel: {channel_name('pools_post_channel_id')}"
+        ), inline=False)
+        jump_ping_mentions = []
+        for rid in (s.get("jump_ping_role_ids") or []):
+            role = guild.get_role(int(rid)) if str(rid).isdigit() else None
+            if role:
+                jump_ping_mentions.append(role.mention)
+        jewelry_mentions = []
+        for rid in (s.get("jewelry_alert_role_ids") or []):
+            role = guild.get_role(int(rid)) if str(rid).isdigit() else None
+            if role:
+                jewelry_mentions.append(role.mention)
+        embed.add_field(name="Roles", value=(
+            f"Admin roles: {', '.join(admin_mentions) if admin_mentions else 'Not set'}\n"
+            f"99k_Jump_Host role: {role_name(s.get('host99k_role_id'))}\n"
+            f"HJ_Insureance_provider role: {role_name(s.get('insurer_role_id'))}\n"
+            f"Raffle Host Role: {role_name(s.get('raffle_host_role_id'))}\n"
+            f"Jump ping roles: {', '.join(jump_ping_mentions) if jump_ping_mentions else 'None selected'}\n"
+            f"Jewelry alert roles: {', '.join(jewelry_mentions) if jewelry_mentions else 'None selected'}"
+        ), inline=False)
+        host_tax_type = str(s.get('host_tax_type') or '').strip().lower()
+        host_tax_enabled = bool(s.get('host_tax_enabled'))
+        if host_tax_type == 'cash':
+            host_tax_label = f"Torn Cash (${int(s.get('host_tax_cash_amount') or 0):,})" if s.get('host_tax_cash_amount') else 'Torn Cash (not set)'
+        elif host_tax_type == 'item' and int(s.get('host_tax_item_id') or 0) == 206:
+            host_tax_label = f"Xanax 💊 x{int(s.get('host_tax_quantity') or 0)}" if s.get('host_tax_quantity') else 'Xanax 💊 (quantity not set)'
+        elif host_tax_type == 'item' and int(s.get('host_tax_item_id') or 0) == 366:
+            host_tax_label = f"Erotic DvD 📀 x{int(s.get('host_tax_quantity') or 0)}" if s.get('host_tax_quantity') else 'Erotic DvD 📀 (quantity not set)'
+        else:
+            host_tax_label = 'Not configured'
+
+        embed.add_field(name="Feature Toggles", value=(
+            f"Welcome enabled: `{bool(s.get('welcome_enabled'))}`\n"
+            f"Raffle announcement enabled: `{bool(s.get('raffle_announce_enabled', True))}`\n"
+            f"99k ping announcements: `{'Disabled' if bool(s.get('disable_99k_announcements', False)) else 'Enabled'}`\n"
+            f"Auto complete: `{bool(s.get('auto_complete_enabled', True))}`\n"
+            f"Reservation timeout: `{s.get('reservation_timeout_minutes', 5)}` minutes\n"
+            f"Default 99k max slots: `{s.get('default_max_slots', 5)}`\n"
+            f"99k Host Tax enabled: `{host_tax_enabled}`\n"
+            f"99k Host Tax recipient Torn ID: `{s.get('host_tax_recipient_torn_id') or 'Not set'}`\n"
+            f"99k Host Tax payment: `{host_tax_label}`\n"
+            f"Bank rates API key configured: `{bool(s.get('bank_rates_api_key_encrypted'))}`"
+        ), inline=False)
+        es = getattr(self, "engagement_settings", {})
+        embed.add_field(name="Engagement", value=(
+            f"Enabled: `{bool(es.get('enabled', False))}`\n"
+            f"Level-up channel: `{es.get('levelup_channel_id') or 'Not set'}`\n"
+            f"Leaderboards enabled: `{bool(es.get('leaderboard_enabled', True))}`\n"
+            f"Profile cards enabled: `{bool(es.get('profile_cards_enabled', True))}`\n"
+            f"Message/Reaction/Voice XP: `{bool(es.get('message_xp_enabled', True))}` / `{bool(es.get('reaction_xp_enabled', True))}` / `{bool(es.get('voice_xp_enabled', True))}`"
+        ), inline=False)
+        ss = getattr(self, "store_settings", {})
+        store_channel_id = ss.get('store_channel_id')
+        embed.add_field(name="Store", value=(
+            f"Enabled: `{bool(ss.get('enabled', False))}`\n"
+            f"Store channel: `{store_channel_id or 'Not set'}`\n"
+            f"Fulfillment channel: `{ss.get('fulfillment_channel_id') or 'Not set'}`\n"
+            f"Torn item store enabled: `{bool(ss.get('torn_item_store_enabled', True))}`\n"
+            f"Discord perk store enabled: `{bool(ss.get('discord_perk_store_enabled', True))}`"
+        ), inline=False)
+        embed.add_field(name="Session placeholders", value=SUPPORTED_PLACEHOLDERS, inline=False)
+        embed.add_field(name="Welcome placeholders", value=WELCOME_SUPPORTED_PLACEHOLDERS, inline=False)
         return embed
 
     def __init__(self, *, owner_id: int, db, settings: dict[str, Any], guild: discord.Guild, engagement_settings: dict[str, Any] | None = None):
@@ -429,10 +485,6 @@ class SetupPanelView(OwnerView):
         self.store_repo = StoreRepository(self.db.pool) if getattr(self.db, "pool", None) is not None else None
         self.engagement_settings = engagement_settings or {}
         self.store_settings: dict[str, Any] = {}
-        self.reward_role_status: dict[str, Any] = {}
-        self.storefront_status: dict[str, Any] = {}
-        self.raffle_status: dict[str, Any] = {}
-        self.giveaway_status: dict[str, Any] = {}
 
     async def save_changes(self, interaction: discord.Interaction, changes: dict[str, Any]) -> None:
         old_values = {k: self.settings.get(k) for k in changes}
@@ -557,59 +609,72 @@ class SetupPanelView(OwnerView):
         await self.save_changes(interaction, updates)
         log.info("Setup channel updated guild_id=%s key=%s channel_id=%s", interaction.guild_id, key, resolved.id)
 
-    @discord.ui.button(label="Channels", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Channels", style=discord.ButtonStyle.primary)
     async def channels_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
-            await _send_or_edit(interaction, build_channels_dashboard_embed(self), ChannelsDashboardView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+            await _send_or_edit(interaction, _channels_embed(), ChannelsViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
-    @discord.ui.button(label="Roles", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Roles", style=discord.ButtonStyle.primary)
     async def roles_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
-            await _send_or_edit(interaction, build_roles_dashboard_embed(self), RolesDashboardView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+            await _send_or_edit(interaction, create_info_embed("Roles", "Configure admin, host, and insurer roles."), RolesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
-    @discord.ui.button(label="Engagement", style=discord.ButtonStyle.primary, row=0)
-    async def engagement_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        try:
-            await _send_or_edit(interaction, build_engagement_dashboard_embed(self), EngagementDashboardView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
-        except Exception as error:
-            await _respond_callback_error(interaction, error)
-
-    @discord.ui.button(label="Raffles", style=discord.ButtonStyle.primary, row=0)
-    async def raffles_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        try:
-            await _send_or_edit(interaction, build_raffles_dashboard_embed(self), RafflesDashboardView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
-        except Exception as error:
-            await _respond_callback_error(interaction, error)
-
-    @discord.ui.button(label="Giveaways", style=discord.ButtonStyle.primary, row=0)
-    async def giveaways_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        try:
-            await _send_or_edit(interaction, build_giveaways_dashboard_embed(self), GiveawaysDashboardView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
-        except Exception as error:
-            await _respond_callback_error(interaction, error)
-
-    @discord.ui.button(label="Store", style=discord.ButtonStyle.primary, row=1)
-    async def store_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        try:
-            await _send_or_edit(interaction, build_store_dashboard_embed(self), StoreDashboardView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
-        except Exception as error:
-            await _respond_callback_error(interaction, error)
-
-    @discord.ui.button(label="Welcome", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Welcome", style=discord.ButtonStyle.primary)
     async def welcome_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
-            await _send_or_edit(interaction, build_welcome_dashboard_embed(self), WelcomeDashboardView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+            await _send_or_edit(
+                interaction,
+                create_info_embed("Welcome", f"Configure welcome behavior. Supported: {WELCOME_SUPPORTED_PLACEHOLDERS}"),
+                WelcomeView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self),
+            )
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
-    @discord.ui.button(label="Maintenance", style=discord.ButtonStyle.secondary, row=1)
-    async def maintenance_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+    @discord.ui.button(label="Feature Toggles", style=discord.ButtonStyle.primary)
+    async def feature_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
-            await _send_or_edit(interaction, build_maintenance_dashboard_embed(self), MaintenanceDashboardView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+            await _send_or_edit(interaction, create_info_embed("Feature Toggles", "Change runtime behavior toggles."), FeatureTogglesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="Engagement", style=discord.ButtonStyle.primary)
+    async def engagement_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Configure engagement system settings."), EngagementCoreView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="Store", style=discord.ButtonStyle.primary)
+    async def store_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await _send_or_edit(interaction, create_info_embed("Store Setup", "Configure prize token store settings."), StoreSetupView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="99k Host Tax", style=discord.ButtonStyle.primary)
+    async def host_tax_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await _send_or_edit(interaction, create_info_embed("99k Host Tax", "Optional fee required for a host to start a jump."), HostTaxView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="Test", style=discord.ButtonStyle.secondary)
+    async def test_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            await _send_or_edit(interaction, create_info_embed("Test", "Send test announcements to configured channels."), TestView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        except Exception as error:
+            await _respond_callback_error(interaction, error)
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
+    async def close_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        try:
+            for child in self.children:
+                child.disabled = True
+            await _send_or_edit(interaction, create_success_embed("Setup closed", "You can run `/setup` again anytime."), self)
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
@@ -627,392 +692,6 @@ class BackView(OwnerView):
             await _send_or_edit(interaction, self.panel._build_embed(), self.panel)
         except Exception as error:
             await _respond_callback_error(interaction, error)
-
-
-def _build_section_embed(title: str, explanation: str, status_lines: list[str]) -> discord.Embed:
-    embed = create_info_embed(title, explanation)
-    embed.add_field(name="Current Status", value="\n".join(status_lines[:8]), inline=False)
-    return embed
-
-
-def build_channels_dashboard_embed(panel: SetupPanelView) -> discord.Embed:
-    return _build_section_embed(
-        "Channels",
-        "Choose where each system posts and which channels staff use.",
-        [
-            f"Jump Channel: **{panel._channel_status('jump_99k_channel_id')}**",
-            f"Raffle Channel: **{panel._channel_status('raffle_purchase_channel_id')}**",
-            f"Giveaway Channel: **{panel._channel_status('raffle_giveaway_purchase_channel_id')}**",
-            f"Store Channel: **{panel._store_channel_status()}**",
-            f"Welcome Channel: **{panel._channel_status('welcome_channel_id')}**",
-            f"Insurance Channel: **{panel._channel_status('insurance_channel_id')}**",
-            f"Jewelry Alerts: **{panel._channel_status('jewelry_alert_channel_id')}**",
-            f"Who Can Jump: **{panel._channel_status('who_can_jump_channel_id')}**",
-        ],
-    )
-
-
-def build_roles_dashboard_embed(panel: SetupPanelView) -> discord.Embed:
-    reward_status = panel.reward_role_status or {}
-    return _build_section_embed(
-        "Roles",
-        "Manage permission roles and reward-role health.",
-        [
-            f"Admin Roles: **{'set' if panel.settings.get('admin_role_ids') else 'not set'}**",
-            f"Host Role: **{'set' if panel.settings.get('raffle_host_role_id') else 'not set'}**",
-            f"Insurance Role: **{'set' if panel.settings.get('insurer_role_id') else 'not set'}**",
-            f"Reward Roles: **{'healthy' if not reward_status.get('missing') else 'missing'}**",
-        ],
-    )
-
-
-def build_engagement_dashboard_embed(panel: SetupPanelView) -> discord.Embed:
-    s = panel.engagement_settings
-    return _build_section_embed(
-        "Engagement",
-        "Control XP, level progress, and automatic giveaway entry rules.",
-        [
-            f"XP: **{'enabled' if s.get('enabled', False) else 'disabled'}**",
-            "Coins: **enabled**",
-            "HJD: **enabled**",
-            f"Auto Entry: **{'enabled' if s.get('auto_entry_giveaways_enabled', True) else 'disabled'}**",
-        ],
-    )
-
-
-def build_raffles_dashboard_embed(panel: SetupPanelView) -> discord.Embed:
-    return _build_section_embed(
-        "Raffles",
-        "Manage paid-raffle posting, control tools, and recovery access.",
-        [
-            f"Panel Channel: **{panel._channel_status('raffle_purchase_channel_id')}**",
-            f"Active Raffles: **{panel.raffle_status.get('active_count', 0)}**",
-            "Recovery Tools: **enabled**",
-        ],
-    )
-
-
-def build_giveaways_dashboard_embed(panel: SetupPanelView) -> discord.Embed:
-    auto_entry = panel.engagement_settings.get("auto_entry_giveaways_enabled", True)
-    return _build_section_embed(
-        "Giveaways",
-        "Manage giveaway posting, entry rules, and host tools.",
-        [
-            f"Giveaway Channel: **{panel._channel_status('raffle_giveaway_purchase_channel_id')}**",
-            f"Active Giveaways: **{panel.giveaway_status.get('active_count', 0)}**",
-            f"Auto Entry: **{'enabled' if auto_entry else 'disabled'}**",
-            "Weighted Mode: **available**",
-        ],
-    )
-
-
-def build_store_dashboard_embed(panel: SetupPanelView) -> discord.Embed:
-    return _build_section_embed(
-        "Store",
-        "Keep the storefront live, clear, and easy to maintain.",
-        [
-            f"Store Channel: **{panel._store_channel_status()}**",
-            "Currency: **HJD**",
-            f"Storefront: **{'live' if panel.storefront_status.get('live') else 'missing'}**",
-            f"Active Items: **{panel.storefront_status.get('active_items', 0)}**",
-        ],
-    )
-
-
-def build_welcome_dashboard_embed(panel: SetupPanelView) -> discord.Embed:
-    return _build_section_embed(
-        "Welcome",
-        "Control onboarding, welcome messages, and applications routing.",
-        [
-            f"Welcome Channel: **{panel._channel_status('welcome_channel_id')}**",
-            "API Key Onboarding: **enabled**",
-            f"Applications: **{'enabled' if panel.settings.get('applications_admin_inbox_channel_id') else 'setup needed'}**",
-        ],
-    )
-
-
-def build_maintenance_dashboard_embed(panel: SetupPanelView) -> discord.Embed:
-    reward_status = panel.reward_role_status or {}
-    return _build_section_embed(
-        "Maintenance",
-        "Run health checks, repairs, and confirmed rebuild actions.",
-        [
-            f"Reward Roles: **{'healthy' if not reward_status.get('missing') else 'missing'}**",
-            f"Storefront: **{'healthy' if panel.storefront_status.get('live') else 'missing'}**",
-            "Giveaway Panels: **healthy**",
-            "Raffle Panels: **healthy**",
-        ],
-    )
-
-
-class DashboardSectionView(BackView):
-    def __init__(self, *, home_embed: discord.Embed | None = None, back_embed: discord.Embed | None = None, back_view: discord.ui.View | None = None, **kwargs):
-        super().__init__(**kwargs)
-        self.home_embed = home_embed or self.panel._build_embed()
-        self.back_embed = back_embed or self.home_embed
-        self.back_view = back_view or self.panel
-        self.remove_item(self.back_btn)
-
-    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary, row=4)
-    async def back_to_previous(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, self.back_embed, self.back_view)
-
-    @discord.ui.button(label="Home", style=discord.ButtonStyle.secondary, row=4)
-    async def back_home(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, self.home_embed, self.panel)
-
-
-class ChannelsDashboardView(DashboardSectionView):
-    @discord.ui.button(label="Core Channels", style=discord.ButtonStyle.primary, row=0)
-    async def core_channels(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(
-            interaction,
-            build_channels_dashboard_embed(self.panel),
-            ChannelConfigView(
-                owner_id=self.owner_id,
-                db=self.db,
-                settings=self.settings,
-                guild=self.guild,
-                panel=self.panel,
-                back_embed=build_channels_dashboard_embed(self.panel),
-                back_view=self,
-                channel_items=[
-                    ("jump_99k_channel_id", "Jump Channel"),
-                    ("raffle_purchase_channel_id", "Raffle Channel"),
-                    ("raffle_giveaway_purchase_channel_id", "Giveaway Channel"),
-                ],
-            ),
-        )
-
-    @discord.ui.button(label="Store & Welcome", style=discord.ButtonStyle.primary, row=0)
-    async def store_and_welcome(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(
-            interaction,
-            build_channels_dashboard_embed(self.panel),
-            ChannelConfigView(
-                owner_id=self.owner_id,
-                db=self.db,
-                settings=self.settings,
-                guild=self.guild,
-                panel=self.panel,
-                back_embed=build_channels_dashboard_embed(self.panel),
-                back_view=self,
-                channel_items=[
-                    ("store_channel_id", "Store Channel"),
-                    ("welcome_channel_id", "Welcome Channel"),
-                    ("applications_admin_inbox_channel_id", "Applications Inbox"),
-                ],
-                use_store_repo_for={"store_channel_id"},
-            ),
-        )
-
-    @discord.ui.button(label="Access & Alerts", style=discord.ButtonStyle.primary, row=1)
-    async def access_and_alerts(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(
-            interaction,
-            build_channels_dashboard_embed(self.panel),
-            ChannelConfigView(
-                owner_id=self.owner_id,
-                db=self.db,
-                settings=self.settings,
-                guild=self.guild,
-                panel=self.panel,
-                back_embed=build_channels_dashboard_embed(self.panel),
-                back_view=self,
-                channel_items=[
-                    ("insurance_channel_id", "Insurance Channel"),
-                    ("jewelry_alert_channel_id", "Jewelry Alerts"),
-                    ("who_can_jump_channel_id", "Who Can Jump"),
-                ],
-            ),
-        )
-
-
-class ChannelConfigView(DashboardSectionView):
-    def __init__(self, *, channel_items: list[tuple[str, str]], use_store_repo_for: set[str] | None = None, **kwargs):
-        super().__init__(**kwargs)
-        self.use_store_repo_for = use_store_repo_for or set()
-        for row, (key, label) in enumerate(channel_items[:3]):
-            if key in self.use_store_repo_for:
-                self.add_item(StoreChannelSelect(self.panel))
-            else:
-                self.add_item(ChannelSelect(self.panel, key, f"Set {label}", row=row))
-
-
-class RolesDashboardView(DashboardSectionView):
-    @discord.ui.button(label="Admin Roles", style=discord.ButtonStyle.primary, row=0)
-    async def admin_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_roles_dashboard_embed(self.panel), RolesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="Host Role", style=discord.ButtonStyle.primary, row=0)
-    async def host_role(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_roles_dashboard_embed(self.panel), RolesViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="Insurance Role", style=discord.ButtonStyle.primary, row=1)
-    async def insurance_role(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_roles_dashboard_embed(self.panel), RolesViewPage1(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="Reward Roles", style=discord.ButtonStyle.primary, row=1)
-    async def reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(
-            interaction,
-            build_roles_dashboard_embed(self.panel),
-            RewardRolesDashboardView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel, back_embed=build_roles_dashboard_embed(self.panel), back_view=self),
-        )
-
-
-class RewardRolesDashboardView(DashboardSectionView):
-    @discord.ui.button(label="Repair Roles", style=discord.ButtonStyle.primary, row=0)
-    async def repair_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        button = next(child for child in EngagementRolesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel).children if getattr(child, "label", None) == "Create / Repair Roles")
-        await button.callback(interaction)
-
-    @discord.ui.button(label="Sync Reward Roles", style=discord.ButtonStyle.primary, row=0)
-    async def sync_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        button = next(child for child in EngagementRolesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel).children if getattr(child, "label", None) == "Sync Reward Roles")
-        await button.callback(interaction)
-
-    @discord.ui.button(label="Reward Role Status", style=discord.ButtonStyle.primary, row=1)
-    async def status(self, interaction: discord.Interaction, _: discord.ui.Button):
-        button = next(child for child in EngagementRolesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel).children if getattr(child, "label", None) == "Reward Role Status")
-        await button.callback(interaction)
-
-
-class EngagementDashboardView(DashboardSectionView):
-    @discord.ui.button(label="XP & Levels", style=discord.ButtonStyle.primary, row=0)
-    async def xp_levels(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_engagement_dashboard_embed(self.panel), EngagementCoreView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="Coins", style=discord.ButtonStyle.primary, row=0)
-    async def coins(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Coins are active through engagement rewards and level progress.", ephemeral=True)
-
-    @discord.ui.button(label="HJD", style=discord.ButtonStyle.primary, row=1)
-    async def hjd(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("HJD is active and powers the in-server store currency.", ephemeral=True)
-
-    @discord.ui.button(label="Auto Entry Rules", style=discord.ButtonStyle.primary, row=1)
-    async def auto_entry_rules(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_engagement_dashboard_embed(self.panel), EngagementEventXPView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-
-class RafflesDashboardView(DashboardSectionView):
-    @discord.ui.button(label="Panel Channel", style=discord.ButtonStyle.primary, row=0)
-    async def panel_channel(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_raffles_dashboard_embed(self.panel), ChannelsViewPage3(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="Controls", style=discord.ButtonStyle.primary, row=0)
-    async def controls(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Use the live raffle panel host controls to draw, cancel, and manage raffles.", ephemeral=True)
-
-    @discord.ui.button(label="Recovery", style=discord.ButtonStyle.primary, row=1)
-    async def recovery(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Raffle recovery tools stay available in the raffle admin workflows.", ephemeral=True)
-
-    @discord.ui.button(label="Display", style=discord.ButtonStyle.primary, row=1)
-    async def display(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Raffle display updates use the existing purchase-panel and announcement channels.", ephemeral=True)
-
-
-class GiveawaysDashboardView(DashboardSectionView):
-    @discord.ui.button(label="Giveaway Channel", style=discord.ButtonStyle.primary, row=0)
-    async def giveaway_channel(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_giveaways_dashboard_embed(self.panel), ChannelsViewPage3(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="Entry Rules", style=discord.ButtonStyle.primary, row=0)
-    async def entry_rules(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Entry rules support button joins, auto entry, and weighted entries.", ephemeral=True)
-
-    @discord.ui.button(label="Host Tools", style=discord.ButtonStyle.primary, row=1)
-    async def host_tools(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Host tools include ending now, canceling, refreshing the panel, and viewing entries.", ephemeral=True)
-
-    @discord.ui.button(label="Refresh Panel", style=discord.ButtonStyle.primary, row=1)
-    async def refresh_panel(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Giveaway panels refresh from the existing giveaway controls.", ephemeral=True)
-
-
-class ConfirmActionView(discord.ui.View):
-    def __init__(self, *, owner_id: int, on_confirm):
-        super().__init__(timeout=180)
-        self.owner_id = owner_id
-        self.on_confirm = on_confirm
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("Only the admin who opened this confirmation can use it.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.on_confirm(interaction)
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.edit_message(content="Action cancelled.", view=None)
-
-
-class StoreDashboardView(DashboardSectionView):
-    @discord.ui.button(label="Store Channel", style=discord.ButtonStyle.primary, row=0)
-    async def store_channel(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_store_dashboard_embed(self.panel), StoreSetupView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="Rebuild Storefront", style=discord.ButtonStyle.danger, row=0)
-    async def rebuild_storefront(self, interaction: discord.Interaction, _: discord.ui.Button):
-        async def _confirm(confirm_interaction: discord.Interaction):
-            await confirm_interaction.response.defer(ephemeral=True, thinking=False)
-            store_cog = confirm_interaction.client.get_cog("StoreCog")
-            if store_cog is None:
-                await confirm_interaction.followup.send("Store controls are unavailable right now.", ephemeral=True)
-                return
-            await store_cog.sync_storefront(confirm_interaction.guild)
-            await confirm_interaction.followup.send("Storefront rebuilt.", ephemeral=True)
-        await interaction.response.send_message("Rebuild the storefront in the Store Channel?", ephemeral=True, view=ConfirmActionView(owner_id=self.owner_id, on_confirm=_confirm))
-
-    @discord.ui.button(label="Inventory", style=discord.ButtonStyle.primary, row=1)
-    async def inventory(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_store_dashboard_embed(self.panel), StoreAdminPageView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="Currency Info", style=discord.ButtonStyle.primary, row=1)
-    async def currency_info(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("The store uses HJD as its currency. Members earn HJD through engagement rewards.", ephemeral=True)
-
-
-class WelcomeDashboardView(DashboardSectionView):
-    @discord.ui.button(label="Welcome Channel", style=discord.ButtonStyle.primary, row=0)
-    async def welcome_channel(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_welcome_dashboard_embed(self.panel), WelcomeView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="API Key Onboarding", style=discord.ButtonStyle.primary, row=0)
-    async def api_key_onboarding(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("API key onboarding stays enabled through the current member setup flow.", ephemeral=True)
-
-    @discord.ui.button(label="Applications", style=discord.ButtonStyle.primary, row=1)
-    async def applications(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_welcome_dashboard_embed(self.panel), ChannelsViewApplications(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="Messages", style=discord.ButtonStyle.primary, row=1)
-    async def messages(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_welcome_dashboard_embed(self.panel), WelcomeView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-
-class MaintenanceDashboardView(DashboardSectionView):
-    @discord.ui.button(label="System Health", style=discord.ButtonStyle.primary, row=0)
-    async def system_health(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message(embed=build_maintenance_dashboard_embed(self.panel), ephemeral=True)
-
-    @discord.ui.button(label="Repair Tools", style=discord.ButtonStyle.primary, row=0)
-    async def repair_tools(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_maintenance_dashboard_embed(self.panel), RewardRolesDashboardView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel, back_embed=build_maintenance_dashboard_embed(self.panel), back_view=self))
-
-    @discord.ui.button(label="Rebuild Tools", style=discord.ButtonStyle.primary, row=1)
-    async def rebuild_tools(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_maintenance_dashboard_embed(self.panel), EngagementMaintenanceView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="Debug", style=discord.ButtonStyle.primary, row=1)
-    async def debug(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(DebugMemberEngagementModal(self.panel))
 
 
 class ChannelSelect(discord.ui.ChannelSelect):
@@ -2015,15 +1694,6 @@ async def send_setup_panel(interaction: discord.Interaction, db) -> None:
     engagement_settings = await EngagementRepository(db.pool).get_or_create_guild_settings(interaction.guild.id)
     panel = SetupPanelView(owner_id=interaction.user.id, db=db, settings=settings, guild=interaction.guild, engagement_settings=engagement_settings)
     panel.store_settings = await StoreRepository(db.pool).get_or_create_guild_settings(interaction.guild.id)
-    panel.reward_role_status = await RoleRewardService(EngagementRepository(db.pool)).rewards_status(interaction.guild.id, interaction.guild)
-    raffle_repo = RafflesRepository(db.pool)
-    free_raffle_repo = FreeRaffleRepository(db.pool)
-    active_raffles = await raffle_repo.get_active_raffles(interaction.guild.id)
-    active_giveaways = await free_raffle_repo.list_active_raffles(interaction.guild.id)
-    items = await StoreRepository(db.pool).list_items(interaction.guild.id)
-    panel.raffle_status = {"active_count": len(active_raffles)}
-    panel.giveaway_status = {"active_count": len(active_giveaways)}
-    panel.storefront_status = {"live": bool(panel.store_settings.get("store_channel_id")), "active_items": len(items)}
     await interaction.response.send_message(embed=panel._build_embed(), view=panel, ephemeral=True)
 
 
@@ -2101,7 +1771,7 @@ class ReverseEventModal(discord.ui.Modal, title="Reverse Event"):
 
 
 class EngagementRolesView(BackView):
-    @discord.ui.button(label="Create / Repair Roles", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Create/Repair Reward Roles", style=discord.ButtonStyle.primary, row=0)
     async def create_repair_reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
         await _maybe_defer_setup_response(interaction)
         repo = EngagementRepository(self.db.pool)
@@ -2135,7 +1805,7 @@ class EngagementRolesView(BackView):
             f"Reward role sync completed. Created: {created}. Repaired: {repaired}. Member sync totals: {totals}",
         )
 
-    @discord.ui.button(label="Engagement Status", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="View Engagement Config", style=discord.ButtonStyle.primary, row=2)
     async def view_engagement_config(self, interaction: discord.Interaction, _: discord.ui.Button):
         s = await EngagementRepository(self.db.pool).get_or_create_guild_settings(interaction.guild.id)
         await interaction.response.send_message(
@@ -2155,7 +1825,7 @@ class EngagementRolesView(BackView):
             ephemeral=True,
         )
 
-    @discord.ui.button(label="Reward Role Status", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="View Reward Role Status", style=discord.ButtonStyle.primary, row=3)
     async def view_reward_role_status(self, interaction: discord.Interaction, _: discord.ui.Button):
         service = RoleRewardService(EngagementRepository(self.db.pool))
         status = await service.rewards_status(interaction.guild.id, interaction.guild)
