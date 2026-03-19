@@ -87,7 +87,7 @@ class HostControlsView(discord.ui.View):
         self.add_item(refresh_button)
 
         entrants_button = discord.ui.Button(
-            label="📋 View Entries",
+            label="📋 View Entrants",
             style=discord.ButtonStyle.secondary,
             custom_id=f"fr_entrants:{raffle_id}",
             disabled=False,

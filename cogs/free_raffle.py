@@ -59,7 +59,7 @@ def _status_label(status: str, winner_id: int | None) -> str:
         return "Cancelled"
     if winner_id:
         return "Ended"
-    return "Ended (no entries)"
+    return "Ended (no entrants)"
 
 
 def _status_color(status: str, winner_id: int | None) -> discord.Color:
@@ -291,7 +291,7 @@ class FreeRaffleCog(commands.Cog):
             on_end_now=self.handle_end_now,
             on_cancel=self.handle_cancel,
             on_refresh=self.handle_refresh_controls,
-            on_view_entrants=self.handle_view_entries,
+            on_view_entrants=self.handle_view_entrants,
             on_reroll=self.handle_reroll,
             disabled=disabled,
             can_reroll=can_reroll,
@@ -435,7 +435,7 @@ class FreeRaffleCog(commands.Cog):
             description="Join now for a chance to win.",
             color=color,
         )
-        live_stats_lines = [f"Entries: **{entry_count}**", f"Status: **{status}**"]
+        live_stats_lines = [f"Entrants: **{entry_count}**", f"Status: **{status}**"]
         if has_real_end_time and total_seconds > 0:
             live_stats_lines.insert(1, f"Time: `{render_text_progress_bar(time_percent)}`")
         embed.add_field(
@@ -466,7 +466,7 @@ class FreeRaffleCog(commands.Cog):
             how_to_play.append("✅ Keep at least **1 coin** to stay eligible for message-based auto entry")
             how_to_play.append("✅ Every **15 qualifying chat messages** grants **1 giveaway entry**")
             how_to_play.append(f"✅ Auto-entry cap: **{auto_max}** per user for this giveaway")
-        how_to_play.append(f"✅ {'Weighted odds are enabled' if weighted_enabled else 'Equal odds for all entries'}")
+        how_to_play.append(f"✅ {'Weighted odds are enabled' if weighted_enabled else 'Equal odds for all entrants'}")
         how_to_play.append("✅ Winner announced automatically")
         embed.add_field(
             name="HOW TO PLAY",
@@ -692,7 +692,7 @@ class FreeRaffleCog(commands.Cog):
         refreshed = await repo.get_raffle(raffle_id) or raffle
         await self._host_controls_response(interaction, "🔄 Giveaway panel refreshed.", refreshed)
 
-    async def handle_view_entries(self, interaction: discord.Interaction, raffle_id: int) -> None:
+    async def handle_view_entrants(self, interaction: discord.Interaction, raffle_id: int) -> None:
         await interaction.response.defer(ephemeral=True, thinking=False)
         repo = FreeRaffleRepository(get_pool())
         raffle = await repo.get_raffle(raffle_id)
@@ -700,11 +700,11 @@ class FreeRaffleCog(commands.Cog):
             return
         entries = await repo.list_entries(raffle_id)
         if not entries:
-            await self._send_ephemeral(interaction, "No entries yet.")
+            await self._send_ephemeral(interaction, "No entrants yet.")
             return
         lines = [f"<@{int(entry['discord_id'])}> — weight {int(entry.get('entry_weight') or 1)} via {entry.get('entry_source') or 'unknown'}" for entry in entries[:50]]
         extra = "" if len(entries) <= 50 else f"\n…and {len(entries) - 50} more."
-        await self._send_ephemeral(interaction, "📋 Entry List:\n" + "\n".join(lines) + extra)
+        await self._send_ephemeral(interaction, "📋 Entrants:\n" + "\n".join(lines) + extra)
 
     async def handle_reroll(self, interaction: discord.Interaction, raffle_id: int) -> None:
         try:

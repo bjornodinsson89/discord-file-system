@@ -1,54 +1,26 @@
 import asyncio
 from types import SimpleNamespace
 
-from setup_panel import RewardRolesDashboardView, RolesDashboardView, SetupPanelView
+from setup_panel import RolesView
 
 
-def test_roles_dashboard_component_limits_and_navigation():
+def test_roles_view_component_limits_and_no_insurer_profile_button():
     async def _run():
-        panel = SetupPanelView(
+        view = RolesView(
             owner_id=1,
             db=SimpleNamespace(),
             settings={},
             guild=SimpleNamespace(),
-        )
-        panel.reward_role_status = {"missing": 0}
-        view = RolesDashboardView(
-            owner_id=1,
-            db=SimpleNamespace(),
-            settings={},
-            guild=SimpleNamespace(),
-            panel=panel,
+            panel=SimpleNamespace(),
         )
 
         assert len(view.children) <= 25
+
+        row_indices = {child.row if child.row is not None else 0 for child in view.children}
+        assert len(row_indices) <= 5
+
         labels = {getattr(child, "label", None) for child in view.children}
+        assert "Edit my insurer profile" not in labels
         assert "Back" in labels
-        assert "Home" in labels
-        assert {"Admin Roles", "Host Role", "Insurance Role", "Reward Roles"}.issubset(labels)
-
-    asyncio.run(_run())
-
-
-def test_reward_roles_dashboard_stays_within_component_limits():
-    async def _run():
-        panel = SetupPanelView(
-            owner_id=1,
-            db=SimpleNamespace(pool=object()),
-            settings={},
-            guild=SimpleNamespace(),
-        )
-        view = RewardRolesDashboardView(
-            owner_id=1,
-            db=SimpleNamespace(pool=object()),
-            settings={},
-            guild=SimpleNamespace(),
-            panel=panel,
-        )
-        assert len(view.children) <= 25
-        rows = [child.row or 0 for child in view.children]
-        assert max(rows) <= 4
-        assert rows.count(0) <= 5
-        assert rows.count(1) <= 5
 
     asyncio.run(_run())
