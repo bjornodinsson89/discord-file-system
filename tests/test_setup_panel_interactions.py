@@ -3,7 +3,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import setup_panel
-from setup_panel import EngagementRolesView, _respond_callback_error
+from setup_panel import (
+    ConfirmActionView,
+    EngagementRolesView,
+    SetupPanelView,
+    _respond_callback_error,
+    build_channels_dashboard_embed,
+)
 
 
 class _Response:
@@ -87,6 +93,28 @@ def _build_view():
         guild=_Guild(),
         panel=SimpleNamespace(),
     )
+
+
+def _build_panel():
+    panel = SetupPanelView(
+        owner_id=55,
+        db=SimpleNamespace(pool=None),
+        settings={
+            "admin_role_ids": [1],
+            "jump_99k_channel_id": 10,
+            "raffle_purchase_channel_id": 11,
+            "raffle_giveaway_purchase_channel_id": 12,
+            "welcome_channel_id": 13,
+            "applications_admin_inbox_channel_id": 14,
+        },
+        guild=SimpleNamespace(id=77),
+    )
+    panel.store_settings = {"store_channel_id": 4321}
+    panel.reward_role_status = {"missing": 0}
+    panel.storefront_status = {"live": True, "active_items": 3}
+    panel.raffle_status = {"active_count": 2}
+    panel.giveaway_status = {"active_count": 4}
+    return panel
 
 
 async def _run_sync_reward_roles(monkeypatch):
@@ -181,19 +209,78 @@ def test_setup_save_store_changes_uses_store_repository_and_syncs(monkeypatch):
 
 
 async def _run_setup_summary_renders_store_channel_from_guild_settings():
-    panel = setup_panel.SetupPanelView(
-        owner_id=55,
-        db=SimpleNamespace(pool=None),
-        settings={},
-        guild=SimpleNamespace(),
-    )
-    panel.store_settings = {"store_channel_id": 4321}
+    panel = _build_panel()
 
     embed = panel._build_embed()
     store_field = next(field for field in embed.fields if field.name == "Store")
 
-    assert "Store channel: `4321`" in store_field.value
+    assert "Store Channel: **set**" in store_field.value
 
 
 def test_setup_summary_renders_store_channel_from_guild_settings():
     asyncio.run(_run_setup_summary_renders_store_channel_from_guild_settings())
+
+
+def test_setup_landing_page_shows_new_dashboard_sections():
+    async def _run():
+        panel = _build_panel()
+        embed = panel._build_embed()
+        assert embed.title.endswith("Admin Control Center")
+        section_names = {field.name for field in embed.fields}
+        assert {
+            "Server Status",
+            "Channels",
+            "Roles",
+            "Engagement",
+            "Raffles",
+            "Giveaways",
+            "Store",
+            "Welcome",
+            "Maintenance",
+        }.issubset(section_names)
+        labels = [child.label for child in panel.children if getattr(child, "label", None)]
+        assert labels == [
+            "Channels",
+            "Roles",
+            "Engagement",
+            "Raffles",
+            "Giveaways",
+            "Store",
+            "Welcome",
+            "Maintenance",
+        ]
+    asyncio.run(_run())
+
+
+def test_channels_section_embed_uses_plain_english_labels():
+    async def _run():
+        embed = build_channels_dashboard_embed(_build_panel())
+        text = "\n".join(field.value for field in embed.fields)
+        assert "Jump Channel" in text
+        assert "Giveaway Channel" in text
+        assert "Store Channel" in text
+        assert "Who Can Jump" in text
+    asyncio.run(_run())
+
+
+def test_reward_roles_view_uses_plain_labels():
+    async def _run():
+        view = _build_view()
+        labels = {getattr(child, "label", None) for child in view.children}
+        assert "Create / Repair Roles" in labels
+        assert "Reward Role Status" in labels
+        assert "View Engagement Config" not in labels
+    asyncio.run(_run())
+
+
+def test_dangerous_confirm_view_requires_confirmation():
+    async def _run():
+        triggered = []
+
+        async def _on_confirm(_interaction):
+            triggered.append(True)
+
+        view = ConfirmActionView(owner_id=55, on_confirm=_on_confirm)
+        labels = [child.label for child in view.children if getattr(child, "label", None)]
+        assert labels == ["Confirm", "Cancel"]
+    asyncio.run(_run())

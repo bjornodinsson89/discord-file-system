@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from setup_panel import ChannelsViewPage4, SetupPanelView, StoreSetupView, _channels_embed
+from setup_panel import ChannelConfigView, ChannelsDashboardView, SetupPanelView, StoreSetupView, build_channels_dashboard_embed
 
 
 class _Guild:
@@ -15,10 +15,13 @@ class _Guild:
         return None
 
 
-def test_channels_embed_mentions_who_can_jump_panel_channel():
-    embed = _channels_embed()
-    assert "Who Can Jump panel channel" in (embed.description or "")
-    assert "Store channel" not in (embed.description or "")
+def test_channels_embed_mentions_who_can_jump_and_store_channels():
+    async def _run():
+        panel = SetupPanelView(owner_id=1, db=SimpleNamespace(), settings={}, guild=_Guild())
+        embed = build_channels_dashboard_embed(panel)
+        assert "Who Can Jump" in embed.fields[0].value
+        assert "Store Channel" in embed.fields[0].value
+    asyncio.run(_run())
 
 
 def test_setup_summary_includes_who_can_jump_channel_line():
@@ -36,27 +39,36 @@ def test_setup_summary_includes_who_can_jump_channel_line():
         )
         embed = panel._build_embed()
         channels_field = next(field for field in embed.fields if field.name == "Channels")
-        assert "Who Can Jump panel: Not set" in channels_field.value
+        assert "Jump: **not set**" in channels_field.value
 
     asyncio.run(_run())
 
 
-def test_channels_view_page4_no_longer_has_store_channel_selector():
+def test_channel_config_view_stays_within_discord_limits():
     async def _run():
-        page = ChannelsViewPage4(
+        panel = SetupPanelView(
             owner_id=1,
             db=SimpleNamespace(),
             settings={},
             guild=_Guild(),
-            panel=SimpleNamespace(),
+        )
+        page = ChannelConfigView(
+            owner_id=1,
+            db=SimpleNamespace(),
+            settings={},
+            guild=_Guild(),
+            panel=panel,
+            channel_items=[
+                ("insurance_channel_id", "Insurance Channel"),
+                ("jewelry_alert_channel_id", "Jewelry Alerts"),
+                ("who_can_jump_channel_id", "Who Can Jump"),
+            ],
         )
         selectors = [
             child for child in page.children if child.__class__.__name__ == "ChannelSelect"
         ]
         assert len(selectors) == 3
-        assert not any(
-            getattr(child, "placeholder", "") == "Set Store channel" for child in selectors
-        )
+        assert len([child for child in page.children if getattr(child, "label", None)]) == 2
 
     asyncio.run(_run())
 
@@ -80,5 +92,22 @@ def test_store_setup_view_has_store_channel_selector():
             child for child in page.children if isinstance(getattr(child, "placeholder", None), str)
         ]
         assert any(getattr(child, "placeholder", "") == "Set Store channel" for child in selectors)
+
+    asyncio.run(_run())
+
+
+def test_channels_dashboard_has_back_and_home_navigation():
+    async def _run():
+        panel = SetupPanelView(owner_id=1, db=SimpleNamespace(), settings={}, guild=_Guild())
+        view = ChannelsDashboardView(
+            owner_id=1,
+            db=SimpleNamespace(),
+            settings={},
+            guild=_Guild(),
+            panel=panel,
+        )
+        labels = {getattr(child, "label", None) for child in view.children}
+        assert "Back" in labels
+        assert "Home" in labels
 
     asyncio.run(_run())

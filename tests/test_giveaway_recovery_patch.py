@@ -48,7 +48,7 @@ def test_host_controls_include_required_actions_and_reroll_state():
         assert "⏹️ End Giveaway Now" in labels
         assert "❌ Cancel Giveaway" in labels
         assert "🔄 Refresh Panel" in labels
-        assert "📋 View Entrants" in labels
+        assert "📋 View Entries" in labels
         assert labels["🎲 Reroll Winner"].disabled is True
 
     asyncio.run(_build())
@@ -62,6 +62,8 @@ def test_giveaway_creation_and_channel_resolution_wired_in_source():
     assert "auto_entry_enabled" in src
     assert "weighted_enabled" in src
     assert "This giveaway uses auto-entry only." in src
+    assert "No entries yet." in src
+    assert "Entry List" in src
 
 
 def test_raffle_recovery_controls_and_repository_wired_in_source():
