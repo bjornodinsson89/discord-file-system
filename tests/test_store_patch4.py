@@ -189,9 +189,9 @@ def test_store_migration_contains_required_new_tables_and_no_torn_items_repurpos
 def test_store_setup_panel_and_commands_exist():
     setup_src = Path("setup_panel.py").read_text(encoding="utf-8")
     assert "class StoreSetupView" in setup_src
-    assert "Toggle store enabled" in setup_src
-    assert "Toggle Torn item store" in setup_src
-    assert "Toggle Discord perk store" in setup_src
+    assert "Store On/Off" in setup_src
+    assert "Torn Items" in setup_src
+    assert "Discord Perks" in setup_src
 
     cog_src = Path("cogs/store.py").read_text(encoding="utf-8")
     assert '@app_commands.command(name="store"' not in cog_src
