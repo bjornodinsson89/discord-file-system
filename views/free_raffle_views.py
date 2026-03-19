@@ -43,7 +43,7 @@ class HostControlsView(discord.ui.View):
         on_end_now: HostHandler,
         on_cancel: HostHandler,
         on_refresh: HostHandler,
-        on_view_entrants: HostHandler,
+        on_view_entries: HostHandler,
         on_reroll: HostHandler,
         disabled: bool = False,
         can_reroll: bool = False,
@@ -53,7 +53,7 @@ class HostControlsView(discord.ui.View):
         self.on_end_now = on_end_now
         self.on_cancel = on_cancel
         self.on_refresh = on_refresh
-        self.on_view_entrants = on_view_entrants
+        self.on_view_entries = on_view_entries
         self.on_reroll = on_reroll
 
         end_button = discord.ui.Button(
@@ -86,15 +86,15 @@ class HostControlsView(discord.ui.View):
         refresh_button.callback = self._on_refresh
         self.add_item(refresh_button)
 
-        entrants_button = discord.ui.Button(
-            label="📋 View Entrants",
+        entries_button = discord.ui.Button(
+            label="📋 View Entries",
             style=discord.ButtonStyle.secondary,
             custom_id=f"fr_entrants:{raffle_id}",
             disabled=False,
             row=1,
         )
-        entrants_button.callback = self._on_view_entrants
-        self.add_item(entrants_button)
+        entries_button.callback = self._on_view_entries
+        self.add_item(entries_button)
 
         reroll_button = discord.ui.Button(
             label="🎲 Reroll Winner",
@@ -115,8 +115,8 @@ class HostControlsView(discord.ui.View):
     async def _on_refresh(self, interaction: discord.Interaction) -> None:
         await self.on_refresh(interaction, self.raffle_id)
 
-    async def _on_view_entrants(self, interaction: discord.Interaction) -> None:
-        await self.on_view_entrants(interaction, self.raffle_id)
+    async def _on_view_entries(self, interaction: discord.Interaction) -> None:
+        await self.on_view_entries(interaction, self.raffle_id)
 
     async def _on_reroll(self, interaction: discord.Interaction) -> None:
         await self.on_reroll(interaction, self.raffle_id)

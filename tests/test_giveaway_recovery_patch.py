@@ -40,7 +40,7 @@ def test_host_controls_include_required_actions_and_reroll_state():
             on_end_now=_noop,
             on_cancel=_noop,
             on_refresh=_noop,
-            on_view_entrants=_noop,
+            on_view_entries=_noop,
             on_reroll=_noop,
             can_reroll=False,
         )
@@ -48,7 +48,7 @@ def test_host_controls_include_required_actions_and_reroll_state():
         assert "⏹️ End Giveaway Now" in labels
         assert "❌ Cancel Giveaway" in labels
         assert "🔄 Refresh Panel" in labels
-        assert "📋 View Entrants" in labels
+        assert "📋 View Entries" in labels
         assert labels["🎲 Reroll Winner"].disabled is True
 
     asyncio.run(_build())
