@@ -283,10 +283,16 @@ def test_system_health_page_exists_and_maintenance_actions_are_reachable(monkeyp
         )
 
         maintenance = MaintenanceHubView(
-            owner_id=1, db=SimpleNamespace(pool=None), settings=panel.settings, guild=panel.guild, panel=panel
+            owner_id=1,
+            db=SimpleNamespace(pool=None),
+            settings=panel.settings,
+            guild=panel.guild,
+            panel=panel,
         )
         system_health = next(
-            child for child in maintenance.children if getattr(child, "label", None) == "System Health"
+            child
+            for child in maintenance.children
+            if getattr(child, "label", None) == "System Health"
         )
         await system_health.callback(interaction)
 
@@ -303,7 +309,14 @@ def test_system_health_page_exists_and_maintenance_actions_are_reachable(monkeyp
             assert line in status_value
 
         labels = {getattr(child, "label", None) for child in view.children}
-        assert {"Refresh Health", "Repair Roles", "Rebuild Storefront", "Repair Panels", "Back", "Home"} <= labels
+        assert {
+            "Refresh Health",
+            "Repair Roles",
+            "Rebuild Storefront",
+            "Repair Panels",
+            "Back",
+            "Home",
+        } <= labels
 
     asyncio.run(_run())
 

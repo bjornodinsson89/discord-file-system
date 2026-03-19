@@ -53,9 +53,7 @@ def test_channels_view_page4_no_longer_has_store_channel_selector():
             child for child in page.children if child.__class__.__name__ == "ChannelSelect"
         ]
         assert len(selectors) == 3
-        assert not any(
-            getattr(child, "placeholder", "") == "Store Channel" for child in selectors
-        )
+        assert not any(getattr(child, "placeholder", "") == "Store Channel" for child in selectors)
 
     asyncio.run(_run())
 
