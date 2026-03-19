@@ -9,6 +9,7 @@ from setup_panel import (
     ChannelsHubView,
     ConfirmActionView,
     MaintenanceHubView,
+    SystemHealthView,
     SetupPanelView,
     StoreHubView,
     send_setup_panel,
@@ -185,9 +186,19 @@ def test_plain_english_labels_and_entries_wording():
     assert "Store Channel" in setup_src
     assert "Reward Roles" in setup_src
     assert "Repair Roles" in setup_src
+    assert "Entrants" not in setup_src
     assert "Entrants" not in giveaway_src
     assert "Entrants" not in view_src
     assert "View Entries" in view_src
+    for label in [
+        "Insurance Channel",
+        "Jewelry Alerts",
+        "Who Can Jump",
+        "Applications Inbox",
+        "Store On/Off",
+        "Auto Entry Rules",
+    ]:
+        assert label in setup_src
 
 
 def test_back_and_home_navigation(monkeypatch):
@@ -253,6 +264,59 @@ def test_dangerous_actions_require_confirmation(monkeypatch):
         )
         await rebuild_profile.callback(interaction)
         assert isinstance(sent[-1][1], ConfirmActionView)
+
+    asyncio.run(_run())
+
+
+def test_system_health_page_exists_and_maintenance_actions_are_reachable(monkeypatch):
+    async def _run():
+        panel = _build_panel()
+        panel.store_settings = {"store_channel_id": 555, "enabled": True}
+        sent = []
+
+        async def _fake_send_or_edit(_interaction, embed, view=None):
+            sent.append((embed.title, embed.fields[0].value if embed.fields else "", view))
+
+        monkeypatch.setattr(setup_panel, "_send_or_edit", _fake_send_or_edit)
+        interaction = SimpleNamespace(
+            response=_FakeResponse(), guild=panel.guild, guild_id=123, user=SimpleNamespace(id=1)
+        )
+
+        maintenance = MaintenanceHubView(
+            owner_id=1,
+            db=SimpleNamespace(pool=None),
+            settings=panel.settings,
+            guild=panel.guild,
+            panel=panel,
+        )
+        system_health = next(
+            child
+            for child in maintenance.children
+            if getattr(child, "label", None) == "System Health"
+        )
+        await system_health.callback(interaction)
+
+        title, status_value, view = sent[-1]
+        assert title.endswith("System Health")
+        assert isinstance(view, SystemHealthView)
+        for line in [
+            "Reward Roles:",
+            "Storefront:",
+            "Giveaway Panels:",
+            "Raffle Panels:",
+            "Welcome / Onboarding:",
+        ]:
+            assert line in status_value
+
+        labels = {getattr(child, "label", None) for child in view.children}
+        assert {
+            "Refresh Health",
+            "Repair Roles",
+            "Rebuild Storefront",
+            "Repair Panels",
+            "Back",
+            "Home",
+        } <= labels
 
     asyncio.run(_run())
 

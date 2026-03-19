@@ -416,6 +416,24 @@ class SetupPanelView(OwnerView):
         reward_roles = self.engagement_settings.get("reward_roles") or self.engagement_settings.get("reward_role_ids") or []
         return "Healthy" if reward_roles else "Needs review"
 
+    def _storefront_health(self) -> str:
+        return "Live" if self.store_settings.get("store_channel_id") and self.store_settings.get("enabled", False) else "Missing"
+
+    def _panel_health(self, key: str) -> str:
+        return "Live" if self.settings.get(key) else "Missing"
+
+    def _welcome_health(self) -> str:
+        return "Healthy" if self.settings.get("welcome_channel_id") else "Missing"
+
+    def _system_health_lines(self) -> list[str]:
+        return [
+            f"Reward Roles: **{self._reward_role_health()}**",
+            f"Storefront: **{self._storefront_health()}**",
+            f"Giveaway Panels: **{self._panel_health('raffle_giveaway_purchase_channel_id')}**",
+            f"Raffle Panels: **{self._panel_health('raffle_purchase_channel_id')}**",
+            f"Welcome / Onboarding: **{self._welcome_health()}**",
+        ]
+
     def _dashboard_summary_lines(self) -> list[str]:
         return [
             f"Jump Channel: **{self._channel_status('jump_99k_channel_id')}**",
@@ -423,7 +441,7 @@ class SetupPanelView(OwnerView):
             f"Welcome Channel: **{self._channel_status('welcome_channel_id')}**",
             f"Admin Roles: **{self._format_admin_roles()}**",
             f"Reward Roles: **{self._reward_role_health()}**",
-            f"Storefront: **{'Live' if self.store_settings.get('store_channel_id') and self.store_settings.get('enabled', False) else 'Needs review'}**",
+            f"Storefront: **{self._storefront_health()}**",
         ]
 
     def _build_embed(self) -> discord.Embed:
@@ -438,7 +456,7 @@ class SetupPanelView(OwnerView):
                 f"Jump Channel: {self._channel_status('jump_99k_channel_id')}\n"
                 f"Raffle Channel: {self._channel_status('raffle_purchase_channel_id')}\n"
                 f"Giveaway Channel: {self._channel_status('raffle_giveaway_purchase_channel_id')}\n"
-                f"Who Can Jump panel: {self._channel_status('who_can_jump_channel_id')}"
+                f"Who Can Jump: {self._channel_status('who_can_jump_channel_id')}"
             ),
             inline=False,
         )
@@ -648,12 +666,11 @@ class SetupPanelView(OwnerView):
 
     @discord.ui.button(label="Maintenance", style=discord.ButtonStyle.secondary, row=1)
     async def maintenance_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_section_embed("Maintenance", "Run diagnostics, repair tools, and rebuild tools.", [
-            f"Reward Roles: **{self._reward_role_health()}**",
-            f"Storefront: **{'Healthy' if self.store_settings.get('store_channel_id') else 'Missing'}**",
-            "Giveaway Panels: **Check host tools**",
-            "Raffle Panels: **Check recovery tools**",
-        ]), MaintenanceHubView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
+        await _send_or_edit(
+            interaction,
+            build_section_embed("Maintenance", "Check health, repairs, and rebuild tools.", self._system_health_lines()),
+            MaintenanceHubView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self),
+        )
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=1)
     async def close_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -711,13 +728,7 @@ class ChannelSelect(discord.ui.ChannelSelect):
 def _channels_embed() -> discord.Embed:
     return create_info_embed(
         "Channels",
-        "Use buttons below to pick each channel.\n\n"
-        "- **Pools management channel**: where pool management and commands live.\n"
-        "- **Pools purchase panel channel**: where the pool buy-in panel is posted.\n"
-        "- **Raffle announcement channel**: where new raffle announcements are posted.\n"
-        "- **Raffle purchase panel channel**: where paid raffle purchase panels are posted.\n"
-        "- **Raffle giveaway purchase panel channel**: where giveaway raffle panels are posted (falls back to raffle purchase panel channel).\n"
-        "- **Jewelry alert channel**: where the bot posts “Jewlery store wide open” shoplifting window alerts.\n- **Who Can Jump panel channel**: where the bot maintains the live host readiness board.",
+        "Pick the channels each system uses.",
     )
 
 
@@ -810,9 +821,9 @@ class ChannelsViewPage4(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.remove_item(self.back_btn)
-        self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Set insurance requests channel", row=0))
-        self.add_item(ChannelSelect(self.panel, "jewelry_alert_channel_id", "Set jewelry alert channel", row=1))
-        self.add_item(ChannelSelect(self.panel, "who_can_jump_channel_id", "Set Who Can Jump panel channel", row=2))
+        self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Insurance Channel", row=0))
+        self.add_item(ChannelSelect(self.panel, "jewelry_alert_channel_id", "Jewelry Alerts", row=1))
+        self.add_item(ChannelSelect(self.panel, "who_can_jump_channel_id", "Who Can Jump", row=2))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
     async def channels_back_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -834,10 +845,7 @@ class ChannelsViewPage4(BackView):
                 interaction,
                 create_info_embed(
                     "Applications",
-                    "Configure channels for the applications system.\n\n"
-                    "- **Applications category (optional)**: where private application channels are created.\n"
-                    "- **Applications admin inbox (required)**: where Host + Insurance applications are sent for approval.\n"
-                    "- Set admin inbox using the channel picker or **Set inbox by ID/mention**.",
+                    "Pick where application reviews are created and sent.",
                 ),
                 ChannelsViewApplications(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
             )
@@ -851,12 +859,12 @@ class ChannelsViewApplications(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.remove_item(self.back_btn)
-        self.add_item(ChannelSelect(self.panel, "applications_category_id", "Set applications category (optional)", row=0, channel_types=[discord.ChannelType.category]))
+        self.add_item(ChannelSelect(self.panel, "applications_category_id", "Applications Category", row=0, channel_types=[discord.ChannelType.category]))
         self.add_item(
             ChannelSelect(
                 self.panel,
                 "applications_admin_inbox_channel_id",
-                "Set applications admin inbox channel",
+                "Applications Inbox",
                 row=1,
                 channel_types=[discord.ChannelType.text, discord.ChannelType.news],
             )
@@ -871,7 +879,7 @@ class ChannelsViewApplications(BackView):
         except Exception as error:
             await _respond_callback_error(interaction, error, "setup_channels_next_error")
 
-    @discord.ui.button(label="Set inbox by ID/mention", style=discord.ButtonStyle.secondary, row=2, custom_id="setup:applications:set_inbox_by_id")
+    @discord.ui.button(label="Inbox by ID", style=discord.ButtonStyle.secondary, row=2, custom_id="setup:applications:set_inbox_by_id")
     async def set_inbox_by_id_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             await interaction.response.send_modal(ApplicationsInboxChannelModal(self.panel))
@@ -1181,7 +1189,7 @@ class InsurerCategoryPickerView(discord.ui.View):
 class WelcomeView(BackView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.add_item(ChannelSelect(self.panel, "welcome_channel_id", "Set welcome channel (clear to set none)"))
+        self.add_item(ChannelSelect(self.panel, "welcome_channel_id", "Welcome Channel"))
 
     @discord.ui.button(label="Toggle Welcome", style=discord.ButtonStyle.primary)
     async def toggle_welcome(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -1859,7 +1867,7 @@ class EngagementMaintenanceView(BackView):
 
 class StoreFulfillmentChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, panel: SetupPanelView):
-        super().__init__(placeholder="Set store fulfillment/admin channel", min_values=0, max_values=1, channel_types=[discord.ChannelType.text, discord.ChannelType.news], row=1)
+        super().__init__(placeholder="Fulfillment Channel", min_values=0, max_values=1, channel_types=[discord.ChannelType.text, discord.ChannelType.news], row=1)
         self.panel = panel
 
     async def callback(self, interaction: discord.Interaction):
@@ -1870,7 +1878,7 @@ class StoreFulfillmentChannelSelect(discord.ui.ChannelSelect):
 class StoreChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, panel: SetupPanelView):
         super().__init__(
-            placeholder="Set Store channel",
+            placeholder="Store Channel",
             min_values=0,
             max_values=1,
             channel_types=[discord.ChannelType.text, discord.ChannelType.news],
@@ -1920,15 +1928,15 @@ class StoreSetupView(BackView):
         self.add_item(StoreChannelSelect(self.panel))
         self.add_item(StoreFulfillmentChannelSelect(self.panel))
 
-    @discord.ui.button(label="Toggle store enabled", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="Store On/Off", style=discord.ButtonStyle.primary, row=2)
     async def toggle_store(self, interaction: discord.Interaction, _: discord.ui.Button):
         await self.panel.save_store_changes(interaction, {"enabled": not bool(self.panel.store_settings.get("enabled", False))})
 
-    @discord.ui.button(label="Toggle Torn item store", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="Torn Items", style=discord.ButtonStyle.primary, row=3)
     async def toggle_torn(self, interaction: discord.Interaction, _: discord.ui.Button):
         await self.panel.save_store_changes(interaction, {"torn_item_store_enabled": not bool(self.panel.store_settings.get("torn_item_store_enabled", True))})
 
-    @discord.ui.button(label="Toggle Discord perk store", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="Discord Perks", style=discord.ButtonStyle.primary, row=3)
     async def toggle_discord_perk(self, interaction: discord.Interaction, _: discord.ui.Button):
         await self.panel.save_store_changes(interaction, {"discord_perk_store_enabled": not bool(self.panel.store_settings.get("discord_perk_store_enabled", True))})
 
@@ -2087,9 +2095,17 @@ class RolesHubView(DashboardSectionView):
     async def insurance_role(self, interaction: discord.Interaction, _: discord.ui.Button):
         await _send_or_edit(interaction, build_section_embed("Insurance Role", "Set the insurer role.", [f"Insurance Role: **{self.panel._role_status('insurer_role_id')}**"]), RolesInsuranceView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
 
-    @discord.ui.button(label="Reward Roles", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Role Health", style=discord.ButtonStyle.secondary, row=1)
     async def reward_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_section_embed("Reward Roles", "Create, repair, and sync reward roles.", [f"Reward Roles: **{self.panel._reward_role_health()}**"]), EngagementRolesView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+        await _send_or_edit(
+            interaction,
+            build_section_embed(
+                "Role Health",
+                "Review reward-role status and use Maintenance for repairs.",
+                [f"Reward Roles: **{self.panel._reward_role_health()}**"],
+            ),
+            RewardRoleHealthView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
+        )
 
 
 class RolesAdminView(DashboardSectionView):
@@ -2108,6 +2124,25 @@ class RolesInsuranceView(DashboardSectionView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_item(SingleRoleSelect(self.panel, "insurer_role_id", "Insurance Role", row=0))
+
+
+class RewardRoleHealthView(DashboardSectionView):
+    @discord.ui.button(label="View Status", style=discord.ButtonStyle.primary, row=0)
+    async def view_status(self, interaction: discord.Interaction, _: discord.ui.Button):
+        service = RoleRewardService(EngagementRepository(self.db.pool))
+        status = await service.rewards_status(interaction.guild.id, interaction.guild)
+        await interaction.response.send_message(
+            f"Reward Roles: `{status['linked']}/{status['total']}` linked and present.\nMissing: `{status['missing']}`.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Open Maintenance", style=discord.ButtonStyle.secondary, row=0)
+    async def open_maintenance(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(
+            interaction,
+            build_section_embed("Maintenance", "Check health, repairs, and rebuild tools.", self.panel._system_health_lines()),
+            MaintenanceHubView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
+        )
 
 
 class EngagementHubView(DashboardSectionView):
@@ -2157,7 +2192,7 @@ class GiveawaysHubView(DashboardSectionView):
     async def giveaway_channel(self, interaction: discord.Interaction, _: discord.ui.Button):
         await _send_or_edit(interaction, build_section_embed("Giveaway Channel", "Choose where giveaway panels are posted.", [f"Giveaway Channel: **{self.panel._channel_status('raffle_giveaway_purchase_channel_id')}**"]), GiveawayChannelView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
 
-    @discord.ui.button(label="Entry Rules", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Auto Entry Rules", style=discord.ButtonStyle.primary, row=0)
     async def entry_rules(self, interaction: discord.Interaction, _: discord.ui.Button):
         await _send_or_edit(interaction, create_info_embed("Entry Rules", "Adjust button entry, weighted mode, and auto entry."), EngagementEventXPView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
 
@@ -2165,9 +2200,9 @@ class GiveawaysHubView(DashboardSectionView):
     async def host_tools(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.send_message("Use the giveaway host controls on the live giveaway message for View Entries, End Giveaway, and refresh actions.", ephemeral=True)
 
-    @discord.ui.button(label="Refresh Panel", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Panel Tools", style=discord.ButtonStyle.secondary, row=1)
     async def refresh_panel(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("Refresh Panel is available from the live giveaway host tools to avoid changing giveaway behavior here.", ephemeral=True)
+        await interaction.response.send_message("Repairs and refresh actions stay on the live giveaway host tools.", ephemeral=True)
 
 
 class GiveawayChannelView(DashboardSectionView):
@@ -2180,10 +2215,6 @@ class StoreHubView(DashboardSectionView):
     @discord.ui.button(label="Store Channel", style=discord.ButtonStyle.primary, row=0)
     async def store_channel(self, interaction: discord.Interaction, _: discord.ui.Button):
         await _send_or_edit(interaction, create_info_embed("Store Channel", "Choose where the storefront is published."), StoreSetupView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
-
-    @discord.ui.button(label="Rebuild Storefront", style=discord.ButtonStyle.secondary, row=0)
-    async def rebuild_storefront(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, create_info_embed("Confirm Rebuild", "Rebuilding republishes storefront content."), ConfirmStorefrontRebuildView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
 
     @discord.ui.button(label="Inventory", style=discord.ButtonStyle.primary, row=0)
     async def inventory(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -2227,7 +2258,11 @@ class WelcomeHubView(DashboardSectionView):
 class MaintenanceHubView(DashboardSectionView):
     @discord.ui.button(label="System Health", style=discord.ButtonStyle.primary, row=0)
     async def system_health(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message("System health: reward roles, storefront, raffle panels, and giveaway panels are shown in this dashboard.", ephemeral=True)
+        await _send_or_edit(
+            interaction,
+            build_section_embed("System Health", "Quick health checks for your admin systems.", self.panel._system_health_lines()),
+            SystemHealthView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
+        )
 
     @discord.ui.button(label="Repair Tools", style=discord.ButtonStyle.primary, row=0)
     async def repair_tools(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -2240,6 +2275,35 @@ class MaintenanceHubView(DashboardSectionView):
     @discord.ui.button(label="Debug", style=discord.ButtonStyle.primary, row=1)
     async def debug(self, interaction: discord.Interaction, _: discord.ui.Button):
         await _send_or_edit(interaction, create_info_embed("Debug", "Inspect member engagement data."), DebugToolsView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+
+
+class SystemHealthView(DashboardSectionView):
+    @discord.ui.button(label="Refresh Health", style=discord.ButtonStyle.primary, row=0)
+    async def refresh_health(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(
+            interaction,
+            build_section_embed("System Health", "Quick health checks for your admin systems.", self.panel._system_health_lines()),
+            SystemHealthView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
+        )
+
+    @discord.ui.button(label="Repair Roles", style=discord.ButtonStyle.primary, row=0)
+    async def repair_roles(self, interaction: discord.Interaction, _: discord.ui.Button):
+        view = RepairToolsView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel)
+        button = next(child for child in view.children if getattr(child, "label", None) == "Repair Roles")
+        await button.callback(interaction)
+
+    @discord.ui.button(label="Rebuild Storefront", style=discord.ButtonStyle.secondary, row=0)
+    async def rebuild_storefront(self, interaction: discord.Interaction, _: discord.ui.Button):
+        view = RepairToolsView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel)
+        button = next(child for child in view.children if getattr(child, "label", None) == "Rebuild Storefront")
+        await button.callback(interaction)
+
+    @discord.ui.button(label="Repair Panels", style=discord.ButtonStyle.secondary, row=1)
+    async def repair_panels(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_message(
+            "Use live raffle and giveaway host tools to refresh or repair panels without changing setup behavior.",
+            ephemeral=True,
+        )
 
 
 class RepairToolsView(DashboardSectionView):
@@ -2284,4 +2348,3 @@ class ConfirmActionView(DashboardSectionView):
     @discord.ui.button(label="Continue", style=discord.ButtonStyle.danger, row=0)
     async def continue_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.send_modal(self.modal_factory())
-

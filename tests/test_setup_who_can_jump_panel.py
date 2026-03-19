@@ -17,8 +17,7 @@ class _Guild:
 
 def test_channels_embed_mentions_who_can_jump_panel_channel():
     embed = _channels_embed()
-    assert "Who Can Jump panel channel" in (embed.description or "")
-    assert "Store channel" not in (embed.description or "")
+    assert "Pick the channels each system uses." == (embed.description or "")
 
 
 def test_setup_summary_includes_who_can_jump_channel_line():
@@ -36,7 +35,7 @@ def test_setup_summary_includes_who_can_jump_channel_line():
         )
         embed = panel._build_embed()
         channels_field = next(field for field in embed.fields if field.name == "Channels")
-        assert "Who Can Jump panel: Not set" in channels_field.value
+        assert "Who Can Jump: Not set" in channels_field.value
 
     asyncio.run(_run())
 
@@ -54,9 +53,7 @@ def test_channels_view_page4_no_longer_has_store_channel_selector():
             child for child in page.children if child.__class__.__name__ == "ChannelSelect"
         ]
         assert len(selectors) == 3
-        assert not any(
-            getattr(child, "placeholder", "") == "Set Store channel" for child in selectors
-        )
+        assert not any(getattr(child, "placeholder", "") == "Store Channel" for child in selectors)
 
     asyncio.run(_run())
 
@@ -79,6 +76,6 @@ def test_store_setup_view_has_store_channel_selector():
         selectors = [
             child for child in page.children if isinstance(getattr(child, "placeholder", None), str)
         ]
-        assert any(getattr(child, "placeholder", "") == "Set Store channel" for child in selectors)
+        assert any(getattr(child, "placeholder", "") == "Store Channel" for child in selectors)
 
     asyncio.run(_run())

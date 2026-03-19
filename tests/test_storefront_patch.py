@@ -170,6 +170,7 @@ def test_store_channel_selector_lives_in_store_setup():
     assert "class StoreChannelSelect(discord.ui.ChannelSelect):" in src
     assert "self.add_item(StoreChannelSelect(self.panel))" in src
     assert 'ChannelSelect(self.panel, "store_channel_id", "Set Store channel"' not in src
+    assert 'placeholder="Store Channel"' in src
 
 
 def test_storefront_sync_creates_hub_admin_and_item_messages_without_duplicates():
