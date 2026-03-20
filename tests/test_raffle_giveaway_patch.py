@@ -26,7 +26,11 @@ class _FakeResponse:
 
 class _FakeInteraction:
     def __init__(self, user_id: int = 123, guild_id: int = 456):
-        self.user = SimpleNamespace(id=user_id, guild_permissions=SimpleNamespace(administrator=False, manage_guild=False), roles=[])
+        self.user = SimpleNamespace(
+            id=user_id,
+            guild_permissions=SimpleNamespace(administrator=False, manage_guild=False),
+            roles=[],
+        )
         self.guild_id = guild_id
         self.response = _FakeResponse()
 
@@ -36,7 +40,9 @@ def test_giveaway_start_allows_normal_user_without_api_key_or_special_role(monke
         async def _unexpected_require_api_key(*_args, **_kwargs):
             raise AssertionError("giveaway start should not require an API key")
 
-        monkeypatch.setattr("cogs.free_raffle.require_api_key", _unexpected_require_api_key, raising=False)
+        monkeypatch.setattr(
+            "cogs.free_raffle.require_api_key", _unexpected_require_api_key, raising=False
+        )
         cog = FreeRaffleCog(SimpleNamespace())
         interaction = _FakeInteraction()
 
