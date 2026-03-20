@@ -56,7 +56,7 @@ def test_host_controls_include_required_actions_and_reroll_state():
 
 def test_giveaway_creation_and_channel_resolution_wired_in_source():
     src = Path("cogs/free_raffle.py").read_text(encoding="utf-8")
-    assert "Choose the giveaway entry mode and posting channel." in src
+    assert "Choose the giveaway entry mode." in src
     assert "GuildSettingsRepository.resolve_raffle_giveaway_purchase_channel_id" in src
     assert "button_join_enabled" in src
     assert "auto_entry_enabled" in src
@@ -79,3 +79,10 @@ def test_raffle_recovery_controls_and_repository_wired_in_source():
     assert "recreated_from_entry_id" in repo_src
     assert "ADD COLUMN IF NOT EXISTS superseded_by_raffle_id" in migration_src
     assert "ADD COLUMN IF NOT EXISTS recreated_from_entry_id" in migration_src
+
+
+def test_giveaway_creation_source_removes_channel_selector_copy():
+    src = Path("cogs/free_raffle.py").read_text(encoding="utf-8")
+    assert "GiveawayPostChannelSelect" not in src
+    assert "posting channel" not in src
+    assert "override_channel_id" not in src

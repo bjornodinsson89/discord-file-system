@@ -145,14 +145,10 @@ class FreeRaffleModal(discord.ui.Modal, title="Giveaway"):
         self.cog.store_create_draft(int(interaction.user.id), draft)
         await interaction.response.defer(ephemeral=True, thinking=False)
         await interaction.followup.send(
-            content="Choose the giveaway entry mode and posting channel.",
-            embed=self.cog.build_create_summary_embed(
-                draft, mode_key="button", channel_id=int(default_channel_id)
-            ),
+            content="Choose the giveaway entry mode.",
+            embed=self.cog.build_create_summary_embed(draft, mode_key="button"),
             ephemeral=True,
-            view=GiveawayCreateFlowView(
-                self.cog, int(interaction.user.id), int(default_channel_id)
-            ),
+            view=GiveawayCreateFlowView(self.cog, int(interaction.user.id)),
         )
 
 
@@ -176,39 +172,17 @@ class GiveawayEntryModeSelect(discord.ui.Select):
             await view.set_mode(interaction, self.values[0])
 
 
-class GiveawayPostChannelSelect(discord.ui.ChannelSelect):
-    def __init__(self, default_channel_id: int | None):
-        super().__init__(
-            placeholder="Choose where to post the giveaway",
-            min_values=0,
-            max_values=1,
-            channel_types=[discord.ChannelType.text],
-            row=1,
-            default_values=[discord.Object(id=default_channel_id)] if default_channel_id else [],
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        view = self.view
-        if isinstance(view, GiveawayCreateFlowView):
-            selected = self.values[0] if self.values else None
-            await view.set_channel(interaction, getattr(selected, "id", None))
-
-
 class GiveawayCreateFlowView(discord.ui.View):
-    def __init__(self, cog: "FreeRaffleCog", owner_id: int, default_channel_id: int | None):
+    def __init__(self, cog: "FreeRaffleCog", owner_id: int):
         super().__init__(timeout=300)
         self.cog = cog
         self.owner_id = owner_id
         self.mode_key = "button"
-        self.post_channel_id = default_channel_id
         self.add_item(GiveawayEntryModeSelect())
-        self.add_item(GiveawayPostChannelSelect(default_channel_id))
 
     async def refresh_message(self, interaction: discord.Interaction) -> None:
         draft = self.cog.get_create_draft(self.owner_id) or {}
-        embed = self.cog.build_create_summary_embed(
-            draft, mode_key=self.mode_key, channel_id=self.post_channel_id
-        )
+        embed = self.cog.build_create_summary_embed(draft, mode_key=self.mode_key)
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -221,11 +195,6 @@ class GiveawayCreateFlowView(discord.ui.View):
 
     async def set_mode(self, interaction: discord.Interaction, mode_key: str) -> None:
         self.mode_key = mode_key if mode_key in GIVEAWAY_ENTRY_MODE_CHOICES else "button"
-        await self.refresh_message(interaction)
-
-    async def set_channel(self, interaction: discord.Interaction, channel_id: int | None) -> None:
-        if channel_id:
-            self.post_channel_id = int(channel_id)
         await self.refresh_message(interaction)
 
     @discord.ui.button(label="Configure Auto Entry", style=discord.ButtonStyle.secondary, row=2)
@@ -246,7 +215,6 @@ class GiveawayCreateFlowView(discord.ui.View):
             interaction,
             owner_id=self.owner_id,
             mode_key=self.mode_key,
-            override_channel_id=self.post_channel_id,
         )
 
 
@@ -929,16 +897,13 @@ class FreeRaffleCog(commands.Cog):
         )
         return embed
 
-    def build_create_summary_embed(
-        self, draft: dict, *, mode_key: str, channel_id: int | None
-    ) -> discord.Embed:
+    def build_create_summary_embed(self, draft: dict, *, mode_key: str) -> discord.Embed:
         mode = GIVEAWAY_ENTRY_MODE_CHOICES.get(mode_key, GIVEAWAY_ENTRY_MODE_CHOICES["button"])
         auto_enabled = bool(mode["auto_entry_enabled"])
         lines = [
             f"Prize: **{str(draft.get('prize_text') or 'Not set')}**",
             f"Ends In: **{int(draft.get('duration_days') or FREE_RAFFLE_MIN_DAYS)} day(s)**",
             f"Mode: **{mode['label']}**",
-            f"Channel: {f'<#{int(channel_id)}>' if channel_id else 'Current channel'}",
             f"Allowed Entries Per User: **{max(1, int(draft.get('auto_entry_max_per_user') or 1))}**",
         ]
         note_text = str(draft.get("note_text") or "").strip()
@@ -991,7 +956,6 @@ class FreeRaffleCog(commands.Cog):
         *,
         owner_id: int,
         mode_key: str,
-        override_channel_id: int | None,
     ) -> None:
         draft = self.pop_create_draft(owner_id)
         if not draft:
@@ -1000,13 +964,11 @@ class FreeRaffleCog(commands.Cog):
             )
             return
         mode = GIVEAWAY_ENTRY_MODE_CHOICES.get(mode_key, GIVEAWAY_ENTRY_MODE_CHOICES["button"])
-        post_channel_id = int(
-            override_channel_id or draft["default_post_channel_id"] or draft["request_channel_id"]
-        )
+        post_channel_id = int(draft["default_post_channel_id"] or draft["request_channel_id"])
         post_channel = await self._resolve_post_channel(interaction, post_channel_id)
         if post_channel is None:
             await interaction.followup.send(
-                "❌ The selected giveaway channel is invalid or inaccessible.", ephemeral=True
+                "❌ The giveaway channel is invalid or inaccessible.", ephemeral=True
             )
             return
         now = datetime.now(timezone.utc)

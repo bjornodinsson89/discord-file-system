@@ -6,11 +6,13 @@ from unittest.mock import AsyncMock
 
 from cogs.engagement import EngagementCog
 from cogs.free_raffle import (
+    AUTO_ENTRY_MESSAGE_STEP,
     AutoEntryRoleBonusManageView,
     AutoEntrySettingsModal,
     DraftRoleBonusRemovalView,
     FreeRaffleCog,
     FreeRaffleModal,
+    GiveawayCreateFlowView,
     PersistedRoleBonusRemovalView,
 )
 from repositories.free_raffle_repo import FreeRaffleRepository
@@ -239,12 +241,152 @@ def test_create_summary_shows_new_values_clearly():
             "role_bonus_rules": [{"role_id": 123, "bonus_entries_per_qualification": 2}],
         },
         mode_key="auto",
-        channel_id=999,
     )
     summary = embed.fields[0].value
     assert "Allowed Entries Per User: **4**" in summary
     assert "Messages Per Entry: **12**" in summary
     assert "Role Bonuses:" in summary
+
+
+def test_giveaway_create_flow_has_no_channel_selector():
+    async def _run():
+        cog = FreeRaffleCog.__new__(FreeRaffleCog)
+        view = GiveawayCreateFlowView(cog, owner_id=1)
+        child_types = {child.__class__.__name__ for child in view.children}
+        assert "GiveawayEntryModeSelect" in child_types
+        assert "GiveawayPostChannelSelect" not in child_types
+        assert all(child.__class__.__name__ != "ChannelSelect" for child in view.children)
+
+    asyncio.run(_run())
+
+
+def test_create_summary_no_longer_mentions_channel():
+    cog = FreeRaffleCog.__new__(FreeRaffleCog)
+    embed = cog.build_create_summary_embed(
+        {
+            "prize_text": "VIP Crate",
+            "duration_days": 3,
+            "note_text": "Weekend drop",
+            "auto_entry_max_per_user": 4,
+            "messages_per_entry": 12,
+            "role_bonus_rules": [{"role_id": 123, "bonus_entries_per_qualification": 2}],
+        },
+        mode_key="auto",
+    )
+    summary = embed.fields[0].value
+    assert "Channel:" not in summary
+    assert "Posting Channel" not in summary
+    assert "Selected Channel" not in summary
+    assert "Allowed Entries Per User: **4**" in summary
+    assert "Messages Per Entry: **12**" in summary
+
+
+def test_finish_giveaway_create_uses_admin_configured_channel_without_override(monkeypatch):
+    async def _run():
+        cog = FreeRaffleCog.__new__(FreeRaffleCog)
+        cog._create_drafts = {
+            5: {
+                "guild_id": 77,
+                "request_channel_id": 111,
+                "default_post_channel_id": 222,
+                "host_discord_id": 5,
+                "prize_text": "VIP Crate",
+                "note_text": "Weekend drop",
+                "duration_days": 3,
+                "auto_entry_max_per_user": 4,
+                "messages_per_entry": AUTO_ENTRY_MESSAGE_STEP,
+                "role_bonus_rules": [],
+            }
+        }
+        cog._last_host_controls_raffles = {}
+        cog.host_controls_view = lambda raffle_id: SimpleNamespace(
+            name=f"host-controls-{raffle_id}"
+        )
+        cog.build_raffle_embed = AsyncMock(return_value=SimpleNamespace(title="Giveaway"))
+        channel = _FakeChannel(222)
+        repo = SimpleNamespace(
+            create_raffle=AsyncMock(
+                return_value={
+                    "id": 90,
+                    "status": "active",
+                    "button_join_enabled": True,
+                }
+            ),
+            set_message_id=AsyncMock(),
+        )
+        monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
+        monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
+        interaction = SimpleNamespace(
+            guild=_FakeGuild(channel),
+            channel=SimpleNamespace(id=111),
+            followup=_FakeFollowup(),
+            client=SimpleNamespace(dispatch=lambda *args, **kwargs: None),
+        )
+        await FreeRaffleCog.finish_giveaway_create(cog, interaction, owner_id=5, mode_key="button")
+
+        assert repo.create_raffle.await_args.kwargs["channel_id"] == 222
+        repo.set_message_id.assert_awaited_once_with(90, 321)
+        assert len(channel.sent) == 1
+        assert (
+            interaction.followup.sent["content"]
+            == "✅ Giveaway created in <#222> with **Button join** mode."
+        )
+
+    asyncio.run(_run())
+
+
+def test_finish_giveaway_create_falls_back_to_request_channel_when_admin_channel_missing(
+    monkeypatch,
+):
+    async def _run():
+        cog = FreeRaffleCog.__new__(FreeRaffleCog)
+        cog._create_drafts = {
+            5: {
+                "guild_id": 77,
+                "request_channel_id": 111,
+                "default_post_channel_id": 111,
+                "host_discord_id": 5,
+                "prize_text": "VIP Crate",
+                "note_text": None,
+                "duration_days": 1,
+                "auto_entry_max_per_user": 1,
+                "messages_per_entry": AUTO_ENTRY_MESSAGE_STEP,
+                "role_bonus_rules": [],
+            }
+        }
+        cog._last_host_controls_raffles = {}
+        cog.host_controls_view = lambda raffle_id: SimpleNamespace(
+            name=f"host-controls-{raffle_id}"
+        )
+        cog.build_raffle_embed = AsyncMock(return_value=SimpleNamespace(title="Giveaway"))
+        channel = _FakeChannel(111)
+        repo = SimpleNamespace(
+            create_raffle=AsyncMock(
+                return_value={
+                    "id": 91,
+                    "status": "active",
+                    "button_join_enabled": True,
+                }
+            ),
+            set_message_id=AsyncMock(),
+        )
+        monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
+        monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
+        interaction = SimpleNamespace(
+            guild=_FakeGuild(channel),
+            channel=channel,
+            followup=_FakeFollowup(),
+            client=SimpleNamespace(dispatch=lambda *args, **kwargs: None),
+        )
+        await FreeRaffleCog.finish_giveaway_create(cog, interaction, owner_id=5, mode_key="button")
+
+        assert repo.create_raffle.await_args.kwargs["channel_id"] == 111
+        assert (
+            interaction.followup.sent["content"]
+            == "✅ Giveaway created in <#111> with **Button join** mode."
+        )
+
+    asyncio.run(_run())
 
 
 def test_touched_giveaway_ui_uses_entries_wording_only():
@@ -264,6 +406,31 @@ def test_migration_adds_message_threshold_and_role_bonus_table():
     src = open("migrations/2026_03_20_giveaway_auto_entry_bonus_rules.sql", encoding="utf-8").read()
     assert "messages_per_entry INTEGER NOT NULL DEFAULT 15" in src
     assert "CREATE TABLE IF NOT EXISTS public.free_raffle_role_bonuses" in src
+
+
+class _FakePublicMessage:
+    id = 321
+
+
+class _FakeChannel:
+    def __init__(self, channel_id: int):
+        self.id = channel_id
+        self.sent = []
+
+    async def send(self, *, embed=None, view=None):
+        self.sent.append({"embed": embed, "view": view})
+        return _FakePublicMessage()
+
+
+class _FakeGuild:
+    def __init__(self, channel):
+        self._channel = channel
+
+    def get_channel(self, channel_id: int):
+        return self._channel if int(channel_id) == self._channel.id else None
+
+    async def fetch_channel(self, channel_id: int):
+        return self.get_channel(channel_id)
 
 
 class _FakeTransaction:
