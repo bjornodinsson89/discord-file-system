@@ -228,7 +228,9 @@ def test_giveaway_embed_describes_message_based_auto_entry(monkeypatch):
         repo = SimpleNamespace(
             get_winner=AsyncMock(return_value=None),
             get_entry_count=AsyncMock(return_value=7),
-            get_auto_entry_progress=AsyncMock(return_value={"qualifying_message_count": 0, "auto_entries_granted": 0}),
+            get_auto_entry_progress=AsyncMock(
+                return_value={"qualifying_message_count": 0, "auto_entries_granted": 0}
+            ),
             get_entry=AsyncMock(return_value=None),
         )
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
@@ -253,15 +255,19 @@ def test_giveaway_embed_describes_message_based_auto_entry(monkeypatch):
         stats = next(f.value for f in embed.fields if f.name == "STATS")
         assert "Entries:" in stats
         assert "Auto Entry + Weighted" in stats
-        info_embed = await FreeRaffleCog._build_personal_info_embed(cog, {
-            "id": 1,
-            "guild_id": 1,
-            "status": "active",
-            "auto_entry_enabled": True,
-            "button_join_enabled": False,
-            "weighted_odds_enabled": True,
-            "auto_entry_max_per_user": 4,
-        }, 55)
+        info_embed = await FreeRaffleCog._build_personal_info_embed(
+            cog,
+            {
+                "id": 1,
+                "guild_id": 1,
+                "status": "active",
+                "auto_entry_enabled": True,
+                "button_join_enabled": False,
+                "weighted_odds_enabled": True,
+                "auto_entry_max_per_user": 4,
+            },
+            55,
+        )
         assert "Every 15 qualifying messages gives 1 entry." in info_embed.fields[0].value
 
     asyncio.run(_run())
