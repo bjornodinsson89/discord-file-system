@@ -17,6 +17,9 @@ from services.role_reward_service import RoleRewardService
 from utils.database import get_pool
 
 
+DEFAULT_LEVELUP_ANNOUNCEMENT_COPY = "reached Level {level} and earned 1 coin and 100 HJD"
+
+
 def _message_has_interaction_origin(message: discord.Message) -> bool:
     return getattr(message, "interaction_metadata", None) is not None
 
