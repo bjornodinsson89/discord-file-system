@@ -70,7 +70,7 @@ class ApiKeyIntroView(ui.View):
 
 
 class ApiKeyModal(ui.Modal, title="Register Torn API Key"):
-    api_key = ui.TextInput(label="Torn API key", placeholder="Use the Create API Key button for the recommended custom scoped key, or paste a full access key with item log permissions.", min_length=16, max_length=16)
+    api_key = ui.TextInput(label="Torn API key", placeholder="CUSTOM API KEY OR FULL ACCESS KEY ONLY", min_length=16, max_length=16)
 
     @staticmethod
     def _missing_log_permissions_message() -> str:
