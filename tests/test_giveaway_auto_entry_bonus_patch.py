@@ -51,16 +51,25 @@ def test_info_embed_shows_messages_per_entry_and_matching_bonus_roles(monkeypatc
         cog = FreeRaffleCog.__new__(FreeRaffleCog)
         vip_role = SimpleNamespace(id=10, mention="<@&10>")
         elite_role = SimpleNamespace(id=20, mention="<@&20>")
-        guild = SimpleNamespace(roles=[vip_role, elite_role], get_member=lambda _uid: SimpleNamespace(guild=SimpleNamespace(roles=[vip_role, elite_role]), roles=[vip_role]))
+        guild = SimpleNamespace(
+            roles=[vip_role, elite_role],
+            get_member=lambda _uid: SimpleNamespace(
+                guild=SimpleNamespace(roles=[vip_role, elite_role]), roles=[vip_role]
+            ),
+        )
         cog.bot = SimpleNamespace(get_guild=lambda _gid: guild)
         cog._get_coin_balance = AsyncMock(return_value=2)
         repo = SimpleNamespace(
-            get_auto_entry_progress=AsyncMock(return_value={"qualifying_message_count": 3, "auto_entries_granted": 2}),
+            get_auto_entry_progress=AsyncMock(
+                return_value={"qualifying_message_count": 3, "auto_entries_granted": 2}
+            ),
             get_entry=AsyncMock(return_value={"entry_weight": 2}),
-            list_role_bonus_rules=AsyncMock(return_value=[
-                {"role_id": 10, "bonus_entries_per_qualification": 1},
-                {"role_id": 20, "bonus_entries_per_qualification": 2},
-            ]),
+            list_role_bonus_rules=AsyncMock(
+                return_value=[
+                    {"role_id": 10, "bonus_entries_per_qualification": 1},
+                    {"role_id": 20, "bonus_entries_per_qualification": 2},
+                ]
+            ),
         )
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
         monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
@@ -94,19 +103,26 @@ def test_auto_entry_processing_passes_member_roles_to_repo(monkeypatch):
     async def _run():
         cog = EngagementCog.__new__(EngagementCog)
         cog.repo = SimpleNamespace(
-            get_or_create_guild_settings=AsyncMock(return_value={"auto_entry_giveaways_enabled": True}),
+            get_or_create_guild_settings=AsyncMock(
+                return_value={"auto_entry_giveaways_enabled": True}
+            ),
             get_or_create_profile=AsyncMock(return_value={"prize_token_balance": 2, "level": 5}),
         )
         cog.role_rewards = SimpleNamespace(giveaway_weight_for_level=lambda level: level + 1)
         raffle_repo = SimpleNamespace(
             list_active_auto_entry_raffles=AsyncMock(return_value=[{"id": 1}]),
-            increment_auto_entry_progress=AsyncMock(return_value={"awarded": True, "entries_granted": 3}),
+            increment_auto_entry_progress=AsyncMock(
+                return_value={"awarded": True, "entries_granted": 3}
+            ),
         )
         monkeypatch.setattr("cogs.engagement.FreeRaffleRepository", lambda _pool: raffle_repo)
         monkeypatch.setattr("cogs.engagement.get_pool", lambda: object())
         awarded = await EngagementCog._process_message_auto_entries(cog, 1, 55, role_ids=[10, 20])
         assert awarded == 3
-        assert raffle_repo.increment_auto_entry_progress.await_args.kwargs["member_role_ids"] == [10, 20]
+        assert raffle_repo.increment_auto_entry_progress.await_args.kwargs["member_role_ids"] == [
+            10,
+            20,
+        ]
 
     asyncio.run(_run())
 
@@ -114,8 +130,15 @@ def test_auto_entry_processing_passes_member_roles_to_repo(monkeypatch):
 def test_host_admin_role_bonus_view_supports_edit_and_remove(monkeypatch):
     async def _run():
         cog = FreeRaffleCog.__new__(FreeRaffleCog)
-        raffle = {"id": 77, "host_discord_id": 5, "messages_per_entry": 15, "auto_entry_max_per_user": 4}
-        view = AutoEntryRoleBonusManageView(cog, raffle, [{"role_id": 123, "bonus_entries_per_qualification": 2}])
+        raffle = {
+            "id": 77,
+            "host_discord_id": 5,
+            "messages_per_entry": 15,
+            "auto_entry_max_per_user": 4,
+        }
+        view = AutoEntryRoleBonusManageView(
+            cog, raffle, [{"role_id": 123, "bonus_entries_per_qualification": 2}]
+        )
         view.selected_role_id = 123
         interaction = SimpleNamespace(user=SimpleNamespace(id=5), response=_FakeResponse())
         await view.edit_limits.callback(interaction)
@@ -133,7 +156,10 @@ def test_host_admin_role_bonus_view_supports_edit_and_remove(monkeypatch):
 
 
 def test_source_uses_entries_language_only():
-    src = open("cogs/free_raffle.py", encoding="utf-8").read() + open("views/free_raffle_views.py", encoding="utf-8").read()
+    src = (
+        open("cogs/free_raffle.py", encoding="utf-8").read()
+        + open("views/free_raffle_views.py", encoding="utf-8").read()
+    )
     assert "Entrants" not in src
 
 
@@ -216,8 +242,21 @@ def _repo_with_conn(conn):
 def test_increment_auto_entry_progress_grants_base_and_stacked_bonus_entries():
     async def _run():
         conn = _FakeConn(
-            raffle={"id": 1, "guild_id": 1, "auto_entry_enabled": True, "status": "active", "messages_per_entry": 15, "auto_entry_max_per_user": 10},
-            progress={"raffle_id": 1, "guild_id": 1, "user_id": 55, "qualifying_message_count": 14, "auto_entries_granted": 0},
+            raffle={
+                "id": 1,
+                "guild_id": 1,
+                "auto_entry_enabled": True,
+                "status": "active",
+                "messages_per_entry": 15,
+                "auto_entry_max_per_user": 10,
+            },
+            progress={
+                "raffle_id": 1,
+                "guild_id": 1,
+                "user_id": 55,
+                "qualifying_message_count": 14,
+                "auto_entries_granted": 0,
+            },
             bonus_rows=[
                 {"role_id": 10, "bonus_entries_per_qualification": 1},
                 {"role_id": 20, "bonus_entries_per_qualification": 2},
@@ -244,8 +283,21 @@ def test_increment_auto_entry_progress_grants_base_and_stacked_bonus_entries():
 def test_increment_auto_entry_progress_applies_base_entry_without_bonus_and_enforces_cap():
     async def _run():
         conn = _FakeConn(
-            raffle={"id": 2, "guild_id": 1, "auto_entry_enabled": True, "status": "active", "messages_per_entry": 12, "auto_entry_max_per_user": 5},
-            progress={"raffle_id": 2, "guild_id": 1, "user_id": 55, "qualifying_message_count": 11, "auto_entries_granted": 4},
+            raffle={
+                "id": 2,
+                "guild_id": 1,
+                "auto_entry_enabled": True,
+                "status": "active",
+                "messages_per_entry": 12,
+                "auto_entry_max_per_user": 5,
+            },
+            progress={
+                "raffle_id": 2,
+                "guild_id": 1,
+                "user_id": 55,
+                "qualifying_message_count": 11,
+                "auto_entries_granted": 4,
+            },
             bonus_rows=[{"role_id": 10, "bonus_entries_per_qualification": 1}],
         )
         repo = _repo_with_conn(conn)

@@ -93,8 +93,6 @@ def _build_modal(value="A" * 16):
     return modal
 
 
-
-
 class _FakeModalResponse:
     def __init__(self):
         self.modal = None
@@ -106,7 +104,9 @@ class _FakeModalResponse:
 def test_enter_api_key_button_opens_api_key_modal_successfully():
     async def _run():
         view = components.ApiKeyIntroView()
-        button = next(child for child in view.children if getattr(child, "label", None) == "Enter API Key")
+        button = next(
+            child for child in view.children if getattr(child, "label", None) == "Enter API Key"
+        )
         interaction = SimpleNamespace(response=_FakeModalResponse())
 
         await button.callback(interaction)
@@ -134,6 +134,7 @@ def test_api_key_modal_placeholders_respect_discord_limits():
         assert all(len(placeholder) <= 100 for placeholder in placeholders)
 
     asyncio.run(_run())
+
 
 def test_api_key_guide_embed_has_loud_public_key_warning():
     embed = create_api_key_guide_embed()
