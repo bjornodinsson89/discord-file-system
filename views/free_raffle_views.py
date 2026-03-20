@@ -62,8 +62,10 @@ class HostControlsView(discord.ui.View):
         on_refresh: HostHandler,
         on_view_entries: HostHandler,
         on_reroll: HostHandler,
+        on_auto_settings: HostHandler | None = None,
         disabled: bool = False,
         can_reroll: bool = False,
+        show_auto_settings: bool = False,
     ):
         super().__init__(timeout=None)
         self.raffle_id = raffle_id
@@ -72,6 +74,7 @@ class HostControlsView(discord.ui.View):
         self.on_refresh = on_refresh
         self.on_view_entries = on_view_entries
         self.on_reroll = on_reroll
+        self.on_auto_settings = on_auto_settings
 
         end_button = discord.ui.Button(
             label="⏹️ End Giveaway Now",
@@ -123,6 +126,17 @@ class HostControlsView(discord.ui.View):
         reroll_button.callback = self._on_reroll
         self.add_item(reroll_button)
 
+        if show_auto_settings and on_auto_settings is not None:
+            auto_settings_button = discord.ui.Button(
+                label="⚙️ Auto Entry Settings",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"fr_auto_settings:{raffle_id}",
+                disabled=False,
+                row=2,
+            )
+            auto_settings_button.callback = self._on_auto_settings
+            self.add_item(auto_settings_button)
+
     async def _on_end_now(self, interaction: discord.Interaction) -> None:
         await self.on_end_now(interaction, self.raffle_id)
 
@@ -137,3 +151,9 @@ class HostControlsView(discord.ui.View):
 
     async def _on_reroll(self, interaction: discord.Interaction) -> None:
         await self.on_reroll(interaction, self.raffle_id)
+
+    async def _on_auto_settings(self, interaction: discord.Interaction) -> None:
+        if self.on_auto_settings is None:
+            await interaction.response.send_message("Auto entry settings are unavailable right now.", ephemeral=True)
+            return
+        await self.on_auto_settings(interaction, self.raffle_id)

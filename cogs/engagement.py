@@ -82,7 +82,7 @@ class EngagementCog(commands.Cog):
         profile = await self.repo.get_or_create_profile(guild_id, user_id)
         return await self.role_rewards.sync_member_roles(guild, member, profile)
 
-    async def _process_message_auto_entries(self, guild_id: int, user_id: int) -> int:
+    async def _process_message_auto_entries(self, guild_id: int, user_id: int, role_ids: list[int] | None = None) -> int:
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         if not bool(settings.get("auto_entry_giveaways_enabled", True)):
             return 0
@@ -102,6 +102,7 @@ class EngagementCog(commands.Cog):
                 raffle_id=int(giveaway["id"]),
                 user_id=user_id,
                 entry_weight=weight,
+                member_role_ids=list(role_ids or []),
                 progress_dedupe_key=f"giveaway_auto_entry:{int(giveaway['id'])}:{user_id}:{bucket}",
             )
             if result.get("awarded"):
@@ -184,7 +185,11 @@ class EngagementCog(commands.Cog):
             on_role_sync_needed=self._sync_roles_for_member,
         )
         if applied:
-            await self._process_message_auto_entries(message.guild.id, message.author.id)
+            await self._process_message_auto_entries(
+                message.guild.id,
+                message.author.id,
+                role_ids=[r.id for r in getattr(message.author, "roles", [])],
+            )
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):

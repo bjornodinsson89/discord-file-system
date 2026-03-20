@@ -21,38 +21,123 @@ class FreeRaffleRepository(RepositoryBase):
         auto_entry_enabled: bool = False,
         weighted_enabled: bool = False,
         auto_entry_max_per_user: int = 1,
+        messages_per_entry: int = 15,
+        role_bonus_rules: list[dict[str, int]] | None = None,
     ) -> dict:
         async with self.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO free_raffles (
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO free_raffles (
+                        guild_id,
+                        channel_id,
+                        host_discord_id,
+                        prize_text,
+                        note_text,
+                        button_join_enabled,
+                        auto_entry_enabled,
+                        weighted_odds_enabled,
+                        auto_entry_max_per_user,
+                        messages_per_entry,
+                        status,
+                        ends_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', $11)
+                    RETURNING *
+                    """,
                     guild_id,
                     channel_id,
                     host_discord_id,
                     prize_text,
                     note_text,
-                    button_join_enabled,
-                    auto_entry_enabled,
-                    weighted_odds_enabled,
-                    auto_entry_max_per_user,
-                    status,
-                    ends_at
+                    bool(button_join_enabled),
+                    bool(auto_entry_enabled),
+                    bool(weighted_enabled),
+                    max(1, int(auto_entry_max_per_user)),
+                    max(1, int(messages_per_entry)),
+                    ends_at,
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', $10)
-                RETURNING *
+                raffle = dict(row)
+                await self.replace_role_bonus_rules(
+                    int(raffle["id"]),
+                    role_bonus_rules or [],
+                    conn=conn,
+                )
+                return raffle
+
+    async def update_auto_entry_settings(
+        self,
+        raffle_id: int,
+        *,
+        messages_per_entry: int,
+        auto_entry_max_per_user: int,
+    ) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE free_raffles
+                SET messages_per_entry = $2,
+                    auto_entry_max_per_user = $3,
+                    updated_at = NOW()
+                WHERE id = $1
                 """,
-                guild_id,
-                channel_id,
-                host_discord_id,
-                prize_text,
-                note_text,
-                bool(button_join_enabled),
-                bool(auto_entry_enabled),
-                bool(weighted_enabled),
+                raffle_id,
+                max(1, int(messages_per_entry)),
                 max(1, int(auto_entry_max_per_user)),
-                ends_at,
             )
-            return dict(row)
+
+    async def upsert_role_bonus_rule(self, raffle_id: int, role_id: int, bonus_entries_per_qualification: int) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO free_raffle_role_bonuses (raffle_id, role_id, bonus_entries_per_qualification)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (raffle_id, role_id) DO UPDATE
+                SET bonus_entries_per_qualification = EXCLUDED.bonus_entries_per_qualification,
+                    created_at = free_raffle_role_bonuses.created_at
+                """,
+                raffle_id,
+                role_id,
+                max(0, int(bonus_entries_per_qualification)),
+            )
+
+    async def remove_role_bonus_rule(self, raffle_id: int, role_id: int) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM free_raffle_role_bonuses WHERE raffle_id = $1 AND role_id = $2",
+                raffle_id,
+                role_id,
+            )
+
+    async def replace_role_bonus_rules(
+        self,
+        raffle_id: int,
+        role_bonus_rules: list[dict[str, int]],
+        *,
+        conn: asyncpg.Connection | None = None,
+    ) -> None:
+        async def _apply(target: asyncpg.Connection) -> None:
+            await target.execute("DELETE FROM free_raffle_role_bonuses WHERE raffle_id = $1", raffle_id)
+            for rule in role_bonus_rules:
+                await target.execute(
+                    """
+                    INSERT INTO free_raffle_role_bonuses (raffle_id, role_id, bonus_entries_per_qualification)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (raffle_id, role_id) DO UPDATE
+                    SET bonus_entries_per_qualification = EXCLUDED.bonus_entries_per_qualification,
+                        created_at = free_raffle_role_bonuses.created_at
+                    """,
+                    raffle_id,
+                    int(rule["role_id"]),
+                    max(0, int(rule["bonus_entries_per_qualification"])),
+                )
+
+        if conn is not None:
+            await _apply(conn)
+            return
+        async with self.acquire() as connection:
+            async with connection.transaction():
+                await _apply(connection)
 
     async def set_message_id(self, raffle_id: int, message_id: int) -> None:
         async with self.acquire() as conn:
@@ -176,6 +261,7 @@ class FreeRaffleRepository(RepositoryBase):
         raffle_id: int,
         user_id: int,
         entry_weight: int,
+        member_role_ids: list[int] | None = None,
         qualifying_messages: int = 1,
         progress_dedupe_key: str,
     ) -> dict:
@@ -232,16 +318,54 @@ class FreeRaffleRepository(RepositoryBase):
                 )
                 progress = dict(progress)
                 max_entries = max(1, int(raffle.get('auto_entry_max_per_user') or 1))
+                messages_per_entry = max(1, int(raffle.get('messages_per_entry') or 15))
                 granted = int(progress.get('auto_entries_granted') or 0)
                 banked = int(progress.get('qualifying_message_count') or 0)
-                entries_to_award = min(max_entries - granted, banked // 15)
-                if entries_to_award <= 0:
+                remaining_capacity = max_entries - granted
+                qualifications_available = banked // messages_per_entry
+                if remaining_capacity <= 0 or qualifications_available <= 0:
                     return {"awarded": False, "entries_granted": 0, "auto_entries_granted": granted, "qualifying_message_count": banked}
 
-                consumed = entries_to_award * 15
+                member_role_set = {int(role_id) for role_id in (member_role_ids or [])}
+                bonus_rows = await conn.fetch(
+                    """
+                    SELECT role_id, bonus_entries_per_qualification
+                    FROM free_raffle_role_bonuses
+                    WHERE raffle_id = $1
+                    ORDER BY role_id ASC
+                    """,
+                    raffle_id,
+                )
+                matching_bonus = sum(
+                    max(0, int(row.get("bonus_entries_per_qualification") or 0))
+                    for row in bonus_rows
+                    if int(row.get("role_id") or 0) in member_role_set
+                )
+                total_per_qualification = 1 + matching_bonus
+                entries_to_award = 0
+                qualifications_processed = 0
+                remaining = remaining_capacity
+                for _ in range(qualifications_available):
+                    if remaining <= 0:
+                        break
+                    awarded_this_qualification = min(total_per_qualification, remaining)
+                    entries_to_award += awarded_this_qualification
+                    qualifications_processed += 1
+                    remaining -= awarded_this_qualification
+                    if awarded_this_qualification < total_per_qualification:
+                        break
+
+                if entries_to_award <= 0 or qualifications_processed <= 0:
+                    return {"awarded": False, "entries_granted": 0, "auto_entries_granted": granted, "qualifying_message_count": banked}
+
+                consumed = qualifications_processed * messages_per_entry
                 new_granted = granted + entries_to_award
                 new_banked = banked - consumed
-                dedupe_key = progress_dedupe_key if entries_to_award == 1 else f"{progress_dedupe_key}:x{entries_to_award}"
+                dedupe_key = (
+                    progress_dedupe_key
+                    if entries_to_award == 1 and qualifications_processed == 1
+                    else f"{progress_dedupe_key}:q{qualifications_processed}:e{entries_to_award}"
+                )
                 applied = await self._upsert_entry_with_conn(
                     conn,
                     raffle_id=raffle_id,
@@ -295,6 +419,19 @@ class FreeRaffleRepository(RepositoryBase):
             if row is None:
                 return {"qualifying_message_count": 0, "auto_entries_granted": 0, "updated_at": None}
             return dict(row)
+
+    async def list_role_bonus_rules(self, raffle_id: int) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT raffle_id, role_id, bonus_entries_per_qualification, created_at
+                FROM free_raffle_role_bonuses
+                WHERE raffle_id = $1
+                ORDER BY bonus_entries_per_qualification DESC, role_id ASC
+                """,
+                raffle_id,
+            )
+            return [dict(row) for row in rows]
 
     async def user_has_entry(self, raffle_id: int, discord_id: int) -> bool:
         async with self.acquire() as conn:

@@ -232,10 +232,12 @@ def test_giveaway_embed_describes_message_based_auto_entry(monkeypatch):
                 return_value={"qualifying_message_count": 0, "auto_entries_granted": 0}
             ),
             get_entry=AsyncMock(return_value=None),
+            list_role_bonus_rules=AsyncMock(return_value=[]),
         )
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
         monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
         cog._get_coin_balance = AsyncMock(return_value=1)
+        cog.bot = SimpleNamespace(get_guild=lambda _gid: None)
         embed = await FreeRaffleCog.build_raffle_embed(
             cog,
             {
@@ -268,7 +270,7 @@ def test_giveaway_embed_describes_message_based_auto_entry(monkeypatch):
             },
             55,
         )
-        assert "Every 15 qualifying messages gives 1 entry." in info_embed.fields[0].value
+        assert "Every 15 qualifying messages gives 1 base entry." in info_embed.fields[0].value
 
     asyncio.run(_run())
 
@@ -286,7 +288,7 @@ def test_message_based_auto_entry_wiring_is_present_in_source():
     assert "_process_message_auto_entries" in engagement_src
     assert "if applied:" in engagement_src
     assert "qualifying_message_count" in raffle_src
-    assert "banked // 15" in raffle_src
+    assert "banked // messages_per_entry" in raffle_src
     assert "auto_entry_max_per_user" in raffle_src
 
 

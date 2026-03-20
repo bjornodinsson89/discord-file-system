@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -20,6 +21,7 @@ from utils.embeds import clamp_percent, format_remaining_time, render_text_progr
 
 AUTO_ENTRY_MESSAGE_STEP = 15
 ENTRIES_PROGRESS_WIDTH = 10
+ROLE_BONUS_LINE_RE = re.compile(r"^(?:<@&)?(?P<role_id>\d+)>?\s*[:=,-]\s*(?:\+)?(?P<bonus>\d+)$")
 
 log = logging.getLogger("happy_jumper.free_raffle")
 
@@ -124,6 +126,8 @@ class FreeRaffleModal(discord.ui.Modal, title="Giveaway"):
             "note_text": (str(self.note.value).strip() or None),
             "duration_days": duration_days,
             "auto_entry_max_per_user": int(auto_entry_max_raw),
+            "messages_per_entry": AUTO_ENTRY_MESSAGE_STEP,
+            "role_bonus_rules": [],
         }
         self.cog.store_create_draft(int(interaction.user.id), draft)
         await interaction.response.defer(ephemeral=True, thinking=False)
@@ -191,7 +195,14 @@ class GiveawayCreateFlowView(discord.ui.View):
             self.post_channel_id = int(channel_id)
         await interaction.response.defer(ephemeral=True, thinking=False)
 
-    @discord.ui.button(label="Create Giveaway", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.button(label="Configure Auto Entry", style=discord.ButtonStyle.secondary, row=2)
+    async def configure_auto_entry(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        draft = self.cog.get_create_draft(self.owner_id) or {}
+        await interaction.response.send_modal(
+            AutoEntrySettingsModal(self.cog, owner_id=self.owner_id, draft=draft)
+        )
+
+    @discord.ui.button(label="Create Giveaway", style=discord.ButtonStyle.success, row=3)
     async def create(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True, thinking=False)
         await self.cog.finish_giveaway_create(
@@ -202,6 +213,150 @@ class GiveawayCreateFlowView(discord.ui.View):
         )
 
 
+class AutoEntrySettingsModal(discord.ui.Modal, title="Auto Entry Settings"):
+    messages_per_entry = discord.ui.TextInput(label="Messages Per Entry", required=True, default=str(AUTO_ENTRY_MESSAGE_STEP), max_length=4)
+    auto_entry_max = discord.ui.TextInput(label="Max Auto Entries Per User", required=True, default="1", max_length=4)
+    role_bonus_rules = discord.ui.TextInput(
+        label="Role Bonus Rules (optional)",
+        required=False,
+        style=discord.TextStyle.paragraph,
+        max_length=800,
+        placeholder="One per line: @VIP = 1",
+    )
+
+    def __init__(self, cog: "FreeRaffleCog", *, owner_id: int, draft: dict):
+        super().__init__()
+        self.cog = cog
+        self.owner_id = owner_id
+        self.messages_per_entry.default = str(int(draft.get("messages_per_entry") or AUTO_ENTRY_MESSAGE_STEP))
+        self.auto_entry_max.default = str(int(draft.get("auto_entry_max_per_user") or 1))
+        self.role_bonus_rules.default = self.cog.serialize_role_bonus_rules(draft.get("role_bonus_rules") or [])
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            messages_per_entry = self.cog.parse_positive_int(self.messages_per_entry.value, label="Messages Per Entry")
+            auto_entry_max = self.cog.parse_positive_int(self.auto_entry_max.value, label="Max Auto Entries Per User")
+            role_bonus_rules = self.cog.parse_role_bonus_rules(self.role_bonus_rules.value)
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        draft = self.cog.get_create_draft(self.owner_id) or {}
+        draft["messages_per_entry"] = messages_per_entry
+        draft["auto_entry_max_per_user"] = auto_entry_max
+        draft["role_bonus_rules"] = role_bonus_rules
+        self.cog.store_create_draft(self.owner_id, draft)
+        await interaction.response.send_message("✅ Auto entry settings updated for this giveaway draft.", ephemeral=True)
+
+
+class EditAutoEntrySettingsModal(discord.ui.Modal, title="Edit Auto Entry Settings"):
+    messages_per_entry = discord.ui.TextInput(label="Messages Per Entry", required=True, max_length=4)
+    auto_entry_max = discord.ui.TextInput(label="Max Auto Entries Per User", required=True, max_length=4)
+
+    def __init__(self, cog: "FreeRaffleCog", raffle: dict):
+        super().__init__()
+        self.cog = cog
+        self.raffle_id = int(raffle["id"])
+        self.messages_per_entry.default = str(max(1, int(raffle.get("messages_per_entry") or AUTO_ENTRY_MESSAGE_STEP)))
+        self.auto_entry_max.default = str(max(1, int(raffle.get("auto_entry_max_per_user") or 1)))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            messages_per_entry = self.cog.parse_positive_int(self.messages_per_entry.value, label="Messages Per Entry")
+            auto_entry_max = self.cog.parse_positive_int(self.auto_entry_max.value, label="Max Auto Entries Per User")
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        repo = FreeRaffleRepository(get_pool())
+        await repo.update_auto_entry_settings(
+            self.raffle_id,
+            messages_per_entry=messages_per_entry,
+            auto_entry_max_per_user=auto_entry_max,
+        )
+        await interaction.response.send_message("✅ Auto entry settings updated.", ephemeral=True)
+
+
+class RoleBonusValueModal(discord.ui.Modal, title="Role Bonus"):
+    bonus_entries = discord.ui.TextInput(label="Bonus Entries Per Qualification", required=True, max_length=4)
+
+    def __init__(self, cog: "FreeRaffleCog", raffle_id: int, role_id: int, current_bonus: int | None = None):
+        super().__init__()
+        self.cog = cog
+        self.raffle_id = raffle_id
+        self.role_id = role_id
+        self.bonus_entries.default = str(max(0, int(current_bonus or 0)))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            bonus_entries = self.cog.parse_non_negative_int(
+                self.bonus_entries.value,
+                label="Bonus Entries Per Qualification",
+            )
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        await FreeRaffleRepository(get_pool()).upsert_role_bonus_rule(self.raffle_id, self.role_id, bonus_entries)
+        await interaction.response.send_message("✅ Role bonus rule saved.", ephemeral=True)
+
+
+class AutoEntryRoleBonusManageView(discord.ui.View):
+    def __init__(self, cog: "FreeRaffleCog", raffle: dict, bonus_rules: list[dict]):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.raffle = dict(raffle)
+        self.raffle_id = int(raffle["id"])
+        self.host_id = int(raffle["host_discord_id"])
+        self.selected_role_id: int | None = int(bonus_rules[0]["role_id"]) if bonus_rules else None
+        self.bonus_lookup = {
+            int(rule["role_id"]): int(rule.get("bonus_entries_per_qualification") or 0)
+            for rule in bonus_rules
+        }
+        self.role_select = discord.ui.RoleSelect(
+            placeholder="Choose a role to add or update",
+            min_values=1,
+            max_values=1,
+            row=0,
+        )
+        self.role_select.callback = self._select_role
+        self.add_item(self.role_select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.host_id:
+            await interaction.response.send_message("Only the giveaway host can manage these settings.", ephemeral=True)
+            return False
+        return True
+
+    async def _select_role(self, interaction: discord.Interaction) -> None:
+        role = self.role_select.values[0] if self.role_select.values else None
+        self.selected_role_id = int(role.id) if role is not None else None
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+    @discord.ui.button(label="Add / Update Role Bonus", style=discord.ButtonStyle.primary, row=1)
+    async def add_or_update(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if self.selected_role_id is None:
+            await interaction.response.send_message("❌ Choose a role first.", ephemeral=True)
+            return
+        await interaction.response.send_modal(
+            RoleBonusValueModal(
+                self.cog,
+                self.raffle_id,
+                self.selected_role_id,
+                self.bonus_lookup.get(self.selected_role_id),
+            )
+        )
+
+    @discord.ui.button(label="Edit Messages / Max", style=discord.ButtonStyle.secondary, row=1)
+    async def edit_limits(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(EditAutoEntrySettingsModal(self.cog, self.raffle))
+
+    @discord.ui.button(label="Remove Selected Role Bonus", style=discord.ButtonStyle.danger, row=1)
+    async def remove(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if self.selected_role_id is None:
+            await interaction.response.send_message("❌ Choose a role first.", ephemeral=True)
+            return
+        await FreeRaffleRepository(get_pool()).remove_role_bonus_rule(self.raffle_id, self.selected_role_id)
+        await interaction.response.send_message("✅ Role bonus rule removed.", ephemeral=True)
+
+
 class FreeRaffleCog(commands.Cog):
     giveaway = app_commands.Group(name="giveaway", description="Giveaway commands")
 
@@ -210,11 +365,13 @@ class FreeRaffleCog(commands.Cog):
         self._views_registered = False
         self._ready_init_lock = asyncio.Lock()
         self._create_drafts: dict[int, dict] = {}
+        self._last_host_controls_raffles: dict[int, dict] = {}
 
     async def cog_load(self) -> None:
         self._views_registered = False
         self._ready_init_lock = asyncio.Lock()
         self._create_drafts = {}
+        self._last_host_controls_raffles = {}
 
     async def cog_unload(self) -> None:
         if self.free_raffle_expiration_worker.is_running():
@@ -290,6 +447,12 @@ class FreeRaffleCog(commands.Cog):
         )
 
     def host_controls_view(self, raffle_id: int, *, disabled: bool = False, can_reroll: bool = False) -> HostControlsView:
+        show_auto_settings = False
+        raffle: dict | None = None
+        if hasattr(self, "_last_host_controls_raffles"):
+            raffle = getattr(self, "_last_host_controls_raffles", {}).get(int(raffle_id))
+        if raffle is not None:
+            show_auto_settings = bool(raffle.get("auto_entry_enabled", False))
         return HostControlsView(
             raffle_id=raffle_id,
             on_end_now=self.handle_end_now,
@@ -297,15 +460,58 @@ class FreeRaffleCog(commands.Cog):
             on_refresh=self.handle_refresh_controls,
             on_view_entries=self.handle_view_entries,
             on_reroll=self.handle_reroll,
+            on_auto_settings=self.handle_auto_settings,
             disabled=disabled,
             can_reroll=can_reroll,
+            show_auto_settings=show_auto_settings,
         )
 
     def store_create_draft(self, user_id: int, draft: dict) -> None:
         self._create_drafts[int(user_id)] = dict(draft)
 
+    def get_create_draft(self, user_id: int) -> dict | None:
+        draft = self._create_drafts.get(int(user_id))
+        return dict(draft) if draft else None
+
     def pop_create_draft(self, user_id: int) -> dict | None:
         return self._create_drafts.pop(int(user_id), None)
+
+    def parse_positive_int(self, raw_value: str, *, label: str) -> int:
+        cleaned = str(raw_value or "").strip()
+        if not cleaned.isdigit() or int(cleaned) < 1:
+            raise ValueError(f"{label} must be a whole number of at least 1.")
+        return int(cleaned)
+
+    def parse_non_negative_int(self, raw_value: str, *, label: str) -> int:
+        cleaned = str(raw_value or "").strip()
+        if not cleaned.isdigit() or int(cleaned) < 0:
+            raise ValueError(f"{label} must be a whole number of at least 0.")
+        return int(cleaned)
+
+    def parse_role_bonus_rules(self, raw_value: str | None) -> list[dict[str, int]]:
+        rules: dict[int, int] = {}
+        for index, line in enumerate(str(raw_value or "").splitlines(), start=1):
+            cleaned = line.strip()
+            if not cleaned:
+                continue
+            match = ROLE_BONUS_LINE_RE.fullmatch(cleaned)
+            if match is None:
+                raise ValueError(f"Role bonus rule #{index} must look like @Role = 1 or 123456789 = 1.")
+            role_id = int(match.group("role_id"))
+            bonus_entries = int(match.group("bonus"))
+            if bonus_entries < 0:
+                raise ValueError("Bonus Entries Per Qualification must be a whole number of at least 0.")
+            rules[role_id] = bonus_entries
+        return [
+            {"role_id": role_id, "bonus_entries_per_qualification": bonus_entries}
+            for role_id, bonus_entries in sorted(rules.items())
+        ]
+
+    def serialize_role_bonus_rules(self, rules: list[dict]) -> str:
+        return "\n".join(
+            f"<@&{int(rule['role_id'])}> = {max(0, int(rule.get('bonus_entries_per_qualification') or 0))}"
+            for rule in rules
+        )
 
     async def _resolve_post_channel(
         self, interaction: discord.Interaction, channel_id: int
@@ -358,6 +564,8 @@ class FreeRaffleCog(commands.Cog):
                 auto_entry_enabled=bool(mode["auto_entry_enabled"]),
                 weighted_enabled=bool(mode["weighted_enabled"]),
                 auto_entry_max_per_user=int(draft.get("auto_entry_max_per_user") or 1),
+                messages_per_entry=int(draft.get("messages_per_entry") or AUTO_ENTRY_MESSAGE_STEP),
+                role_bonus_rules=list(draft.get("role_bonus_rules") or []),
             )
             raffle_id = int(raffle["id"])
             embed = await self.build_raffle_embed(raffle)
@@ -372,6 +580,7 @@ class FreeRaffleCog(commands.Cog):
                 "giveaway_started",
                 {"guild_id": int(draft["guild_id"]), "giveaway_id": raffle_id, "id": raffle_id},
             )
+            self._last_host_controls_raffles[raffle_id] = dict(raffle)
             await interaction.followup.send(
                 f"✅ Giveaway created in <#{post_channel_id}> with **{mode['label']}** mode.",
                 ephemeral=True,
@@ -432,20 +641,42 @@ class FreeRaffleCog(commands.Cog):
         repo = FreeRaffleRepository(get_pool())
         profile = await repo.get_auto_entry_progress(int(raffle["id"]), int(user_id))
         entry_row = await repo.get_entry(int(raffle["id"]), int(user_id))
+        list_bonus_rules = getattr(repo, "list_role_bonus_rules", None)
+        bonus_rules = await list_bonus_rules(int(raffle["id"])) if callable(list_bonus_rules) else []
         has_entry = entry_row is not None
         entry_weight = max(1, int((entry_row or {}).get("entry_weight") or 1)) if has_entry else 0
         weighted_enabled = bool(raffle.get("weighted_odds_enabled", raffle.get("weighted_enabled", False)))
         auto_entry_enabled = bool(raffle.get("auto_entry_enabled", False))
         button_join_enabled = bool(raffle.get("button_join_enabled", False))
         auto_max = max(1, int(raffle.get("auto_entry_max_per_user") or 1))
+        messages_per_entry = max(1, int(raffle.get("messages_per_entry") or AUTO_ENTRY_MESSAGE_STEP))
         progress_count = int(profile.get("qualifying_message_count") or 0)
         auto_entries_granted = int(profile.get("auto_entries_granted") or 0)
-        messages_toward_next = min(progress_count, AUTO_ENTRY_MESSAGE_STEP)
+        messages_toward_next = min(progress_count, messages_per_entry)
+        member = None
+        if self.bot is not None:
+            guild = self.bot.get_guild(int(raffle.get("guild_id") or 0))
+            if guild is not None:
+                member = guild.get_member(int(user_id))
+        member_role_ids = {int(role.id) for role in getattr(member, "roles", [])}
+        matching_bonus_rules = [
+            rule for rule in bonus_rules if int(rule.get("role_id") or 0) in member_role_ids
+        ]
+        matching_bonus_total = sum(int(rule.get("bonus_entries_per_qualification") or 0) for rule in matching_bonus_rules)
+
+        def _role_label(role_id: int) -> str:
+            if member is not None:
+                role = discord.utils.get(member.guild.roles, id=role_id)
+                if role is not None:
+                    return role.mention
+            return f"<@&{role_id}>"
+
         description_lines: list[str] = []
         if auto_entry_enabled:
             description_lines.extend([
                 "You must have at least 1 Coin.",
-                f"Every {AUTO_ENTRY_MESSAGE_STEP} qualifying messages gives 1 entry.",
+                f"Every {messages_per_entry} qualifying messages gives 1 base entry.",
+                f"Bonus role entries stack per qualification: {'Enabled' if bonus_rules else 'None configured'}.",
                 f"Max auto entries: {auto_max}.",
             ])
         if button_join_enabled:
@@ -461,8 +692,9 @@ class FreeRaffleCog(commands.Cog):
         if auto_entry_enabled:
             coin_eligible = "Eligible" if int((await self._get_coin_balance(int(raffle['guild_id']), int(user_id))) or 0) >= 1 else "Not eligible"
             progress_lines.append(f"Coin Check: **{coin_eligible}**")
-            progress_lines.append(f"Messages toward next entry: **{messages_toward_next} / {AUTO_ENTRY_MESSAGE_STEP}**")
+            progress_lines.append(f"Messages toward next entry: **{messages_toward_next} / {messages_per_entry}**")
             progress_lines.append(f"Your entries: **{auto_entries_granted} / {auto_max}**")
+            progress_lines.append(f"Your bonus this cycle: **+{matching_bonus_total} Entries**" if matching_bonus_total else "You have no bonus roles for this giveaway.")
         elif button_join_enabled:
             progress_lines.append(f"Your entries: **{1 if has_entry else 0}**")
         if weighted_enabled:
@@ -470,6 +702,15 @@ class FreeRaffleCog(commands.Cog):
             if has_entry:
                 progress_lines.append(f"Your current weight: **{entry_weight}**")
         embed.add_field(name="HOW IT WORKS", value="\n".join(description_lines), inline=False)
+        if auto_entry_enabled:
+            bonus_lines = [
+                f"{_role_label(int(rule['role_id']))}: **+{int(rule.get('bonus_entries_per_qualification') or 0)} {'Entries' if int(rule.get('bonus_entries_per_qualification') or 0) != 1 else 'Entry'}**"
+                for rule in bonus_rules
+            ]
+            if bonus_lines:
+                embed.add_field(name="BONUS ROLES", value="\n".join(bonus_lines), inline=False)
+            else:
+                embed.add_field(name="BONUS ROLES", value="No bonus roles are configured for this giveaway.", inline=False)
         embed.add_field(name="YOUR PROGRESS", value="\n".join(progress_lines) or "No personal progress yet.", inline=False)
         embed.set_footer(text="This panel only shows your personal progress.")
         return embed
@@ -489,6 +730,9 @@ class FreeRaffleCog(commands.Cog):
         prize_text = str(raffle.get("prize_text") or "Unknown Prize").strip() or "Unknown Prize"
         note_text = str(raffle.get("note_text") or "").strip()
         entry_mode = self._entry_mode_label(raffle)
+        messages_per_entry = max(1, int(raffle.get("messages_per_entry") or AUTO_ENTRY_MESSAGE_STEP))
+        list_bonus_rules = getattr(repo, "list_role_bonus_rules", None)
+        role_bonus_rules = await list_bonus_rules(raffle_id) if callable(list_bonus_rules) else []
         thumbnail_url = await self.resolve_thumbnail(prize_text)
         now = datetime.now(timezone.utc)
         created_at = raffle.get("created_at")
@@ -506,6 +750,9 @@ class FreeRaffleCog(commands.Cog):
                 f"Status: **{status}**",
                 self._entries_section(entry_count, None),
                 f"Mode: **{entry_mode}**",
+                f"Auto Entry: **{'Active' if bool(raffle.get('auto_entry_enabled', False)) else 'Off'}**",
+                f"Messages Per Entry: **{messages_per_entry}**" if bool(raffle.get("auto_entry_enabled", False)) else "Messages Per Entry: **N/A**",
+                f"Role Bonuses: **{'Enabled' if role_bonus_rules else 'None'}**" if bool(raffle.get("auto_entry_enabled", False)) else "Role Bonuses: **N/A**",
             ]),
             inline=False,
         )
@@ -686,6 +933,7 @@ class FreeRaffleCog(commands.Cog):
         return True
 
     async def _host_controls_response(self, interaction: discord.Interaction, message: str, raffle: dict) -> None:
+        self._last_host_controls_raffles[int(raffle["id"])] = dict(raffle)
         disabled = str(raffle.get("status") or "").lower() != "active"
         can_reroll = str(raffle.get("status") or "").lower() == "ended" and await FreeRaffleRepository(get_pool()).get_winner(int(raffle["id"])) is not None
         if interaction.response.is_done():
@@ -755,6 +1003,44 @@ class FreeRaffleCog(commands.Cog):
         lines = [f"<@{int(entry['discord_id'])}> — weight {int(entry.get('entry_weight') or 1)} via {entry.get('entry_source') or 'unknown'}" for entry in entries[:50]]
         extra = "" if len(entries) <= 50 else f"\n…and {len(entries) - 50} more."
         await self._send_ephemeral(interaction, "📋 Entries:\n" + "\n".join(lines) + extra)
+
+    async def handle_auto_settings(self, interaction: discord.Interaction, raffle_id: int) -> None:
+        repo = FreeRaffleRepository(get_pool())
+        raffle = await repo.get_raffle(raffle_id)
+        if not await self._assert_host(interaction, raffle):
+            return
+        if not bool((raffle or {}).get("auto_entry_enabled", False)):
+            await self._send_ephemeral(interaction, "This giveaway does not use auto entry.")
+            return
+        bonus_rules = await repo.list_role_bonus_rules(raffle_id)
+        summary_lines = [
+            f"Messages Per Entry: **{max(1, int(raffle.get('messages_per_entry') or AUTO_ENTRY_MESSAGE_STEP))}**",
+            f"Max Auto Entries: **{max(1, int(raffle.get('auto_entry_max_per_user') or 1))}**",
+            "Role bonus stacking: **Enabled**",
+        ]
+        if bonus_rules:
+            summary_lines.append(
+                "Role Bonuses:\n" + "\n".join(
+                    f"<@&{int(rule['role_id'])}>: **+{int(rule.get('bonus_entries_per_qualification') or 0)}**"
+                    for rule in bonus_rules
+                )
+            )
+        else:
+            summary_lines.append("Role Bonuses: **None configured**")
+        embed = discord.Embed(
+            title=f"Auto Entry Settings for Giveaway #{raffle_id}",
+            description="\n".join(summary_lines),
+            color=_status_color(str(raffle.get("status") or ""), await repo.get_winner(raffle_id)),
+        )
+        view = AutoEntryRoleBonusManageView(self, raffle, bonus_rules)
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                embed=embed,
+                ephemeral=True,
+                view=view,
+            )
+            return
+        await interaction.response.send_message(embed=embed, ephemeral=True, view=view)
 
     async def handle_reroll(self, interaction: discord.Interaction, raffle_id: int) -> None:
         try:
