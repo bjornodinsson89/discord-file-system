@@ -95,3 +95,27 @@ class PrizeTokenService:
             conn=conn,
         )
         return tx is not None
+
+    async def grant_configured_reward(
+        self,
+        *,
+        guild_id: int,
+        user_id: int,
+        amount: int,
+        transaction_type: str,
+        source_type: str,
+        source_id: str,
+        dedupe_key: str,
+        metadata: dict | None = None,
+    ) -> bool:
+        tx = await self.repo.apply_transaction(
+            guild_id=guild_id,
+            user_id=user_id,
+            transaction_type=transaction_type,
+            amount=int(amount),
+            source_type=source_type,
+            source_id=source_id,
+            dedupe_key=dedupe_key,
+            metadata=metadata or {},
+        )
+        return tx is not None

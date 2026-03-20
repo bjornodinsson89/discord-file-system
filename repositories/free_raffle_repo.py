@@ -267,6 +267,35 @@ class FreeRaffleRepository(RepositoryBase):
                 )
                 return {"awarded": True, "entries_granted": entries_to_award, "auto_entries_granted": new_granted, "qualifying_message_count": new_banked}
 
+
+    async def get_entry(self, raffle_id: int, user_id: int) -> dict | None:
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT discord_id, entry_source, entry_weight, created_at
+                FROM free_raffle_entries
+                WHERE raffle_id = $1 AND discord_id = $2
+                """,
+                raffle_id,
+                user_id,
+            )
+            return dict(row) if row else None
+
+    async def get_auto_entry_progress(self, raffle_id: int, user_id: int) -> dict:
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT qualifying_message_count, auto_entries_granted, updated_at
+                FROM giveaway_auto_progress
+                WHERE raffle_id = $1 AND user_id = $2
+                """,
+                raffle_id,
+                user_id,
+            )
+            if row is None:
+                return {"qualifying_message_count": 0, "auto_entries_granted": 0, "updated_at": None}
+            return dict(row)
+
     async def user_has_entry(self, raffle_id: int, discord_id: int) -> bool:
         async with self.acquire() as conn:
             value = await conn.fetchval(

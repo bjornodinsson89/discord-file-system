@@ -296,11 +296,9 @@ def test_giveaway_embed_hides_time_row_when_no_end_time_exists(monkeypatch):
                 "ends_at": None,
             },
         )
-        live_stats = next(field.value for field in embed.fields if field.name == "LIVE STATS")
-        info = next(field.value for field in embed.fields if field.name == "GIVEAWAY INFO")
-        assert "Time:" not in live_stats
-        assert "Remaining:" not in info
-        assert "Ends:" not in info
+        stats = next(field.value for field in embed.fields if field.name == "STATS")
+        assert "Entries:" in stats
+        assert all(field.name != "TIME" for field in embed.fields)
 
     asyncio.run(_run())
 
@@ -330,11 +328,11 @@ def test_giveaway_embed_keeps_time_row_when_end_time_exists(monkeypatch):
                 "ends_at": now + timedelta(minutes=10),
             },
         )
-        live_stats = next(field.value for field in embed.fields if field.name == "LIVE STATS")
-        info = next(field.value for field in embed.fields if field.name == "GIVEAWAY INFO")
-        assert "Time:" in live_stats
-        assert "Remaining:" in info
-        assert "Ends:" in info
+        stats = next(field.value for field in embed.fields if field.name == "STATS")
+        time_field = next(field.value for field in embed.fields if field.name == "TIME")
+        assert "Entries:" in stats
+        assert "Ends in:" in time_field
+        assert "Ends at:" in time_field
 
     asyncio.run(_run())
 

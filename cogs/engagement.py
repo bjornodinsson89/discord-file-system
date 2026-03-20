@@ -17,6 +17,9 @@ from services.role_reward_service import RoleRewardService
 from utils.database import get_pool
 
 
+DEFAULT_LEVELUP_ANNOUNCEMENT_COPY = "reached Level {level} and earned 1 coin and 100 HJD"
+
+
 def _message_has_interaction_origin(message: discord.Message) -> bool:
     return getattr(message, "interaction_metadata", None) is not None
 
@@ -61,8 +64,10 @@ class EngagementCog(commands.Cog):
             channel = guild.get_channel(channel_id)
             if channel is None or not hasattr(channel, "send"):
                 return
+            coin_reward = int(settings.get("level_up_coin_reward") or 1)
+            hjd_reward = int(settings.get("level_up_hjd_reward") or 100)
             await channel.send(
-                f"🎉 {member.mention} reached Level {level} and earned 1 coin and 100 HJD."
+                f"🎉 {member.mention} reached Level {level} and earned {coin_reward} Coin{'s' if coin_reward != 1 else ''} and {hjd_reward} HJD."
             )
         except Exception:
             return
