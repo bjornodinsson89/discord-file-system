@@ -145,6 +145,7 @@ class FreeRaffleModal(discord.ui.Modal, title="Giveaway"):
         self.cog.store_create_draft(int(interaction.user.id), draft)
         await interaction.response.defer(ephemeral=True, thinking=False)
         await interaction.followup.send(
+            content="Choose the giveaway entry mode and posting channel.",
             embed=self.cog.build_create_summary_embed(
                 draft, mode_key="button", channel_id=int(default_channel_id)
             ),
