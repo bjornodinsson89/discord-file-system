@@ -194,10 +194,12 @@ def test_info_button_exists_and_returns_ephemeral_progress(monkeypatch):
                 return_value={"qualifying_message_count": 9, "auto_entries_granted": 2}
             ),
             get_entry=AsyncMock(return_value={"entry_weight": 4}),
+            list_role_bonus_rules=AsyncMock(return_value=[]),
         )
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: progress_repo)
         monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
         cog._get_coin_balance = AsyncMock(return_value=1)
+        cog.bot = SimpleNamespace(get_guild=lambda _gid: None)
         view = FreeRaffleCog.build_free_raffle_view(
             cog, 11, status="active", button_join_enabled=False
         )
@@ -210,8 +212,8 @@ def test_info_button_exists_and_returns_ephemeral_progress(monkeypatch):
         await FreeRaffleCog.handle_info(cog, interaction, 11)
         embed = interaction.response.sent["embed"]
         assert interaction.response.sent["ephemeral"] is True
-        assert "Every 15 qualifying messages gives 1 entry." in embed.fields[0].value
-        assert "Messages toward next entry: **9 / 15**" in embed.fields[1].value
+        assert "Every 15 qualifying messages gives 1 base entry." in embed.fields[0].value
+        assert "Messages toward next entry: **9 / 15**" in embed.fields[-1].value
 
     asyncio.run(_run())
 
