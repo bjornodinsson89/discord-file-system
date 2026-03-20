@@ -69,16 +69,78 @@ class EngagementService:
         old_level = int(profile.get("level") or 0)
         new_level = level_from_total_xp(int(profile.get("xp_total") or 0))
         if new_level > old_level:
+            settings = await self.repo.get_or_create_guild_settings(guild_id)
+            levelup_coin_reward = int(settings.get("level_up_coin_reward") or 1)
+            levelup_hjd_reward = int(settings.get("level_up_hjd_reward") or 100)
             await self.repo.update_level(guild_id, user_id, new_level)
             for level in range(old_level + 1, new_level + 1):
-                await self.prize_tokens.grant_level_up_token(guild_id, user_id, level)
-                if self.hjd_service is not None:
-                    await self.hjd_service.grant_level_up_hjd(guild_id, user_id, level)
+                if levelup_coin_reward > 0:
+                    await self._grant_levelup_coin_reward(guild_id, user_id, level, levelup_coin_reward)
+                if self.hjd_service is not None and levelup_hjd_reward > 0:
+                    try:
+                        await self.hjd_service.grant_level_up_hjd(guild_id, user_id, level, amount=levelup_hjd_reward)
+                    except TypeError:
+                        await self.hjd_service.grant_level_up_hjd(guild_id, user_id, level)
                 if on_level_up is not None:
                     await on_level_up(guild_id, user_id, level)
             if on_role_sync_needed is not None:
                 await on_role_sync_needed(guild_id, user_id)
         return True
+
+    async def _grant_levelup_coin_reward(self, guild_id: int, user_id: int, level: int, amount: int) -> None:
+        grant_configured = getattr(self.prize_tokens, "grant_configured_reward", None)
+        if callable(grant_configured):
+            await grant_configured(
+                guild_id=guild_id,
+                user_id=user_id,
+                amount=amount,
+                transaction_type="level_up_grant",
+                source_type="level",
+                source_id=str(level),
+                dedupe_key=f"levelup_token:{guild_id}:{user_id}:{level}",
+                metadata={"level": level, "amount": amount},
+            )
+            return
+        await self.prize_tokens.grant_level_up_token(guild_id, user_id, level)
+
+    async def _award_configured_activity_rewards(
+        self,
+        *,
+        guild_id: int,
+        user_id: int,
+        settings: dict,
+        coin_key: str,
+        hjd_key: str,
+        transaction_prefix: str,
+        source_type: str,
+        source_id: str,
+        dedupe_key: str,
+        metadata: dict | None = None,
+    ) -> None:
+        coin_amount = int(settings.get(coin_key) or 0)
+        hjd_amount = int(settings.get(hjd_key) or 0)
+        if coin_amount > 0:
+            await self.prize_tokens.grant_configured_reward(
+                guild_id=guild_id,
+                user_id=user_id,
+                amount=coin_amount,
+                transaction_type=f"{transaction_prefix}_coin_reward",
+                source_type=source_type,
+                source_id=source_id,
+                dedupe_key=f"{dedupe_key}:coin_reward",
+                metadata=metadata or {"amount": coin_amount},
+            )
+        if self.hjd_service is not None and hjd_amount > 0:
+            await self.hjd_service.grant_configured_reward(
+                guild_id=guild_id,
+                user_id=user_id,
+                amount=hjd_amount,
+                transaction_type=f"{transaction_prefix}_hjd_reward",
+                source_type=source_type,
+                source_id=source_id,
+                dedupe_key=f"{dedupe_key}:hjd_reward",
+                metadata=metadata or {"amount": hjd_amount},
+            )
 
     async def process_paid_raffle_purchase(self, payload: dict, on_role_sync_needed=None) -> bool:
         guild_id = int(payload.get("guild_id") or 0)
@@ -88,13 +150,16 @@ class EngagementService:
         per_ticket = int(settings.get("paid_raffle_purchase_xp_per_ticket") or 2)
         cap = int(settings.get("paid_raffle_purchase_xp_cap") or 50)
         xp = min(cap, base + (per_ticket * ticket_count))
-        return await self.award_xp(
+        user_id = int(payload.get("user_id") or 0)
+        source_id = str(payload.get("entry_id") or payload.get("raffle_id") or "0")
+        dedupe_key = str(payload.get("dedupe_key") or "")
+        applied = await self.award_xp(
             guild_id=guild_id,
-            user_id=int(payload.get("user_id") or 0),
+            user_id=user_id,
             event_name="paid_raffle_purchase_verified",
             source_type="raffle",
-            source_id=str(payload.get("entry_id") or payload.get("raffle_id") or "0"),
-            dedupe_key=str(payload.get("dedupe_key") or ""),
+            source_id=source_id,
+            dedupe_key=dedupe_key,
             xp_delta=xp,
             payload=payload,
             increments={
@@ -104,6 +169,20 @@ class EngagementService:
             },
             on_role_sync_needed=on_role_sync_needed,
         )
+        if applied:
+            await self._award_configured_activity_rewards(
+                guild_id=guild_id,
+                user_id=user_id,
+                settings=settings,
+                coin_key="paid_raffle_purchase_coin_reward",
+                hjd_key="paid_raffle_purchase_hjd_reward",
+                transaction_prefix="paid_raffle_purchase",
+                source_type="raffle",
+                source_id=source_id,
+                dedupe_key=dedupe_key,
+                metadata={"ticket_count": ticket_count},
+            )
+        return applied
 
     async def process_raffle_prize_token_purchase_confirmed(self, payload: dict, on_role_sync_needed=None) -> bool:
         guild_id = int(payload.get("guild_id") or 0)
@@ -130,35 +209,69 @@ class EngagementService:
         guild_id = int(payload.get("guild_id") or 0)
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         xp = int(settings.get("jump_purchase_xp") or 40)
-        return await self.award_xp(
+        user_id = int(payload.get("user_id") or 0)
+        source_id = str(payload.get("signup_id") or payload.get("session_id") or "0")
+        dedupe_key = str(payload.get("dedupe_key") or "")
+        applied = await self.award_xp(
             guild_id=guild_id,
-            user_id=int(payload.get("user_id") or 0),
+            user_id=user_id,
             event_name="jump_99k_purchase_verified",
             source_type="jump_99k",
-            source_id=str(payload.get("signup_id") or payload.get("session_id") or "0"),
-            dedupe_key=str(payload.get("dedupe_key") or ""),
+            source_id=source_id,
+            dedupe_key=dedupe_key,
             xp_delta=xp,
             payload=payload,
             increments={"jump_purchase_xp_total": xp, "jump_99k_purchases_count": 1},
             on_role_sync_needed=on_role_sync_needed,
         )
+        if applied:
+            await self._award_configured_activity_rewards(
+                guild_id=guild_id,
+                user_id=user_id,
+                settings=settings,
+                coin_key="jump_purchase_coin_reward",
+                hjd_key="jump_purchase_hjd_reward",
+                transaction_prefix="jump_purchase",
+                source_type="jump_99k",
+                source_id=source_id,
+                dedupe_key=dedupe_key,
+                metadata={"activity": "jump_purchase"},
+            )
+        return applied
 
     async def process_jump_completed(self, payload: dict, on_role_sync_needed=None) -> bool:
         guild_id = int(payload.get("guild_id") or 0)
         settings = await self.repo.get_or_create_guild_settings(guild_id)
         xp = int(settings.get("jump_completion_xp") or 75)
-        return await self.award_xp(
+        user_id = int(payload.get("user_id") or 0)
+        source_id = str(payload.get("session_id") or "0")
+        dedupe_key = str(payload.get("dedupe_key") or "")
+        applied = await self.award_xp(
             guild_id=guild_id,
-            user_id=int(payload.get("user_id") or 0),
+            user_id=user_id,
             event_name="jump_99k_completed",
             source_type="jump_99k",
-            source_id=str(payload.get("session_id") or "0"),
-            dedupe_key=str(payload.get("dedupe_key") or ""),
+            source_id=source_id,
+            dedupe_key=dedupe_key,
             xp_delta=xp,
             payload=payload,
             increments={"jump_completion_xp_total": xp, "jump_99k_completed_count": 1},
             on_role_sync_needed=on_role_sync_needed,
         )
+        if applied:
+            await self._award_configured_activity_rewards(
+                guild_id=guild_id,
+                user_id=user_id,
+                settings=settings,
+                coin_key="jump_completion_coin_reward",
+                hjd_key="jump_completion_hjd_reward",
+                transaction_prefix="jump_completion",
+                source_type="jump_99k",
+                source_id=source_id,
+                dedupe_key=dedupe_key,
+                metadata={"activity": "jump_completion"},
+            )
+        return applied
 
 
     async def voice_xp_if_eligible(

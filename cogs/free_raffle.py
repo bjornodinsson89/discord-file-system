@@ -18,6 +18,9 @@ from utils.panel_edit_safety import PANEL_EDIT_SAFETY
 from views.free_raffle_views import EnterRaffleView, HostControlsView
 from utils.embeds import clamp_percent, format_remaining_time, render_text_progress_bar
 
+AUTO_ENTRY_MESSAGE_STEP = 15
+ENTRIES_PROGRESS_WIDTH = 10
+
 log = logging.getLogger("happy_jumper.free_raffle")
 
 FREE_RAFFLE_MIN_DAYS = 1
@@ -267,7 +270,7 @@ class FreeRaffleCog(commands.Cog):
         await interaction.response.send_modal(FreeRaffleModal(self))
 
     def public_view(self, raffle_id: int, *, disabled: bool = False) -> EnterRaffleView:
-        return EnterRaffleView(raffle_id=raffle_id, on_enter=self.handle_enter, disabled=disabled)
+        return EnterRaffleView(raffle_id=raffle_id, on_enter=self.handle_enter, on_info=self.handle_info, disabled=disabled)
 
     def build_free_raffle_view(
         self,
@@ -281,6 +284,7 @@ class FreeRaffleCog(commands.Cog):
         return EnterRaffleView(
             raffle_id=raffle_id,
             on_enter=self.handle_enter,
+            on_info=self.handle_info,
             disabled=disabled,
             show_join_button=bool(button_join_enabled),
         )
@@ -388,100 +392,134 @@ class FreeRaffleCog(commands.Cog):
         image = str(item.get("image_url") or "").strip()
         return image or None
 
+    def _entry_mode_label(self, raffle: dict) -> str:
+        button_join_enabled = bool(raffle.get("button_join_enabled", False))
+        auto_entry_enabled = bool(raffle.get("auto_entry_enabled", False))
+        weighted_enabled = bool(raffle.get("weighted_odds_enabled", raffle.get("weighted_enabled", False)))
+        if button_join_enabled and weighted_enabled:
+            return "Button Join + Weighted"
+        if button_join_enabled:
+            return "Button Join"
+        if auto_entry_enabled and weighted_enabled:
+            return "Auto Entry + Weighted"
+        if auto_entry_enabled:
+            return "Auto Entry"
+        return "Unknown"
+
+    def _entries_section(self, entry_count: int, entry_goal: int | None) -> str:
+        if entry_goal and entry_goal > 0:
+            progress = clamp_percent((entry_count / entry_goal) * 100)
+            return f"Entries: **{entry_count} / {entry_goal}**\n`{render_text_progress_bar(progress, width=ENTRIES_PROGRESS_WIDTH)}`"
+        return f"Entries: **{entry_count} / Unlimited**"
+
+    def _time_section(self, created_at: datetime | None, ends_at: datetime | None, now: datetime) -> str | None:
+        if not isinstance(ends_at, datetime):
+            return None
+        if ends_at.tzinfo is None:
+            ends_at = ends_at.replace(tzinfo=timezone.utc)
+        lines = [f"Ends in: **{format_remaining_time(ends_at, now)}**", f"Ends at: <t:{int(ends_at.timestamp())}:f>"]
+        if isinstance(created_at, datetime):
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            total_seconds = int((ends_at - created_at).total_seconds())
+            elapsed_seconds = int((now - created_at).total_seconds())
+            if total_seconds > 0:
+                percent = clamp_percent((elapsed_seconds / total_seconds) * 100)
+                lines.append(f"`{render_text_progress_bar(percent, width=ENTRIES_PROGRESS_WIDTH)}`")
+        return "\n".join(lines)
+
+    async def _build_personal_info_embed(self, raffle: dict, user_id: int) -> discord.Embed:
+        repo = FreeRaffleRepository(get_pool())
+        profile = await repo.get_auto_entry_progress(int(raffle["id"]), int(user_id))
+        entry_row = await repo.get_entry(int(raffle["id"]), int(user_id))
+        has_entry = entry_row is not None
+        entry_weight = max(1, int((entry_row or {}).get("entry_weight") or 1)) if has_entry else 0
+        weighted_enabled = bool(raffle.get("weighted_odds_enabled", raffle.get("weighted_enabled", False)))
+        auto_entry_enabled = bool(raffle.get("auto_entry_enabled", False))
+        button_join_enabled = bool(raffle.get("button_join_enabled", False))
+        auto_max = max(1, int(raffle.get("auto_entry_max_per_user") or 1))
+        progress_count = int(profile.get("qualifying_message_count") or 0)
+        auto_entries_granted = int(profile.get("auto_entries_granted") or 0)
+        messages_toward_next = min(progress_count, AUTO_ENTRY_MESSAGE_STEP)
+        description_lines: list[str] = []
+        if auto_entry_enabled:
+            description_lines.extend([
+                "You must have at least 1 Coin.",
+                f"Every {AUTO_ENTRY_MESSAGE_STEP} qualifying messages gives 1 entry.",
+                f"Max auto entries: {auto_max}.",
+            ])
+        if button_join_enabled:
+            description_lines.append("Use the Enter Giveaway button to join instantly.")
+        description_lines.append(f"Weighted entries are {'enabled' if weighted_enabled else 'off'}.")
+
+        embed = discord.Embed(
+            title=f"Info for Giveaway #{int(raffle['id'])}",
+            description="\n".join(description_lines),
+            color=_status_color(str(raffle.get("status") or ""), None),
+        )
+        progress_lines = []
+        if auto_entry_enabled:
+            coin_eligible = "Eligible" if int((await self._get_coin_balance(int(raffle['guild_id']), int(user_id))) or 0) >= 1 else "Not eligible"
+            progress_lines.append(f"Coin Check: **{coin_eligible}**")
+            progress_lines.append(f"Messages toward next entry: **{messages_toward_next} / {AUTO_ENTRY_MESSAGE_STEP}**")
+            progress_lines.append(f"Your entries: **{auto_entries_granted} / {auto_max}**")
+        elif button_join_enabled:
+            progress_lines.append(f"Your entries: **{1 if has_entry else 0}**")
+        if weighted_enabled:
+            progress_lines.append("Weighted mode: **Enabled**")
+            if has_entry:
+                progress_lines.append(f"Your current weight: **{entry_weight}**")
+        embed.add_field(name="HOW IT WORKS", value="\n".join(description_lines), inline=False)
+        embed.add_field(name="YOUR PROGRESS", value="\n".join(progress_lines) or "No personal progress yet.", inline=False)
+        embed.set_footer(text="This panel only shows your personal progress.")
+        return embed
+
+    async def _get_coin_balance(self, guild_id: int, user_id: int) -> int:
+        from repositories.engagement import EngagementRepository
+        profile = await EngagementRepository(get_pool()).get_or_create_profile(guild_id, user_id)
+        return int(profile.get("prize_token_balance") or 0)
+
     async def build_raffle_embed(self, raffle: dict) -> discord.Embed:
         raffle_id = int(raffle["id"])
         repo = FreeRaffleRepository(get_pool())
-
         winner_id = await repo.get_winner(raffle_id)
         entry_count = await repo.get_entry_count(raffle_id)
         status = _status_label(str(raffle.get("status") or ""), winner_id)
         color = _status_color(str(raffle.get("status") or ""), winner_id)
         prize_text = str(raffle.get("prize_text") or "Unknown Prize").strip() or "Unknown Prize"
         note_text = str(raffle.get("note_text") or "").strip()
-        button_join_enabled = bool(raffle.get("button_join_enabled", False))
-        auto_entry_enabled = bool(raffle.get("auto_entry_enabled", False))
-        weighted_enabled = bool(raffle.get("weighted_odds_enabled", False))
-        if button_join_enabled and weighted_enabled:
-            entry_mode = "Button join + weighted"
-        elif button_join_enabled:
-            entry_mode = "Button join"
-        elif auto_entry_enabled and weighted_enabled:
-            entry_mode = "Auto entry + weighted"
-        elif auto_entry_enabled:
-            entry_mode = "Auto entry"
-        else:
-            entry_mode = "Unknown"
-
-        ends_at = raffle.get("ends_at")
-        ends_line = ""
-        if isinstance(ends_at, datetime):
-            ends_unix = int(ends_at.astimezone(timezone.utc).timestamp())
-            ends_line = f"\n**Ends:** <t:{ends_unix}:R> (<t:{ends_unix}:f>)"
-
+        entry_mode = self._entry_mode_label(raffle)
         thumbnail_url = await self.resolve_thumbnail(prize_text)
-        title = "🎉 GIVEAWAY 🎉" if thumbnail_url else "🎉 GIVEAWAY 🎉 🎁"
         now = datetime.now(timezone.utc)
         created_at = raffle.get("created_at")
-        if isinstance(created_at, datetime) and created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        end_time = ends_at if isinstance(ends_at, datetime) else None
-        has_real_end_time = isinstance(end_time, datetime) and isinstance(created_at, datetime)
-        total_seconds = int((end_time - created_at).total_seconds()) if has_real_end_time else 0
-        elapsed_seconds = int((now - created_at).total_seconds()) if has_real_end_time else 0
-        time_percent = clamp_percent((elapsed_seconds / total_seconds) * 100) if total_seconds > 0 else 0
+        ends_at = raffle.get("ends_at")
+        is_timer_triggered = isinstance(ends_at, datetime)
 
         embed = discord.Embed(
-            title=title,
-            description="Join now for a chance to win.",
+            title=f"Giveaway for {prize_text}",
             color=color,
         )
-        live_stats_lines = [f"Entries: **{entry_count}**", f"Status: **{status}**"]
-        if has_real_end_time and total_seconds > 0:
-            live_stats_lines.insert(1, f"Time: `{render_text_progress_bar(time_percent)}`")
+        embed.add_field(name="PRIZE", value=prize_text, inline=False)
         embed.add_field(
-            name="LIVE STATS",
-            value="\n".join(live_stats_lines),
+            name="STATS",
+            value="\n".join([
+                f"Status: **{status}**",
+                self._entries_section(entry_count, None),
+                f"Mode: **{entry_mode}**",
+            ]),
             inline=False,
         )
-        embed.add_field(name="PRIZE", value=f"🪓 {prize_text}", inline=False)
-        giveaway_info_lines = [
-            f"Host: <@{int(raffle['host_discord_id'])}>",
-            f"Entry mode: **{entry_mode}**",
-            f"Weighted odds: **{'Enabled' if weighted_enabled else 'Disabled'}**",
-            f"Join button: **{'Available' if button_join_enabled else 'Disabled'}**",
-        ]
-        if ends_line:
-            giveaway_info_lines.insert(1, f"Ends: {ends_line.strip()}")
-            giveaway_info_lines.insert(2, f"Remaining: {format_remaining_time(end_time, now)}")
-        embed.add_field(
-            name="GIVEAWAY INFO",
-            value="\n".join(giveaway_info_lines),
-            inline=False,
-        )
-        how_to_play = []
-        if button_join_enabled:
-            how_to_play.append("✅ Click **🎟️ Enter Giveaway**")
-        if auto_entry_enabled:
-            auto_max = max(1, int(raffle.get("auto_entry_max_per_user") or 1))
-            how_to_play.append("✅ Keep at least **1 coin** to stay eligible for message-based auto entry")
-            how_to_play.append("✅ Every **15 qualifying chat messages** grants **1 giveaway entry**")
-            how_to_play.append(f"✅ Auto-entry cap: **{auto_max}** per user for this giveaway")
-        how_to_play.append(f"✅ {'Weighted odds are enabled' if weighted_enabled else 'Equal odds for all entrants'}")
-        how_to_play.append("✅ Winner announced automatically")
-        embed.add_field(
-            name="HOW TO PLAY",
-            value="\n".join(how_to_play),
-            inline=False,
-        )
-        embed.set_footer(text=f"Last updated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+        if is_timer_triggered:
+            time_value = self._time_section(created_at, ends_at, now)
+            if time_value:
+                embed.add_field(name="TIME", value=time_value, inline=False)
         if note_text:
-            embed.add_field(name="📝 Note", value=note_text, inline=False)
+            embed.add_field(name="NOTE", value=note_text, inline=False)
         if winner_id:
-            embed.add_field(name="🏆 Winner", value=f"<@{winner_id}>", inline=False)
-
+            embed.add_field(name="WINNER", value=f"<@{winner_id}>", inline=False)
+        embed.set_footer(text=f"Last updated: {now.strftime('%Y-%m-%d %H:%M UTC')}")
         if thumbnail_url:
             embed.set_thumbnail(url=thumbnail_url)
-
         return embed
 
     async def refresh_public_message(self, raffle_id: int) -> None:
@@ -562,6 +600,18 @@ class FreeRaffleCog(commands.Cog):
             await interaction.followup.send(message, ephemeral=True)
             return
         await interaction.response.send_message(message, ephemeral=True)
+
+    async def handle_info(self, interaction: discord.Interaction, raffle_id: int) -> None:
+        repo = FreeRaffleRepository(get_pool())
+        raffle = await repo.get_raffle(raffle_id)
+        if not raffle:
+            await self._send_ephemeral(interaction, "Giveaway not found.")
+            return
+        embed = await self._build_personal_info_embed(raffle, int(interaction.user.id))
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def handle_enter(self, interaction: discord.Interaction, raffle_id: int) -> None:
         try:

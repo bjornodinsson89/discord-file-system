@@ -171,6 +171,14 @@ async def _send_setup_response(interaction: discord.Interaction, content: str, *
         await interaction.response.send_message(content, ephemeral=ephemeral)
 
 
+
+
+def _parse_friendly_int(raw_value: str, *, label: str) -> int:
+    cleaned = str(raw_value or "").strip().replace(",", "")
+    if not cleaned or not re.fullmatch(r"\d+", cleaned):
+        raise ValueError(f"{label} must be a whole number.")
+    return int(cleaned)
+
 async def _send_setup_error_message(interaction: discord.Interaction, message: str) -> None:
     embed = create_error_embed("Setup failed", message)
     if _interaction_response_is_done(interaction):
@@ -1624,11 +1632,14 @@ class PaidRaffleXPModal(discord.ui.Modal):
         self.panel = panel
 
     async def on_submit(self, interaction: discord.Interaction):
-        await self.panel.save_engagement_changes(interaction, {
-            "paid_raffle_purchase_xp_base": int(str(self.base.value).strip()),
-            "paid_raffle_purchase_xp_per_ticket": int(str(self.per_ticket.value).strip()),
-            "paid_raffle_purchase_xp_cap": int(str(self.cap.value).strip()),
-        })
+        try:
+            await self.panel.save_engagement_changes(interaction, {
+                "paid_raffle_purchase_xp_base": _parse_friendly_int(str(self.base.value), label="Paid raffle base XP"),
+                "paid_raffle_purchase_xp_per_ticket": _parse_friendly_int(str(self.per_ticket.value), label="Paid raffle XP per ticket"),
+                "paid_raffle_purchase_xp_cap": _parse_friendly_int(str(self.cap.value), label="Paid raffle XP cap"),
+            })
+        except ValueError as error:
+            await interaction.response.send_message(embed=create_error_embed("Invalid value", str(error)), ephemeral=True)
 
 
 class JumpXPModal(discord.ui.Modal):
@@ -1641,8 +1652,61 @@ class JumpXPModal(discord.ui.Modal):
         self.value.default = str(default)
 
     async def on_submit(self, interaction: discord.Interaction):
-        await self.panel.save_engagement_changes(interaction, {self.key: int(str(self.value.value).strip())})
+        try:
+            await self.panel.save_engagement_changes(interaction, {self.key: _parse_friendly_int(str(self.value.value), label=self.value.label or self.title)})
+        except ValueError as error:
+            await interaction.response.send_message(embed=create_error_embed("Invalid value", str(error)), ephemeral=True)
 
+
+class EngagementRewardAmountModal(discord.ui.Modal):
+    value = discord.ui.TextInput(label="Amount", required=True, max_length=10)
+
+    def __init__(self, panel: SetupPanelView, *, key: str, title: str, label: str, default: int):
+        super().__init__(title=title)
+        self.panel = panel
+        self.key = key
+        self.value.label = label
+        self.value.default = f"{int(default):,}"
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await self.panel.save_engagement_changes(interaction, {self.key: _parse_friendly_int(str(self.value.value), label=self.value.label)})
+        except ValueError as error:
+            await interaction.response.send_message(embed=create_error_embed("Invalid value", str(error)), ephemeral=True)
+
+
+class EngagementRewardConfigView(BackView):
+    REWARD_FIELDS = [
+        ("level_up_coin_reward", "Level-up Coin Reward"),
+        ("level_up_hjd_reward", "Level-up HJD Reward"),
+        ("paid_raffle_purchase_coin_reward", "Raffle Purchase Coin Reward"),
+        ("paid_raffle_purchase_hjd_reward", "Raffle Purchase HJD Reward"),
+        ("jump_purchase_coin_reward", "Jump Purchase Coin Reward"),
+        ("jump_purchase_hjd_reward", "Jump Purchase HJD Reward"),
+        ("jump_completion_coin_reward", "Jump Completion Coin Reward"),
+        ("jump_completion_hjd_reward", "Jump Completion HJD Reward"),
+    ]
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        for index, (key, label) in enumerate(self.REWARD_FIELDS):
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary, row=index // 2)
+            async def _callback(interaction: discord.Interaction, *, reward_key=key, reward_label=label):
+                await interaction.response.send_modal(
+                    EngagementRewardAmountModal(
+                        self.panel,
+                        key=reward_key,
+                        title=reward_label,
+                        label=reward_label,
+                        default=int(self.panel.engagement_settings.get(reward_key) or 0),
+                    )
+                )
+            button.callback = _callback
+            self.add_item(button)
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
+    async def custom_back(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(interaction, create_info_embed("Engagement Setup", "Event XP settings"), EngagementEventXPView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
 
 class EngagementEventXPView(BackView):
     @discord.ui.button(label="Paid raffle purchase XP config", style=discord.ButtonStyle.primary, row=0)
@@ -1657,7 +1721,20 @@ class EngagementEventXPView(BackView):
     async def jump_completion_config(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.send_modal(JumpXPModal(self.panel, "jump_completion_xp", "Jump completion XP", int(self.panel.engagement_settings.get("jump_completion_xp") or 75)))
 
-    @discord.ui.button(label="Toggle auto-entry giveaways enabled", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="Reward amount controls", style=discord.ButtonStyle.primary, row=3)
+    async def reward_amount_controls(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(interaction, build_section_embed("Reward Amounts", "Adjust Coin and HJD payouts for the activities this bot already rewards.", [
+            f"Level-up Coin Reward: **{int(self.panel.engagement_settings.get('level_up_coin_reward') or 1):,}**",
+            f"Level-up HJD Reward: **{int(self.panel.engagement_settings.get('level_up_hjd_reward') or 100):,}**",
+            f"Raffle Purchase Coin Reward: **{int(self.panel.engagement_settings.get('paid_raffle_purchase_coin_reward') or 0):,}**",
+            f"Raffle Purchase HJD Reward: **{int(self.panel.engagement_settings.get('paid_raffle_purchase_hjd_reward') or 0):,}**",
+            f"Jump Purchase Coin Reward: **{int(self.panel.engagement_settings.get('jump_purchase_coin_reward') or 0):,}**",
+            f"Jump Purchase HJD Reward: **{int(self.panel.engagement_settings.get('jump_purchase_hjd_reward') or 0):,}**",
+            f"Jump Completion Coin Reward: **{int(self.panel.engagement_settings.get('jump_completion_coin_reward') or 0):,}**",
+            f"Jump Completion HJD Reward: **{int(self.panel.engagement_settings.get('jump_completion_hjd_reward') or 0):,}**",
+        ]), EngagementRewardConfigView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
+
+    @discord.ui.button(label="Toggle auto-entry giveaways enabled", style=discord.ButtonStyle.secondary, row=3)
     async def auto_entry_toggle(self, interaction: discord.Interaction, _: discord.ui.Button):
         await self.panel.save_engagement_changes(interaction, {"auto_entry_giveaways_enabled": not bool(self.panel.engagement_settings.get("auto_entry_giveaways_enabled", True))})
 

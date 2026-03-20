@@ -6,6 +6,7 @@ import discord
 
 
 EnterHandler = Callable[[discord.Interaction, int], Awaitable[None]]
+InfoHandler = Callable[[discord.Interaction, int], Awaitable[None]]
 HostHandler = Callable[[discord.Interaction, int], Awaitable[None]]
 
 
@@ -17,10 +18,20 @@ class EnterRaffleView(discord.ui.View):
         *,
         disabled: bool = False,
         show_join_button: bool = True,
+        on_info: InfoHandler | None = None,
     ):
         super().__init__(timeout=None)
         self.raffle_id = raffle_id
         self.on_enter = on_enter
+        self.on_info = on_info
+        info_button = discord.ui.Button(
+            label="ℹ️ Info",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"fr_info:{raffle_id}",
+            disabled=False,
+        )
+        info_button.callback = self._on_info
+        self.add_item(info_button)
         if show_join_button:
             button = discord.ui.Button(
                 label="🎟️ Enter Giveaway",
@@ -33,6 +44,12 @@ class EnterRaffleView(discord.ui.View):
 
     async def _on_enter(self, interaction: discord.Interaction) -> None:
         await self.on_enter(interaction, self.raffle_id)
+
+    async def _on_info(self, interaction: discord.Interaction) -> None:
+        if self.on_info is None:
+            await interaction.response.send_message("Info is unavailable right now.", ephemeral=True)
+            return
+        await self.on_info(interaction, self.raffle_id)
 
 
 class HostControlsView(discord.ui.View):
