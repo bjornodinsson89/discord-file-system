@@ -70,23 +70,22 @@ class FreeRaffleRepository(RepositoryBase):
         raffle_id: int,
         *,
         messages_per_entry: int,
-        auto_entry_max_per_user: int,
     ) -> None:
         async with self.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE free_raffles
                 SET messages_per_entry = $2,
-                    auto_entry_max_per_user = $3,
                     updated_at = NOW()
                 WHERE id = $1
                 """,
                 raffle_id,
                 max(1, int(messages_per_entry)),
-                max(1, int(auto_entry_max_per_user)),
             )
 
-    async def upsert_role_bonus_rule(self, raffle_id: int, role_id: int, bonus_entries_per_qualification: int) -> None:
+    async def upsert_role_bonus_rule(
+        self, raffle_id: int, role_id: int, bonus_entries_per_qualification: int
+    ) -> None:
         async with self.acquire() as conn:
             await conn.execute(
                 """
@@ -117,7 +116,9 @@ class FreeRaffleRepository(RepositoryBase):
         conn: asyncpg.Connection | None = None,
     ) -> None:
         async def _apply(target: asyncpg.Connection) -> None:
-            await target.execute("DELETE FROM free_raffle_role_bonuses WHERE raffle_id = $1", raffle_id)
+            await target.execute(
+                "DELETE FROM free_raffle_role_bonuses WHERE raffle_id = $1", raffle_id
+            )
             for rule in role_bonus_rules:
                 await target.execute(
                     """
@@ -281,7 +282,12 @@ class FreeRaffleRepository(RepositoryBase):
                     guild_id,
                 )
                 if raffle is None:
-                    return {"awarded": False, "entries_granted": 0, "auto_entries_granted": 0, "qualifying_message_count": 0}
+                    return {
+                        "awarded": False,
+                        "entries_granted": 0,
+                        "auto_entries_granted": 0,
+                        "qualifying_message_count": 0,
+                    }
 
                 await conn.execute(
                     """
@@ -303,7 +309,12 @@ class FreeRaffleRepository(RepositoryBase):
                     user_id,
                 )
                 if int(profile.get("prize_token_balance") or 0) < 1:
-                    return {"awarded": False, "entries_granted": 0, "auto_entries_granted": 0, "qualifying_message_count": 0}
+                    return {
+                        "awarded": False,
+                        "entries_granted": 0,
+                        "auto_entries_granted": 0,
+                        "qualifying_message_count": 0,
+                    }
 
                 progress = await conn.fetchrow(
                     """
@@ -314,17 +325,25 @@ class FreeRaffleRepository(RepositoryBase):
                         updated_at = NOW()
                     RETURNING *
                     """,
-                    raffle_id, guild_id, user_id, max(0, int(qualifying_messages))
+                    raffle_id,
+                    guild_id,
+                    user_id,
+                    max(0, int(qualifying_messages)),
                 )
                 progress = dict(progress)
-                max_entries = max(1, int(raffle.get('auto_entry_max_per_user') or 1))
-                messages_per_entry = max(1, int(raffle.get('messages_per_entry') or 15))
-                granted = int(progress.get('auto_entries_granted') or 0)
-                banked = int(progress.get('qualifying_message_count') or 0)
+                max_entries = max(1, int(raffle.get("auto_entry_max_per_user") or 1))
+                messages_per_entry = max(1, int(raffle.get("messages_per_entry") or 15))
+                granted = int(progress.get("auto_entries_granted") or 0)
+                banked = int(progress.get("qualifying_message_count") or 0)
                 remaining_capacity = max_entries - granted
                 qualifications_available = banked // messages_per_entry
                 if remaining_capacity <= 0 or qualifications_available <= 0:
-                    return {"awarded": False, "entries_granted": 0, "auto_entries_granted": granted, "qualifying_message_count": banked}
+                    return {
+                        "awarded": False,
+                        "entries_granted": 0,
+                        "auto_entries_granted": granted,
+                        "qualifying_message_count": banked,
+                    }
 
                 member_role_set = {int(role_id) for role_id in (member_role_ids or [])}
                 bonus_rows = await conn.fetch(
@@ -356,7 +375,12 @@ class FreeRaffleRepository(RepositoryBase):
                         break
 
                 if entries_to_award <= 0 or qualifications_processed <= 0:
-                    return {"awarded": False, "entries_granted": 0, "auto_entries_granted": granted, "qualifying_message_count": banked}
+                    return {
+                        "awarded": False,
+                        "entries_granted": 0,
+                        "auto_entries_granted": granted,
+                        "qualifying_message_count": banked,
+                    }
 
                 consumed = qualifications_processed * messages_per_entry
                 new_granted = granted + entries_to_award
@@ -370,13 +394,18 @@ class FreeRaffleRepository(RepositoryBase):
                     conn,
                     raffle_id=raffle_id,
                     discord_id=user_id,
-                    entry_source='auto_messages',
+                    entry_source="auto_messages",
                     entry_weight=max(1, int(entry_weight)) * entries_to_award,
                     dedupe_key=dedupe_key,
                     accumulate=True,
                 )
                 if not applied:
-                    return {"awarded": False, "entries_granted": 0, "auto_entries_granted": granted, "qualifying_message_count": banked}
+                    return {
+                        "awarded": False,
+                        "entries_granted": 0,
+                        "auto_entries_granted": granted,
+                        "qualifying_message_count": banked,
+                    }
 
                 await conn.execute(
                     """
@@ -387,10 +416,19 @@ class FreeRaffleRepository(RepositoryBase):
                         updated_at = NOW()
                     WHERE raffle_id = $1 AND guild_id = $2 AND user_id = $3
                     """,
-                    raffle_id, guild_id, user_id, new_banked, new_granted, dedupe_key
+                    raffle_id,
+                    guild_id,
+                    user_id,
+                    new_banked,
+                    new_granted,
+                    dedupe_key,
                 )
-                return {"awarded": True, "entries_granted": entries_to_award, "auto_entries_granted": new_granted, "qualifying_message_count": new_banked}
-
+                return {
+                    "awarded": True,
+                    "entries_granted": entries_to_award,
+                    "auto_entries_granted": new_granted,
+                    "qualifying_message_count": new_banked,
+                }
 
     async def get_entry(self, raffle_id: int, user_id: int) -> dict | None:
         async with self.acquire() as conn:
@@ -417,7 +455,11 @@ class FreeRaffleRepository(RepositoryBase):
                 user_id,
             )
             if row is None:
-                return {"qualifying_message_count": 0, "auto_entries_granted": 0, "updated_at": None}
+                return {
+                    "qualifying_message_count": 0,
+                    "auto_entries_granted": 0,
+                    "updated_at": None,
+                }
             return dict(row)
 
     async def list_role_bonus_rules(self, raffle_id: int) -> list[dict]:
@@ -522,7 +564,9 @@ class FreeRaffleRepository(RepositoryBase):
 
                 raffle_data = dict(raffle_row)
                 weighted_mode = bool(
-                    raffle_data.get("weighted_odds_enabled", raffle_data.get("weighted_enabled", False))
+                    raffle_data.get(
+                        "weighted_odds_enabled", raffle_data.get("weighted_enabled", False)
+                    )
                 )
                 entry_rows = await conn.fetch(
                     "SELECT discord_id, entry_weight FROM free_raffle_entries WHERE raffle_id = $1",
@@ -624,7 +668,9 @@ class FreeRaffleRepository(RepositoryBase):
                             winner_id = entrant_id
                             break
                 else:
-                    winner_id = int(secrets.choice([entrant_id for entrant_id, _weight in entrants]))
+                    winner_id = int(
+                        secrets.choice([entrant_id for entrant_id, _weight in entrants])
+                    )
                 await conn.execute(
                     """
                     UPDATE free_raffles

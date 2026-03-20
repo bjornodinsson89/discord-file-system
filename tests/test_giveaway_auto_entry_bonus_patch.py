@@ -5,7 +5,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from cogs.engagement import EngagementCog
-from cogs.free_raffle import AutoEntryRoleBonusManageView, FreeRaffleCog
+from cogs.free_raffle import (
+    AutoEntryRoleBonusManageView,
+    AutoEntrySettingsModal,
+    DraftRoleBonusRemovalView,
+    FreeRaffleCog,
+    FreeRaffleModal,
+    PersistedRoleBonusRemovalView,
+)
 from repositories.free_raffle_repo import FreeRaffleRepository
 
 
@@ -27,6 +34,9 @@ class _FakeResponse:
     async def defer(self, *, ephemeral=False, thinking=False):
         self.deferred = True
 
+    async def edit_message(self, content=None, *, embed=None, view=None):
+        self.sent = {"content": content, "embed": embed, "view": view, "edited": True}
+
 
 class _FakeFollowup:
     def __init__(self):
@@ -36,14 +46,45 @@ class _FakeFollowup:
         self.sent = {"content": content, "embed": embed, "ephemeral": ephemeral, "view": view}
 
 
-def test_create_draft_parses_messages_per_entry_and_bonus_rules():
+def test_creation_modal_uses_allowed_entries_per_user_label():
+    async def _run():
+        cog = FreeRaffleCog.__new__(FreeRaffleCog)
+        modal = FreeRaffleModal(cog)
+        assert modal.allowed_entries_per_user.label == "Allowed Entries Per User"
+        labels = [child.label for child in modal.children]
+        assert "Allowed Entries Per User" in labels
+        assert "Auto-entry max per user" not in labels
+
+    asyncio.run(_run())
+
+
+def test_merge_role_bonus_rule_updates_one_rule_per_role():
     cog = FreeRaffleCog.__new__(FreeRaffleCog)
-    rules = cog.parse_role_bonus_rules("<@&123> = 1\n456:2\n456:4")
+    rules = cog.merge_role_bonus_rule(
+        [{"role_id": 123, "bonus_entries_per_qualification": 1}],
+        role_id=456,
+        bonus_entries=4,
+    )
     assert rules == [
         {"role_id": 123, "bonus_entries_per_qualification": 1},
         {"role_id": 456, "bonus_entries_per_qualification": 4},
     ]
     assert cog.parse_positive_int("15", label="Messages Per Entry") == 15
+
+
+def test_auto_entry_settings_modal_only_asks_for_messages_per_entry():
+    async def _run():
+        cog = FreeRaffleCog.__new__(FreeRaffleCog)
+        modal = AutoEntrySettingsModal(
+            cog,
+            owner_id=1,
+            draft={"messages_per_entry": 12, "auto_entry_max_per_user": 5, "role_bonus_rules": []},
+        )
+        labels = [child.label for child in modal.children]
+        assert labels == ["Messages Per Entry"]
+        assert all("Max" not in label for label in labels)
+
+    asyncio.run(_run())
 
 
 def test_info_embed_shows_messages_per_entry_and_matching_bonus_roles(monkeypatch):
@@ -144,15 +185,71 @@ def test_host_admin_role_bonus_view_supports_edit_and_remove(monkeypatch):
         await view.edit_limits.callback(interaction)
         assert interaction.response.modal is not None
 
-        repo = SimpleNamespace(remove_role_bonus_rule=AsyncMock())
+        repo = SimpleNamespace(
+            list_role_bonus_rules=AsyncMock(
+                return_value=[{"role_id": 123, "bonus_entries_per_qualification": 2}]
+            )
+        )
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
         monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
-        remove_interaction = SimpleNamespace(user=SimpleNamespace(id=5), response=_FakeResponse())
+        remove_interaction = SimpleNamespace(
+            user=SimpleNamespace(id=5),
+            response=_FakeResponse(),
+            guild=SimpleNamespace(get_role=lambda role_id: SimpleNamespace(id=role_id, name="VIP")),
+        )
         await view.remove.callback(remove_interaction)
-        repo.remove_role_bonus_rule.assert_awaited_once_with(77, 123)
-        assert remove_interaction.response.sent["content"] == "✅ Role bonus rule removed."
+        assert "Role Bonuses for Giveaway #77" == remove_interaction.response.sent["embed"].title
+        assert isinstance(remove_interaction.response.sent["view"], PersistedRoleBonusRemovalView)
 
     asyncio.run(_run())
+
+
+def test_draft_role_bonus_removal_updates_draft():
+    async def _run():
+        cog = FreeRaffleCog.__new__(FreeRaffleCog)
+        cog._create_drafts = {
+            5: {
+                "messages_per_entry": 15,
+                "auto_entry_max_per_user": 4,
+                "role_bonus_rules": [{"role_id": 123, "bonus_entries_per_qualification": 2}],
+            }
+        }
+        view = DraftRoleBonusRemovalView(
+            cog,
+            owner_id=5,
+            bonus_rules=[{"role_id": 123, "bonus_entries_per_qualification": 2}],
+        )
+        interaction = SimpleNamespace(user=SimpleNamespace(id=5), response=_FakeResponse())
+        await view.remove_selected(interaction, 123)
+        assert cog.get_create_draft(5)["role_bonus_rules"] == []
+        assert interaction.response.sent["embed"].title == "Auto Entry Settings"
+
+    asyncio.run(_run())
+
+
+def test_create_summary_shows_new_values_clearly():
+    cog = FreeRaffleCog.__new__(FreeRaffleCog)
+    embed = cog.build_create_summary_embed(
+        {
+            "prize_text": "VIP Crate",
+            "duration_days": 3,
+            "note_text": "Weekend drop",
+            "auto_entry_max_per_user": 4,
+            "messages_per_entry": 12,
+            "role_bonus_rules": [{"role_id": 123, "bonus_entries_per_qualification": 2}],
+        },
+        mode_key="auto",
+        channel_id=999,
+    )
+    summary = embed.fields[0].value
+    assert "Allowed Entries Per User: **4**" in summary
+    assert "Messages Per Entry: **12**" in summary
+    assert "Role Bonuses:" in summary
+
+
+def test_touched_giveaway_ui_uses_entries_wording_only():
+    src = open("cogs/free_raffle.py", encoding="utf-8").read()
+    assert "Entrants" not in src
 
 
 def test_source_uses_entries_language_only():
