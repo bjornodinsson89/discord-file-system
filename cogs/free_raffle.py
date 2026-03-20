@@ -11,7 +11,7 @@ from discord.ext import commands, tasks
 
 from repositories.free_raffle_repo import FreeRaffleRepository
 from repositories.torn_items import TornItemsRepository
-from utils import GuildSettingsRepository, get_database, require_api_key
+from utils import GuildSettingsRepository, get_database
 from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
 from utils.advisory_lock import run_with_advisory_lock
 from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
@@ -421,9 +421,6 @@ class FreeRaffleCog(commands.Cog):
 
     @giveaway.command(name="start", description="Start a giveaway")
     async def start(self, interaction: discord.Interaction) -> None:
-        db = get_database()
-        if not await require_api_key(interaction, db, "start a giveaway"):
-            return
         await interaction.response.send_modal(FreeRaffleModal(self))
 
     def public_view(self, raffle_id: int, *, disabled: bool = False) -> EnterRaffleView:
