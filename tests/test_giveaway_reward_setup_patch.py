@@ -6,8 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import discord
-
 import setup_panel
 from cogs.engagement import EngagementCog
 from cogs.free_raffle import FreeRaffleCog
