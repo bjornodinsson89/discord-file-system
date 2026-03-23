@@ -29,6 +29,64 @@ class UsersRepository(RepositoryBase):
             )
             return [dict(row) for row in rows]
 
+
+    async def list_user_api_keys_by_discord_ids(self, discord_ids: list[int]) -> list[dict]:
+        normalized_ids = [int(discord_id) for discord_id in discord_ids if int(discord_id) > 0]
+        if not normalized_ids:
+            return []
+
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM user_api_keys
+                WHERE discord_id = ANY($1::bigint[])
+                ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, discord_id ASC
+                """,
+                normalized_ids,
+            )
+            return [dict(row) for row in rows]
+
+    async def record_invalid_key_failure(self, discord_id: int) -> tuple[int, bool]:
+        async with self.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    UPDATE public.user_api_keys
+                    SET invalid_key_fail_count = invalid_key_fail_count + 1,
+                        invalid_key_last_failed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE discord_id = $1
+                    RETURNING invalid_key_fail_count
+                    """,
+                    discord_id,
+                )
+                if row is None:
+                    return 0, False
+
+                new_count = int(row["invalid_key_fail_count"] or 0)
+                if new_count < 3:
+                    return new_count, False
+
+                deleted_row = await conn.fetchrow(
+                    "DELETE FROM public.user_api_keys WHERE discord_id = $1 RETURNING discord_id",
+                    discord_id,
+                )
+                return new_count, deleted_row is not None
+
+    async def reset_invalid_key_failures(self, discord_id: int) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE public.user_api_keys
+                SET invalid_key_fail_count = 0,
+                    invalid_key_last_failed_at = NULL,
+                    updated_at = NOW()
+                WHERE discord_id = $1
+                """,
+                discord_id,
+            )
+
     async def upsert_user_api_key(
         self,
         *,

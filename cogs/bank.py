@@ -10,7 +10,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils.database import get_database
-from utils import GuildSettingsRepository, get_security_manager, get_torn_api
+from utils import GuildSettingsRepository
+from services.admin_key_pool import AdminKeyPoolService
 from utils.embeds import create_info_embed, create_error_embed
 from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 
@@ -96,6 +97,7 @@ class BankCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._repo = GuildSettingsRepository(get_database())
+        self._admin_key_pool = AdminKeyPoolService()
         self._cache: dict[int, dict[str, Any]] = {}
         self._cache_locks: dict[int, asyncio.Lock] = {}
 
@@ -106,8 +108,9 @@ class BankCog(commands.Cog):
             self._cache_locks[guild_id] = lock
         return lock
 
-    async def _get_rates(self, guild_id: int, api_key: str) -> dict[str, float]:
+    async def _get_rates(self, guild: discord.Guild) -> dict[str, float]:
         now = time.monotonic()
+        guild_id = guild.id
         cached = self._cache.get(guild_id)
         if cached and (now - float(cached.get("fetched_at", 0))) < CACHE_TTL_SECONDS:
             return cached["rates"]
@@ -119,7 +122,7 @@ class BankCog(commands.Cog):
                 return cached["rates"]
 
             try:
-                rates = await get_torn_api().get_bank_rates(api_key)
+                rates = await self._admin_key_pool.get_bank_rates_for_guild(guild)
                 normalized = {k: float(v) for k, v in rates.items() if k in DURATIONS_DAYS}
                 if not normalized:
                     raise TornAPIError("Torn bank rates were empty.")
@@ -179,32 +182,13 @@ class BankCog(commands.Cog):
             )
             return
 
-        settings = await self._repo.get_or_create(guild.id)
-        encrypted_key = settings.get("bank_rates_api_key_encrypted")
-        if not encrypted_key:
-            await interaction.response.send_message(
-                embed=create_error_embed(
-                    "Not configured",
-                    "Bank rates API key is not configured yet. Ask an admin to set it in `/setup` → Feature Toggles.",
-                ),
-                ephemeral=True,
-            )
-            return
+        await self._repo.get_or_create(guild.id)
 
         try:
-            api_key = get_security_manager().decrypt_api_key(str(encrypted_key))
-        except Exception:
-            await interaction.response.send_message(
-                embed=create_error_embed("Configuration error", "Stored bank rates API key could not be read. Ask an admin to re-save it in setup."),
-                ephemeral=True,
-            )
-            return
-
-        try:
-            rates = await self._get_rates(guild.id, api_key)
+            rates = await self._get_rates(guild)
         except TornAPIPermissionError:
             await interaction.response.send_message(
-                embed=create_error_embed("Bank rates unavailable", "The configured bank rates API key does not have required Torn access."),
+                embed=create_error_embed("Bank rates unavailable", "Bank rates are unavailable because no admin key with the required Torn access is available."),
                 ephemeral=True,
             )
             return
@@ -214,9 +198,14 @@ class BankCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        except TornAPIError:
+        except TornAPIError as exc:
+            message = str(exc).strip().lower()
+            if "no admin api keys are available for this server" in message:
+                description = "Bank rates are unavailable because no admin in this server has a stored Torn API key."
+            else:
+                description = "Could not fetch bank rates from Torn right now. Please try again later."
             await interaction.response.send_message(
-                embed=create_error_embed("Bank rates unavailable", "Could not fetch bank rates from Torn right now. Please try again later."),
+                embed=create_error_embed("Bank rates unavailable", description),
                 ephemeral=True,
             )
             return
