@@ -11,6 +11,8 @@ from setup_panel import (
     ChannelsAlertsAccessView,
     AdminKeySettingsView,
     AdminKeySettingsModeSelect,
+    AdminKeySettingsAddPoolMemberSelect,
+    AdminKeySettingsRemovePoolMemberSelect,
     AdminKeySettingsSingleAdminSelect,
 )
 
@@ -274,7 +276,12 @@ class _SetupGuild:
 
 
 def _build_setup_panel(*, strategy="pool", selected_admin=None):
-    settings = {"admin_role_ids": [77], "admin_key_strategy": strategy, "admin_key_single_discord_id": selected_admin}
+    settings = {
+        "admin_role_ids": [77],
+        "admin_key_strategy": strategy,
+        "admin_key_single_discord_id": selected_admin,
+        "admin_key_pool_member_ids": [901],
+    }
     return setup_panel.SetupPanelView(owner_id=55, db=SimpleNamespace(pool=None), settings=settings, guild=_SetupGuild())
 
 
@@ -375,6 +382,47 @@ async def _run_setup_views_respect_row_width_limits():
         assert all(width <= 5 for width in _row_widths(view).values())
 
 
+async def _run_admin_key_settings_add_pool_member(monkeypatch):
+    panel = _build_setup_panel(strategy="pool")
+    panel.db = SimpleNamespace(pool=object())
+    interaction = _build_interaction()
+    sent = AsyncMock()
+    add_member = AsyncMock()
+    monkeypatch.setattr(setup_panel, "_send_or_edit", sent)
+    monkeypatch.setattr(setup_panel.GuildSettingsRepository, "add_admin_key_pool_member", add_member)
+    select = AdminKeySettingsAddPoolMemberSelect(panel)
+    select._values = [panel.guild.get_member(902)]
+
+    await select.callback(interaction)
+
+    add_member.assert_awaited_once_with(panel.guild.id, 902)
+    assert panel.settings["admin_key_pool_member_ids"] == [901, 902]
+
+
+async def _run_admin_key_settings_remove_pool_member(monkeypatch):
+    panel = _build_setup_panel(strategy="pool")
+    panel.db = SimpleNamespace(pool=object())
+    interaction = _build_interaction()
+    sent = AsyncMock()
+    remove_member = AsyncMock()
+    monkeypatch.setattr(setup_panel, "_send_or_edit", sent)
+    monkeypatch.setattr(setup_panel.GuildSettingsRepository, "remove_admin_key_pool_member", remove_member)
+    select = AdminKeySettingsRemovePoolMemberSelect(panel)
+    select._values = ["901"]
+
+    await select.callback(interaction)
+
+    remove_member.assert_awaited_once_with(panel.guild.id, 901)
+    assert panel.settings["admin_key_pool_member_ids"] == []
+
+
+async def _run_admin_key_settings_embed_shows_pool_members():
+    panel = _build_setup_panel(strategy="pool")
+    embed = setup_panel._admin_key_settings_embed(panel)
+
+    assert "<@901>" in embed.fields[0].value
+
+
 async def _run_admin_key_settings_back_and_home_navigation(monkeypatch):
     panel = _build_setup_panel(strategy="single")
     interaction = _build_interaction()
@@ -387,6 +435,7 @@ async def _run_admin_key_settings_back_and_home_navigation(monkeypatch):
     _, back_embed, back_view = sent.await_args.args
     assert back_embed.title.endswith("Alerts & Access")
     assert isinstance(back_view, ChannelsAlertsAccessView)
+    assert "Pool Members" in back_embed.fields[0].value
 
     sent.reset_mock()
     home_button = next(child for child in view.children if getattr(child, "label", None) == "Home")
@@ -394,6 +443,9 @@ async def _run_admin_key_settings_back_and_home_navigation(monkeypatch):
     _, home_embed, home_view = sent.await_args.args
     assert home_embed.title.endswith("Admin Control Center")
     assert home_view is panel
+
+def test_admin_key_settings_embed_shows_pool_members():
+    asyncio.run(_run_admin_key_settings_embed_shows_pool_members())
 
 
 def test_alerts_access_view_constructs_without_row_overflow():
@@ -418,6 +470,18 @@ def test_admin_key_settings_selected_admin_save(monkeypatch):
 
 def test_setup_views_respect_row_width_limits():
     asyncio.run(_run_setup_views_respect_row_width_limits())
+
+
+def test_admin_key_settings_add_pool_member(monkeypatch):
+    asyncio.run(_run_admin_key_settings_add_pool_member(monkeypatch))
+
+
+def test_admin_key_settings_remove_pool_member(monkeypatch):
+    asyncio.run(_run_admin_key_settings_remove_pool_member(monkeypatch))
+
+
+def test_admin_key_settings_embed_pool_members():
+    asyncio.run(_run_admin_key_settings_embed_shows_pool_members())
 
 
 def test_admin_key_settings_back_and_home_navigation(monkeypatch):

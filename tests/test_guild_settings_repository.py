@@ -249,3 +249,55 @@ def test_repo_normalizes_admin_key_single_settings():
 
     assert normalized["admin_key_strategy"] == "single"
     assert normalized["admin_key_single_discord_id"] == 12345
+
+
+def test_repo_merge_defaults_does_not_require_pool_member_ids_column():
+    repo = GuildSettingsRepository(_DB())
+    merged = repo._merge_defaults({}, guild_id=1000)
+
+    assert "admin_key_pool_member_ids" not in merged
+
+
+def test_repo_replace_admin_key_pool_members(monkeypatch):
+    executed = []
+    executemany_calls = []
+
+    class _Txn:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _Conn:
+        async def execute(self, query, *args):
+            executed.append((query, args))
+
+        async def executemany(self, query, values):
+            executemany_calls.append((query, list(values)))
+
+        def transaction(self):
+            return _Txn()
+
+    class _Acquire:
+        async def __aenter__(self):
+            return _Conn()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _Pool:
+        pass
+
+    class _Db:
+        pool = _Pool()
+
+    monkeypatch.setattr("utils.guild_settings_repository.acquire_conn", lambda _pool, _timeout: _Acquire())
+    repo = GuildSettingsRepository(_Db())
+
+    import asyncio
+
+    asyncio.run(repo.replace_admin_key_pool_members(77, [901, 902, 901]))
+
+    assert any("DELETE FROM public.guild_admin_key_pool_members" in query for query, _args in executed)
+    assert executemany_calls[0][1] == [(77, 901), (77, 902)]

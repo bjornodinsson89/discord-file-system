@@ -151,13 +151,29 @@ class AdminKeyPoolService:
         return await self._build_pooled_key_pool(guild, settings)
 
     async def _build_pooled_key_pool(self, guild: discord.Guild, settings: dict[str, Any]) -> dict[str, Any]:
+        selected_ids = set(await self._settings_repo.list_admin_key_pool_members(guild.id))
+        if not selected_ids:
+            return {
+                "strategy": _POOL_STRATEGY,
+                "pool": [],
+                "empty_message": "This server has no admin key pool members configured.",
+                "failure_message": "No selected pool key is working for this server.",
+            }
+
         eligible_ids = await self._get_eligible_member_ids(guild, settings=settings)
-        pool = await self._load_key_pool(guild, eligible_ids)
+        selected_eligible_ids = selected_ids.intersection(eligible_ids)
+        pool = await self._load_key_pool(guild, selected_eligible_ids)
+        if not selected_eligible_ids:
+            empty_message = "No selected admin key pool member is currently eligible in this server."
+        elif not pool:
+            empty_message = "No selected pool member has a stored Torn API key."
+        else:
+            empty_message = "No selected pool member has a usable Torn API key."
         return {
             "strategy": _POOL_STRATEGY,
             "pool": pool,
-            "empty_message": "No admin API keys are available for this server.",
-            "failure_message": "No working admin API keys are available for this server.",
+            "empty_message": empty_message,
+            "failure_message": "No selected pool key is working for this server.",
         }
 
     async def _build_single_key_pool(self, guild: discord.Guild, settings: dict[str, Any]) -> dict[str, Any]:
