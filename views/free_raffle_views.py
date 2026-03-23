@@ -19,11 +19,14 @@ class EnterRaffleView(discord.ui.View):
         disabled: bool = False,
         show_join_button: bool = True,
         on_info: InfoHandler | None = None,
+        on_host_controls: HostHandler | None = None,
     ):
         super().__init__(timeout=None)
         self.raffle_id = raffle_id
         self.on_enter = on_enter
         self.on_info = on_info
+        self.on_host_controls = on_host_controls
+
         info_button = discord.ui.Button(
             label="ℹ️ Info",
             style=discord.ButtonStyle.secondary,
@@ -32,6 +35,16 @@ class EnterRaffleView(discord.ui.View):
         )
         info_button.callback = self._on_info
         self.add_item(info_button)
+
+        host_controls_button = discord.ui.Button(
+            label="🛠️ Host Controls",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"fr_host_controls:{raffle_id}",
+            disabled=False,
+        )
+        host_controls_button.callback = self._on_host_controls
+        self.add_item(host_controls_button)
+
         if show_join_button:
             button = discord.ui.Button(
                 label="🎟️ Enter Giveaway",
@@ -50,6 +63,14 @@ class EnterRaffleView(discord.ui.View):
             await interaction.response.send_message("Info is unavailable right now.", ephemeral=True)
             return
         await self.on_info(interaction, self.raffle_id)
+
+    async def _on_host_controls(self, interaction: discord.Interaction) -> None:
+        if self.on_host_controls is None:
+            await interaction.response.send_message(
+                "Host controls are unavailable right now.", ephemeral=True
+            )
+            return
+        await self.on_host_controls(interaction, self.raffle_id)
 
 
 class HostControlsView(discord.ui.View):
@@ -154,6 +175,8 @@ class HostControlsView(discord.ui.View):
 
     async def _on_auto_settings(self, interaction: discord.Interaction) -> None:
         if self.on_auto_settings is None:
-            await interaction.response.send_message("Auto entry settings are unavailable right now.", ephemeral=True)
+            await interaction.response.send_message(
+                "Auto entry settings are unavailable right now.", ephemeral=True
+            )
             return
         await self.on_auto_settings(interaction, self.raffle_id)
