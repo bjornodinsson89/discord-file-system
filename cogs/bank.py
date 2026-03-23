@@ -191,7 +191,7 @@ class BankCog(commands.Cog):
             description = (
                 "Bank rates are unavailable because the selected admin key does not have the required Torn access."
                 if settings.get("admin_key_strategy") == "single"
-                else "Bank rates are unavailable because no admin key with the required Torn access is available."
+                else "Bank rates are unavailable because no selected pool key has the required Torn access."
             )
             await interaction.response.send_message(
                 embed=create_error_embed("Bank rates unavailable", description),
@@ -212,8 +212,12 @@ class BankCog(commands.Cog):
                 description = "Bank rates are unavailable because the selected admin has no stored Torn API key."
             elif "selected admin is no longer eligible" in message or "selected admin is no longer in this server" in message:
                 description = "Bank rates are unavailable because the selected admin is no longer eligible for setup/admin access in this server."
-            elif "no admin api keys are available for this server" in message:
-                description = "Bank rates are unavailable because no admin in this server has a stored Torn API key."
+            elif "no admin key pool members configured" in message:
+                description = "Bank rates are unavailable because this server has no admin key pool members configured."
+            elif "no selected pool member has a stored torn api key" in message:
+                description = "Bank rates are unavailable because no selected pool member has a stored Torn API key."
+            elif "no selected admin key pool member is currently eligible" in message:
+                description = "Bank rates are unavailable because no selected pool member is currently eligible in this server."
             else:
                 description = "Could not fetch bank rates from Torn right now. Please try again later."
             await interaction.response.send_message(

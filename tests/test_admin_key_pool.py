@@ -111,6 +111,7 @@ class _FakeSettingsRepo:
         self.admin_role_ids = admin_role_ids or []
         self.settings = settings or {}
         self.upserts: list[tuple[int, dict]] = []
+        self.pool_member_ids: list[int] = []
 
     async def get_or_create(self, guild_id: int) -> dict:
         data = {"admin_role_ids": list(self.admin_role_ids)}
@@ -121,6 +122,16 @@ class _FakeSettingsRepo:
         self.upserts.append((guild_id, updates))
         self.settings.update(updates)
         return self.settings
+
+    async def list_admin_key_pool_members(self, guild_id: int) -> list[int]:
+        return list(self.pool_member_ids)
+
+    async def add_admin_key_pool_member(self, guild_id: int, discord_user_id: int) -> None:
+        if discord_user_id not in self.pool_member_ids:
+            self.pool_member_ids.append(discord_user_id)
+
+    async def remove_admin_key_pool_member(self, guild_id: int, discord_user_id: int) -> None:
+        self.pool_member_ids = [member_id for member_id in self.pool_member_ids if member_id != discord_user_id]
 
 
 class _FakeTornAPI:
@@ -248,6 +259,7 @@ def test_invalid_key_failure_increments_and_resets_after_success(monkeypatch):
         {"discord_id": 302, "encrypted_key": "enc-key-b"},
     ]
     service, users_repo, _ = _make_service(rows=rows)
+    service._settings_repo.pool_member_ids = [301, 302]
     torn = _FakeTornAPI(
         bank_plan=[
             TornAPIError("Incorrect key"),
@@ -271,6 +283,7 @@ def test_invalid_key_failure_increments_and_resets_after_success(monkeypatch):
 def test_invalid_key_deleted_after_three_failures(monkeypatch):
     guild = _FakeGuild(40, [_FakeMember(401, administrator=True)], owner_id=401)
     service, users_repo, _ = _make_service(rows=[{"discord_id": 401, "encrypted_key": "enc-key-a"}])
+    service._settings_repo.pool_member_ids = [401]
     users_repo.invalid_results[401] = (3, True)
     torn = _FakeTornAPI(bank_plan=[TornAPIError("Invalid key")])
     monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
@@ -285,6 +298,7 @@ def test_invalid_key_deleted_after_three_failures(monkeypatch):
 def test_permission_failure_does_not_delete_key(monkeypatch):
     guild = _FakeGuild(50, [_FakeMember(501, administrator=True)], owner_id=501)
     service, users_repo, _ = _make_service(rows=[{"discord_id": 501, "encrypted_key": "enc-key-a"}])
+    service._settings_repo.pool_member_ids = [501]
     torn = _FakeTornAPI(bank_plan=[TornAPIPermissionError("missing access")])
     monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
     monkeypatch.setattr("services.admin_key_pool.get_security_manager", lambda: _FakeSecurity())
@@ -298,6 +312,7 @@ def test_permission_failure_does_not_delete_key(monkeypatch):
 def test_rate_limit_failure_does_not_delete_key(monkeypatch):
     guild = _FakeGuild(60, [_FakeMember(601, administrator=True)], owner_id=601)
     service, users_repo, _ = _make_service(rows=[{"discord_id": 601, "encrypted_key": "enc-key-a"}])
+    service._settings_repo.pool_member_ids = [601]
     torn = _FakeTornAPI(bank_plan=[TornAPIRateLimitError("rate limit")])
     monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
     monkeypatch.setattr("services.admin_key_pool.get_security_manager", lambda: _FakeSecurity())
@@ -455,6 +470,88 @@ def test_single_mode_missing_member_returns_clear_failure(monkeypatch):
         asyncio.run(service.get_bank_rates_for_guild(guild))
 
     assert "no longer in this server" in str(excinfo.value).lower()
+
+
+def test_pool_mode_without_selected_members_fails_clearly():
+    guild = _FakeGuild(76, [_FakeMember(761, administrator=True)], owner_id=761)
+    service, _users_repo, _settings_repo = _make_service(rows=[{"discord_id": 761, "encrypted_key": "enc-key-a"}])
+
+    with pytest.raises(TornAPIError) as excinfo:
+        asyncio.run(service.get_bank_rates_for_guild(guild))
+
+    assert "no admin key pool members configured" in str(excinfo.value).lower()
+
+
+def test_pool_mode_uses_only_selected_members(monkeypatch):
+    guild = _FakeGuild(77, [_FakeMember(771, administrator=True), _FakeMember(772, administrator=True)], owner_id=771)
+    service, users_repo, settings_repo = _make_service(
+        rows=[
+            {"discord_id": 771, "encrypted_key": "enc-key-a"},
+            {"discord_id": 772, "encrypted_key": "enc-key-b"},
+        ]
+    )
+    settings_repo.pool_member_ids = [772]
+    torn = _FakeTornAPI(bank_plan=[{"1w": 1, "2w": 2, "1m": 3, "2m": 4, "3m": 5}])
+    monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
+    monkeypatch.setattr("services.admin_key_pool.get_security_manager", lambda: _FakeSecurity())
+
+    result = asyncio.run(service.get_bank_rates_for_guild(guild))
+
+    assert result["1w"] == 1
+    assert torn.bank_keys == ["key-b"]
+    assert users_repo.reset_calls == [772]
+
+
+def test_pool_mode_does_not_use_non_selected_eligible_admins(monkeypatch):
+    guild = _FakeGuild(78, [_FakeMember(781, administrator=True), _FakeMember(782, administrator=True)], owner_id=781)
+    service, _users_repo, settings_repo = _make_service(
+        rows=[
+            {"discord_id": 781, "encrypted_key": "enc-key-a"},
+            {"discord_id": 782, "encrypted_key": "enc-key-b"},
+        ]
+    )
+    settings_repo.pool_member_ids = [781]
+    torn = _FakeTornAPI(bank_plan=[TornAPIPermissionError("missing access")])
+    monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
+    monkeypatch.setattr("services.admin_key_pool.get_security_manager", lambda: _FakeSecurity())
+
+    with pytest.raises(TornAPIPermissionError):
+        asyncio.run(service.get_bank_rates_for_guild(guild))
+
+    assert torn.bank_keys == ["key-a"]
+
+
+def test_pool_mode_skips_selected_members_who_are_no_longer_eligible(monkeypatch):
+    guild = _FakeGuild(79, [_FakeMember(791), _FakeMember(792, administrator=True)], owner_id=792)
+    service, _users_repo, settings_repo = _make_service(
+        rows=[
+            {"discord_id": 791, "encrypted_key": "enc-key-a"},
+            {"discord_id": 792, "encrypted_key": "enc-key-b"},
+        ]
+    )
+    settings_repo.pool_member_ids = [791, 792]
+    torn = _FakeTornAPI(bank_plan=[{"1w": 6, "2w": 7, "1m": 8, "2m": 9, "3m": 10}])
+    monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
+    monkeypatch.setattr("services.admin_key_pool.get_security_manager", lambda: _FakeSecurity())
+
+    result = asyncio.run(service.get_bank_rates_for_guild(guild))
+
+    assert result["1w"] == 6
+    assert torn.bank_keys == ["key-b"]
+
+
+def test_pool_mode_skips_selected_members_without_stored_keys(monkeypatch):
+    guild = _FakeGuild(82, [_FakeMember(821, administrator=True), _FakeMember(822, administrator=True)], owner_id=821)
+    service, _users_repo, settings_repo = _make_service(rows=[{"discord_id": 822, "encrypted_key": "enc-key-b"}])
+    settings_repo.pool_member_ids = [821, 822]
+    torn = _FakeTornAPI(bank_plan=[{"1w": 2, "2w": 3, "1m": 4, "2m": 5, "3m": 6}])
+    monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
+    monkeypatch.setattr("services.admin_key_pool.get_security_manager", lambda: _FakeSecurity())
+
+    result = asyncio.run(service.get_bank_rates_for_guild(guild))
+
+    assert result["1w"] == 2
+    assert torn.bank_keys == ["key-b"]
 
 
 def test_bank_calc_single_mode_maps_clear_errors():

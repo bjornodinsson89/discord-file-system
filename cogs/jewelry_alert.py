@@ -217,7 +217,7 @@ class JewelryAlertCog(commands.Cog):
             if settings.get("admin_key_strategy") == "single":
                 self._log_throttled(guild.id, "permission_error_single", "Jewelry alert skipped; selected admin key lacks required Torn access guild_id=%s", guild.id)
             else:
-                self._log_throttled(guild.id, "permission_error", "Jewelry alert skipped; no admin key with required Torn access guild_id=%s", guild.id)
+                self._log_throttled(guild.id, "permission_error", "Jewelry alert skipped; no selected pool key with required Torn access guild_id=%s", guild.id)
             return
         except TornAPIRateLimitError:
             self._log_throttled(guild.id, "rate_limit", "Jewelry alert skipped; all admin Torn keys are rate limited guild_id=%s", guild.id)
@@ -230,8 +230,12 @@ class JewelryAlertCog(commands.Cog):
                 self._log_throttled(guild.id, "single_admin_missing_key", "Jewelry alert skipped; selected admin has no stored Torn API key guild_id=%s", guild.id)
             elif "selected admin is no longer eligible" in message or "selected admin is no longer in this server" in message:
                 self._log_throttled(guild.id, "single_admin_ineligible", "Jewelry alert skipped; selected admin is no longer eligible guild_id=%s", guild.id)
-            elif "no admin api keys are available for this server" in message:
-                self._log_throttled(guild.id, "missing_admin_keys", "Jewelry alert skipped; no eligible admin Torn API keys guild_id=%s", guild.id)
+            elif "no admin key pool members configured" in message:
+                self._log_throttled(guild.id, "missing_pool_members", "Jewelry alert skipped; no admin key pool members configured guild_id=%s", guild.id)
+            elif "no selected pool member has a stored torn api key" in message:
+                self._log_throttled(guild.id, "missing_pool_keys", "Jewelry alert skipped; selected pool members have no stored Torn API keys guild_id=%s", guild.id)
+            elif "no selected admin key pool member is currently eligible" in message:
+                self._log_throttled(guild.id, "ineligible_pool_members", "Jewelry alert skipped; selected pool members are no longer eligible guild_id=%s", guild.id)
             else:
                 self._log_throttled(guild.id, "torn_error", "Jewelry alert poll failed for guild_id=%s", guild.id)
             return

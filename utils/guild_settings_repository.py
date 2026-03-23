@@ -384,6 +384,77 @@ class GuildSettingsRepository:
         )
         return data
 
+    async def list_admin_key_pool_members(self, guild_id: int) -> list[int]:
+        if not hasattr(self._db, "pool"):
+            return []
+        async with acquire_conn(self._db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT discord_user_id
+                FROM public.guild_admin_key_pool_members
+                WHERE guild_id = $1
+                ORDER BY created_at ASC, discord_user_id ASC
+                """,
+                guild_id,
+            )
+        return [int(row["discord_user_id"]) for row in rows if row and row.get("discord_user_id")]
+
+    async def add_admin_key_pool_member(self, guild_id: int, discord_user_id: int) -> None:
+        if not hasattr(self._db, "pool"):
+            return
+        async with acquire_conn(self._db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
+            await conn.execute(
+                """
+                INSERT INTO public.guild_admin_key_pool_members (guild_id, discord_user_id)
+                VALUES ($1, $2)
+                ON CONFLICT (guild_id, discord_user_id) DO NOTHING
+                """,
+                guild_id,
+                discord_user_id,
+            )
+
+    async def remove_admin_key_pool_member(self, guild_id: int, discord_user_id: int) -> None:
+        if not hasattr(self._db, "pool"):
+            return
+        async with acquire_conn(self._db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
+            await conn.execute(
+                """
+                DELETE FROM public.guild_admin_key_pool_members
+                WHERE guild_id = $1 AND discord_user_id = $2
+                """,
+                guild_id,
+                discord_user_id,
+            )
+
+    async def clear_admin_key_pool_members(self, guild_id: int) -> None:
+        if not hasattr(self._db, "pool"):
+            return
+        async with acquire_conn(self._db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
+            await conn.execute(
+                "DELETE FROM public.guild_admin_key_pool_members WHERE guild_id = $1",
+                guild_id,
+            )
+
+    async def replace_admin_key_pool_members(self, guild_id: int, discord_user_ids: list[int]) -> None:
+        normalized_ids = sorted({int(discord_user_id) for discord_user_id in discord_user_ids if discord_user_id})
+        if not hasattr(self._db, "pool"):
+            return
+        async with acquire_conn(self._db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM public.guild_admin_key_pool_members WHERE guild_id = $1",
+                    guild_id,
+                )
+                if normalized_ids:
+                    await conn.executemany(
+                        """
+                        INSERT INTO public.guild_admin_key_pool_members (guild_id, discord_user_id)
+                        VALUES ($1, $2)
+                        ON CONFLICT (guild_id, discord_user_id) DO NOTHING
+                        """,
+                        [(guild_id, discord_user_id) for discord_user_id in normalized_ids],
+                    )
+
     async def _db_insert_or_get_settings(self, guild_id: int) -> Optional[dict[str, Any]]:
         if not hasattr(self._db, "pool"):
             return None
