@@ -11,11 +11,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils import GuildSettingsRepository, get_security_manager, get_torn_api
+from utils import GuildSettingsRepository
 from utils.command_checks import require_command_access
 from utils.database import get_database, is_initialized, wait_until_initialized
 from utils.embeds import create_error_embed
-from utils.torn_api import TornAPIError
+from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
+from services.admin_key_pool import AdminKeyPoolService
 from utils.worker_throttle import db_heavy_worker_slot, sleep_startup_jitter
 
 ASSET_MEME_PATH = os.path.join("assets", "pwmeme.png")
@@ -32,6 +33,7 @@ class JewelryAlertCog(commands.Cog):
         self.bot = bot
         self._db = get_database()
         self._repo = GuildSettingsRepository(self._db)
+        self._admin_key_pool = AdminKeyPoolService()
         self._log_throttle_until: dict[tuple[int, str], float] = {}
         self._meme_png_cache: bytes | None = None
         self.jewelry_alert_poller.start()
@@ -190,7 +192,6 @@ class JewelryAlertCog(commands.Cog):
 
     async def _poll_guild(self, guild: discord.Guild) -> None:
         settings = await self._repo.get_or_create(guild.id)
-        encrypted_key = settings.get("bank_rates_api_key_encrypted")
         channel_id = int(settings.get("jewelry_alert_channel_id") or 0)
         role_ids = GuildSettingsRepository._normalize_role_id_list(
             settings.get("jewelry_alert_role_ids"),
@@ -201,28 +202,28 @@ class JewelryAlertCog(commands.Cog):
         if channel_id <= 0:
             return
 
-        if not encrypted_key:
-            self._log_throttled(guild.id, "missing_key", "Jewelry alert skipped; API key missing guild_id=%s", guild.id)
-            return
-
-        try:
-            api_key = get_security_manager().decrypt_api_key(str(encrypted_key))
-        except Exception:
-            self._log_throttled(guild.id, "decrypt_error", "Jewelry alert skipped; API key decrypt failed guild_id=%s", guild.id)
-            return
-
         torn_success = False
         is_clear = False
         try:
-            shoplifting = await get_torn_api().get_shoplifting(api_key)
+            shoplifting = await self._admin_key_pool.get_shoplifting_for_guild(guild)
             torn_success = True
             jewelry_store = shoplifting.get("jewelry_store") if isinstance(shoplifting, dict) else None
             if isinstance(jewelry_store, list) and len(jewelry_store) >= 2:
                 cameras_disabled = bool((jewelry_store[0] or {}).get("disabled"))
                 guard_disabled = bool((jewelry_store[1] or {}).get("disabled"))
                 is_clear = cameras_disabled and guard_disabled
-        except TornAPIError:
-            self._log_throttled(guild.id, "torn_error", "Jewelry alert poll failed for guild_id=%s", guild.id)
+        except TornAPIPermissionError:
+            self._log_throttled(guild.id, "permission_error", "Jewelry alert skipped; no admin key with required Torn access guild_id=%s", guild.id)
+            return
+        except TornAPIRateLimitError:
+            self._log_throttled(guild.id, "rate_limit", "Jewelry alert skipped; all admin Torn keys are rate limited guild_id=%s", guild.id)
+            return
+        except TornAPIError as exc:
+            message = str(exc).strip().lower()
+            if "no admin api keys are available for this server" in message:
+                self._log_throttled(guild.id, "missing_admin_keys", "Jewelry alert skipped; no eligible admin Torn API keys guild_id=%s", guild.id)
+            else:
+                self._log_throttled(guild.id, "torn_error", "Jewelry alert poll failed for guild_id=%s", guild.id)
             return
         except Exception:
             log.exception("Unexpected jewelry alert poll error guild_id=%s", guild.id)
@@ -307,23 +308,6 @@ class JewelryAlertCog(commands.Cog):
         if channel_id <= 0:
             await interaction.response.send_message(
                 embed=create_error_embed("Not configured", "Set a jewelry alert channel in `/setup` first."),
-                ephemeral=True,
-            )
-            return
-
-        encrypted_key = settings.get("bank_rates_api_key_encrypted")
-        if not encrypted_key:
-            await interaction.response.send_message(
-                embed=create_error_embed("Not configured", "Set the Torn API key in `/setup` → Feature Toggles first."),
-                ephemeral=True,
-            )
-            return
-
-        try:
-            get_security_manager().decrypt_api_key(str(encrypted_key))
-        except Exception:
-            await interaction.response.send_message(
-                embed=create_error_embed("Configuration error", "Stored API key could not be read. Re-save it in setup."),
                 ephemeral=True,
             )
             return

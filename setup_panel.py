@@ -6,7 +6,7 @@ from typing import Any
 
 import discord
 
-from utils import GuildSettingsRepository, get_security_manager, get_torn_api
+from utils import GuildSettingsRepository
 from repositories.audit import AuditRepository
 from repositories.engagement import EngagementRepository
 from repositories.store import StoreRepository
@@ -19,7 +19,6 @@ from utils.discord_channels import resolve_guild_channel
 from utils.embeds import create_error_embed, create_info_embed, create_success_embed
 from constants.insurers import INSURER_CATEGORIES, normalize_insurer_categories
 from repositories.applications import ApplicationsRepository
-from utils.torn_api import TornAPIError, TornAPIPermissionError, TornAPIRateLimitError
 
 log = logging.getLogger("happy_jumper.setup_panel")
 
@@ -1262,57 +1261,6 @@ class DefaultMaxSlotsModal(discord.ui.Modal):
         await self.panel.save_changes(interaction, {"default_max_slots": int(raw)})
 
 
-class BankRatesApiKeyModal(discord.ui.Modal):
-    def __init__(self, panel: "SetupPanelView"):
-        super().__init__(title="Set Bank rates API key")
-        self.panel = panel
-        self.api_key_input = discord.ui.TextInput(
-            label="Bank rates API key",
-            required=False,
-            max_length=64,
-            placeholder="Paste a Torn API key (16 chars)",
-            default="",
-        )
-        self.add_item(self.api_key_input)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        raw_key = str(self.api_key_input.value or "").strip()
-        if not raw_key:
-            await self.panel.save_changes(interaction, {"bank_rates_api_key_encrypted": None})
-            await interaction.followup.send(embed=create_success_embed("Saved", "Bank rates API key cleared."), ephemeral=True)
-            return
-
-        if len(raw_key) != 16:
-            await interaction.response.send_message(
-                embed=create_error_embed("Invalid API key", "Bank rates API key must be 16 characters."),
-                ephemeral=True,
-            )
-            return
-
-        try:
-            await get_torn_api().get_bank_rates(raw_key)
-        except TornAPIPermissionError:
-            await interaction.response.send_message(
-                embed=create_error_embed("Validation failed", "That API key does not have access to Torn bank rates."),
-                ephemeral=True,
-            )
-            return
-        except TornAPIRateLimitError:
-            await interaction.response.send_message(
-                embed=create_error_embed("Validation failed", "Torn API is rate limited right now. Please try again in a minute."),
-                ephemeral=True,
-            )
-            return
-        except TornAPIError:
-            await interaction.response.send_message(
-                embed=create_error_embed("Validation failed", "Could not validate that API key with Torn right now. Please verify it and try again."),
-                ephemeral=True,
-            )
-            return
-
-        encrypted_key = get_security_manager().encrypt_api_key(raw_key)
-        await self.panel.save_changes(interaction, {"bank_rates_api_key_encrypted": encrypted_key})
-        await interaction.followup.send(embed=create_success_embed("Saved", "Bank rates API key saved."), ephemeral=True)
 
 class FeatureTogglesView(BackView):
     def __init__(self, **kwargs):
@@ -1333,7 +1281,6 @@ class FeatureTogglesView(BackView):
             await self.panel.save_changes(interaction, {"auto_complete_enabled": not bool(self.settings.get("auto_complete_enabled", True))})
         except Exception as error:
             await _respond_callback_error(interaction, error)
-
 
     @discord.ui.button(label="Toggle Raffle Announcement", style=discord.ButtonStyle.primary)
     async def toggle_raffle_announce(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -1361,14 +1308,6 @@ class FeatureTogglesView(BackView):
     async def default_slots(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             await interaction.response.send_modal(DefaultMaxSlotsModal(self.panel, self.settings.get("default_max_slots")))
-        except Exception as error:
-            await _respond_callback_error(interaction, error)
-
-
-    @discord.ui.button(label="Set Bank rates API key", style=discord.ButtonStyle.secondary, row=2)
-    async def set_bank_rates_api_key(self, interaction: discord.Interaction, _: discord.ui.Button):
-        try:
-            await interaction.response.send_modal(BankRatesApiKeyModal(self.panel))
         except Exception as error:
             await _respond_callback_error(interaction, error)
 
@@ -2127,7 +2066,7 @@ class ChannelsHubView(DashboardSectionView):
 
     @discord.ui.button(label="Alerts & Access", style=discord.ButtonStyle.primary, row=0)
     async def alerts_access(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_section_embed("Alerts & Access", "Set supporting alert and access channels.", [
+        await _send_or_edit(interaction, build_section_embed("Alerts & Access", "Set supporting alert and access channels. Bank calculator and jewelry alerts now use stored Torn API keys from eligible admins in this server.", [
             f"Insurance Channel: **{self.panel._channel_status('insurance_channel_id')}**",
             f"Jewelry Alerts: **{self.panel._channel_status('jewelry_alert_channel_id')}**",
             f"Who Can Jump: **{self.panel._channel_status('who_can_jump_channel_id')}**",
