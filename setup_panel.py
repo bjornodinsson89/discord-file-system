@@ -223,7 +223,7 @@ class OwnerView(discord.ui.View):
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item[Any]) -> None:
         selected = None
         if hasattr(item, "values"):
-            values = getattr(item, "values") or []
+            values = item.values or []
             if values:
                 selected = values[0]
         log.exception(
@@ -633,8 +633,8 @@ class SetupPanelView(OwnerView):
     async def engagement_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         await _send_or_edit(interaction, build_section_embed("Engagement", "Tune XP, levels, HJD, and auto entry.", [
             f"XP: **{'Enabled' if self.engagement_settings.get('enabled', False) else 'Off'}**",
-            f"Coins: **Enabled**",
-            f"HJD: **Enabled**",
+            "Coins: **Enabled**",
+            "HJD: **Enabled**",
             f"Auto Entry: **{'Enabled' if self.engagement_settings.get('auto_entry_giveaways_enabled', True) else 'Off'}**",
         ]), EngagementHubView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self))
 

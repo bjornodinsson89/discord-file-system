@@ -22,21 +22,41 @@ class _FakeRole:
 
 
 class _FakePerms:
-    def __init__(self, *, administrator: bool = False, manage_guild: bool = False, mention_everyone: bool = True):
+    def __init__(
+        self,
+        *,
+        administrator: bool = False,
+        manage_guild: bool = False,
+        mention_everyone: bool = True,
+    ):
         self.administrator = administrator
         self.manage_guild = manage_guild
         self.mention_everyone = mention_everyone
 
 
 class _FakeMember:
-    def __init__(self, member_id: int, *, administrator: bool = False, manage_guild: bool = False, roles: list[_FakeRole] | None = None):
+    def __init__(
+        self,
+        member_id: int,
+        *,
+        administrator: bool = False,
+        manage_guild: bool = False,
+        roles: list[_FakeRole] | None = None,
+    ):
         self.id = member_id
         self.roles = roles or []
         self.guild_permissions = _FakePerms(administrator=administrator, manage_guild=manage_guild)
 
 
 class _FakeGuild:
-    def __init__(self, guild_id: int, members: list[_FakeMember], *, owner_id: int, roles: list[_FakeRole] | None = None):
+    def __init__(
+        self,
+        guild_id: int,
+        members: list[_FakeMember],
+        *,
+        owner_id: int,
+        roles: list[_FakeRole] | None = None,
+    ):
         self.id = guild_id
         self.members = members
         self.owner_id = owner_id
@@ -164,12 +184,18 @@ def test_bank_calc_uses_pooled_admin_keys_without_guild_key(monkeypatch):
     cog = bank.BankCog.__new__(bank.BankCog)
     cog.bot = object()
     cog._repo = _FakeSettingsRepo(settings={"bank_rates_api_key_encrypted": None})
-    cog._admin_key_pool = types.SimpleNamespace(get_bank_rates_for_guild=lambda _guild: _fake_async({"1w": 10, "2w": 11, "1m": 12, "2m": 13, "3m": 14}))
+    cog._admin_key_pool = types.SimpleNamespace(
+        get_bank_rates_for_guild=lambda _guild: _fake_async(
+            {"1w": 10, "2w": 11, "1m": 12, "2m": 13, "3m": 14}
+        )
+    )
     cog._cache = {}
     cog._cache_locks = {}
 
     interaction = _FakeInteraction(guild)
-    asyncio.run(bank.BankCog.bank_calc.callback(cog, interaction, amount="100m", merits=0, tci=None))
+    asyncio.run(
+        bank.BankCog.bank_calc.callback(cog, interaction, amount="100m", merits=0, tci=None)
+    )
 
     assert interaction.response.messages
     embed = interaction.response.messages[0]["embed"]
@@ -184,8 +210,18 @@ def test_jewelry_alert_poll_uses_pooled_admin_keys_without_guild_key(monkeypatch
     cog = jewelry_alert.JewelryAlertCog.__new__(jewelry_alert.JewelryAlertCog)
     cog.bot = types.SimpleNamespace(user=types.SimpleNamespace(id=999999))
     cog._db = object()
-    cog._repo = _FakeSettingsRepo(settings={"jewelry_alert_channel_id": 333, "bank_rates_api_key_encrypted": None, "jewelry_alert_role_ids": []})
-    cog._admin_key_pool = types.SimpleNamespace(get_shoplifting_for_guild=lambda _guild: _fake_async({"jewelry_store": [{"disabled": True}, {"disabled": True}]}))
+    cog._repo = _FakeSettingsRepo(
+        settings={
+            "jewelry_alert_channel_id": 333,
+            "bank_rates_api_key_encrypted": None,
+            "jewelry_alert_role_ids": [],
+        }
+    )
+    cog._admin_key_pool = types.SimpleNamespace(
+        get_shoplifting_for_guild=lambda _guild: _fake_async(
+            {"jewelry_store": [{"disabled": True}, {"disabled": True}]}
+        )
+    )
     cog._log_throttle_until = {}
     cog._meme_png_cache = b"png"
 
@@ -202,14 +238,22 @@ def test_jewelry_alert_poll_uses_pooled_admin_keys_without_guild_key(monkeypatch
 
 
 def test_invalid_key_failure_increments_and_resets_after_success(monkeypatch):
-    guild = _FakeGuild(30, [_FakeMember(301, administrator=True), _FakeMember(302, manage_guild=True)], owner_id=999)
+    guild = _FakeGuild(
+        30,
+        [_FakeMember(301, administrator=True), _FakeMember(302, manage_guild=True)],
+        owner_id=999,
+    )
     rows = [
         {"discord_id": 301, "encrypted_key": "enc-key-a"},
         {"discord_id": 302, "encrypted_key": "enc-key-b"},
     ]
     service, users_repo, _ = _make_service(rows=rows)
     torn = _FakeTornAPI(
-        bank_plan=[TornAPIError("Incorrect key"), {"1w": 1, "2w": 2, "1m": 3, "2m": 4, "3m": 5}, {"1w": 9, "2w": 8, "1m": 7, "2m": 6, "3m": 5}],
+        bank_plan=[
+            TornAPIError("Incorrect key"),
+            {"1w": 1, "2w": 2, "1m": 3, "2m": 4, "3m": 5},
+            {"1w": 9, "2w": 8, "1m": 7, "2m": 6, "3m": 5},
+        ],
     )
     monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
     monkeypatch.setattr("services.admin_key_pool.get_security_manager", lambda: _FakeSecurity())
