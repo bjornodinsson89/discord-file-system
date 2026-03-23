@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS public.guild_settings (
     insurance_channel_id BIGINT,
     welcome_channel_id BIGINT,
     admin_role_ids JSONB,
+    admin_key_strategy TEXT NOT NULL DEFAULT 'pool' CHECK (admin_key_strategy IN ('pool', 'single')),
+    admin_key_single_discord_id BIGINT,
     host99k_role_id BIGINT,
     insurer_role_id BIGINT,
     jump_announce_channel_id BIGINT,

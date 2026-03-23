@@ -187,8 +187,14 @@ class BankCog(commands.Cog):
         try:
             rates = await self._get_rates(guild)
         except TornAPIPermissionError:
+            settings = await self._repo.get_or_create(guild.id)
+            description = (
+                "Bank rates are unavailable because the selected admin key does not have the required Torn access."
+                if settings.get("admin_key_strategy") == "single"
+                else "Bank rates are unavailable because no admin key with the required Torn access is available."
+            )
             await interaction.response.send_message(
-                embed=create_error_embed("Bank rates unavailable", "Bank rates are unavailable because no admin key with the required Torn access is available."),
+                embed=create_error_embed("Bank rates unavailable", description),
                 ephemeral=True,
             )
             return
@@ -200,7 +206,13 @@ class BankCog(commands.Cog):
             return
         except TornAPIError as exc:
             message = str(exc).strip().lower()
-            if "no admin api keys are available for this server" in message:
+            if "no single admin key is configured for this server" in message:
+                description = "Bank rates are unavailable because no single admin key is configured for this server."
+            elif "selected admin has no stored torn api key" in message:
+                description = "Bank rates are unavailable because the selected admin has no stored Torn API key."
+            elif "selected admin is no longer eligible" in message or "selected admin is no longer in this server" in message:
+                description = "Bank rates are unavailable because the selected admin is no longer eligible for setup/admin access in this server."
+            elif "no admin api keys are available for this server" in message:
                 description = "Bank rates are unavailable because no admin in this server has a stored Torn API key."
             else:
                 description = "Could not fetch bank rates from Torn right now. Please try again later."

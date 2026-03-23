@@ -1,3 +1,4 @@
+- Added `/setup` admin key mode controls so bank calculator and jewelry alerts can use either the admin key pool or one selected admin's stored Torn API key.
 # Changelog
 
 ## Unreleased

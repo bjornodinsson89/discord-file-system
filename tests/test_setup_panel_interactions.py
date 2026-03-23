@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import setup_panel
-from setup_panel import EngagementRolesView, _respond_callback_error
+from setup_panel import EngagementRolesView, _respond_callback_error, AdminKeyModeSelect, SingleAdminKeySelect
 
 
 class _Response:
@@ -197,3 +197,48 @@ async def _run_setup_summary_renders_store_channel_from_guild_settings():
 
 def test_setup_summary_renders_store_channel_from_guild_settings():
     asyncio.run(_run_setup_summary_renders_store_channel_from_guild_settings())
+
+
+class _PanelGuild:
+    def __init__(self):
+        self.owner_id = 900
+        self.members = [
+            SimpleNamespace(id=900, display_name="Owner", guild_permissions=SimpleNamespace(administrator=False, manage_guild=False), roles=[]),
+            SimpleNamespace(id=901, display_name="Admin", guild_permissions=SimpleNamespace(administrator=True, manage_guild=False), roles=[]),
+            SimpleNamespace(id=902, display_name="SetupRole", guild_permissions=SimpleNamespace(administrator=False, manage_guild=False), roles=[SimpleNamespace(id=77)]),
+        ]
+
+    def get_member(self, member_id):
+        return next((member for member in self.members if member.id == member_id), None)
+
+
+async def _run_admin_key_mode_select_saves_single(monkeypatch):
+    panel = SimpleNamespace(settings={"admin_key_strategy": "pool"}, save_changes=AsyncMock())
+    select = AdminKeyModeSelect(panel)
+    interaction = _build_interaction()
+    select._values = ["single"]
+
+    await select.callback(interaction)
+
+    panel.save_changes.assert_awaited_once_with(interaction, {"admin_key_strategy": "single"})
+
+
+async def _run_single_admin_key_select_saves_selected_admin(monkeypatch):
+    guild = _PanelGuild()
+    panel = setup_panel.SetupPanelView(owner_id=55, db=SimpleNamespace(pool=None), settings={"admin_role_ids": [77], "admin_key_strategy": "single"}, guild=guild)
+    panel.save_changes = AsyncMock()
+    select = SingleAdminKeySelect(panel)
+    interaction = _build_interaction()
+    select._values = ["902"]
+
+    await select.callback(interaction)
+
+    panel.save_changes.assert_awaited_once_with(interaction, {"admin_key_single_discord_id": 902, "admin_key_strategy": "single"})
+
+
+def test_admin_key_mode_select_saves_single(monkeypatch):
+    asyncio.run(_run_admin_key_mode_select_saves_single(monkeypatch))
+
+
+def test_single_admin_key_select_saves_selected_admin(monkeypatch):
+    asyncio.run(_run_single_admin_key_select_saves_selected_admin(monkeypatch))

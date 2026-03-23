@@ -65,6 +65,8 @@ class GuildSettingsRepository:
         "casino_house",
         "casino_games",
         "bank_rates_api_key_encrypted",
+        "admin_key_strategy",
+        "admin_key_single_discord_id",
         "jewelry_alert_channel_id",
         "who_can_jump_channel_id",
         "jewelry_alert_role_ids",
@@ -100,6 +102,7 @@ class GuildSettingsRepository:
         "default_max_slots",
         "host_tax_cash_amount",
         "jewelry_alert_channel_id",
+        "admin_key_single_discord_id",
         "who_can_jump_channel_id",
         "jewelry_alert_active_message_id",
         "who_can_jump_message_id",
@@ -156,6 +159,8 @@ class GuildSettingsRepository:
         "casino_house": {},
         "casino_games": {},
         "bank_rates_api_key_encrypted": None,
+        "admin_key_strategy": "pool",
+        "admin_key_single_discord_id": None,
         "jewelry_alert_channel_id": None,
         "who_can_jump_channel_id": None,
         "jewelry_alert_role_ids": [],
@@ -325,6 +330,12 @@ class GuildSettingsRepository:
                 normalized[key] = self._normalize_role_id_list(
                     value, guild_id=guild_id, field_name=key
                 )
+                continue
+            if key == "admin_key_strategy":
+                normalized_value = str(value or "pool").strip().lower()
+                if normalized_value not in {"pool", "single"}:
+                    raise ValueError("admin_key_strategy must be pool or single")
+                normalized[key] = normalized_value
                 continue
             if key == "jewelry_alert_role_ids":
                 normalized[key] = self._normalize_role_id_list(
@@ -526,6 +537,8 @@ class GuildSettingsRepository:
             "casino_house": {},
             "casino_games": {},
             "bank_rates_api_key_encrypted": None,
+            "admin_key_strategy": "pool",
+            "admin_key_single_discord_id": None,
             "jewelry_alert_channel_id": None,
             "who_can_jump_channel_id": None,
             "jewelry_alert_role_ids": [],
