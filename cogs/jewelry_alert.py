@@ -213,14 +213,24 @@ class JewelryAlertCog(commands.Cog):
                 guard_disabled = bool((jewelry_store[1] or {}).get("disabled"))
                 is_clear = cameras_disabled and guard_disabled
         except TornAPIPermissionError:
-            self._log_throttled(guild.id, "permission_error", "Jewelry alert skipped; no admin key with required Torn access guild_id=%s", guild.id)
+            settings = await self._repo.get_or_create(guild.id)
+            if settings.get("admin_key_strategy") == "single":
+                self._log_throttled(guild.id, "permission_error_single", "Jewelry alert skipped; selected admin key lacks required Torn access guild_id=%s", guild.id)
+            else:
+                self._log_throttled(guild.id, "permission_error", "Jewelry alert skipped; no admin key with required Torn access guild_id=%s", guild.id)
             return
         except TornAPIRateLimitError:
             self._log_throttled(guild.id, "rate_limit", "Jewelry alert skipped; all admin Torn keys are rate limited guild_id=%s", guild.id)
             return
         except TornAPIError as exc:
             message = str(exc).strip().lower()
-            if "no admin api keys are available for this server" in message:
+            if "no single admin key is configured for this server" in message:
+                self._log_throttled(guild.id, "missing_single_admin", "Jewelry alert skipped; no single admin key configured guild_id=%s", guild.id)
+            elif "selected admin has no stored torn api key" in message:
+                self._log_throttled(guild.id, "single_admin_missing_key", "Jewelry alert skipped; selected admin has no stored Torn API key guild_id=%s", guild.id)
+            elif "selected admin is no longer eligible" in message or "selected admin is no longer in this server" in message:
+                self._log_throttled(guild.id, "single_admin_ineligible", "Jewelry alert skipped; selected admin is no longer eligible guild_id=%s", guild.id)
+            elif "no admin api keys are available for this server" in message:
                 self._log_throttled(guild.id, "missing_admin_keys", "Jewelry alert skipped; no eligible admin Torn API keys guild_id=%s", guild.id)
             else:
                 self._log_throttled(guild.id, "torn_error", "Jewelry alert poll failed for guild_id=%s", guild.id)

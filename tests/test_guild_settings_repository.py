@@ -233,3 +233,19 @@ def test_repo_supports_who_can_jump_panel_fields():
     assert merged["who_can_jump_channel_id"] is None
     assert merged["who_can_jump_message_id"] is None
     assert merged["who_can_jump_page_index"] == 0
+
+
+def test_repo_defaults_admin_key_strategy_to_pool():
+    repo = GuildSettingsRepository(_DB())
+    merged = repo._merge_defaults({}, guild_id=999)
+
+    assert merged["admin_key_strategy"] == "pool"
+    assert merged["admin_key_single_discord_id"] is None
+
+
+def test_repo_normalizes_admin_key_single_settings():
+    repo = GuildSettingsRepository(_DB())
+    normalized = repo._normalize_updates({"admin_key_strategy": "single", "admin_key_single_discord_id": "12345"})
+
+    assert normalized["admin_key_strategy"] == "single"
+    assert normalized["admin_key_single_discord_id"] == 12345

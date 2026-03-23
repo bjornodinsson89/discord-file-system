@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
+from collections.abc import Iterable
 
 import discord
 
@@ -419,6 +420,36 @@ class SetupPanelView(OwnerView):
                 mentions.append(role.mention)
         return ", ".join(mentions) if mentions else "Not set"
 
+    def _eligible_admin_members(self) -> list[discord.Member]:
+        admin_role_ids = set(GuildSettingsRepository.resolve_admin_role_ids(self.settings))
+        eligible: list[discord.Member] = []
+        for member in sorted(getattr(self.guild, "members", []) or [], key=lambda item: (getattr(item, "display_name", str(item.id)).lower(), item.id)):
+            if has_setup_permission(
+                member_id=member.id,
+                guild_owner_id=self.guild.owner_id,
+                is_administrator=member.guild_permissions.administrator,
+                can_manage_guild=member.guild_permissions.manage_guild,
+                member_role_ids={role.id for role in getattr(member, "roles", [])},
+                admin_role_ids=list(admin_role_ids),
+            ):
+                eligible.append(member)
+        owner = self.guild.get_member(self.guild.owner_id)
+        if owner is not None and all(owner.id != member.id for member in eligible):
+            eligible.insert(0, owner)
+        return eligible
+
+    def _admin_key_mode_label(self) -> str:
+        return "Single Admin Key" if self.settings.get("admin_key_strategy") == "single" else "Admin Key Pool"
+
+    def _admin_key_single_status(self) -> str:
+        selected_id = GuildSettingsRepository._normalize_bigint(self.settings.get("admin_key_single_discord_id"))
+        if not selected_id:
+            return "Not selected"
+        member = self.guild.get_member(selected_id)
+        if member is None:
+            return f"Missing member (`{selected_id}`)"
+        return getattr(member, "mention", getattr(member, "display_name", str(selected_id)))
+
     def _reward_role_health(self) -> str:
         reward_roles = self.engagement_settings.get("reward_roles") or self.engagement_settings.get("reward_role_ids") or []
         return "Healthy" if reward_roles else "Needs review"
@@ -730,6 +761,66 @@ class ChannelSelect(discord.ui.ChannelSelect):
             await self.panel._set_channel(interaction, self.key, self.values[0])
         except Exception as error:
             await _respond_callback_error(interaction, error, "setup_channels_save_error")
+
+
+class AdminKeyModeSelect(discord.ui.Select):
+    def __init__(self, panel: SetupPanelView, *, row: int | None = None):
+        strategy = str(panel.settings.get("admin_key_strategy") or "pool")
+        options = [
+            discord.SelectOption(
+                label="Admin Key Pool",
+                value="pool",
+                description="Bank calculator and jewelry alerts rotate through stored Torn API keys from eligible admins.",
+                default=strategy == "pool",
+            ),
+            discord.SelectOption(
+                label="Single Admin Key",
+                value="single",
+                description="Bank calculator and jewelry alerts use one selected admin's stored Torn API key.",
+                default=strategy == "single",
+            ),
+        ]
+        super().__init__(placeholder="Admin Key Mode", min_values=1, max_values=1, options=options, row=row)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            strategy = self.values[0]
+            updates: dict[str, Any] = {"admin_key_strategy": strategy}
+            if strategy == "pool":
+                updates["admin_key_single_discord_id"] = None
+            await self.panel.save_changes(interaction, updates)
+        except Exception as error:
+            await _respond_callback_error(interaction, error, "setup_admin_key_mode_error")
+
+
+class SingleAdminKeySelect(discord.ui.Select):
+    def __init__(self, panel: SetupPanelView, *, row: int | None = None):
+        self.panel = panel
+        options = self._build_options(panel._eligible_admin_members(), panel.settings.get("admin_key_single_discord_id"))
+        super().__init__(placeholder="Selected Single Admin", min_values=0, max_values=1, options=options, row=row)
+        self.disabled = len(options) == 0
+
+    @staticmethod
+    def _build_options(members: Iterable[discord.Member], selected_id: Any) -> list[discord.SelectOption]:
+        normalized_selected = GuildSettingsRepository._normalize_bigint(selected_id)
+        options: list[discord.SelectOption] = []
+        for member in list(members)[:25]:
+            option = discord.SelectOption(
+                label=(member.display_name or str(member.id))[:100],
+                value=str(member.id),
+                description=f"Use {member.display_name} for bank calculator and jewelry alerts."[:100],
+                default=normalized_selected == member.id,
+            )
+            options.append(option)
+        return options
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            selected_member_id = int(self.values[0]) if self.values else None
+            await self.panel.save_changes(interaction, {"admin_key_single_discord_id": selected_member_id, "admin_key_strategy": "single"})
+        except Exception as error:
+            await _respond_callback_error(interaction, error, "setup_admin_key_single_error")
 
 
 def _channels_embed() -> discord.Embed:
@@ -2066,10 +2157,12 @@ class ChannelsHubView(DashboardSectionView):
 
     @discord.ui.button(label="Alerts & Access", style=discord.ButtonStyle.primary, row=0)
     async def alerts_access(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await _send_or_edit(interaction, build_section_embed("Alerts & Access", "Set supporting alert and access channels. Bank calculator and jewelry alerts now use stored Torn API keys from eligible admins in this server.", [
+        await _send_or_edit(interaction, build_section_embed("Alerts & Access", "Set supporting alert and access channels plus how bank calculator and jewelry alerts choose stored Torn API keys.", [
             f"Insurance Channel: **{self.panel._channel_status('insurance_channel_id')}**",
             f"Jewelry Alerts: **{self.panel._channel_status('jewelry_alert_channel_id')}**",
             f"Who Can Jump: **{self.panel._channel_status('who_can_jump_channel_id')}**",
+            f"Admin Key Mode: **{self.panel._admin_key_mode_label()}**",
+            f"Single Admin: **{self.panel._admin_key_single_status()}**",
         ]), ChannelsAlertsAccessView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel))
 
 
@@ -2096,6 +2189,44 @@ class ChannelsAlertsAccessView(DashboardSectionView):
         self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Insurance Channel", row=0))
         self.add_item(ChannelSelect(self.panel, "jewelry_alert_channel_id", "Jewelry Alerts", row=1))
         self.add_item(ChannelSelect(self.panel, "who_can_jump_channel_id", "Who Can Jump", row=2))
+        self.add_item(AdminKeyModeSelect(self.panel, row=3))
+
+    @discord.ui.button(label="Admin Key Details", style=discord.ButtonStyle.secondary, row=3)
+    async def admin_key_details(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(
+            interaction,
+            build_section_embed(
+                "Admin Key Settings",
+                "Pool mode: Bank calculator and jewelry alerts rotate through stored Torn API keys from eligible admins.\nSingle mode: Bank calculator and jewelry alerts use one selected admin's stored Torn API key.",
+                [
+                    f"Admin Key Mode: **{self.panel._admin_key_mode_label()}**",
+                    f"Single Admin: **{self.panel._admin_key_single_status()}**",
+                ],
+            ),
+            AdminKeySettingsView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
+        )
+
+
+class AdminKeySettingsView(DashboardSectionView):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.add_item(AdminKeyModeSelect(self.panel, row=0))
+        if str(self.panel.settings.get("admin_key_strategy") or "pool") == "single":
+            self.add_item(SingleAdminKeySelect(self.panel, row=1))
+
+    @discord.ui.button(label="Back to Alerts & Access", style=discord.ButtonStyle.secondary, row=3)
+    async def back_to_alerts(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await _send_or_edit(
+            interaction,
+            build_section_embed("Alerts & Access", "Set supporting alert and access channels plus how bank calculator and jewelry alerts choose stored Torn API keys.", [
+                f"Insurance Channel: **{self.panel._channel_status('insurance_channel_id')}**",
+                f"Jewelry Alerts: **{self.panel._channel_status('jewelry_alert_channel_id')}**",
+                f"Who Can Jump: **{self.panel._channel_status('who_can_jump_channel_id')}**",
+                f"Admin Key Mode: **{self.panel._admin_key_mode_label()}**",
+                f"Single Admin: **{self.panel._admin_key_single_status()}**",
+            ]),
+            ChannelsAlertsAccessView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
+        )
 
 
 class RolesHubView(DashboardSectionView):
