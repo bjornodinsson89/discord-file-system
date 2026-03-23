@@ -200,7 +200,7 @@ def test_host_admin_role_bonus_view_supports_edit_and_remove(monkeypatch):
             guild=SimpleNamespace(get_role=lambda role_id: SimpleNamespace(id=role_id, name="VIP")),
         )
         await view.remove.callback(remove_interaction)
-        assert "Role Bonuses for Giveaway #77" == remove_interaction.response.sent["embed"].title
+        assert "Bonus Roles for Giveaway #77" == remove_interaction.response.sent["embed"].title
         assert isinstance(remove_interaction.response.sent["view"], PersistedRoleBonusRemovalView)
 
     asyncio.run(_run())
@@ -245,7 +245,7 @@ def test_create_summary_shows_new_values_clearly():
     summary = embed.fields[0].value
     assert "Allowed Entries Per User: **4**" in summary
     assert "Messages Per Entry: **12**" in summary
-    assert "Role Bonuses:" in summary
+    assert "Bonus Roles:" in summary
 
 
 def test_giveaway_create_flow_has_no_channel_selector():

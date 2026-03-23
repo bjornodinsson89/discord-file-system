@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from repositories.free_raffle_repo import FreeRaffleRepository
-from repositories.torn_items import TornItemsRepository
+from repositories.torn_items import TornItemsRepository, derive_lookup_candidates
 from utils import GuildSettingsRepository, get_database
 from utils.database import get_pool, is_initialized as db_is_initialized, wait_until_initialized
 from utils.advisory_lock import run_with_advisory_lock
@@ -280,10 +280,10 @@ class EditAutoEntrySettingsModal(discord.ui.Modal, title="Edit Auto Entry Settin
 
 
 class BonusAmountSelect(discord.ui.Select):
-    def __init__(self, *, current_bonus: int | None = None):
+    def __init__(self, *, current_bonus: int = 1, row: int = 3):
         options = [
             discord.SelectOption(
-                label=f"+{amount}", value=str(amount), default=amount == current_bonus
+                label=f"+{amount} Entries", value=str(amount), default=amount == current_bonus
             )
             for amount in range(1, 6)
         ]
@@ -292,7 +292,7 @@ class BonusAmountSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=options,
-            row=1,
+            row=row,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -301,29 +301,92 @@ class BonusAmountSelect(discord.ui.Select):
             await view.set_bonus_amount(interaction, int(self.values[0]))
 
 
+class ActiveRoleSelect(discord.ui.RoleSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="Choose a role for the active slot",
+            min_values=1,
+            max_values=1,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if isinstance(view, BaseRoleBonusConfigView):
+            role = self.values[0] if self.values else None
+            await view.set_role(interaction, int(role.id) if role is not None else None)
+
+
+class RoleBonusSlotButton(discord.ui.Button):
+    def __init__(self, slot_index: int):
+        super().__init__(label=f"Slot {slot_index + 1}", style=discord.ButtonStyle.secondary)
+        self.slot_index = slot_index
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if isinstance(view, BaseRoleBonusConfigView):
+            await view.select_slot(interaction, self.slot_index)
+
+
 class BaseRoleBonusConfigView(discord.ui.View):
-    def __init__(
-        self,
-        cog: "FreeRaffleCog",
-        *,
-        host_id: int,
-        selected_role_id: int | None = None,
-        selected_bonus_amount: int = 1,
-    ):
+    max_slots = 5
+
+    def __init__(self, cog: "FreeRaffleCog", *, host_id: int, initial_rules: list[dict]):
         super().__init__(timeout=300)
         self.cog = cog
         self.host_id = host_id
-        self.selected_role_id = selected_role_id
-        self.selected_bonus_amount = selected_bonus_amount
-        role_select = discord.ui.RoleSelect(
-            placeholder="Choose a role",
-            min_values=1,
-            max_values=1,
-            row=0,
+        self.slot_index = 0
+        self.slot_rules = self.cog.normalize_role_bonus_rules(initial_rules, max_slots=self.max_slots, include_empty_slots=True)
+        for slot_index in range(self.max_slots):
+            button = RoleBonusSlotButton(slot_index)
+            button.row = 0 if slot_index < 3 else 1
+            self.add_item(button)
+        self.role_select = ActiveRoleSelect()
+        self.add_item(self.role_select)
+        self.bonus_select = BonusAmountSelect(
+            current_bonus=self._current_slot().get("bonus_entries_per_qualification", 1),
+            row=3,
         )
-        role_select.callback = self._select_role
-        self.add_item(role_select)
-        self.add_item(BonusAmountSelect(current_bonus=selected_bonus_amount))
+        self.add_item(self.bonus_select)
+        self._refresh_components()
+
+    def _current_slot(self) -> dict:
+        return self.slot_rules[self.slot_index]
+
+    def _refresh_components(self) -> None:
+        current_role_id = self._current_slot().get("role_id")
+        current_bonus = int(self._current_slot().get("bonus_entries_per_qualification") or 1)
+        self.remove_item(self.bonus_select)
+        self.bonus_select = BonusAmountSelect(current_bonus=current_bonus, row=3)
+        self.add_item(self.bonus_select)
+        for child in self.children:
+            if isinstance(child, RoleBonusSlotButton):
+                slot = self.slot_rules[child.slot_index]
+                role_id = slot.get("role_id")
+                child.style = (
+                    discord.ButtonStyle.primary
+                    if child.slot_index == self.slot_index
+                    else discord.ButtonStyle.secondary
+                )
+                child.label = (
+                    f"Slot {child.slot_index + 1}: <set>"
+                    if role_id is not None
+                    else f"Slot {child.slot_index + 1}: Empty"
+                )
+        if current_role_id is not None:
+            self.role_select.default_values = [discord.Object(id=int(current_role_id))]
+        else:
+            self.role_select.default_values = []
+
+    def _slot_summary_line(self, slot_index: int, guild: discord.Guild | None = None) -> str:
+        slot = self.slot_rules[slot_index]
+        role_id = slot.get("role_id")
+        if role_id is None:
+            return f"Slot {slot_index + 1}: Empty"
+        return (
+            f"Slot {slot_index + 1}: {self.cog._role_label(int(role_id), guild)} — "
+            f"**+{int(slot.get('bonus_entries_per_qualification') or 1)} Entries**"
+        )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.host_id:
@@ -333,19 +396,23 @@ class BaseRoleBonusConfigView(discord.ui.View):
             return False
         return True
 
-    async def _select_role(self, interaction: discord.Interaction) -> None:
-        role = None
-        role_select = next(
-            (child for child in self.children if isinstance(child, discord.ui.RoleSelect)), None
-        )
-        if isinstance(role_select, discord.ui.RoleSelect):
-            role = role_select.values[0] if role_select.values else None
-        self.selected_role_id = int(role.id) if role is not None else None
+    async def select_slot(self, interaction: discord.Interaction, slot_index: int) -> None:
+        self.slot_index = slot_index
+        self._refresh_components()
+        await self.refresh(interaction)
+
+    async def set_role(self, interaction: discord.Interaction, role_id: int | None) -> None:
+        self._current_slot()["role_id"] = role_id
+        self._refresh_components()
         await self.refresh(interaction)
 
     async def set_bonus_amount(self, interaction: discord.Interaction, amount: int) -> None:
-        self.selected_bonus_amount = amount
+        self._current_slot()["bonus_entries_per_qualification"] = max(1, int(amount))
+        self._refresh_components()
         await self.refresh(interaction)
+
+    def _validated_rules(self) -> list[dict[str, int]]:
+        return self.cog.normalize_role_bonus_rules(self.slot_rules, max_slots=self.max_slots)
 
     async def refresh(self, interaction: discord.Interaction) -> None:
         raise NotImplementedError
@@ -354,58 +421,59 @@ class BaseRoleBonusConfigView(discord.ui.View):
 class DraftRoleBonusConfigView(BaseRoleBonusConfigView):
     def __init__(self, cog: "FreeRaffleCog", *, owner_id: int):
         draft = cog.get_create_draft(owner_id) or {}
-        bonus_rules = draft.get("role_bonus_rules") or []
-        selected_role_id = int(bonus_rules[0]["role_id"]) if bonus_rules else None
-        selected_bonus_amount = (
-            int(bonus_rules[0].get("bonus_entries_per_qualification") or 1) if bonus_rules else 1
-        )
-        super().__init__(
-            cog,
-            host_id=owner_id,
-            selected_role_id=selected_role_id,
-            selected_bonus_amount=selected_bonus_amount,
-        )
+        super().__init__(cog, host_id=owner_id, initial_rules=draft.get("role_bonus_rules") or [])
         self.owner_id = owner_id
 
     def _draft(self) -> dict:
         return self.cog.get_create_draft(self.owner_id) or {}
 
     async def refresh(self, interaction: discord.Interaction) -> None:
-        draft = self._draft()
         embed = self.cog.build_role_bonus_embed(
-            draft.get("role_bonus_rules") or [],
-            title="Role Bonuses",
+            self.slot_rules,
+            title="Bonus Roles",
             guild=interaction.guild,
-            selected_role_id=self.selected_role_id,
-            selected_bonus_amount=self.selected_bonus_amount,
+            active_slot_index=self.slot_index,
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Save Role Bonus", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="Clear Active Slot", style=discord.ButtonStyle.secondary, row=4)
+    async def clear_slot(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        self.slot_rules[self.slot_index] = {"role_id": None, "bonus_entries_per_qualification": 1}
+        self._refresh_components()
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Save Bonus Roles", style=discord.ButtonStyle.primary, row=4)
     async def save(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        if self.selected_role_id is None:
-            await interaction.response.send_message("❌ Choose a role first.", ephemeral=True)
+        try:
+            updated_rules = self._validated_rules()
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
             return
         draft = self._draft()
-        updated_rules = self.cog.merge_role_bonus_rule(
-            draft.get("role_bonus_rules") or [],
-            role_id=self.selected_role_id,
-            bonus_entries=self.selected_bonus_amount,
-        )
         draft["role_bonus_rules"] = updated_rules
         self.cog.store_create_draft(self.owner_id, draft)
-        embed = self.cog.build_role_bonus_embed(
-            updated_rules,
-            title="Role Bonuses",
-            guild=interaction.guild,
-            selected_role_id=self.selected_role_id,
-            selected_bonus_amount=self.selected_bonus_amount,
+        self.slot_rules = self.cog.normalize_role_bonus_rules(updated_rules, max_slots=self.max_slots, include_empty_slots=True)
+        self._refresh_components()
+        await interaction.response.edit_message(
+            embed=self.cog.build_role_bonus_embed(
+                self.slot_rules,
+                title="Bonus Roles",
+                guild=interaction.guild,
+                active_slot_index=self.slot_index,
+            ),
+            view=self,
         )
-        await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Done", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.button(label="Done", style=discord.ButtonStyle.success, row=4)
     async def done(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        try:
+            updated_rules = self._validated_rules()
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
         draft = self._draft()
+        draft["role_bonus_rules"] = updated_rules
+        self.cog.store_create_draft(self.owner_id, draft)
         await interaction.response.edit_message(
             embed=self.cog.build_auto_entry_settings_embed(draft, title="Auto Entry Settings"),
             view=DraftAutoEntrySettingsView(self.cog, owner_id=self.owner_id, draft=draft),
@@ -414,63 +482,72 @@ class DraftRoleBonusConfigView(BaseRoleBonusConfigView):
 
 class PersistedRoleBonusConfigView(BaseRoleBonusConfigView):
     def __init__(self, cog: "FreeRaffleCog", raffle: dict, bonus_rules: list[dict]):
-        selected_role_id = int(bonus_rules[0]["role_id"]) if bonus_rules else None
-        selected_bonus_amount = (
-            int(bonus_rules[0].get("bonus_entries_per_qualification") or 1) if bonus_rules else 1
-        )
         super().__init__(
             cog,
             host_id=int(raffle["host_discord_id"]),
-            selected_role_id=selected_role_id,
-            selected_bonus_amount=selected_bonus_amount,
+            initial_rules=bonus_rules,
         )
         self.raffle = dict(raffle)
         self.raffle_id = int(raffle["id"])
 
-    async def _bonus_rules(self) -> list[dict]:
-        return await FreeRaffleRepository(get_pool()).list_role_bonus_rules(self.raffle_id)
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not self.cog._can_manage_raffle(interaction, self.raffle):
+            await interaction.response.send_message(
+                "Only the giveaway host can manage these settings.", ephemeral=True
+            )
+            return False
+        return True
 
     async def refresh(self, interaction: discord.Interaction) -> None:
-        bonus_rules = await self._bonus_rules()
         embed = self.cog.build_role_bonus_embed(
-            bonus_rules,
-            title=f"Role Bonuses for Giveaway #{self.raffle_id}",
+            self.slot_rules,
+            title=f"Bonus Roles for Giveaway #{self.raffle_id}",
             guild=interaction.guild,
-            selected_role_id=self.selected_role_id,
-            selected_bonus_amount=self.selected_bonus_amount,
+            active_slot_index=self.slot_index,
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Save Role Bonus", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="Clear Active Slot", style=discord.ButtonStyle.secondary, row=4)
+    async def clear_slot(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        self.slot_rules[self.slot_index] = {"role_id": None, "bonus_entries_per_qualification": 1}
+        self._refresh_components()
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Save Bonus Roles", style=discord.ButtonStyle.primary, row=4)
     async def save(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        if self.selected_role_id is None:
-            await interaction.response.send_message("❌ Choose a role first.", ephemeral=True)
+        try:
+            updated_rules = self._validated_rules()
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
             return
-        await FreeRaffleRepository(get_pool()).upsert_role_bonus_rule(
-            self.raffle_id,
-            self.selected_role_id,
-            self.selected_bonus_amount,
+        await FreeRaffleRepository(get_pool()).replace_role_bonus_rules(self.raffle_id, updated_rules)
+        self.slot_rules = self.cog.normalize_role_bonus_rules(updated_rules, max_slots=self.max_slots, include_empty_slots=True)
+        self._refresh_components()
+        await interaction.response.edit_message(
+            embed=self.cog.build_role_bonus_embed(
+                self.slot_rules,
+                title=f"Bonus Roles for Giveaway #{self.raffle_id}",
+                guild=interaction.guild,
+                active_slot_index=self.slot_index,
+            ),
+            view=self,
         )
-        bonus_rules = await self._bonus_rules()
-        embed = self.cog.build_role_bonus_embed(
-            bonus_rules,
-            title=f"Role Bonuses for Giveaway #{self.raffle_id}",
-            guild=interaction.guild,
-            selected_role_id=self.selected_role_id,
-            selected_bonus_amount=self.selected_bonus_amount,
-        )
-        await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Done", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.button(label="Done", style=discord.ButtonStyle.success, row=4)
     async def done(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        bonus_rules = await self._bonus_rules()
+        try:
+            updated_rules = self._validated_rules()
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        await FreeRaffleRepository(get_pool()).replace_role_bonus_rules(self.raffle_id, updated_rules)
         await interaction.response.edit_message(
             embed=self.cog.build_auto_entry_admin_embed(
                 self.raffle,
-                bonus_rules,
+                updated_rules,
                 title=f"Auto Entry Settings for Giveaway #{self.raffle_id}",
             ),
-            view=AutoEntryRoleBonusManageView(self.cog, self.raffle, bonus_rules),
+            view=AutoEntryRoleBonusManageView(self.cog, self.raffle, updated_rules),
         )
 
 
@@ -484,21 +561,21 @@ class AutoEntryRoleBonusManageView(discord.ui.View):
         self.selected_role_id: int | None = int(bonus_rules[0]["role_id"]) if bonus_rules else None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.host_id:
+        if not self.cog._can_manage_raffle(interaction, self.raffle):
             await interaction.response.send_message(
                 "Only the giveaway host can manage these settings.", ephemeral=True
             )
             return False
         return True
 
-    @discord.ui.button(label="Add Role Bonus", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Edit Bonus Roles", style=discord.ButtonStyle.primary, row=1)
     async def add_or_update(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         repo = FreeRaffleRepository(get_pool())
         bonus_rules = await repo.list_role_bonus_rules(self.raffle_id)
         await interaction.response.send_message(
             embed=self.cog.build_role_bonus_embed(
                 bonus_rules,
-                title=f"Role Bonuses for Giveaway #{self.raffle_id}",
+                title=f"Bonus Roles for Giveaway #{self.raffle_id}",
                 guild=interaction.guild,
             ),
             ephemeral=True,
@@ -509,25 +586,23 @@ class AutoEntryRoleBonusManageView(discord.ui.View):
     async def edit_limits(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(EditAutoEntrySettingsModal(self.cog, self.raffle))
 
-    @discord.ui.button(label="Remove Role Bonus", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="Remove Bonus Role", style=discord.ButtonStyle.danger, row=2)
     async def remove(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         bonus_rules = await FreeRaffleRepository(get_pool()).list_role_bonus_rules(self.raffle_id)
         if not bonus_rules:
             await interaction.response.send_message(
-                "❌ No role bonuses are configured yet.", ephemeral=True
+                "❌ No bonus roles are configured yet.", ephemeral=True
             )
             return
         await interaction.response.send_message(
             embed=self.cog.build_role_bonus_embed(
                 bonus_rules,
-                title=f"Role Bonuses for Giveaway #{self.raffle_id}",
+                title=f"Bonus Roles for Giveaway #{self.raffle_id}",
                 guild=interaction.guild,
             ),
             ephemeral=True,
             view=PersistedRoleBonusRemovalView(self.cog, self.raffle, bonus_rules),
         )
-
-
 class DraftAutoEntrySettingsView(discord.ui.View):
     def __init__(self, cog: "FreeRaffleCog", *, owner_id: int, draft: dict):
         super().__init__(timeout=300)
@@ -553,35 +628,15 @@ class DraftAutoEntrySettingsView(discord.ui.View):
             )
         )
 
-    @discord.ui.button(label="Add Role Bonus", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Edit Bonus Roles", style=discord.ButtonStyle.primary, row=0)
     async def add_role_bonus(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.edit_message(
             embed=self.cog.build_role_bonus_embed(
                 (self.cog.get_create_draft(self.owner_id) or {}).get("role_bonus_rules") or [],
-                title="Role Bonuses",
+                title="Bonus Roles",
                 guild=interaction.guild,
             ),
             view=DraftRoleBonusConfigView(self.cog, owner_id=self.owner_id),
-        )
-
-    @discord.ui.button(label="Remove Role Bonus", style=discord.ButtonStyle.danger, row=0)
-    async def remove_role_bonus(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        draft = self.cog.get_create_draft(self.owner_id) or {}
-        bonus_rules = draft.get("role_bonus_rules") or []
-        if not bonus_rules:
-            await interaction.response.send_message(
-                "❌ No role bonuses are configured yet.", ephemeral=True
-            )
-            return
-        await interaction.response.edit_message(
-            embed=self.cog.build_role_bonus_embed(
-                bonus_rules, title="Role Bonuses", guild=interaction.guild
-            ),
-            view=DraftRoleBonusRemovalView(
-                self.cog, owner_id=self.owner_id, bonus_rules=bonus_rules
-            ),
         )
 
     @discord.ui.button(label="Done", style=discord.ButtonStyle.success, row=1)
@@ -750,6 +805,7 @@ class FreeRaffleCog(commands.Cog):
             raffle_id=raffle_id,
             on_enter=self.handle_enter,
             on_info=self.handle_info,
+            on_host_controls=self.handle_host_controls,
             disabled=disabled,
         )
 
@@ -766,6 +822,7 @@ class FreeRaffleCog(commands.Cog):
             raffle_id=raffle_id,
             on_enter=self.handle_enter,
             on_info=self.handle_info,
+            on_host_controls=self.handle_host_controls,
             disabled=disabled,
             show_join_button=bool(button_join_enabled),
         )
@@ -792,6 +849,16 @@ class FreeRaffleCog(commands.Cog):
             show_auto_settings=show_auto_settings,
         )
 
+    def _can_manage_raffle(self, interaction: discord.Interaction, raffle: dict | None) -> bool:
+        if not raffle:
+            return False
+        is_host = int(interaction.user.id) == int(raffle["host_discord_id"])
+        is_admin = (
+            isinstance(interaction.user, discord.Member)
+            and interaction.user.guild_permissions.administrator
+        )
+        return is_host or is_admin
+
     def store_create_draft(self, user_id: int, draft: dict) -> None:
         self._create_drafts[int(user_id)] = dict(draft)
 
@@ -817,15 +884,36 @@ class FreeRaffleCog(commands.Cog):
     def merge_role_bonus_rule(
         self, rules: list[dict], *, role_id: int, bonus_entries: int
     ) -> list[dict[str, int]]:
-        merged = {
-            int(rule["role_id"]): max(0, int(rule.get("bonus_entries_per_qualification") or 0))
-            for rule in rules
-        }
-        merged[int(role_id)] = max(1, int(bonus_entries))
-        return [
-            {"role_id": current_role_id, "bonus_entries_per_qualification": current_bonus}
-            for current_role_id, current_bonus in sorted(merged.items())
-        ]
+        return self.normalize_role_bonus_rules([*list(rules), {"role_id": role_id, "bonus_entries_per_qualification": bonus_entries}])
+
+    def normalize_role_bonus_rules(
+        self, rules: list[dict], *, max_slots: int = 5, include_empty_slots: bool = False
+    ) -> list[dict[str, int | None]]:
+        normalized: list[dict[str, int | None]] = []
+        seen_role_ids: set[int] = set()
+        for rule in list(rules or [])[:max_slots]:
+            role_id = rule.get("role_id")
+            if role_id in (None, "", 0, "0"):
+                if include_empty_slots:
+                    normalized.append({"role_id": None, "bonus_entries_per_qualification": 1})
+                continue
+            current_role_id = int(role_id)
+            if current_role_id in seen_role_ids:
+                raise ValueError("Each bonus role can only be selected once.")
+            seen_role_ids.add(current_role_id)
+            normalized.append(
+                {
+                    "role_id": current_role_id,
+                    "bonus_entries_per_qualification": max(
+                        1, int(rule.get("bonus_entries_per_qualification") or 1)
+                    ),
+                }
+            )
+        if include_empty_slots:
+            normalized = normalized[:max_slots]
+            while len(normalized) < max_slots:
+                normalized.append({"role_id": None, "bonus_entries_per_qualification": 1})
+        return normalized
 
     def _role_label(self, role_id: int, guild: discord.Guild | None = None) -> str:
         role = guild.get_role(role_id) if guild else None
@@ -839,37 +927,48 @@ class FreeRaffleCog(commands.Cog):
         *,
         title: str,
         guild: discord.Guild | None = None,
-        selected_role_id: int | None = None,
-        selected_bonus_amount: int | None = None,
+        active_slot_index: int = 0,
     ) -> discord.Embed:
-        lines = [
-            "Choose a role, choose bonus entries, then save the rule.",
-            "Matching role bonuses stack for each qualifying auto-entry cycle.",
+        slot_rules = self.normalize_role_bonus_rules(rules, include_empty_slots=True)
+        current_slot = (
+            slot_rules[active_slot_index]
+            if slot_rules
+            else {"role_id": None, "bonus_entries_per_qualification": 1}
+        )
+        description_lines = [
+            "Configure up to 5 bonus role slots.",
+            "Pick a slot, choose a role, then choose how many extra entries it grants.",
+            "Leave any unused slots empty.",
         ]
-        if selected_role_id is not None:
-            lines.append(
-                f"Current selection: {self._role_label(selected_role_id, guild)} — **+{int(selected_bonus_amount or 1)} Entries**"
-            )
-        if rules:
-            lines.append("")
-            lines.append("Configured Role Bonuses:")
-            lines.extend(
-                f"• {self._role_label(int(rule['role_id']), guild)} — **+{int(rule.get('bonus_entries_per_qualification') or 0)} Entries**"
-                for rule in rules
+        if current_slot.get("role_id") is not None:
+            description_lines.append(
+                f"Active Slot: **{active_slot_index + 1}** — {self._role_label(int(current_slot['role_id']), guild)} (+{int(current_slot.get('bonus_entries_per_qualification') or 1)} Entries)"
             )
         else:
-            lines.append("")
-            lines.append("Configured Role Bonuses: **None**")
-        return discord.Embed(
-            title=title, description="\n".join(lines), color=discord.Color.blurple()
+            description_lines.append(f"Active Slot: **{active_slot_index + 1}** — Empty")
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(description_lines),
+            color=discord.Color.blurple(),
         )
+        embed.add_field(
+            name="Configured Slots",
+            value="\n".join(
+                f"• Slot {index + 1}: Empty"
+                if rule.get("role_id") is None
+                else f"• Slot {index + 1}: {self._role_label(int(rule['role_id']), guild)} — **+{int(rule.get('bonus_entries_per_qualification') or 1)} Entries**"
+                for index, rule in enumerate(slot_rules)
+            ),
+            inline=False,
+        )
+        return embed
 
     def build_auto_entry_settings_embed(self, draft: dict, *, title: str) -> discord.Embed:
         bonus_rules = draft.get("role_bonus_rules") or []
         lines = [
             f"Messages Per Entry: **{max(1, int(draft.get('messages_per_entry') or AUTO_ENTRY_MESSAGE_STEP))}**",
             f"Allowed Entries Per User: **{max(1, int(draft.get('auto_entry_max_per_user') or 1))}**",
-            "Role Bonuses:",
+            "Bonus Roles:",
         ]
         if bonus_rules:
             lines.extend(
@@ -893,7 +992,7 @@ class FreeRaffleCog(commands.Cog):
         embed = self.build_auto_entry_settings_embed(draft, title=title)
         embed.description = (
             (embed.description or "")
-            + "\n\nUse **Add Role Bonus** to add or update a rule, or **Remove Role Bonus** to delete one."
+            + "\n\nUse **Edit Bonus Roles** to review all 5 slots and save the full bonus-role setup."
         )
         return embed
 
@@ -914,15 +1013,13 @@ class FreeRaffleCog(commands.Cog):
                 f"Messages Per Entry: **{max(1, int(draft.get('messages_per_entry') or AUTO_ENTRY_MESSAGE_STEP))}**"
             )
             if bonus_rules:
-                lines.append(
-                    "Role Bonuses: "
-                    + ", ".join(
-                        f"<@&{int(rule['role_id'])}> (+{int(rule.get('bonus_entries_per_qualification') or 0)})"
-                        for rule in bonus_rules
-                    )
+                lines.append("Bonus Roles:")
+                lines.extend(
+                    f"• <@&{int(rule['role_id'])}>: +{int(rule.get('bonus_entries_per_qualification') or 0)} Entries"
+                    for rule in bonus_rules
                 )
             else:
-                lines.append("Role Bonuses: **None**")
+                lines.append("Bonus Roles: **None configured**")
         embed = discord.Embed(
             title="Create Giveaway",
             description="Review the giveaway details below, then create it when everything looks right.",
@@ -1016,14 +1113,16 @@ class FreeRaffleCog(commands.Cog):
 
     async def resolve_thumbnail(self, prize_text: str) -> str | None:
         try:
-            item = await TornItemsRepository(get_pool()).get_item_meta_by_name(prize_text)
+            repo = TornItemsRepository(get_pool())
+            for candidate in derive_lookup_candidates(prize_text):
+                item = await repo.get_item_meta_by_name(candidate)
+                if item:
+                    image = str(item.get("image_url") or "").strip()
+                    if image:
+                        return image
         except Exception:
             log.exception("Failed resolving free raffle thumbnail for prize '%s'", prize_text)
-            return None
-        if not item:
-            return None
-        image = str(item.get("image_url") or "").strip()
-        return image or None
+        return None
 
     def _entry_mode_label(self, raffle: dict) -> str:
         button_join_enabled = bool(raffle.get("button_join_enabled", False))
@@ -1128,7 +1227,7 @@ class FreeRaffleCog(commands.Cog):
 
         embed = discord.Embed(
             title=f"Info for Giveaway #{int(raffle['id'])}",
-            description="\n".join(description_lines),
+            description="Your personal giveaway progress and eligibility.",
             color=_status_color(str(raffle.get("status") or ""), None),
         )
         progress_lines = []
@@ -1220,13 +1319,26 @@ class FreeRaffleCog(commands.Cog):
                     f"Messages Per Entry: **{messages_per_entry}**"
                     if bool(raffle.get("auto_entry_enabled", False))
                     else "Messages Per Entry: **N/A**",
-                    f"Role Bonuses: **{'Enabled' if role_bonus_rules else 'None'}**"
-                    if bool(raffle.get("auto_entry_enabled", False))
-                    else "Role Bonuses: **N/A**",
                 ]
             ),
             inline=False,
         )
+        if bool(raffle.get("auto_entry_enabled", False)):
+            if role_bonus_rules:
+                embed.add_field(
+                    name="BONUS ROLES",
+                    value="\n".join(
+                        f"{self._role_label(int(rule['role_id']))}: +{int(rule.get('bonus_entries_per_qualification') or 0)} Entries"
+                        for rule in role_bonus_rules
+                    ),
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name="BONUS ROLES",
+                    value="No bonus roles are configured for this giveaway.",
+                    inline=False,
+                )
         if is_timer_triggered:
             time_value = self._time_section(created_at, ends_at, now)
             if time_value:
@@ -1331,6 +1443,17 @@ class FreeRaffleCog(commands.Cog):
             return
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    async def handle_host_controls(self, interaction: discord.Interaction, raffle_id: int) -> None:
+        repo = FreeRaffleRepository(get_pool())
+        raffle = await repo.get_raffle(raffle_id)
+        if not await self._assert_host(interaction, raffle):
+            return
+        await self._host_controls_response(
+            interaction,
+            f"🛠️ Host Controls for Giveaway #{raffle_id}",
+            raffle,
+        )
+
     async def handle_enter(self, interaction: discord.Interaction, raffle_id: int) -> None:
         try:
             repo = FreeRaffleRepository(get_pool())
@@ -1398,12 +1521,7 @@ class FreeRaffleCog(commands.Cog):
         if not raffle:
             await self._send_ephemeral(interaction, "Raffle not found.")
             return False
-        is_host = int(interaction.user.id) == int(raffle["host_discord_id"])
-        is_admin = (
-            isinstance(interaction.user, discord.Member)
-            and interaction.user.guild_permissions.administrator
-        )
-        if not is_host and not is_admin:
+        if not self._can_manage_raffle(interaction, raffle):
             await self._send_ephemeral(interaction, "Only the host can do that.")
             return False
         return True

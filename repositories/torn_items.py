@@ -8,6 +8,8 @@ from .base import RepositoryBase
 _CURLY_QUOTES_RE = re.compile(r"[’‘]")
 _NON_ALNUM_WS_RE = re.compile(r"[^a-z0-9\s]")
 _WS_RE = re.compile(r"\s+")
+_LEADING_COUNT_RE = re.compile(r"^(?:x\s*\d+|\d+\s*x?|\d+)\s+", re.IGNORECASE)
+_PART_SPLIT_RE = re.compile(r"\s*(?:\+|,|\band\b)\s*", re.IGNORECASE)
 
 
 class TornItemLookupError(ValueError):
@@ -22,6 +24,34 @@ def norm_name(s: str) -> str:
     value = _WS_RE.sub(" ", value).strip()
     return value
 
+
+
+
+def derive_lookup_candidates(raw_name: str) -> list[str]:
+    source = (raw_name or "").strip()
+    if not source:
+        return []
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _push(value: str) -> None:
+        cleaned = value.strip(" -–—")
+        normalized = norm_name(cleaned)
+        if cleaned and normalized and normalized not in seen:
+            candidates.append(cleaned)
+            seen.add(normalized)
+
+    _push(source)
+    for part in _PART_SPLIT_RE.split(source):
+        cleaned_part = part.strip()
+        if not cleaned_part:
+            continue
+        _push(cleaned_part)
+        without_count = _LEADING_COUNT_RE.sub("", cleaned_part).strip()
+        if without_count and without_count != cleaned_part:
+            _push(without_count)
+    return candidates
 
 class TornItemsRepository(RepositoryBase):
     async def upsert_items(self, rows: list[tuple[int, str, str, str, str | None]]) -> int:
