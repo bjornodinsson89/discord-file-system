@@ -783,13 +783,18 @@ class AdminKeyModeSelect(discord.ui.Select):
         super().__init__(placeholder="Admin Key Mode", min_values=1, max_values=1, options=options, row=row)
         self.panel = panel
 
+    def build_updates(self, strategy: str) -> dict[str, Any]:
+        updates: dict[str, Any] = {"admin_key_strategy": strategy}
+        if strategy == "pool":
+            updates["admin_key_single_discord_id"] = None
+        return updates
+
+    async def save_selection(self, interaction: discord.Interaction, strategy: str) -> None:
+        await self.panel.save_changes(interaction, self.build_updates(strategy))
+
     async def callback(self, interaction: discord.Interaction):
         try:
-            strategy = self.values[0]
-            updates: dict[str, Any] = {"admin_key_strategy": strategy}
-            if strategy == "pool":
-                updates["admin_key_single_discord_id"] = None
-            await self.panel.save_changes(interaction, updates)
+            await self.save_selection(interaction, self.values[0])
         except Exception as error:
             await _respond_callback_error(interaction, error, "setup_admin_key_mode_error")
 
@@ -815,12 +820,27 @@ class SingleAdminKeySelect(discord.ui.Select):
             options.append(option)
         return options
 
+    async def save_selection(self, interaction: discord.Interaction, selected_member_id: int | None) -> None:
+        await self.panel.save_changes(interaction, {"admin_key_single_discord_id": selected_member_id, "admin_key_strategy": "single"})
+
     async def callback(self, interaction: discord.Interaction):
         try:
             selected_member_id = int(self.values[0]) if self.values else None
-            await self.panel.save_changes(interaction, {"admin_key_single_discord_id": selected_member_id, "admin_key_strategy": "single"})
+            await self.save_selection(interaction, selected_member_id)
         except Exception as error:
             await _respond_callback_error(interaction, error, "setup_admin_key_single_error")
+
+
+class AdminKeySettingsModeSelect(AdminKeyModeSelect):
+    async def save_selection(self, interaction: discord.Interaction, strategy: str) -> None:
+        await super().save_selection(interaction, strategy)
+        await _send_or_edit(interaction, _admin_key_settings_embed(self.panel), AdminKeySettingsView(owner_id=self.panel.owner_id, db=self.panel.db, settings=self.panel.settings, guild=self.panel.guild, panel=self.panel))
+
+
+class AdminKeySettingsSingleAdminSelect(SingleAdminKeySelect):
+    async def save_selection(self, interaction: discord.Interaction, selected_member_id: int | None) -> None:
+        await super().save_selection(interaction, selected_member_id)
+        await _send_or_edit(interaction, _admin_key_settings_embed(self.panel), AdminKeySettingsView(owner_id=self.panel.owner_id, db=self.panel.db, settings=self.panel.settings, guild=self.panel.guild, panel=self.panel))
 
 
 def _channels_embed() -> discord.Embed:
@@ -2189,30 +2209,40 @@ class ChannelsAlertsAccessView(DashboardSectionView):
         self.add_item(ChannelSelect(self.panel, "insurance_channel_id", "Insurance Channel", row=0))
         self.add_item(ChannelSelect(self.panel, "jewelry_alert_channel_id", "Jewelry Alerts", row=1))
         self.add_item(ChannelSelect(self.panel, "who_can_jump_channel_id", "Who Can Jump", row=2))
-        self.add_item(AdminKeyModeSelect(self.panel, row=3))
 
-    @discord.ui.button(label="Admin Key Details", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="Admin Key Settings", style=discord.ButtonStyle.secondary, row=3)
     async def admin_key_details(self, interaction: discord.Interaction, _: discord.ui.Button):
         await _send_or_edit(
             interaction,
-            build_section_embed(
-                "Admin Key Settings",
-                "Pool mode: Bank calculator and jewelry alerts rotate through stored Torn API keys from eligible admins.\nSingle mode: Bank calculator and jewelry alerts use one selected admin's stored Torn API key.",
-                [
-                    f"Admin Key Mode: **{self.panel._admin_key_mode_label()}**",
-                    f"Single Admin: **{self.panel._admin_key_single_status()}**",
-                ],
-            ),
+            _admin_key_settings_embed(self.panel),
             AdminKeySettingsView(owner_id=self.owner_id, db=self.db, settings=self.settings, guild=self.guild, panel=self.panel),
         )
+
+
+def _admin_key_settings_embed(panel: SetupPanelView) -> discord.Embed:
+    eligible_admins = panel._eligible_admin_members()
+    description = (
+        "Choose how bank calculator and jewelry alerts use stored Torn API keys. "
+        "Use Pool for shared rotation or Single to lock these tools to one eligible admin."
+    )
+    status_lines = [
+        f"Admin Key Mode: **{panel._admin_key_mode_label()}**",
+        f"Single Admin: **{panel._admin_key_single_status()}**",
+        f"Eligible Admins: **{len(eligible_admins)}**",
+    ]
+    if str(panel.settings.get("admin_key_strategy") or "pool") == "single":
+        status_lines.append("Tip: pick the admin below whose stored Torn API key should power bank calculator and jewelry alerts.")
+    else:
+        status_lines.append("Tip: Pool mode automatically clears the single-admin selection and rotates through eligible admins.")
+    return build_section_embed("Admin Key Settings", description, status_lines)
 
 
 class AdminKeySettingsView(DashboardSectionView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.add_item(AdminKeyModeSelect(self.panel, row=0))
+        self.add_item(AdminKeySettingsModeSelect(self.panel, row=0))
         if str(self.panel.settings.get("admin_key_strategy") or "pool") == "single":
-            self.add_item(SingleAdminKeySelect(self.panel, row=1))
+            self.add_item(AdminKeySettingsSingleAdminSelect(self.panel, row=1))
 
     @discord.ui.button(label="Back to Alerts & Access", style=discord.ButtonStyle.secondary, row=3)
     async def back_to_alerts(self, interaction: discord.Interaction, _: discord.ui.Button):

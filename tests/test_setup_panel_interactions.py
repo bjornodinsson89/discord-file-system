@@ -3,7 +3,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import setup_panel
-from setup_panel import EngagementRolesView, _respond_callback_error, AdminKeyModeSelect, SingleAdminKeySelect
+from setup_panel import (
+    EngagementRolesView,
+    _respond_callback_error,
+    AdminKeyModeSelect,
+    SingleAdminKeySelect,
+    ChannelsAlertsAccessView,
+    AdminKeySettingsView,
+    AdminKeySettingsModeSelect,
+    AdminKeySettingsSingleAdminSelect,
+)
 
 
 class _Response:
@@ -242,3 +251,174 @@ def test_admin_key_mode_select_saves_single(monkeypatch):
 
 def test_single_admin_key_select_saves_selected_admin(monkeypatch):
     asyncio.run(_run_single_admin_key_select_saves_selected_admin(monkeypatch))
+
+
+class _SetupGuild:
+    def __init__(self):
+        self.id = 77
+        self.owner_id = 900
+        self.members = [
+            SimpleNamespace(id=900, display_name="Owner", mention="<@900>", guild_permissions=SimpleNamespace(administrator=False, manage_guild=False), roles=[]),
+            SimpleNamespace(id=901, display_name="Admin", mention="<@901>", guild_permissions=SimpleNamespace(administrator=True, manage_guild=False), roles=[]),
+            SimpleNamespace(id=902, display_name="SetupRole", mention="<@902>", guild_permissions=SimpleNamespace(administrator=False, manage_guild=False), roles=[SimpleNamespace(id=77)]),
+        ]
+
+    def get_member(self, member_id):
+        return next((member for member in self.members if member.id == member_id), None)
+
+    def get_channel(self, _channel_id):
+        return None
+
+    def get_role(self, _role_id):
+        return None
+
+
+def _build_setup_panel(*, strategy="pool", selected_admin=None):
+    settings = {"admin_role_ids": [77], "admin_key_strategy": strategy, "admin_key_single_discord_id": selected_admin}
+    return setup_panel.SetupPanelView(owner_id=55, db=SimpleNamespace(pool=None), settings=settings, guild=_SetupGuild())
+
+
+def _row_widths(view):
+    widths = {}
+    for child in view.children:
+        row = child.row if child.row is not None else 0
+        widths[row] = widths.get(row, 0) + child.width
+    return widths
+
+
+async def _run_alerts_access_view_constructs_without_row_overflow():
+    panel = _build_setup_panel()
+    view = ChannelsAlertsAccessView(owner_id=55, db=panel.db, settings=panel.settings, guild=panel.guild, panel=panel)
+
+    assert view is not None
+    assert all(width <= 5 for width in _row_widths(view).values())
+    assert any(getattr(child, "label", None) == "Admin Key Settings" for child in view.children)
+
+
+async def _run_admin_key_settings_ui_opens_from_alerts_page(monkeypatch):
+    panel = _build_setup_panel()
+    interaction = _build_interaction()
+    sent = AsyncMock()
+    monkeypatch.setattr(setup_panel, "_send_or_edit", sent)
+    view = ChannelsAlertsAccessView(owner_id=55, db=panel.db, settings=panel.settings, guild=panel.guild, panel=panel)
+    button = next(child for child in view.children if getattr(child, "label", None) == "Admin Key Settings")
+
+    await button.callback(interaction)
+
+    _, embed, rendered_view = sent.await_args.args
+    assert embed.title.endswith("Admin Key Settings")
+    assert isinstance(rendered_view, AdminKeySettingsView)
+
+
+async def _run_admin_key_settings_pool_mode_save(monkeypatch):
+    panel = _build_setup_panel(strategy="single", selected_admin=902)
+    interaction = _build_interaction()
+    panel.save_changes = AsyncMock(side_effect=lambda _i, changes: panel.settings.update(changes))
+    sent = AsyncMock()
+    monkeypatch.setattr(setup_panel, "_send_or_edit", sent)
+    select = AdminKeySettingsModeSelect(panel)
+    select._values = ["pool"]
+
+    await select.callback(interaction)
+
+    panel.save_changes.assert_awaited_once_with(interaction, {"admin_key_strategy": "pool", "admin_key_single_discord_id": None})
+    _, _, rendered_view = sent.await_args.args
+    assert isinstance(rendered_view, AdminKeySettingsView)
+    assert panel.settings["admin_key_strategy"] == "pool"
+    assert panel.settings["admin_key_single_discord_id"] is None
+
+
+async def _run_admin_key_settings_single_mode_save(monkeypatch):
+    panel = _build_setup_panel(strategy="pool")
+    interaction = _build_interaction()
+    panel.save_changes = AsyncMock(side_effect=lambda _i, changes: panel.settings.update(changes))
+    sent = AsyncMock()
+    monkeypatch.setattr(setup_panel, "_send_or_edit", sent)
+    select = AdminKeySettingsModeSelect(panel)
+    select._values = ["single"]
+
+    await select.callback(interaction)
+
+    panel.save_changes.assert_awaited_once_with(interaction, {"admin_key_strategy": "single"})
+    _, _, rendered_view = sent.await_args.args
+    assert isinstance(rendered_view, AdminKeySettingsView)
+    assert panel.settings["admin_key_strategy"] == "single"
+
+
+async def _run_admin_key_settings_selected_admin_save(monkeypatch):
+    panel = _build_setup_panel(strategy="single")
+    interaction = _build_interaction()
+    panel.save_changes = AsyncMock(side_effect=lambda _i, changes: panel.settings.update(changes))
+    sent = AsyncMock()
+    monkeypatch.setattr(setup_panel, "_send_or_edit", sent)
+    select = AdminKeySettingsSingleAdminSelect(panel)
+    select._values = ["902"]
+
+    await select.callback(interaction)
+
+    panel.save_changes.assert_awaited_once_with(interaction, {"admin_key_single_discord_id": 902, "admin_key_strategy": "single"})
+    _, _, rendered_view = sent.await_args.args
+    assert isinstance(rendered_view, AdminKeySettingsView)
+    assert panel.settings["admin_key_single_discord_id"] == 902
+
+
+async def _run_setup_views_respect_row_width_limits():
+    pool_panel = _build_setup_panel()
+    single_panel = _build_setup_panel(strategy="single")
+    views = [
+        ChannelsAlertsAccessView(owner_id=55, db=pool_panel.db, settings=pool_panel.settings, guild=pool_panel.guild, panel=pool_panel),
+        AdminKeySettingsView(owner_id=55, db=pool_panel.db, settings=pool_panel.settings, guild=pool_panel.guild, panel=pool_panel),
+        AdminKeySettingsView(owner_id=55, db=single_panel.db, settings=single_panel.settings, guild=single_panel.guild, panel=single_panel),
+    ]
+
+    for view in views:
+        assert all(width <= 5 for width in _row_widths(view).values())
+
+
+async def _run_admin_key_settings_back_and_home_navigation(monkeypatch):
+    panel = _build_setup_panel(strategy="single")
+    interaction = _build_interaction()
+    sent = AsyncMock()
+    monkeypatch.setattr(setup_panel, "_send_or_edit", sent)
+    view = AdminKeySettingsView(owner_id=55, db=panel.db, settings=panel.settings, guild=panel.guild, panel=panel)
+
+    back_button = next(child for child in view.children if getattr(child, "label", None) == "Back to Alerts & Access")
+    await back_button.callback(interaction)
+    _, back_embed, back_view = sent.await_args.args
+    assert back_embed.title.endswith("Alerts & Access")
+    assert isinstance(back_view, ChannelsAlertsAccessView)
+
+    sent.reset_mock()
+    home_button = next(child for child in view.children if getattr(child, "label", None) == "Home")
+    await home_button.callback(interaction)
+    _, home_embed, home_view = sent.await_args.args
+    assert home_embed.title.endswith("Admin Control Center")
+    assert home_view is panel
+
+
+def test_alerts_access_view_constructs_without_row_overflow():
+    asyncio.run(_run_alerts_access_view_constructs_without_row_overflow())
+
+
+def test_admin_key_settings_ui_opens_from_alerts_page(monkeypatch):
+    asyncio.run(_run_admin_key_settings_ui_opens_from_alerts_page(monkeypatch))
+
+
+def test_admin_key_settings_pool_mode_save(monkeypatch):
+    asyncio.run(_run_admin_key_settings_pool_mode_save(monkeypatch))
+
+
+def test_admin_key_settings_single_mode_save(monkeypatch):
+    asyncio.run(_run_admin_key_settings_single_mode_save(monkeypatch))
+
+
+def test_admin_key_settings_selected_admin_save(monkeypatch):
+    asyncio.run(_run_admin_key_settings_selected_admin_save(monkeypatch))
+
+
+def test_setup_views_respect_row_width_limits():
+    asyncio.run(_run_setup_views_respect_row_width_limits())
+
+
+def test_admin_key_settings_back_and_home_navigation(monkeypatch):
+    asyncio.run(_run_admin_key_settings_back_and_home_navigation(monkeypatch))
