@@ -5,6 +5,7 @@ Discord bot process entrypoint (no embedded web server).
 
 import discord
 import asyncpg
+import aiohttp
 from discord import app_commands
 from discord.ext import commands, tasks
 import logging
@@ -2985,6 +2986,16 @@ async def _refresh_stored_roster_panel_message(bot_client: commands.Bot, session
     except (discord.NotFound, discord.Forbidden):
         await repo.clear_roster_panel_message(int(session_id))
         return "missing_message"
+    except (aiohttp.ClientOSError, aiohttp.ClientConnectionError, ConnectionResetError) as exc:
+        log.warning(
+            "Roster refresh transient network error session=%s guild_id=%s channel_id=%s message_id=%s error_type=%s",
+            session_id,
+            session.get("guild_id"),
+            roster_channel_id,
+            roster_message_id,
+            type(exc).__name__,
+        )
+        return "error"
     except discord.HTTPException:
         log.warning("Roster refresh HTTPException for session=%s", session_id)
         return "error"

@@ -214,7 +214,10 @@ class JewelryAlertCog(commands.Cog):
                 is_clear = cameras_disabled and guard_disabled
         except TornAPIPermissionError:
             settings = await self._repo.get_or_create(guild.id)
-            if settings.get("admin_key_strategy") == "single":
+            strategy = GuildSettingsRepository.normalize_admin_key_strategy(
+                settings.get("admin_key_strategy"), default="pool"
+            )
+            if strategy == "single":
                 self._log_throttled(guild.id, "permission_error_single", "Jewelry alert skipped; selected admin key lacks required Torn access guild_id=%s", guild.id)
             else:
                 self._log_throttled(guild.id, "permission_error", "Jewelry alert skipped; no selected pool key with required Torn access guild_id=%s", guild.id)
