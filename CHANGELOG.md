@@ -4,6 +4,8 @@
 ## Unreleased
 - Added Jewelry Store “wide open” alerts with Paul Wall meme, SHOPLIFT NOW button, and auto-delete when security returns.
 - Updated `/setup` admin key settings so bank calculator and jewelry alerts can use either one selected admin key or a server-managed pool of selected eligible admins only.
+- Fixed admin key strategy runtime resolution so saved single/pool modes are normalized and honored consistently by bank calculator and jewelry alert polling, including clearer single-mode error routing and no pool-member fallback in single mode.
+- Hardened 99k roster panel refresh to treat transient Discord connection reset/network errors as a skipped cycle with contextual warning logging instead of noisy traceback cascades.
 - Hardened Discord startup login handling with retry/backoff for HTTP 429 and Cloudflare 1015 failures, keeping the process alive during cooldown instead of crash-looping.
 
 ## 2026-02-25 — Xanax Pools: Modal Creation + Unlimited Tickets + Auto End Date

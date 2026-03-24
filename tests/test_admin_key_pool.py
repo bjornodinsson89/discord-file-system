@@ -112,6 +112,7 @@ class _FakeSettingsRepo:
         self.settings = settings or {}
         self.upserts: list[tuple[int, dict]] = []
         self.pool_member_ids: list[int] = []
+        self.list_pool_member_calls = 0
 
     async def get_or_create(self, guild_id: int) -> dict:
         data = {"admin_role_ids": list(self.admin_role_ids)}
@@ -124,6 +125,7 @@ class _FakeSettingsRepo:
         return self.settings
 
     async def list_admin_key_pool_members(self, guild_id: int) -> list[int]:
+        self.list_pool_member_calls += 1
         return list(self.pool_member_ids)
 
     async def add_admin_key_pool_member(self, guild_id: int, discord_user_id: int) -> None:
@@ -409,6 +411,7 @@ def test_single_mode_uses_only_selected_admin_key(monkeypatch):
     assert result["1w"] == 4
     assert torn.bank_keys == ["key-b"]
     assert users_repo.reset_calls == [702]
+    assert settings_repo.list_pool_member_calls == 0
 
 
 def test_single_mode_does_not_fall_back_to_other_admin_keys(monkeypatch):
@@ -650,6 +653,26 @@ def test_jewelry_alert_single_mode_skips_cleanly_for_missing_single_admin():
     asyncio.run(jewelry_alert.JewelryAlertCog._poll_guild(cog, guild))
 
     assert any("no single admin key configured" in msg.lower() for msg in messages)
+    assert all("no admin key pool members configured" not in msg.lower() for msg in messages)
+
+
+def test_single_mode_string_alias_uses_single_branch_without_pool_lookups(monkeypatch):
+    guild = _FakeGuild(83, [_FakeMember(831, administrator=True)], owner_id=831)
+    service, _users_repo, settings_repo = _make_service(
+        rows=[{"discord_id": 831, "encrypted_key": "enc-key-a"}]
+    )
+    settings_repo.settings.update(
+        {"admin_key_strategy": "Single Admin Key", "admin_key_single_discord_id": 831}
+    )
+    torn = _FakeTornAPI(bank_plan=[{"1w": 1, "2w": 2, "1m": 3, "2m": 4, "3m": 5}])
+    monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
+    monkeypatch.setattr("services.admin_key_pool.get_security_manager", lambda: _FakeSecurity())
+
+    result = asyncio.run(service.get_bank_rates_for_guild(guild))
+
+    assert result["1w"] == 1
+    assert torn.bank_keys == ["key-a"]
+    assert settings_repo.list_pool_member_calls == 0
 
 
 async def _fake_raise(exc):

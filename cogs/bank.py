@@ -188,9 +188,12 @@ class BankCog(commands.Cog):
             rates = await self._get_rates(guild)
         except TornAPIPermissionError:
             settings = await self._repo.get_or_create(guild.id)
+            strategy = GuildSettingsRepository.normalize_admin_key_strategy(
+                settings.get("admin_key_strategy"), default="pool"
+            )
             description = (
                 "Bank rates are unavailable because the selected admin key does not have the required Torn access."
-                if settings.get("admin_key_strategy") == "single"
+                if strategy == "single"
                 else "Bank rates are unavailable because no selected pool key has the required Torn access."
             )
             await interaction.response.send_message(

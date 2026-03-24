@@ -255,6 +255,22 @@ class GuildSettingsRepository:
                 return False
         return bool(value)
 
+    @staticmethod
+    def normalize_admin_key_strategy(value: Any, *, default: str = "pool") -> str:
+        normalized_value = str(value or "").strip().lower()
+        if not normalized_value:
+            return default
+
+        aliases = {
+            "pool": "pool",
+            "admin key pool": "pool",
+            "admin_key_pool": "pool",
+            "single": "single",
+            "single admin key": "single",
+            "single_admin_key": "single",
+        }
+        return aliases.get(normalized_value, default)
+
     @classmethod
     def _normalize_role_id_list(
         cls,
@@ -332,7 +348,7 @@ class GuildSettingsRepository:
                 )
                 continue
             if key == "admin_key_strategy":
-                normalized_value = str(value or "pool").strip().lower()
+                normalized_value = self.normalize_admin_key_strategy(value, default="")
                 if normalized_value not in {"pool", "single"}:
                     raise ValueError("admin_key_strategy must be pool or single")
                 normalized[key] = normalized_value
@@ -377,6 +393,13 @@ class GuildSettingsRepository:
         data["jump_ping_role_ids"] = self._normalize_role_id_list(
             data.get("jump_ping_role_ids"), guild_id=guild_id, field_name="jump_ping_role_ids"
         )
+        raw_strategy = data.get("admin_key_strategy")
+        data["admin_key_strategy"] = self.normalize_admin_key_strategy(raw_strategy, default="pool")
+        if raw_strategy not in (None, "", data["admin_key_strategy"]):
+            logger.warning(
+                "Normalized non-canonical admin key strategy value",
+                extra={"guild_id": guild_id, "raw_admin_key_strategy": raw_strategy},
+            )
         data["jewelry_alert_role_ids"] = self._normalize_role_id_list(
             data.get("jewelry_alert_role_ids"),
             guild_id=guild_id,

@@ -143,9 +143,15 @@ class AdminKeyPoolService:
 
     async def _get_strategy_settings(self, guild: discord.Guild) -> dict[str, Any]:
         settings = await self._settings_repo.get_or_create(guild.id)
-        strategy = str(settings.get("admin_key_strategy") or _POOL_STRATEGY).strip().lower()
-        if strategy not in {_POOL_STRATEGY, _SINGLE_STRATEGY}:
-            strategy = _POOL_STRATEGY
+        raw_strategy = settings.get("admin_key_strategy")
+        strategy = GuildSettingsRepository.normalize_admin_key_strategy(raw_strategy, default=_POOL_STRATEGY)
+        if raw_strategy not in (None, "", strategy):
+            log.warning(
+                "admin_key_pool.invalid_strategy guild_id=%s raw_strategy=%r fallback_strategy=%s",
+                guild.id,
+                raw_strategy,
+                strategy,
+            )
         if strategy == _SINGLE_STRATEGY:
             return await self._build_single_key_pool(guild, settings)
         return await self._build_pooled_key_pool(guild, settings)

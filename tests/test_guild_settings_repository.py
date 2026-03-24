@@ -253,6 +253,16 @@ def test_repo_normalizes_admin_key_single_settings():
     assert normalized["admin_key_single_discord_id"] == 12345
 
 
+def test_repo_merge_defaults_normalizes_admin_key_strategy_aliases():
+    repo = GuildSettingsRepository(_DB())
+
+    merged_single = repo._merge_defaults({"admin_key_strategy": "Single Admin Key"}, guild_id=123)
+    merged_pool = repo._merge_defaults({"admin_key_strategy": "Admin Key Pool"}, guild_id=124)
+
+    assert merged_single["admin_key_strategy"] == "single"
+    assert merged_pool["admin_key_strategy"] == "pool"
+
+
 def test_repo_merge_defaults_does_not_require_pool_member_ids_column():
     repo = GuildSettingsRepository(_DB())
     merged = repo._merge_defaults({}, guild_id=1000)
