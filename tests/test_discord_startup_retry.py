@@ -105,7 +105,11 @@ def test_successful_run_allows_fresh_backoff_sequence(monkeypatch):
         stop_event_second.set()
 
     first_client = _FakeClient(
-        [_FakeHTTPException("rate limited", status=429), _FakeHTTPException("rate limited", status=429), _stop_first]
+        [
+            _FakeHTTPException("rate limited", status=429),
+            _FakeHTTPException("rate limited", status=429),
+            _stop_first,
+        ]
     )
     second_client = _FakeClient([_FakeHTTPException("rate limited", status=429), _stop_second])
 

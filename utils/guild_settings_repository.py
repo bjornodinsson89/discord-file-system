@@ -435,8 +435,12 @@ class GuildSettingsRepository:
                 guild_id,
             )
 
-    async def replace_admin_key_pool_members(self, guild_id: int, discord_user_ids: list[int]) -> None:
-        normalized_ids = sorted({int(discord_user_id) for discord_user_id in discord_user_ids if discord_user_id})
+    async def replace_admin_key_pool_members(
+        self, guild_id: int, discord_user_ids: list[int]
+    ) -> None:
+        normalized_ids = sorted(
+            {int(discord_user_id) for discord_user_id in discord_user_ids if discord_user_id}
+        )
         if not hasattr(self._db, "pool"):
             return
         async with acquire_conn(self._db.pool, config.DB_ACQUIRE_TIMEOUT) as conn:
