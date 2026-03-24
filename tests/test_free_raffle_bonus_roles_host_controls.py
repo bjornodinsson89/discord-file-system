@@ -64,7 +64,10 @@ def test_public_embed_shows_bonus_roles_and_info_is_not_duplicated(monkeypatch):
         }
         embed = await FreeRaffleCog.build_raffle_embed(cog, raffle)
         info = await FreeRaffleCog._build_personal_info_embed(cog, raffle, 99)
-        assert next(field.value for field in embed.fields if field.name == "BONUS ROLES") == "<@&10>: +2 Entries"
+        assert (
+            next(field.value for field in embed.fields if field.name == "BONUS ROLES")
+            == "<@&10>: +2 Entries"
+        )
         how_it_works = next(field.value for field in info.fields if field.name == "HOW IT WORKS")
         assert info.description == "Your personal giveaway progress and eligibility."
         assert info.description not in how_it_works
@@ -79,10 +82,16 @@ def test_live_view_exposes_host_controls_button_and_handler_denies_non_host(monk
         repo = SimpleNamespace(get_raffle=AsyncMock(return_value={"id": 5, "host_discord_id": 10}))
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
         monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
-        view = FreeRaffleCog.build_free_raffle_view(cog, 5, status="active", button_join_enabled=True)
+        view = FreeRaffleCog.build_free_raffle_view(
+            cog, 5, status="active", button_join_enabled=True
+        )
         assert isinstance(view, EnterRaffleView)
-        assert any(getattr(child, "custom_id", "") == "fr_host_controls:5" for child in view.children)
-        interaction = SimpleNamespace(user=SimpleNamespace(id=99), response=_FakeResponse(), followup=_FakeFollowup())
+        assert any(
+            getattr(child, "custom_id", "") == "fr_host_controls:5" for child in view.children
+        )
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=99), response=_FakeResponse(), followup=_FakeFollowup()
+        )
         await FreeRaffleCog.handle_host_controls(cog, interaction, 5)
         assert interaction.response.sent["content"] == "Only the host can do that."
         assert interaction.response.sent["ephemeral"] is True
@@ -102,10 +111,15 @@ def test_host_controls_handler_allows_host_and_returns_ephemeral_view(monkeypatc
             on_view_entries=AsyncMock(),
             on_reroll=AsyncMock(),
         )
-        repo = SimpleNamespace(get_raffle=AsyncMock(return_value={"id": 7, "host_discord_id": 44, "status": "active"}), get_winner=AsyncMock(return_value=None))
+        repo = SimpleNamespace(
+            get_raffle=AsyncMock(return_value={"id": 7, "host_discord_id": 44, "status": "active"}),
+            get_winner=AsyncMock(return_value=None),
+        )
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
         monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
-        interaction = SimpleNamespace(user=SimpleNamespace(id=44), response=_FakeResponse(), followup=_FakeFollowup())
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=44), response=_FakeResponse(), followup=_FakeFollowup()
+        )
         await FreeRaffleCog.handle_host_controls(cog, interaction, 7)
         assert interaction.response.sent["ephemeral"] is True
         assert isinstance(interaction.response.sent["view"], HostControlsView)
@@ -127,19 +141,32 @@ def test_draft_bonus_role_editor_rejects_duplicates_and_ignores_empty_slots():
         cog._create_drafts = {5: {"role_bonus_rules": []}}
         cog.store_create_draft = FreeRaffleCog.store_create_draft.__get__(cog, FreeRaffleCog)
         cog.get_create_draft = FreeRaffleCog.get_create_draft.__get__(cog, FreeRaffleCog)
-        cog.normalize_role_bonus_rules = FreeRaffleCog.normalize_role_bonus_rules.__get__(cog, FreeRaffleCog)
-        cog.build_role_bonus_embed = FreeRaffleCog.build_role_bonus_embed.__get__(cog, FreeRaffleCog)
-        cog.build_auto_entry_settings_embed = FreeRaffleCog.build_auto_entry_settings_embed.__get__(cog, FreeRaffleCog)
+        cog.normalize_role_bonus_rules = FreeRaffleCog.normalize_role_bonus_rules.__get__(
+            cog, FreeRaffleCog
+        )
+        cog.build_role_bonus_embed = FreeRaffleCog.build_role_bonus_embed.__get__(
+            cog, FreeRaffleCog
+        )
+        cog.build_auto_entry_settings_embed = FreeRaffleCog.build_auto_entry_settings_embed.__get__(
+            cog, FreeRaffleCog
+        )
         cog._role_label = FreeRaffleCog._role_label.__get__(cog, FreeRaffleCog)
         view = DraftRoleBonusConfigView(cog, owner_id=5)
         view.slot_rules[0] = {"role_id": 100, "bonus_entries_per_qualification": 2}
         view.slot_rules[1] = {"role_id": 100, "bonus_entries_per_qualification": 3}
-        duplicate_interaction = SimpleNamespace(user=SimpleNamespace(id=5), response=_FakeResponse(), guild=None)
+        duplicate_interaction = SimpleNamespace(
+            user=SimpleNamespace(id=5), response=_FakeResponse(), guild=None
+        )
         await view.save.callback(duplicate_interaction)
-        assert duplicate_interaction.response.sent["content"] == "❌ Each bonus role can only be selected once."
+        assert (
+            duplicate_interaction.response.sent["content"]
+            == "❌ Each bonus role can only be selected once."
+        )
 
         view.slot_rules[1] = {"role_id": None, "bonus_entries_per_qualification": 1}
-        clean_interaction = SimpleNamespace(user=SimpleNamespace(id=5), response=_FakeResponse(), guild=None)
+        clean_interaction = SimpleNamespace(
+            user=SimpleNamespace(id=5), response=_FakeResponse(), guild=None
+        )
         await view.save.callback(clean_interaction)
         assert cog.get_create_draft(5)["role_bonus_rules"] == [
             {"role_id": 100, "bonus_entries_per_qualification": 2}
@@ -170,19 +197,29 @@ def test_persisted_bonus_role_editor_replaces_saved_rules(monkeypatch):
         from cogs.free_raffle import PersistedRoleBonusConfigView
 
         cog = FreeRaffleCog.__new__(FreeRaffleCog)
-        cog.normalize_role_bonus_rules = FreeRaffleCog.normalize_role_bonus_rules.__get__(cog, FreeRaffleCog)
-        cog.build_role_bonus_embed = FreeRaffleCog.build_role_bonus_embed.__get__(cog, FreeRaffleCog)
+        cog.normalize_role_bonus_rules = FreeRaffleCog.normalize_role_bonus_rules.__get__(
+            cog, FreeRaffleCog
+        )
+        cog.build_role_bonus_embed = FreeRaffleCog.build_role_bonus_embed.__get__(
+            cog, FreeRaffleCog
+        )
         cog._role_label = FreeRaffleCog._role_label.__get__(cog, FreeRaffleCog)
         cog._can_manage_raffle = FreeRaffleCog._can_manage_raffle.__get__(cog, FreeRaffleCog)
         repo = SimpleNamespace(replace_role_bonus_rules=AsyncMock())
         monkeypatch.setattr("cogs.free_raffle.FreeRaffleRepository", lambda _pool: repo)
         monkeypatch.setattr("cogs.free_raffle.get_pool", lambda: object())
         raffle = {"id": 8, "host_discord_id": 55}
-        view = PersistedRoleBonusConfigView(cog, raffle, [{"role_id": 11, "bonus_entries_per_qualification": 2}])
+        view = PersistedRoleBonusConfigView(
+            cog, raffle, [{"role_id": 11, "bonus_entries_per_qualification": 2}]
+        )
         view.slot_rules[0] = {"role_id": 11, "bonus_entries_per_qualification": 4}
         view.slot_rules[1] = {"role_id": None, "bonus_entries_per_qualification": 1}
-        interaction = SimpleNamespace(user=SimpleNamespace(id=55), response=_FakeResponse(), guild=None)
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=55), response=_FakeResponse(), guild=None
+        )
         await view.save.callback(interaction)
-        repo.replace_role_bonus_rules.assert_awaited_once_with(8, [{"role_id": 11, "bonus_entries_per_qualification": 4}])
+        repo.replace_role_bonus_rules.assert_awaited_once_with(
+            8, [{"role_id": 11, "bonus_entries_per_qualification": 4}]
+        )
 
     asyncio.run(_run())

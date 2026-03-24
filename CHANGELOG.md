@@ -4,6 +4,7 @@
 ## Unreleased
 - Added Jewelry Store “wide open” alerts with Paul Wall meme, SHOPLIFT NOW button, and auto-delete when security returns.
 - Updated `/setup` admin key settings so bank calculator and jewelry alerts can use either one selected admin key or a server-managed pool of selected eligible admins only.
+- Hardened Discord startup login handling with retry/backoff for HTTP 429 and Cloudflare 1015 failures, keeping the process alive during cooldown instead of crash-looping.
 
 ## 2026-02-25 — Xanax Pools: Modal Creation + Unlimited Tickets + Auto End Date
 Added a modal-based (form) pool creation flow to replace slash-command parameter entry, improving mobile usability. Pool ticket totals now accept either a numeric cap (e.g. 50) or the keyword UNLIMITED for no cap. Optional MM/DD Auto End Date triggers an automatic pool end + winner draw when reached.

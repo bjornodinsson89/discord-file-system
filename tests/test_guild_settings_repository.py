@@ -245,7 +245,9 @@ def test_repo_defaults_admin_key_strategy_to_pool():
 
 def test_repo_normalizes_admin_key_single_settings():
     repo = GuildSettingsRepository(_DB())
-    normalized = repo._normalize_updates({"admin_key_strategy": "single", "admin_key_single_discord_id": "12345"})
+    normalized = repo._normalize_updates(
+        {"admin_key_strategy": "single", "admin_key_single_discord_id": "12345"}
+    )
 
     assert normalized["admin_key_strategy"] == "single"
     assert normalized["admin_key_single_discord_id"] == 12345
@@ -292,12 +294,16 @@ def test_repo_replace_admin_key_pool_members(monkeypatch):
     class _Db:
         pool = _Pool()
 
-    monkeypatch.setattr("utils.guild_settings_repository.acquire_conn", lambda _pool, _timeout: _Acquire())
+    monkeypatch.setattr(
+        "utils.guild_settings_repository.acquire_conn", lambda _pool, _timeout: _Acquire()
+    )
     repo = GuildSettingsRepository(_Db())
 
     import asyncio
 
     asyncio.run(repo.replace_admin_key_pool_members(77, [901, 902, 901]))
 
-    assert any("DELETE FROM public.guild_admin_key_pool_members" in query for query, _args in executed)
+    assert any(
+        "DELETE FROM public.guild_admin_key_pool_members" in query for query, _args in executed
+    )
     assert executemany_calls[0][1] == [(77, 901), (77, 902)]

@@ -214,9 +214,24 @@ class _PanelGuild:
     def __init__(self):
         self.owner_id = 900
         self.members = [
-            SimpleNamespace(id=900, display_name="Owner", guild_permissions=SimpleNamespace(administrator=False, manage_guild=False), roles=[]),
-            SimpleNamespace(id=901, display_name="Admin", guild_permissions=SimpleNamespace(administrator=True, manage_guild=False), roles=[]),
-            SimpleNamespace(id=902, display_name="SetupRole", guild_permissions=SimpleNamespace(administrator=False, manage_guild=False), roles=[SimpleNamespace(id=77)]),
+            SimpleNamespace(
+                id=900,
+                display_name="Owner",
+                guild_permissions=SimpleNamespace(administrator=False, manage_guild=False),
+                roles=[],
+            ),
+            SimpleNamespace(
+                id=901,
+                display_name="Admin",
+                guild_permissions=SimpleNamespace(administrator=True, manage_guild=False),
+                roles=[],
+            ),
+            SimpleNamespace(
+                id=902,
+                display_name="SetupRole",
+                guild_permissions=SimpleNamespace(administrator=False, manage_guild=False),
+                roles=[SimpleNamespace(id=77)],
+            ),
         ]
 
     def get_member(self, member_id):
@@ -236,7 +251,12 @@ async def _run_admin_key_mode_select_saves_single(monkeypatch):
 
 async def _run_single_admin_key_select_saves_selected_admin(monkeypatch):
     guild = _PanelGuild()
-    panel = setup_panel.SetupPanelView(owner_id=55, db=SimpleNamespace(pool=None), settings={"admin_role_ids": [77], "admin_key_strategy": "single"}, guild=guild)
+    panel = setup_panel.SetupPanelView(
+        owner_id=55,
+        db=SimpleNamespace(pool=None),
+        settings={"admin_role_ids": [77], "admin_key_strategy": "single"},
+        guild=guild,
+    )
     panel.save_changes = AsyncMock()
     select = SingleAdminKeySelect(panel)
     interaction = _build_interaction()
@@ -244,7 +264,9 @@ async def _run_single_admin_key_select_saves_selected_admin(monkeypatch):
 
     await select.callback(interaction)
 
-    panel.save_changes.assert_awaited_once_with(interaction, {"admin_key_single_discord_id": 902, "admin_key_strategy": "single"})
+    panel.save_changes.assert_awaited_once_with(
+        interaction, {"admin_key_single_discord_id": 902, "admin_key_strategy": "single"}
+    )
 
 
 def test_admin_key_mode_select_saves_single(monkeypatch):
@@ -260,9 +282,27 @@ class _SetupGuild:
         self.id = 77
         self.owner_id = 900
         self.members = [
-            SimpleNamespace(id=900, display_name="Owner", mention="<@900>", guild_permissions=SimpleNamespace(administrator=False, manage_guild=False), roles=[]),
-            SimpleNamespace(id=901, display_name="Admin", mention="<@901>", guild_permissions=SimpleNamespace(administrator=True, manage_guild=False), roles=[]),
-            SimpleNamespace(id=902, display_name="SetupRole", mention="<@902>", guild_permissions=SimpleNamespace(administrator=False, manage_guild=False), roles=[SimpleNamespace(id=77)]),
+            SimpleNamespace(
+                id=900,
+                display_name="Owner",
+                mention="<@900>",
+                guild_permissions=SimpleNamespace(administrator=False, manage_guild=False),
+                roles=[],
+            ),
+            SimpleNamespace(
+                id=901,
+                display_name="Admin",
+                mention="<@901>",
+                guild_permissions=SimpleNamespace(administrator=True, manage_guild=False),
+                roles=[],
+            ),
+            SimpleNamespace(
+                id=902,
+                display_name="SetupRole",
+                mention="<@902>",
+                guild_permissions=SimpleNamespace(administrator=False, manage_guild=False),
+                roles=[SimpleNamespace(id=77)],
+            ),
         ]
 
     def get_member(self, member_id):
@@ -282,7 +322,9 @@ def _build_setup_panel(*, strategy="pool", selected_admin=None):
         "admin_key_single_discord_id": selected_admin,
         "admin_key_pool_member_ids": [901],
     }
-    return setup_panel.SetupPanelView(owner_id=55, db=SimpleNamespace(pool=None), settings=settings, guild=_SetupGuild())
+    return setup_panel.SetupPanelView(
+        owner_id=55, db=SimpleNamespace(pool=None), settings=settings, guild=_SetupGuild()
+    )
 
 
 def _row_widths(view):
@@ -295,7 +337,9 @@ def _row_widths(view):
 
 async def _run_alerts_access_view_constructs_without_row_overflow():
     panel = _build_setup_panel()
-    view = ChannelsAlertsAccessView(owner_id=55, db=panel.db, settings=panel.settings, guild=panel.guild, panel=panel)
+    view = ChannelsAlertsAccessView(
+        owner_id=55, db=panel.db, settings=panel.settings, guild=panel.guild, panel=panel
+    )
 
     assert view is not None
     assert all(width <= 5 for width in _row_widths(view).values())
@@ -307,8 +351,12 @@ async def _run_admin_key_settings_ui_opens_from_alerts_page(monkeypatch):
     interaction = _build_interaction()
     sent = AsyncMock()
     monkeypatch.setattr(setup_panel, "_send_or_edit", sent)
-    view = ChannelsAlertsAccessView(owner_id=55, db=panel.db, settings=panel.settings, guild=panel.guild, panel=panel)
-    button = next(child for child in view.children if getattr(child, "label", None) == "Admin Key Settings")
+    view = ChannelsAlertsAccessView(
+        owner_id=55, db=panel.db, settings=panel.settings, guild=panel.guild, panel=panel
+    )
+    button = next(
+        child for child in view.children if getattr(child, "label", None) == "Admin Key Settings"
+    )
 
     await button.callback(interaction)
 
@@ -328,7 +376,9 @@ async def _run_admin_key_settings_pool_mode_save(monkeypatch):
 
     await select.callback(interaction)
 
-    panel.save_changes.assert_awaited_once_with(interaction, {"admin_key_strategy": "pool", "admin_key_single_discord_id": None})
+    panel.save_changes.assert_awaited_once_with(
+        interaction, {"admin_key_strategy": "pool", "admin_key_single_discord_id": None}
+    )
     _, _, rendered_view = sent.await_args.args
     assert isinstance(rendered_view, AdminKeySettingsView)
     assert panel.settings["admin_key_strategy"] == "pool"
@@ -363,7 +413,9 @@ async def _run_admin_key_settings_selected_admin_save(monkeypatch):
 
     await select.callback(interaction)
 
-    panel.save_changes.assert_awaited_once_with(interaction, {"admin_key_single_discord_id": 902, "admin_key_strategy": "single"})
+    panel.save_changes.assert_awaited_once_with(
+        interaction, {"admin_key_single_discord_id": 902, "admin_key_strategy": "single"}
+    )
     _, _, rendered_view = sent.await_args.args
     assert isinstance(rendered_view, AdminKeySettingsView)
     assert panel.settings["admin_key_single_discord_id"] == 902
@@ -373,9 +425,27 @@ async def _run_setup_views_respect_row_width_limits():
     pool_panel = _build_setup_panel()
     single_panel = _build_setup_panel(strategy="single")
     views = [
-        ChannelsAlertsAccessView(owner_id=55, db=pool_panel.db, settings=pool_panel.settings, guild=pool_panel.guild, panel=pool_panel),
-        AdminKeySettingsView(owner_id=55, db=pool_panel.db, settings=pool_panel.settings, guild=pool_panel.guild, panel=pool_panel),
-        AdminKeySettingsView(owner_id=55, db=single_panel.db, settings=single_panel.settings, guild=single_panel.guild, panel=single_panel),
+        ChannelsAlertsAccessView(
+            owner_id=55,
+            db=pool_panel.db,
+            settings=pool_panel.settings,
+            guild=pool_panel.guild,
+            panel=pool_panel,
+        ),
+        AdminKeySettingsView(
+            owner_id=55,
+            db=pool_panel.db,
+            settings=pool_panel.settings,
+            guild=pool_panel.guild,
+            panel=pool_panel,
+        ),
+        AdminKeySettingsView(
+            owner_id=55,
+            db=single_panel.db,
+            settings=single_panel.settings,
+            guild=single_panel.guild,
+            panel=single_panel,
+        ),
     ]
 
     for view in views:
@@ -389,7 +459,9 @@ async def _run_admin_key_settings_add_pool_member(monkeypatch):
     sent = AsyncMock()
     add_member = AsyncMock()
     monkeypatch.setattr(setup_panel, "_send_or_edit", sent)
-    monkeypatch.setattr(setup_panel.GuildSettingsRepository, "add_admin_key_pool_member", add_member)
+    monkeypatch.setattr(
+        setup_panel.GuildSettingsRepository, "add_admin_key_pool_member", add_member
+    )
     select = AdminKeySettingsAddPoolMemberSelect(panel)
     select._values = [panel.guild.get_member(902)]
 
@@ -406,7 +478,9 @@ async def _run_admin_key_settings_remove_pool_member(monkeypatch):
     sent = AsyncMock()
     remove_member = AsyncMock()
     monkeypatch.setattr(setup_panel, "_send_or_edit", sent)
-    monkeypatch.setattr(setup_panel.GuildSettingsRepository, "remove_admin_key_pool_member", remove_member)
+    monkeypatch.setattr(
+        setup_panel.GuildSettingsRepository, "remove_admin_key_pool_member", remove_member
+    )
     select = AdminKeySettingsRemovePoolMemberSelect(panel)
     select._values = ["901"]
 
@@ -428,9 +502,15 @@ async def _run_admin_key_settings_back_and_home_navigation(monkeypatch):
     interaction = _build_interaction()
     sent = AsyncMock()
     monkeypatch.setattr(setup_panel, "_send_or_edit", sent)
-    view = AdminKeySettingsView(owner_id=55, db=panel.db, settings=panel.settings, guild=panel.guild, panel=panel)
+    view = AdminKeySettingsView(
+        owner_id=55, db=panel.db, settings=panel.settings, guild=panel.guild, panel=panel
+    )
 
-    back_button = next(child for child in view.children if getattr(child, "label", None) == "Back to Alerts & Access")
+    back_button = next(
+        child
+        for child in view.children
+        if getattr(child, "label", None) == "Back to Alerts & Access"
+    )
     await back_button.callback(interaction)
     _, back_embed, back_view = sent.await_args.args
     assert back_embed.title.endswith("Alerts & Access")
@@ -443,6 +523,7 @@ async def _run_admin_key_settings_back_and_home_navigation(monkeypatch):
     _, home_embed, home_view = sent.await_args.args
     assert home_embed.title.endswith("Admin Control Center")
     assert home_view is panel
+
 
 def test_admin_key_settings_embed_shows_pool_members():
     asyncio.run(_run_admin_key_settings_embed_shows_pool_members())

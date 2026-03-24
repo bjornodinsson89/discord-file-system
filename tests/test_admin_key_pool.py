@@ -131,7 +131,9 @@ class _FakeSettingsRepo:
             self.pool_member_ids.append(discord_user_id)
 
     async def remove_admin_key_pool_member(self, guild_id: int, discord_user_id: int) -> None:
-        self.pool_member_ids = [member_id for member_id in self.pool_member_ids if member_id != discord_user_id]
+        self.pool_member_ids = [
+            member_id for member_id in self.pool_member_ids if member_id != discord_user_id
+        ]
 
 
 class _FakeTornAPI:
@@ -385,13 +387,19 @@ async def _fake_async(result):
 
 
 def test_single_mode_uses_only_selected_admin_key(monkeypatch):
-    guild = _FakeGuild(70, [_FakeMember(701, administrator=True), _FakeMember(702, administrator=True)], owner_id=701)
+    guild = _FakeGuild(
+        70,
+        [_FakeMember(701, administrator=True), _FakeMember(702, administrator=True)],
+        owner_id=701,
+    )
     rows = [
         {"discord_id": 701, "encrypted_key": "enc-key-a"},
         {"discord_id": 702, "encrypted_key": "enc-key-b"},
     ]
     service, users_repo, settings_repo = _make_service(rows=rows)
-    settings_repo.settings.update({"admin_key_strategy": "single", "admin_key_single_discord_id": 702})
+    settings_repo.settings.update(
+        {"admin_key_strategy": "single", "admin_key_single_discord_id": 702}
+    )
     torn = _FakeTornAPI(bank_plan=[{"1w": 4, "2w": 5, "1m": 6, "2m": 7, "3m": 8}])
     monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
     monkeypatch.setattr("services.admin_key_pool.get_security_manager", lambda: _FakeSecurity())
@@ -404,13 +412,19 @@ def test_single_mode_uses_only_selected_admin_key(monkeypatch):
 
 
 def test_single_mode_does_not_fall_back_to_other_admin_keys(monkeypatch):
-    guild = _FakeGuild(71, [_FakeMember(711, administrator=True), _FakeMember(712, administrator=True)], owner_id=711)
+    guild = _FakeGuild(
+        71,
+        [_FakeMember(711, administrator=True), _FakeMember(712, administrator=True)],
+        owner_id=711,
+    )
     rows = [
         {"discord_id": 711, "encrypted_key": "enc-key-a"},
         {"discord_id": 712, "encrypted_key": "enc-key-b"},
     ]
     service, users_repo, settings_repo = _make_service(rows=rows)
-    settings_repo.settings.update({"admin_key_strategy": "single", "admin_key_single_discord_id": 711})
+    settings_repo.settings.update(
+        {"admin_key_strategy": "single", "admin_key_single_discord_id": 711}
+    )
     torn = _FakeTornAPI(bank_plan=[TornAPIPermissionError("missing access")])
     monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
     monkeypatch.setattr("services.admin_key_pool.get_security_manager", lambda: _FakeSecurity())
@@ -424,8 +438,12 @@ def test_single_mode_does_not_fall_back_to_other_admin_keys(monkeypatch):
 
 def test_single_mode_invalid_key_deleted_after_three_failures(monkeypatch):
     guild = _FakeGuild(72, [_FakeMember(721, administrator=True)], owner_id=721)
-    service, users_repo, settings_repo = _make_service(rows=[{"discord_id": 721, "encrypted_key": "enc-key-a"}])
-    settings_repo.settings.update({"admin_key_strategy": "single", "admin_key_single_discord_id": 721})
+    service, users_repo, settings_repo = _make_service(
+        rows=[{"discord_id": 721, "encrypted_key": "enc-key-a"}]
+    )
+    settings_repo.settings.update(
+        {"admin_key_strategy": "single", "admin_key_single_discord_id": 721}
+    )
     users_repo.invalid_results[721] = (3, True)
     torn = _FakeTornAPI(bank_plan=[TornAPIError("Invalid key")])
     monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
@@ -441,7 +459,9 @@ def test_single_mode_invalid_key_deleted_after_three_failures(monkeypatch):
 def test_single_mode_missing_selected_key_returns_clear_failure(monkeypatch):
     guild = _FakeGuild(73, [_FakeMember(731, administrator=True)], owner_id=731)
     service, _users_repo, settings_repo = _make_service(rows=[])
-    settings_repo.settings.update({"admin_key_strategy": "single", "admin_key_single_discord_id": 731})
+    settings_repo.settings.update(
+        {"admin_key_strategy": "single", "admin_key_single_discord_id": 731}
+    )
     monkeypatch.setattr("services.admin_key_pool.get_security_manager", lambda: _FakeSecurity())
 
     with pytest.raises(TornAPIError) as excinfo:
@@ -452,8 +472,12 @@ def test_single_mode_missing_selected_key_returns_clear_failure(monkeypatch):
 
 def test_single_mode_ineligible_selected_admin_returns_clear_failure(monkeypatch):
     guild = _FakeGuild(74, [_FakeMember(741), _FakeMember(742, administrator=True)], owner_id=742)
-    service, _users_repo, settings_repo = _make_service(rows=[{"discord_id": 741, "encrypted_key": "enc-key-a"}])
-    settings_repo.settings.update({"admin_key_strategy": "single", "admin_key_single_discord_id": 741})
+    service, _users_repo, settings_repo = _make_service(
+        rows=[{"discord_id": 741, "encrypted_key": "enc-key-a"}]
+    )
+    settings_repo.settings.update(
+        {"admin_key_strategy": "single", "admin_key_single_discord_id": 741}
+    )
 
     with pytest.raises(TornAPIError) as excinfo:
         asyncio.run(service.get_bank_rates_for_guild(guild))
@@ -463,8 +487,12 @@ def test_single_mode_ineligible_selected_admin_returns_clear_failure(monkeypatch
 
 def test_single_mode_missing_member_returns_clear_failure(monkeypatch):
     guild = _FakeGuild(75, [_FakeMember(752, administrator=True)], owner_id=752)
-    service, _users_repo, settings_repo = _make_service(rows=[{"discord_id": 751, "encrypted_key": "enc-key-a"}])
-    settings_repo.settings.update({"admin_key_strategy": "single", "admin_key_single_discord_id": 751})
+    service, _users_repo, settings_repo = _make_service(
+        rows=[{"discord_id": 751, "encrypted_key": "enc-key-a"}]
+    )
+    settings_repo.settings.update(
+        {"admin_key_strategy": "single", "admin_key_single_discord_id": 751}
+    )
 
     with pytest.raises(TornAPIError) as excinfo:
         asyncio.run(service.get_bank_rates_for_guild(guild))
@@ -474,7 +502,9 @@ def test_single_mode_missing_member_returns_clear_failure(monkeypatch):
 
 def test_pool_mode_without_selected_members_fails_clearly():
     guild = _FakeGuild(76, [_FakeMember(761, administrator=True)], owner_id=761)
-    service, _users_repo, _settings_repo = _make_service(rows=[{"discord_id": 761, "encrypted_key": "enc-key-a"}])
+    service, _users_repo, _settings_repo = _make_service(
+        rows=[{"discord_id": 761, "encrypted_key": "enc-key-a"}]
+    )
 
     with pytest.raises(TornAPIError) as excinfo:
         asyncio.run(service.get_bank_rates_for_guild(guild))
@@ -483,7 +513,11 @@ def test_pool_mode_without_selected_members_fails_clearly():
 
 
 def test_pool_mode_uses_only_selected_members(monkeypatch):
-    guild = _FakeGuild(77, [_FakeMember(771, administrator=True), _FakeMember(772, administrator=True)], owner_id=771)
+    guild = _FakeGuild(
+        77,
+        [_FakeMember(771, administrator=True), _FakeMember(772, administrator=True)],
+        owner_id=771,
+    )
     service, users_repo, settings_repo = _make_service(
         rows=[
             {"discord_id": 771, "encrypted_key": "enc-key-a"},
@@ -503,7 +537,11 @@ def test_pool_mode_uses_only_selected_members(monkeypatch):
 
 
 def test_pool_mode_does_not_use_non_selected_eligible_admins(monkeypatch):
-    guild = _FakeGuild(78, [_FakeMember(781, administrator=True), _FakeMember(782, administrator=True)], owner_id=781)
+    guild = _FakeGuild(
+        78,
+        [_FakeMember(781, administrator=True), _FakeMember(782, administrator=True)],
+        owner_id=781,
+    )
     service, _users_repo, settings_repo = _make_service(
         rows=[
             {"discord_id": 781, "encrypted_key": "enc-key-a"},
@@ -541,8 +579,14 @@ def test_pool_mode_skips_selected_members_who_are_no_longer_eligible(monkeypatch
 
 
 def test_pool_mode_skips_selected_members_without_stored_keys(monkeypatch):
-    guild = _FakeGuild(82, [_FakeMember(821, administrator=True), _FakeMember(822, administrator=True)], owner_id=821)
-    service, _users_repo, settings_repo = _make_service(rows=[{"discord_id": 822, "encrypted_key": "enc-key-b"}])
+    guild = _FakeGuild(
+        82,
+        [_FakeMember(821, administrator=True), _FakeMember(822, administrator=True)],
+        owner_id=821,
+    )
+    service, _users_repo, settings_repo = _make_service(
+        rows=[{"discord_id": 822, "encrypted_key": "enc-key-b"}]
+    )
     settings_repo.pool_member_ids = [821, 822]
     torn = _FakeTornAPI(bank_plan=[{"1w": 2, "2w": 3, "1m": 4, "2m": 5, "3m": 6}])
     monkeypatch.setattr("services.admin_key_pool.get_torn_api", lambda: torn)
@@ -560,13 +604,17 @@ def test_bank_calc_single_mode_maps_clear_errors():
     cog.bot = object()
     cog._repo = _FakeSettingsRepo(settings={"admin_key_strategy": "single"})
     cog._admin_key_pool = types.SimpleNamespace(
-        get_bank_rates_for_guild=lambda _guild: _fake_raise(TornAPIError("No single admin key is configured for this server."))
+        get_bank_rates_for_guild=lambda _guild: _fake_raise(
+            TornAPIError("No single admin key is configured for this server.")
+        )
     )
     cog._cache = {}
     cog._cache_locks = {}
 
     interaction = _FakeInteraction(guild)
-    asyncio.run(bank.BankCog.bank_calc.callback(cog, interaction, amount="100m", merits=0, tci=None))
+    asyncio.run(
+        bank.BankCog.bank_calc.callback(cog, interaction, amount="100m", merits=0, tci=None)
+    )
 
     embed = interaction.response.messages[0]["embed"]
     assert "no single admin key is configured" in embed.description.lower()
@@ -580,14 +628,24 @@ def test_jewelry_alert_single_mode_skips_cleanly_for_missing_single_admin():
     cog = jewelry_alert.JewelryAlertCog.__new__(jewelry_alert.JewelryAlertCog)
     cog.bot = types.SimpleNamespace(user=types.SimpleNamespace(id=999999))
     cog._db = object()
-    cog._repo = _FakeSettingsRepo(settings={"jewelry_alert_channel_id": 333, "admin_key_strategy": "single", "jewelry_alert_role_ids": []})
+    cog._repo = _FakeSettingsRepo(
+        settings={
+            "jewelry_alert_channel_id": 333,
+            "admin_key_strategy": "single",
+            "jewelry_alert_role_ids": [],
+        }
+    )
     cog._admin_key_pool = types.SimpleNamespace(
-        get_shoplifting_for_guild=lambda _guild: _fake_raise(TornAPIError("No single admin key is configured for this server."))
+        get_shoplifting_for_guild=lambda _guild: _fake_raise(
+            TornAPIError("No single admin key is configured for this server.")
+        )
     )
     cog._log_throttle_until = {}
     cog._meme_png_cache = b"png"
     messages: list[str] = []
-    cog._log_throttled = lambda guild_id, error_type, message, *args: messages.append(message % args)
+    cog._log_throttled = lambda guild_id, error_type, message, *args: messages.append(
+        message % args
+    )
 
     asyncio.run(jewelry_alert.JewelryAlertCog._poll_guild(cog, guild))
 
