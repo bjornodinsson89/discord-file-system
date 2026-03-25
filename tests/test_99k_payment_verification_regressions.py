@@ -16,7 +16,9 @@ class _FakeFollowup:
         self.messages = []
 
     async def send(self, content=None, *, embed=None, ephemeral=False, view=None):
-        self.messages.append({"content": content, "embed": embed, "ephemeral": ephemeral, "view": view})
+        self.messages.append(
+            {"content": content, "embed": embed, "ephemeral": ephemeral, "view": view}
+        )
 
 
 class _FakeRepo:
@@ -108,12 +110,26 @@ def test_manual_verify_succeeds_when_receipt_write_fails(monkeypatch):
         monkeypatch.setattr(events, "get_database", lambda: SimpleNamespace(pool=object()))
         monkeypatch.setattr(events, "JumpsRepository", lambda _pool: repo)
         monkeypatch.setattr(events, "UsersRepository", lambda _pool: _FakeUsersRepo())
-        monkeypatch.setattr(events, "get_security_manager", lambda: SimpleNamespace(decrypt_api_key=lambda _v: "api"))
+        monkeypatch.setattr(
+            events,
+            "get_security_manager",
+            lambda: SimpleNamespace(decrypt_api_key=lambda _v: "api"),
+        )
         monkeypatch.setattr(events, "get_torn_api", lambda: _FakeTornApi())
-        monkeypatch.setattr(events, "require_api_key", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
-        monkeypatch.setattr(events, "_refresh_99k_panel", lambda *_args, **_kwargs: asyncio.sleep(0))
-        monkeypatch.setattr(events, "_refresh_or_repost_roster_panel", lambda *_args, **_kwargs: asyncio.sleep(0))
-        monkeypatch.setattr(events, "_grant_private_channel_access", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+        monkeypatch.setattr(
+            events, "require_api_key", lambda *_args, **_kwargs: asyncio.sleep(0, result=True)
+        )
+        monkeypatch.setattr(
+            events, "_refresh_99k_panel", lambda *_args, **_kwargs: asyncio.sleep(0)
+        )
+        monkeypatch.setattr(
+            events, "_refresh_or_repost_roster_panel", lambda *_args, **_kwargs: asyncio.sleep(0)
+        )
+        monkeypatch.setattr(
+            events,
+            "_grant_private_channel_access",
+            lambda *_args, **_kwargs: asyncio.sleep(0, result=True),
+        )
 
         class _FailReceipts:
             def __init__(self, _pool):
@@ -141,13 +157,33 @@ def test_manual_verify_succeeds_when_private_access_fails(monkeypatch):
         monkeypatch.setattr(events, "get_database", lambda: SimpleNamespace(pool=object()))
         monkeypatch.setattr(events, "JumpsRepository", lambda _pool: repo)
         monkeypatch.setattr(events, "UsersRepository", lambda _pool: _FakeUsersRepo())
-        monkeypatch.setattr(events, "get_security_manager", lambda: SimpleNamespace(decrypt_api_key=lambda _v: "api"))
+        monkeypatch.setattr(
+            events,
+            "get_security_manager",
+            lambda: SimpleNamespace(decrypt_api_key=lambda _v: "api"),
+        )
         monkeypatch.setattr(events, "get_torn_api", lambda: _FakeTornApi())
-        monkeypatch.setattr(events, "require_api_key", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
-        monkeypatch.setattr(events, "_refresh_99k_panel", lambda *_args, **_kwargs: asyncio.sleep(0))
-        monkeypatch.setattr(events, "_refresh_or_repost_roster_panel", lambda *_args, **_kwargs: asyncio.sleep(0))
-        monkeypatch.setattr(events, "_grant_private_channel_access", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
-        monkeypatch.setattr(events, "PaymentReceiptService", lambda _pool: SimpleNamespace(create_and_verify=lambda **_kwargs: asyncio.sleep(0, result=1)))
+        monkeypatch.setattr(
+            events, "require_api_key", lambda *_args, **_kwargs: asyncio.sleep(0, result=True)
+        )
+        monkeypatch.setattr(
+            events, "_refresh_99k_panel", lambda *_args, **_kwargs: asyncio.sleep(0)
+        )
+        monkeypatch.setattr(
+            events, "_refresh_or_repost_roster_panel", lambda *_args, **_kwargs: asyncio.sleep(0)
+        )
+        monkeypatch.setattr(
+            events,
+            "_grant_private_channel_access",
+            lambda *_args, **_kwargs: asyncio.sleep(0, result=False),
+        )
+        monkeypatch.setattr(
+            events,
+            "PaymentReceiptService",
+            lambda _pool: SimpleNamespace(
+                create_and_verify=lambda **_kwargs: asyncio.sleep(0, result=1)
+            ),
+        )
 
         view = events.Jump99kUserControlsView(77)
         interaction = _FakeInteraction()
@@ -162,22 +198,42 @@ def test_manual_verify_succeeds_when_private_access_fails(monkeypatch):
 def test_auto_verify_keeps_success_when_receipt_write_fails(monkeypatch):
     async def _run():
         repo = _FakeRepo()
+
         async def _run_with_lock(_db, _name, fn):
             result = await fn()
             return True, result
-        monkeypatch.setattr(events, "_worker_db_ready", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+
+        monkeypatch.setattr(
+            events, "_worker_db_ready", lambda *_args, **_kwargs: asyncio.sleep(0, result=True)
+        )
         monkeypatch.setattr(events, "get_database", lambda: SimpleNamespace(pool=object()))
         monkeypatch.setattr(events, "get_pool", lambda: object())
         monkeypatch.setattr(events, "JumpsRepository", lambda _pool: repo)
         monkeypatch.setattr(events, "UsersRepository", lambda _pool: _FakeUsersRepo())
-        monkeypatch.setattr(events, "get_security_manager", lambda: SimpleNamespace(decrypt_api_key=lambda _v: "api"))
+        monkeypatch.setattr(
+            events,
+            "get_security_manager",
+            lambda: SimpleNamespace(decrypt_api_key=lambda _v: "api"),
+        )
         monkeypatch.setattr(events, "get_torn_api", lambda: _FakeTornApi())
         monkeypatch.setattr(events, "run_with_advisory_lock", _run_with_lock)
-        monkeypatch.setattr(events, "db_heavy_worker_slot", lambda *_args, **_kwargs: _FakeWorkerSlot())
-        monkeypatch.setattr(events, "_refresh_99k_panel", lambda *_args, **_kwargs: asyncio.sleep(0))
-        monkeypatch.setattr(events, "_refresh_or_repost_roster_panel", lambda *_args, **_kwargs: asyncio.sleep(0))
-        monkeypatch.setattr(events, "_grant_private_channel_access", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
-        events.bot = SimpleNamespace(dispatch=lambda *_a, **_k: None, get_guild=lambda _gid: SimpleNamespace(id=1))
+        monkeypatch.setattr(
+            events, "db_heavy_worker_slot", lambda *_args, **_kwargs: _FakeWorkerSlot()
+        )
+        monkeypatch.setattr(
+            events, "_refresh_99k_panel", lambda *_args, **_kwargs: asyncio.sleep(0)
+        )
+        monkeypatch.setattr(
+            events, "_refresh_or_repost_roster_panel", lambda *_args, **_kwargs: asyncio.sleep(0)
+        )
+        monkeypatch.setattr(
+            events,
+            "_grant_private_channel_access",
+            lambda *_args, **_kwargs: asyncio.sleep(0, result=False),
+        )
+        events.bot = SimpleNamespace(
+            dispatch=lambda *_a, **_k: None, get_guild=lambda _gid: SimpleNamespace(id=1)
+        )
 
         class _FailReceipts:
             def __init__(self, _pool):
@@ -196,7 +252,9 @@ def test_auto_verify_keeps_success_when_receipt_write_fails(monkeypatch):
 
 def test_fake_schema_mismatch_message_removed_from_manual_99k_path():
     src = Path("cogs/events.py").read_text(encoding="utf-8")
-    verify_block = src.split("async def verify_payment", 1)[1].split("class Jump99kSignupView", 1)[0]
+    verify_block = src.split("async def verify_payment", 1)[1].split("class Jump99kSignupView", 1)[
+        0
+    ]
     assert "database schema mismatch" not in verify_block
 
 

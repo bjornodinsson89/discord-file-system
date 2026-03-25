@@ -80,7 +80,9 @@ def test_upsert_and_read_use_both_user_columns_when_both_exist():
         assert ok is True
         assert "COALESCE(free_raffle_entries.participant_discord_id, $2)" in conn.last_update_query
         await repo.get_entry(1, 99)
-        assert "COALESCE(discord_id, participant_discord_id) AS discord_id" in conn.last_fetchrow_query
+        assert (
+            "COALESCE(discord_id, participant_discord_id) AS discord_id" in conn.last_fetchrow_query
+        )
 
     asyncio.run(_run())
 
@@ -163,6 +165,8 @@ def test_migration_repairs_canonical_uniqueness_and_dedupe_index():
     )
     assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_free_raffle_entries_raffle_user_unique" in src
     assert "ON public.free_raffle_entries (raffle_id, discord_id)" in src
-    assert "DROP INDEX IF EXISTS public.idx_free_raffle_entries_raffle_participant_user_unique" in src
+    assert (
+        "DROP INDEX IF EXISTS public.idx_free_raffle_entries_raffle_participant_user_unique" in src
+    )
     assert "idx_free_raffle_entries_dedupe_key" in src
     assert "WHERE dedupe_key IS NOT NULL" in src
