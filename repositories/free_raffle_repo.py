@@ -8,6 +8,71 @@ from .base import RepositoryBase
 
 
 class FreeRaffleRepository(RepositoryBase):
+    async def _get_entry_user_schema(self, conn: asyncpg.Connection) -> dict[str, bool]:
+        cached = getattr(self, "_free_raffle_entries_user_schema", None)
+        if cached is not None:
+            return cached
+        rows = await conn.fetch(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'free_raffle_entries'
+              AND column_name IN ('discord_id', 'participant_discord_id')
+            """
+        )
+        names = {str(r.get("column_name")) for r in rows}
+        schema = {
+            "has_discord_id": "discord_id" in names,
+            "has_participant_discord_id": "participant_discord_id" in names,
+        }
+        if not schema["has_discord_id"] and not schema["has_participant_discord_id"]:
+            schema["has_discord_id"] = True
+        self._free_raffle_entries_user_schema = schema
+        return schema
+
+    def _entry_user_select_sql(self, schema: dict[str, bool]) -> str:
+        if schema["has_discord_id"] and schema["has_participant_discord_id"]:
+            return "COALESCE(discord_id, participant_discord_id) AS discord_id"
+        if schema["has_discord_id"]:
+            return "discord_id AS discord_id"
+        return "participant_discord_id AS discord_id"
+
+    def _entry_user_match_sql(self, schema: dict[str, bool], *, param_idx: int = 2) -> str:
+        if schema["has_discord_id"] and schema["has_participant_discord_id"]:
+            return f"COALESCE(discord_id, participant_discord_id) = ${param_idx}"
+        if schema["has_discord_id"]:
+            return f"discord_id = ${param_idx}"
+        return f"participant_discord_id = ${param_idx}"
+
+    def _entry_user_match_sql_for_alias(
+        self, schema: dict[str, bool], *, alias: str, param_idx: int = 2
+    ) -> str:
+        if schema["has_discord_id"] and schema["has_participant_discord_id"]:
+            return (
+                f"COALESCE({alias}.discord_id, {alias}.participant_discord_id) = ${param_idx}"
+            )
+        if schema["has_discord_id"]:
+            return f"{alias}.discord_id = ${param_idx}"
+        return f"{alias}.participant_discord_id = ${param_idx}"
+
+    def _entry_user_insert_parts(
+        self, schema: dict[str, bool], *, raffle_param: int = 1, user_param: int = 2
+    ) -> tuple[str, str]:
+        if schema["has_discord_id"] and schema["has_participant_discord_id"]:
+            return (
+                "raffle_id, discord_id, participant_discord_id",
+                f"${raffle_param}, ${user_param}, ${user_param}",
+            )
+        if schema["has_discord_id"]:
+            return ("raffle_id, discord_id", f"${raffle_param}, ${user_param}")
+        return ("raffle_id, participant_discord_id", f"${raffle_param}, ${user_param}")
+
+    def _entry_user_conflict_target(self, schema: dict[str, bool]) -> str:
+        if schema["has_discord_id"]:
+            return "(raffle_id, discord_id)"
+        return "(raffle_id, participant_discord_id)"
+
     async def create_raffle(
         self,
         *,
@@ -180,11 +245,14 @@ class FreeRaffleRepository(RepositoryBase):
 
     async def add_entry(self, raffle_id: int, discord_id: int) -> bool:
         async with self.acquire() as conn:
+            schema = await self._get_entry_user_schema(conn)
+            columns, values = self._entry_user_insert_parts(schema)
+            conflict_target = self._entry_user_conflict_target(schema)
             result = await conn.execute(
-                """
-                INSERT INTO free_raffle_entries (raffle_id, discord_id)
-                VALUES ($1, $2)
-                ON CONFLICT (raffle_id, discord_id) DO NOTHING
+                f"""
+                INSERT INTO free_raffle_entries ({columns})
+                VALUES ({values})
+                ON CONFLICT {conflict_target} DO NOTHING
                 """,
                 raffle_id,
                 discord_id,
@@ -222,16 +290,33 @@ class FreeRaffleRepository(RepositoryBase):
         dedupe_key: str | None,
         accumulate: bool,
     ) -> bool:
+        schema = await self._get_entry_user_schema(conn)
+        user_columns, user_values = self._entry_user_insert_parts(schema)
+        conflict_target = self._entry_user_conflict_target(schema)
+        insert_columns = f"{user_columns}, entry_source, entry_weight, dedupe_key"
+        insert_values = f"{user_values}, $3, $4, $5"
         if accumulate:
+            set_parts = [
+                "entry_weight = free_raffle_entries.entry_weight + EXCLUDED.entry_weight",
+                "entry_source = EXCLUDED.entry_source",
+                "dedupe_key = EXCLUDED.dedupe_key",
+            ]
+            if schema["has_discord_id"]:
+                set_parts.append(
+                    "discord_id = COALESCE(EXCLUDED.discord_id, free_raffle_entries.discord_id)"
+                )
+            if schema["has_participant_discord_id"]:
+                set_parts.append(
+                    "participant_discord_id = COALESCE(EXCLUDED.participant_discord_id, free_raffle_entries.participant_discord_id)"
+                )
+            set_parts.append("created_at = free_raffle_entries.created_at")
+            set_sql = ",\n                    ".join(set_parts)
             result = await conn.execute(
-                """
-                INSERT INTO free_raffle_entries (raffle_id, discord_id, entry_source, entry_weight, dedupe_key)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (raffle_id, discord_id) DO UPDATE
-                SET entry_weight = free_raffle_entries.entry_weight + EXCLUDED.entry_weight,
-                    entry_source = EXCLUDED.entry_source,
-                    dedupe_key = EXCLUDED.dedupe_key,
-                    created_at = free_raffle_entries.created_at
+                f"""
+                INSERT INTO free_raffle_entries ({insert_columns})
+                VALUES ({insert_values})
+                ON CONFLICT {conflict_target} DO UPDATE
+                SET {set_sql}
                 WHERE free_raffle_entries.dedupe_key IS DISTINCT FROM EXCLUDED.dedupe_key
                 """,
                 raffle_id,
@@ -242,10 +327,10 @@ class FreeRaffleRepository(RepositoryBase):
             )
             return not result.endswith("0")
         result = await conn.execute(
-            """
-            INSERT INTO free_raffle_entries (raffle_id, discord_id, entry_source, entry_weight, dedupe_key)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (raffle_id, discord_id) DO NOTHING
+            f"""
+            INSERT INTO free_raffle_entries ({insert_columns})
+            VALUES ({insert_values})
+            ON CONFLICT {conflict_target} DO NOTHING
             """,
             raffle_id,
             discord_id,
@@ -432,11 +517,14 @@ class FreeRaffleRepository(RepositoryBase):
 
     async def get_entry(self, raffle_id: int, user_id: int) -> dict | None:
         async with self.acquire() as conn:
+            schema = await self._get_entry_user_schema(conn)
+            discord_select = self._entry_user_select_sql(schema)
+            user_match = self._entry_user_match_sql(schema)
             row = await conn.fetchrow(
-                """
-                SELECT discord_id, entry_source, entry_weight, created_at
+                f"""
+                SELECT {discord_select}, entry_source, entry_weight, created_at
                 FROM free_raffle_entries
-                WHERE raffle_id = $1 AND discord_id = $2
+                WHERE raffle_id = $1 AND {user_match}
                 """,
                 raffle_id,
                 user_id,
@@ -477,8 +565,10 @@ class FreeRaffleRepository(RepositoryBase):
 
     async def user_has_entry(self, raffle_id: int, discord_id: int) -> bool:
         async with self.acquire() as conn:
+            schema = await self._get_entry_user_schema(conn)
+            user_match = self._entry_user_match_sql(schema)
             value = await conn.fetchval(
-                "SELECT 1 FROM free_raffle_entries WHERE raffle_id = $1 AND discord_id = $2",
+                f"SELECT 1 FROM free_raffle_entries WHERE raffle_id = $1 AND {user_match}",
                 raffle_id,
                 discord_id,
             )
@@ -512,17 +602,21 @@ class FreeRaffleRepository(RepositoryBase):
 
     async def list_entry_ids(self, raffle_id: int) -> list[int]:
         async with self.acquire() as conn:
+            schema = await self._get_entry_user_schema(conn)
+            discord_select = self._entry_user_select_sql(schema)
             rows = await conn.fetch(
-                "SELECT discord_id FROM free_raffle_entries WHERE raffle_id = $1",
+                f"SELECT {discord_select} FROM free_raffle_entries WHERE raffle_id = $1",
                 raffle_id,
             )
             return [int(row["discord_id"]) for row in rows]
 
     async def list_entries(self, raffle_id: int) -> list[dict]:
         async with self.acquire() as conn:
+            schema = await self._get_entry_user_schema(conn)
+            discord_select = self._entry_user_select_sql(schema)
             rows = await conn.fetch(
-                """
-                SELECT discord_id, entry_source, entry_weight, created_at
+                f"""
+                SELECT {discord_select}, entry_source, entry_weight, created_at
                 FROM free_raffle_entries
                 WHERE raffle_id = $1
                 ORDER BY COALESCE(created_at, NOW()) ASC, discord_id ASC
@@ -568,8 +662,10 @@ class FreeRaffleRepository(RepositoryBase):
                         "weighted_odds_enabled", raffle_data.get("weighted_enabled", False)
                     )
                 )
+                schema = await self._get_entry_user_schema(conn)
+                discord_select = self._entry_user_select_sql(schema)
                 entry_rows = await conn.fetch(
-                    "SELECT discord_id, entry_weight FROM free_raffle_entries WHERE raffle_id = $1",
+                    f"SELECT {discord_select}, entry_weight FROM free_raffle_entries WHERE raffle_id = $1",
                     raffle_id,
                 )
                 entrants = [
@@ -645,8 +741,10 @@ class FreeRaffleRepository(RepositoryBase):
                 if raffle_row is None:
                     return None
                 weighted_mode = bool(raffle_row.get("weighted_odds_enabled", False))
+                schema = await self._get_entry_user_schema(conn)
+                discord_select = self._entry_user_select_sql(schema)
                 rows = await conn.fetch(
-                    "SELECT discord_id, entry_weight FROM free_raffle_entries WHERE raffle_id = $1",
+                    f"SELECT {discord_select}, entry_weight FROM free_raffle_entries WHERE raffle_id = $1",
                     raffle_id,
                 )
                 entrants = [
@@ -780,13 +878,15 @@ class FreeRaffleRepository(RepositoryBase):
 
     async def cleanup_departed_member(self, guild_id: int, user_id: int) -> dict[str, int]:
         async with self.acquire() as conn:
+            schema = await self._get_entry_user_schema(conn)
+            user_match = self._entry_user_match_sql_for_alias(schema, alias="e", param_idx=2)
             result = await conn.execute(
-                """
+                f"""
                 DELETE FROM free_raffle_entries e
                 USING free_raffles r
                 WHERE e.raffle_id = r.id
                   AND r.guild_id = $1
-                  AND e.discord_id = $2
+                  AND {user_match}
                 """,
                 guild_id,
                 user_id,
@@ -795,9 +895,16 @@ class FreeRaffleRepository(RepositoryBase):
 
     async def list_guild_participant_user_ids(self, guild_id: int) -> set[int]:
         async with self.acquire() as conn:
+            schema = await self._get_entry_user_schema(conn)
+            if schema["has_discord_id"] and schema["has_participant_discord_id"]:
+                user_select = "COALESCE(e.discord_id, e.participant_discord_id) AS discord_id"
+            elif schema["has_discord_id"]:
+                user_select = "e.discord_id AS discord_id"
+            else:
+                user_select = "e.participant_discord_id AS discord_id"
             rows = await conn.fetch(
-                """
-                SELECT DISTINCT e.discord_id
+                f"""
+                SELECT DISTINCT {user_select}
                 FROM free_raffle_entries e
                 JOIN free_raffles r ON r.id = e.raffle_id
                 WHERE r.guild_id = $1

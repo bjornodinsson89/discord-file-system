@@ -1665,7 +1665,7 @@ class RafflePaymentView(ui.View):
                 await interaction.followup.send(embed=create_error_embed("Payment Not Found", f"Send {item_label} and try again"), ephemeral=True)
                 return
             
-            await RafflePaymentService(db).verify_entry_payment(self.entry_id, manual=True)
+            await RafflePaymentService(db).verify_entry_payment(int(entry["entry_id"]), manual=True)
             await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="raffle_entry_verified", target_type="raffle", target_id=self.raffle_id, payload={}, guild_id=interaction.guild_id, source="views/components.py:RaffleVerifyPaymentButton.verify")
             
             await interaction.followup.send(embed=create_success_embed(
