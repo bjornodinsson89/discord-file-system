@@ -2,6 +2,9 @@
 # Changelog
 
 ## Unreleased
+- Fixed free giveaway auto-entry writes so they no longer depend on `ON CONFLICT` index inference and now remain safe across mixed `discord_id` / `participant_discord_id` schema states.
+- Fixed 99k manual/auto payment verification so once signup payment status is marked verified, follow-up receipt/access/panel failures are treated as best-effort and no longer shown to users as full verification failures.
+- Added a new `payment_receipts` migration and idempotent receipt-hash dedupe behavior for payment receipt writes.
 - Added Jewelry Store “wide open” alerts with Paul Wall meme, SHOPLIFT NOW button, and auto-delete when security returns.
 - Updated `/setup` admin key settings so bank calculator and jewelry alerts can use either one selected admin key or a server-managed pool of selected eligible admins only.
 - Fixed admin key strategy runtime resolution so saved single/pool modes are normalized and honored consistently by bank calculator and jewelry alert polling, including clearer single-mode error routing and no pool-member fallback in single mode.
