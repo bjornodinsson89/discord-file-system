@@ -383,73 +383,13 @@ class PaymentView(ui.View):
     @ui.button(label="Mark as Paid", style=discord.ButtonStyle.success, emoji=config.EMOJI_MONEY)
     async def mark_paid(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
-        try:
-            db = get_database()
-            signup = await JumpsRepository(db.pool).get_signup(self.session_id, interaction.user.id)
-            if not signup:
-                await interaction.followup.send(embed=create_error_embed("Not Signed Up"), ephemeral=True)
-                return
-            if signup.get('payment_verified') is True:
-                await interaction.followup.send(embed=create_warning_embed("Already Verified"), ephemeral=True)
-                return
-            
-            session = await JumpsRepository(db.pool).get_session(self.session_id)
-            if not await require_api_key(interaction, db, "verify your payment"):
-                return
-            key_data = await UsersRepository(db.pool).get_user_api_key(interaction.user.id)
-
-            security = get_security_manager()
-            api_key = security.decrypt(key_data['encrypted_key'])
-            torn_api = get_torn_api()
-            
-            payment = await torn_api.verify_payment(
-                api_key, session['host_torn_id'], session['payment_type'],
-                session['payment_amount'], session.get('payment_item_id'),
-                int(session['created_at'].timestamp())
-            )
-            
-            if not payment:
-                await interaction.followup.send(embed=create_error_embed(
-                    "Payment Not Found", "Send payment and wait a few moments before trying again."), ephemeral=True)
-                return
-            
-            jump_repo = JumpsRepository(db.pool)
-            await jump_repo.mark_purchase_verified(self.session_id, interaction.user.id)
-            receipts = PaymentReceiptService(db.pool)
-            receipt_id = await receipts.create_and_verify(
-                featureType="jump_99k",
-                featureRefId=self.session_id,
-                payer_discord_id=interaction.user.id,
-                payer_torn_id=key_data.get('torn_user_id'),
-                payee_discord_id=session.get('host_discord_id'),
-                payee_torn_id=session.get('host_torn_id'),
-                amount=session['payment_amount'],
-                currency_type=session['payment_type'],
-                metadata=payment,
-            )
-            await AuditRepository(db.pool).log_audit(actor_discord_id=interaction.user.id, action="payment_verified", target_type="session", target_id=self.session_id, payload=payment, guild_id=interaction.guild_id, source="views/components.py:ManualPaymentVerifyButton.verify")
-            get_jump_monitor().mark_needs_refresh(self.session_id)
-            
-            # Try to update embed
-            settings = await GuildSettingsRepository(db).get_or_create(interaction.guild.id)
-            channel_id = settings.get('jump_99k_channel_id')
-            if channel_id and session.get('announce_message_id'):
-                try:
-                    channel = interaction.guild.get_channel(channel_id)
-                    if channel:
-                        message = await channel.fetch_message(session['announce_message_id'])
-                        await update_jump_embed(self.session_id, message)
-                except Exception:
-                    log.exception("Failed to refresh jump embed after payment verification session_id=%s", self.session_id)
-            
-            await interaction.followup.send(
-                embed=create_success_embed("Payment Verified!", "You're all set for the jump!"),
-                view=InsuranceOfferView(self.session_id, interaction.user.id),
-                ephemeral=True,
-            )
-        except Exception as e:
-            log.exception(f"Payment verification error: {e}")
-            await interaction.followup.send(embed=create_error_embed("Error", str(e)), ephemeral=True)
+        await interaction.followup.send(
+            embed=create_info_embed(
+                "Use Current Verify Flow",
+                "Use the 99k session panel **✅ Verify Payment** button. This legacy action is disabled to keep payment verification in a single source of truth.",
+            ),
+            ephemeral=True,
+        )
 
 
 class InsuranceOfferView(ui.View):
@@ -703,7 +643,7 @@ class InsuranceFeeVerifyView(ui.View):
                 custom_id,
             )
             await interaction.followup.send(
-                "Payment verification hit an internal error (database schema mismatch). The admin has been notified. Try again in a minute.",
+                "Payment verification failed before completion. Please try again in a minute.",
                 ephemeral=True,
             )
 

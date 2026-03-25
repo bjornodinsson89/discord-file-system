@@ -3321,28 +3321,64 @@ async def _delete_99k_signup_panel_with_fallback(
 
     return result
 
-async def _grant_private_channel_access(guild: discord.Guild | None, session: dict, discord_id: int) -> None:
+async def _grant_private_channel_access(
+    guild: discord.Guild | None, session: dict, discord_id: int
+) -> bool:
     if guild is None:
-        return
+        return False
     private_channel_id = session.get("private_channel_id")
     if not private_channel_id:
-        return
+        return False
 
     member = guild.get_member(int(discord_id))
     if member is None:
         try:
             member = await guild.fetch_member(int(discord_id))
         except Exception:
+            log.warning(
+                "Private channel access grant failed while fetching member session_id=%s guild_id=%s discord_id=%s private_channel_id=%s",
+                session.get("id"),
+                guild.id,
+                discord_id,
+                private_channel_id,
+                exc_info=True,
+            )
             member = None
     if member is None:
-        return
+        return False
 
     try:
         channel = guild.get_channel(int(private_channel_id)) or await guild.fetch_channel(int(private_channel_id))
     except Exception:
-        return
+        log.warning(
+            "Private channel access grant failed while fetching channel session_id=%s guild_id=%s discord_id=%s private_channel_id=%s",
+            session.get("id"),
+            guild.id,
+            discord_id,
+            private_channel_id,
+            exc_info=True,
+        )
+        return False
     if isinstance(channel, discord.abc.GuildChannel):
-        await channel.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
+        try:
+            await channel.set_permissions(
+                member,
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+            )
+            return True
+        except Exception:
+            log.warning(
+                "Private channel access grant failed while setting permissions session_id=%s guild_id=%s discord_id=%s private_channel_id=%s",
+                session.get("id"),
+                guild.id,
+                discord_id,
+                private_channel_id,
+                exc_info=True,
+            )
+            return False
+    return False
 
 
 async def _revoke_private_channel_access(guild: discord.Guild | None, session: dict, discord_id: int) -> None:
@@ -3993,6 +4029,18 @@ class Jump99kUserControlsView(discord.ui.View):
                     recipient_torn_id=host_torn_id,
                 )
                 return
+            log_event(
+                log,
+                logging.INFO,
+                "jump99k.verify_payment.match",
+                guild_id=interaction.guild_id,
+                session_id=self.session_id,
+                user_id=interaction.user.id,
+                action="verify_payment",
+                result="matched",
+                payment_item=item,
+                paid_amount=paid_amount,
+            )
 
             signup = await repo.get_signup(self.session_id, interaction.user.id)
             if not signup:
@@ -4013,6 +4061,16 @@ class Jump99kUserControlsView(discord.ui.View):
                 discord_id=interaction.user.id,
                 torn_user_id=payer_torn,
                 torn_name=payer_torn_name,
+            )
+            log_event(
+                log,
+                logging.INFO,
+                "jump99k.verify_payment.mark_paid",
+                guild_id=interaction.guild_id,
+                session_id=self.session_id,
+                user_id=interaction.user.id,
+                action="verify_payment",
+                result="updated" if updated else "no_state_change",
             )
             if updated:
                 interaction.client.dispatch(
@@ -4039,26 +4097,85 @@ class Jump99kUserControlsView(discord.ui.View):
                     result="no_state_change",
                 )
                 return
+            post_verify_warnings: list[str] = []
             receipts = PaymentReceiptService(db.pool)
-            await receipts.create_and_verify(
-            featureType="jump_99k",
-            featureRefId=self.session_id,
-            payer_discord_id=interaction.user.id,
-            payer_torn_id=payer_torn,
-            payee_discord_id=int(session["host_discord_id"]) or None,
-            payee_torn_id=host_torn_id,
-            amount=paid_amount,
-            currency_type=str(session["price_item"]),
-            metadata=payment,
-            verifier_discord_id=interaction.user.id,
-            verifier_torn_id=payer_torn,
-        )
+            try:
+                await receipts.create_and_verify(
+                    featureType="jump_99k",
+                    featureRefId=self.session_id,
+                    payer_discord_id=interaction.user.id,
+                    payer_torn_id=payer_torn,
+                    payee_discord_id=int(session["host_discord_id"]) or None,
+                    payee_torn_id=host_torn_id,
+                    amount=paid_amount,
+                    currency_type=str(session["price_item"]),
+                    metadata=payment,
+                    verifier_discord_id=interaction.user.id,
+                    verifier_torn_id=payer_torn,
+                    receipt_hash=f"jump99k:{self.session_id}:{interaction.user.id}:{item}:{paid_amount}",
+                )
+                log_event(
+                    log,
+                    logging.INFO,
+                    "jump99k.verify_payment.receipt",
+                    guild_id=interaction.guild_id,
+                    session_id=self.session_id,
+                    user_id=interaction.user.id,
+                    action="verify_payment",
+                    result="ok",
+                )
+            except Exception:
+                post_verify_warnings.append("receipt")
+                log.exception(
+                    "jump99k.verify_payment receipt write failed session_id=%s guild_id=%s user_id=%s",
+                    self.session_id,
+                    interaction.guild_id,
+                    interaction.user.id,
+                )
+
             if interaction.guild:
-                await _grant_private_channel_access(interaction.guild, session, interaction.user.id)
-            await _refresh_99k_panel(interaction.client, self.session_id)
-            await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
+                granted = await _grant_private_channel_access(
+                    interaction.guild, session, interaction.user.id
+                )
+                log_event(
+                    log,
+                    logging.INFO if granted else logging.WARNING,
+                    "jump99k.verify_payment.private_access",
+                    guild_id=interaction.guild_id,
+                    session_id=self.session_id,
+                    user_id=interaction.user.id,
+                    action="verify_payment",
+                    result="ok" if granted else "failed",
+                )
+                if not granted:
+                    post_verify_warnings.append("private_channel")
+
+            try:
+                await _refresh_99k_panel(interaction.client, self.session_id)
+                await _refresh_or_repost_roster_panel(interaction.client, self.session_id)
+                log_event(
+                    log,
+                    logging.INFO,
+                    "jump99k.verify_payment.refresh",
+                    guild_id=interaction.guild_id,
+                    session_id=self.session_id,
+                    user_id=interaction.user.id,
+                    action="verify_payment",
+                    result="ok",
+                )
+            except Exception:
+                post_verify_warnings.append("panel_refresh")
+                log.exception(
+                    "jump99k.verify_payment refresh failed session_id=%s guild_id=%s user_id=%s",
+                    self.session_id,
+                    interaction.guild_id,
+                    interaction.user.id,
+                )
+            success_message = "✅ Payment verified for this 99k session."
+            if post_verify_warnings:
+                success_message += " Some follow-up updates were delayed."
             await interaction.followup.send(
-                "✅ Payment verified for this 99k session.",
+                success_message,
                 view=InsuranceOfferView(self.session_id, interaction.user.id),
                 ephemeral=True,
             )
@@ -4086,7 +4203,7 @@ class Jump99kUserControlsView(discord.ui.View):
                 custom_id,
             )
             await interaction.followup.send(
-                "Payment verification hit an internal error (database schema mismatch). The admin has been notified. Try again in a minute.",
+                "Payment verification failed before confirmation. Please try again in a minute.",
                 ephemeral=True,
             )
 
@@ -5651,6 +5768,16 @@ async def auto_verify_99k_payments():
                     continue
 
                 if not payment:
+                    log_event(
+                        log,
+                        logging.DEBUG,
+                        "jump99k.auto_verify.no_match",
+                        guild_id=signup.get("guild_id"),
+                        session_id=session_id,
+                        user_id=participant_id,
+                        action="auto_verify",
+                        result="not_found",
+                    )
                     continue
 
                 if paid_amount == priority_amount:
@@ -5708,26 +5835,61 @@ async def auto_verify_99k_payments():
                 )
 
                 payer_torn = int(key_row.get("torn_user_id") or 0) or None
-                await receipts.create_and_verify(
-                    featureType="jump_99k",
-                    featureRefId=session_id,
-                    payer_discord_id=participant_id,
-                    payer_torn_id=payer_torn,
-                    payee_discord_id=int(signup["host_discord_id"]) or None,
-                    payee_torn_id=host_torn_id,
-                    amount=paid_amount,
-                    currency_type=str(signup["price_item"]),
-                    metadata=payment,
-                    verifier_discord_id=participant_id,
-                    verifier_torn_id=payer_torn,
-                )
+                try:
+                    await receipts.create_and_verify(
+                        featureType="jump_99k",
+                        featureRefId=session_id,
+                        payer_discord_id=participant_id,
+                        payer_torn_id=payer_torn,
+                        payee_discord_id=int(signup["host_discord_id"]) or None,
+                        payee_torn_id=host_torn_id,
+                        amount=paid_amount,
+                        currency_type=str(signup["price_item"]),
+                        metadata=payment,
+                        verifier_discord_id=participant_id,
+                        verifier_torn_id=payer_torn,
+                        receipt_hash=f"jump99k:{session_id}:{participant_id}:{item}:{paid_amount}",
+                    )
+                    log_event(
+                        log,
+                        logging.INFO,
+                        "jump99k.auto_verify.receipt",
+                        guild_id=signup.get("guild_id"),
+                        session_id=session_id,
+                        user_id=participant_id,
+                        action="auto_verify",
+                        result="ok",
+                    )
+                except Exception:
+                    log.exception(
+                        "jump99k.auto_verify receipt write failed session_id=%s participant_id=%s",
+                        session_id,
+                        participant_id,
+                    )
 
                 guild = bot.get_guild(int(signup["guild_id"]))
                 session = await repo.get_session(session_id)
                 if guild and session:
-                    await _grant_private_channel_access(guild, session, participant_id)
-                    await _refresh_99k_panel(bot, session_id)
-                    await _refresh_or_repost_roster_panel(bot, session_id)
+                    granted = await _grant_private_channel_access(guild, session, participant_id)
+                    log_event(
+                        log,
+                        logging.INFO if granted else logging.WARNING,
+                        "jump99k.auto_verify.private_access",
+                        guild_id=signup.get("guild_id"),
+                        session_id=session_id,
+                        user_id=participant_id,
+                        action="auto_verify",
+                        result="ok" if granted else "failed",
+                    )
+                    try:
+                        await _refresh_99k_panel(bot, session_id)
+                        await _refresh_or_repost_roster_panel(bot, session_id)
+                    except Exception:
+                        log.exception(
+                            "jump99k.auto_verify refresh failed session_id=%s participant_id=%s",
+                            session_id,
+                            participant_id,
+                        )
             except Exception as entry_err:
                 log.warning(
                     "Auto verify failed for signup %s/%s: %s",

@@ -68,11 +68,6 @@ class FreeRaffleRepository(RepositoryBase):
             return ("raffle_id, discord_id", f"${raffle_param}, ${user_param}")
         return ("raffle_id, participant_discord_id", f"${raffle_param}, ${user_param}")
 
-    def _entry_user_conflict_target(self, schema: dict[str, bool]) -> str:
-        if schema["has_discord_id"]:
-            return "(raffle_id, discord_id)"
-        return "(raffle_id, participant_discord_id)"
-
     async def create_raffle(
         self,
         *,
@@ -245,19 +240,15 @@ class FreeRaffleRepository(RepositoryBase):
 
     async def add_entry(self, raffle_id: int, discord_id: int) -> bool:
         async with self.acquire() as conn:
-            schema = await self._get_entry_user_schema(conn)
-            columns, values = self._entry_user_insert_parts(schema)
-            conflict_target = self._entry_user_conflict_target(schema)
-            result = await conn.execute(
-                f"""
-                INSERT INTO free_raffle_entries ({columns})
-                VALUES ({values})
-                ON CONFLICT {conflict_target} DO NOTHING
-                """,
-                raffle_id,
-                discord_id,
+            return await self._upsert_entry_with_conn(
+                conn,
+                raffle_id=raffle_id,
+                discord_id=discord_id,
+                entry_source="button",
+                entry_weight=1,
+                dedupe_key=None,
+                accumulate=False,
             )
-            return result.endswith("1")
 
     async def add_entry_with_source(
         self,
@@ -279,6 +270,81 @@ class FreeRaffleRepository(RepositoryBase):
                 accumulate=False,
             )
 
+    async def _insert_entry_with_conn(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        schema: dict[str, bool],
+        raffle_id: int,
+        discord_id: int,
+        entry_source: str,
+        entry_weight: int,
+        dedupe_key: str | None,
+    ) -> bool:
+        user_columns, user_values = self._entry_user_insert_parts(schema)
+        insert_columns = f"{user_columns}, entry_source, entry_weight, dedupe_key"
+        insert_values = f"{user_values}, $3, $4, $5"
+        try:
+            result = await conn.execute(
+                f"""
+                INSERT INTO free_raffle_entries ({insert_columns})
+                VALUES ({insert_values})
+                """,
+                raffle_id,
+                discord_id,
+                entry_source,
+                max(1, int(entry_weight)),
+                dedupe_key,
+            )
+        except asyncpg.UniqueViolationError:
+            return False
+        return result.endswith("1")
+
+    async def _update_entry_with_conn(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        schema: dict[str, bool],
+        raffle_id: int,
+        discord_id: int,
+        entry_source: str,
+        entry_weight: int,
+        dedupe_key: str | None,
+        accumulate: bool,
+    ) -> bool:
+        user_match = self._entry_user_match_sql(schema)
+        set_parts = ["entry_source = $3"]
+        if accumulate:
+            set_parts.append("entry_weight = free_raffle_entries.entry_weight + $4")
+            set_parts.append("dedupe_key = $5")
+        else:
+            set_parts.append("entry_weight = GREATEST(free_raffle_entries.entry_weight, $4)")
+            set_parts.append("dedupe_key = COALESCE(free_raffle_entries.dedupe_key, $5)")
+        if schema["has_discord_id"]:
+            set_parts.append("discord_id = COALESCE(free_raffle_entries.discord_id, $2)")
+        if schema["has_participant_discord_id"]:
+            set_parts.append(
+                "participant_discord_id = COALESCE(free_raffle_entries.participant_discord_id, $2)"
+            )
+        set_parts.append("created_at = free_raffle_entries.created_at")
+
+        where_parts = ["raffle_id = $1", user_match]
+        if accumulate:
+            where_parts.append("free_raffle_entries.dedupe_key IS DISTINCT FROM $5")
+        result = await conn.execute(
+            f"""
+            UPDATE free_raffle_entries
+            SET {', '.join(set_parts)}
+            WHERE {' AND '.join(where_parts)}
+            """,
+            raffle_id,
+            discord_id,
+            entry_source,
+            max(1, int(entry_weight)),
+            dedupe_key,
+        )
+        return result.endswith("1")
+
     async def _upsert_entry_with_conn(
         self,
         conn: asyncpg.Connection,
@@ -291,54 +357,60 @@ class FreeRaffleRepository(RepositoryBase):
         accumulate: bool,
     ) -> bool:
         schema = await self._get_entry_user_schema(conn)
-        user_columns, user_values = self._entry_user_insert_parts(schema)
-        conflict_target = self._entry_user_conflict_target(schema)
-        insert_columns = f"{user_columns}, entry_source, entry_weight, dedupe_key"
-        insert_values = f"{user_values}, $3, $4, $5"
         if accumulate:
-            set_parts = [
-                "entry_weight = free_raffle_entries.entry_weight + EXCLUDED.entry_weight",
-                "entry_source = EXCLUDED.entry_source",
-                "dedupe_key = EXCLUDED.dedupe_key",
-            ]
-            if schema["has_discord_id"]:
-                set_parts.append(
-                    "discord_id = COALESCE(EXCLUDED.discord_id, free_raffle_entries.discord_id)"
-                )
-            if schema["has_participant_discord_id"]:
-                set_parts.append(
-                    "participant_discord_id = COALESCE(EXCLUDED.participant_discord_id, free_raffle_entries.participant_discord_id)"
-                )
-            set_parts.append("created_at = free_raffle_entries.created_at")
-            set_sql = ",\n                    ".join(set_parts)
-            result = await conn.execute(
-                f"""
-                INSERT INTO free_raffle_entries ({insert_columns})
-                VALUES ({insert_values})
-                ON CONFLICT {conflict_target} DO UPDATE
-                SET {set_sql}
-                WHERE free_raffle_entries.dedupe_key IS DISTINCT FROM EXCLUDED.dedupe_key
-                """,
-                raffle_id,
-                discord_id,
-                entry_source,
-                max(1, int(entry_weight)),
-                dedupe_key,
+            if await self._update_entry_with_conn(
+                conn,
+                schema=schema,
+                raffle_id=raffle_id,
+                discord_id=discord_id,
+                entry_source=entry_source,
+                entry_weight=entry_weight,
+                dedupe_key=dedupe_key,
+                accumulate=True,
+            ):
+                return True
+            inserted = await self._insert_entry_with_conn(
+                conn,
+                schema=schema,
+                raffle_id=raffle_id,
+                discord_id=discord_id,
+                entry_source=entry_source,
+                entry_weight=entry_weight,
+                dedupe_key=dedupe_key,
             )
-            return not result.endswith("0")
-        result = await conn.execute(
-            f"""
-            INSERT INTO free_raffle_entries ({insert_columns})
-            VALUES ({insert_values})
-            ON CONFLICT {conflict_target} DO NOTHING
-            """,
-            raffle_id,
-            discord_id,
-            entry_source,
-            max(1, int(entry_weight)),
-            dedupe_key,
+            if inserted:
+                return True
+            return await self._update_entry_with_conn(
+                conn,
+                schema=schema,
+                raffle_id=raffle_id,
+                discord_id=discord_id,
+                entry_source=entry_source,
+                entry_weight=entry_weight,
+                dedupe_key=dedupe_key,
+                accumulate=True,
+            )
+
+        if await self._update_entry_with_conn(
+            conn,
+            schema=schema,
+            raffle_id=raffle_id,
+            discord_id=discord_id,
+            entry_source=entry_source,
+            entry_weight=entry_weight,
+            dedupe_key=dedupe_key,
+            accumulate=False,
+        ):
+            return True
+        return await self._insert_entry_with_conn(
+            conn,
+            schema=schema,
+            raffle_id=raffle_id,
+            discord_id=discord_id,
+            entry_source=entry_source,
+            entry_weight=entry_weight,
+            dedupe_key=dedupe_key,
         )
-        return result.endswith("1")
 
     async def increment_auto_entry_progress(
         self,
