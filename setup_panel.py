@@ -1905,7 +1905,12 @@ async def send_setup_panel(interaction: discord.Interaction, db) -> None:
         return
 
     engagement_settings = await EngagementRepository(db.pool).get_or_create_guild_settings(interaction.guild.id)
-    settings["admin_key_pool_member_ids"] = await repo.list_admin_key_pool_members(interaction.guild.id)
+    if hasattr(repo, "list_admin_key_pool_members"):
+        settings["admin_key_pool_member_ids"] = await repo.list_admin_key_pool_members(
+            interaction.guild.id
+        )
+    else:
+        settings["admin_key_pool_member_ids"] = []
     panel = SetupPanelView(owner_id=interaction.user.id, db=db, settings=settings, guild=interaction.guild, engagement_settings=engagement_settings)
     panel.store_settings = await StoreRepository(db.pool).get_or_create_guild_settings(interaction.guild.id)
     await interaction.response.send_message(embed=panel._build_embed(), view=panel, ephemeral=True)

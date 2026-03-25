@@ -231,8 +231,12 @@ def test_auto_verify_keeps_success_when_receipt_write_fails(monkeypatch):
             "_grant_private_channel_access",
             lambda *_args, **_kwargs: asyncio.sleep(0, result=False),
         )
-        events.bot = SimpleNamespace(
-            dispatch=lambda *_a, **_k: None, get_guild=lambda _gid: SimpleNamespace(id=1)
+        monkeypatch.setattr(
+            events,
+            "bot",
+            SimpleNamespace(
+                dispatch=lambda *_a, **_k: None, get_guild=lambda _gid: SimpleNamespace(id=1)
+            ),
         )
 
         class _FailReceipts:
