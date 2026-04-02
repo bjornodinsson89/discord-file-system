@@ -1374,9 +1374,7 @@ class RaffleManageView(discord.ui.View):
             raffle = await repo.get_raffle(self.raffle_id)
             cog = interaction.client.get_cog("RafflesCog") if interaction.client else None
             if raffle and cog:
-                await cog._disable_raffle_panels(raffle, status_text="Raffle completed.")
-                await cog._send_prize_delivery_dm(raffle)
-                await cog._send_admin_winner_announcement(raffle, result)
+                await cog._handle_raffle_completed(raffle, result)
             await interaction.followup.send(f"✅ Raffle #{self.raffle_id} drawn.", ephemeral=True)
         except Exception:
             log.exception("Raffle draw manage callback failed raffle_id=%s", self.raffle_id)
@@ -2148,6 +2146,42 @@ class RafflesCog(commands.Cog):
         self._raffle_create_drafts.pop(creator_discord_id, None)
     def _is_admin_raffle(self, raffle: dict) -> bool:
         return str(raffle.get("ticket_payment_type") or "").lower() != "free" and not bool(raffle.get("is_free"))
+
+    async def _handle_raffle_completed(self, raffle: dict, winner: dict) -> None:
+        raffle_id = int(raffle.get("raffle_id") or 0)
+        guild_id = int(raffle.get("guild_id") or 0)
+        log.info("Raffle completion side effects running raffle_id=%s guild_id=%s", raffle_id, guild_id)
+
+        await self._disable_raffle_panels(raffle, status_text="Raffle completed.")
+        await self._send_prize_delivery_dm(raffle)
+
+        admin_announcement_attempted = self._is_admin_raffle(raffle)
+        log.info("Raffle completion admin announcement attempted=%s raffle_id=%s", admin_announcement_attempted, raffle_id)
+        await self._send_admin_winner_announcement(raffle, winner)
+
+        verification_cog = self.bot.get_cog("RaffleVerificationCog")
+        if verification_cog:
+            await verification_cog.send_winner_notification(winner)
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild or not guild.system_channel:
+            log.info("Raffle completion public fallback skipped raffle_id=%s reason=no_system_channel", raffle_id)
+            return
+
+        winner_discord_id = int(winner.get("discord_id") or raffle.get("winner_discord_id") or 0)
+        prize_text = str(winner.get("prize") or raffle.get("prize") or "Unknown")
+        total_entries = int(winner.get("total_entries") or 0)
+        embed = discord.Embed(
+            title="🎉 RAFFLE WINNER!",
+            description=(
+                f"🎁 **{prize_text}**\n\n"
+                f"🏆 Winner: <@{winner_discord_id}>\n"
+                f"🎟️ Total Entries: {total_entries}"
+            ),
+            color=discord.Color.gold(),
+        )
+        await guild.system_channel.send(embed=embed)
+        log.info("Raffle completion public fallback posted raffle_id=%s channel_id=%s", raffle_id, guild.system_channel.id)
 
     async def _send_admin_winner_announcement(self, raffle: dict, winner: dict) -> None:
         if not self._is_admin_raffle(raffle):
@@ -2929,22 +2963,7 @@ class RafflesCog(commands.Cog):
                         if result:
                             updated_raffle = await repo.get_raffle(int(raffle["raffle_id"]))
                             if updated_raffle:
-                                await self._disable_raffle_panels(updated_raffle, status_text="Raffle completed.")
-                                await self._send_prize_delivery_dm(updated_raffle)
-                                await self._send_admin_winner_announcement(updated_raffle, result)
-                            verification_cog = self.bot.get_cog("RaffleVerificationCog")
-                            if verification_cog:
-                                await verification_cog.send_winner_notification(result)
-                            guild = self.bot.get_guild(raffle["guild_id"])
-                            if guild and guild.system_channel:
-                                embed = discord.Embed(
-                                    title="🎉 RAFFLE WINNER!",
-                                    description=f"🎁 **{raffle['prize']}**\n\n"
-                                               f"🏆 Winner: <@{result['discord_id']}>\n"
-                                               f"🎟️ Total Entries: {result['total_entries']}",
-                                    color=discord.Color.gold()
-                                )
-                                await guild.system_channel.send(embed=embed)
+                                await self._handle_raffle_completed(updated_raffle, result)
                     except Exception as e:
                         log.error(f"Error drawing raffle {raffle['raffle_id']}: {e}")
             except Exception as e:
