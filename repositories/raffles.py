@@ -628,13 +628,19 @@ class RafflesRepository(RepositoryBase):
             )
             return int(result.split()[-1]) if result.split()[-1].isdigit() else 0
 
-    async def draw_raffle_winner_atomic(self, raffle_id: int) -> dict:
+    async def _draw_raffle_winner_atomic(
+        self,
+        raffle_id: int,
+        *,
+        require_ready: bool,
+        cancel_if_empty: bool,
+    ) -> dict:
         """Atomically draw raffle winner while guarding against concurrent draws."""
         async with self.acquire() as conn:
             async with conn.transaction():
                 raffle = await conn.fetchrow(
                     """
-                    SELECT raffle_id, status, tickets_available, winner_discord_id, winner_torn_id,
+                    SELECT raffle_id, status, end_trigger, end_time, tickets_available, winner_discord_id, winner_torn_id,
                            COALESCE((
                                SELECT SUM(num_tickets)
                                FROM raffle_entries
@@ -662,8 +668,17 @@ class RafflesRepository(RepositoryBase):
                 if status != "active":
                     return {"state": "not_drawable", "winner": None}
 
-                if int(raffle["tickets_available"] or 0) > 0 and int(raffle["verified_total"] or 0) < int(raffle["tickets_available"] or 0):
-                    return {"state": "not_ready", "winner": None}
+                if require_ready:
+                    verified_total = int(raffle["verified_total"] or 0)
+                    tickets_available = int(raffle["tickets_available"] or 0)
+                    end_trigger = str(raffle.get("end_trigger") or "").lower()
+                    if end_trigger == "tickets_sold" and tickets_available > 0 and verified_total < tickets_available:
+                        return {"state": "not_ready", "winner": None}
+                    end_time = raffle.get("end_time")
+                    if end_trigger == "time" and end_time is not None:
+                        now = datetime.now(end_time.tzinfo) if getattr(end_time, "tzinfo", None) else datetime.now()
+                        if end_time > now:
+                            return {"state": "not_ready", "winner": None}
 
                 entries = await conn.fetch(
                     """
@@ -675,11 +690,13 @@ class RafflesRepository(RepositoryBase):
                 )
 
                 if not entries:
-                    await conn.execute(
-                        "UPDATE raffles SET status = 'cancelled' WHERE raffle_id = $1",
-                        raffle_id,
-                    )
-                    return {"state": "cancelled", "winner": None}
+                    if cancel_if_empty:
+                        await conn.execute(
+                            "UPDATE raffles SET status = 'cancelled' WHERE raffle_id = $1",
+                            raffle_id,
+                        )
+                        return {"state": "cancelled", "winner": None}
+                    return {"state": "no_entries", "winner": None}
 
                 import random
 
@@ -713,8 +730,20 @@ class RafflesRepository(RepositoryBase):
                     },
                 }
 
+    async def draw_raffle_winner_atomic(self, raffle_id: int) -> dict:
+        return await self._draw_raffle_winner_atomic(raffle_id, require_ready=True, cancel_if_empty=True)
+
+    async def force_draw_raffle_winner_atomic(self, raffle_id: int) -> dict:
+        return await self._draw_raffle_winner_atomic(raffle_id, require_ready=False, cancel_if_empty=False)
+
     async def draw_raffle_winner(self, raffle_id: int) -> Optional[dict]:
         result = await self.draw_raffle_winner_atomic(raffle_id)
+        if result.get("state") == "drawn":
+            return result.get("winner")
+        return None
+
+    async def force_draw_raffle_winner(self, raffle_id: int) -> Optional[dict]:
+        result = await self.force_draw_raffle_winner_atomic(raffle_id)
         if result.get("state") == "drawn":
             return result.get("winner")
         return None
