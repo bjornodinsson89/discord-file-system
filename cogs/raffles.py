@@ -1349,9 +1349,27 @@ class RaffleManageView(discord.ui.View):
     async def _perform_draw(self, interaction: discord.Interaction) -> None:
         try:
             repo = RafflesRepository(get_pool())
-            result = await repo.draw_raffle_winner(self.raffle_id)
+            draw_result = await repo.force_draw_raffle_winner_atomic(self.raffle_id)
+            state = str(draw_result.get("state") or "")
+            if state == "not_found":
+                await interaction.followup.send("❌ Raffle not found.", ephemeral=True)
+                return
+            if state == "no_entries":
+                await interaction.followup.send("❌ No verified entries found for this raffle.", ephemeral=True)
+                return
+            if state == "already_drawn":
+                await interaction.followup.send("❌ This raffle has already been drawn or cancelled.", ephemeral=True)
+                return
+            if state == "not_drawable":
+                await interaction.followup.send("❌ Only active raffles can be drawn.", ephemeral=True)
+                return
+            if state != "drawn":
+                await interaction.followup.send("❌ Unable to draw raffle right now.", ephemeral=True)
+                return
+
+            result = draw_result.get("winner")
             if not result:
-                await interaction.followup.send("❌ No entries or raffle not found", ephemeral=True)
+                await interaction.followup.send("❌ Unable to draw raffle right now.", ephemeral=True)
                 return
             raffle = await repo.get_raffle(self.raffle_id)
             cog = interaction.client.get_cog("RafflesCog") if interaction.client else None
