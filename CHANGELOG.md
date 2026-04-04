@@ -2,6 +2,7 @@
 # Changelog
 
 ## Unreleased
+- Fixed paid raffle completion side-effects parity so manual/admin draws now run the same winner notification/announcement flow as scheduled draws, including public `guild.system_channel` fallback winner posts when no raffle announcement channel is configured.
 - Fixed free giveaway auto-entry writes so they no longer depend on `ON CONFLICT` index inference and now remain safe across mixed `discord_id` / `participant_discord_id` schema states.
 - Fixed 99k manual/auto payment verification so once signup payment status is marked verified, follow-up receipt/access/panel failures are treated as best-effort and no longer shown to users as full verification failures.
 - Added a new `payment_receipts` migration and idempotent receipt-hash dedupe behavior for payment receipt writes.
