@@ -2180,8 +2180,16 @@ class RafflesCog(commands.Cog):
             ),
             color=discord.Color.gold(),
         )
-        await guild.system_channel.send(embed=embed)
-        log.info("Raffle completion public fallback posted raffle_id=%s channel_id=%s", raffle_id, guild.system_channel.id)
+        try:
+            await guild.system_channel.send(embed=embed)
+            log.info("Raffle completion public fallback posted raffle_id=%s channel_id=%s", raffle_id, guild.system_channel.id)
+        except Exception:
+            log.warning(
+                "Raffle completion public fallback failed raffle_id=%s channel_id=%s",
+                raffle_id,
+                guild.system_channel.id,
+                exc_info=True,
+            )
 
     async def _send_admin_winner_announcement(self, raffle: dict, winner: dict) -> None:
         if not self._is_admin_raffle(raffle):
