@@ -662,6 +662,10 @@ class PoolVerifyPaymentView(discord.ui.View):
                 await interaction.followup.send(creator_path_error or "❌ Torn verification is unavailable right now.", ephemeral=True)
                 return
 
+        if not match and not logs and (creator_path_error or buyer_path_error):
+            await interaction.followup.send(buyer_path_error or creator_path_error or "❌ Torn verification is unavailable right now.", ephemeral=True)
+            return
+
         if not match:
             sender_match_count, sender_item_match_count, sender_item_time_match_count = verifier._summarize_payment_match_stages(
                 logs=logs,

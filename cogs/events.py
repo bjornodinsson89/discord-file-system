@@ -371,16 +371,25 @@ async def _fetch_and_upsert_user_readiness_snapshot(
     cached = _READINESS_FETCH_CACHE.get(cache_key)
     if cached and (now - cached[0]).total_seconds() <= _READINESS_FETCH_CACHE_TTL_SECONDS:
         cached_payload = dict(cached[1])
-        await repo.upsert_readiness_snapshot(
-            session_id=session_id,
-            guild_id=guild_id,
-            discord_id=discord_id,
-            energy=int(cached_payload.get("energy") or 0),
-            energy_max=int(cached_payload.get("energy_max") or 0),
-            drug_cooldown=int(cached_payload.get("drug_cooldown") or 0),
-            booster_cooldown=int(cached_payload.get("booster_cooldown") or 0),
-            status_text=str(cached_payload.get("status_text") or "not ready"),
-        )
+        try:
+            await repo.upsert_readiness_snapshot(
+                session_id=session_id,
+                guild_id=guild_id,
+                discord_id=discord_id,
+                energy=int(cached_payload.get("energy") or 0),
+                energy_max=int(cached_payload.get("energy_max") or 0),
+                drug_cooldown=int(cached_payload.get("drug_cooldown") or 0),
+                booster_cooldown=int(cached_payload.get("booster_cooldown") or 0),
+                status_text=str(cached_payload.get("status_text") or "not ready"),
+            )
+        except Exception:
+            log.exception(
+                "Readiness snapshot upsert failure from cache guild_id=%s session_id=%s discord_id=%s",
+                guild_id,
+                session_id,
+                discord_id,
+            )
+            return None
         return cached_payload
 
     try:

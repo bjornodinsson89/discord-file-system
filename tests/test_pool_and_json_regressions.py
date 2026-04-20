@@ -6,6 +6,7 @@ from enum import Enum
 from types import SimpleNamespace
 from uuid import uuid4
 
+import cogs.events as events
 import cogs.pools as pools
 from repositories.engagement import EngagementRepository
 from services.payment_receipts import PaymentReceiptService
@@ -198,3 +199,92 @@ def test_payment_receipts_defensive_migration_is_idempotent_contract():
     assert "ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ NULL" in src
     assert "ADD COLUMN IF NOT EXISTS verified_by_discord_id BIGINT NULL" in src
     assert "ADD COLUMN IF NOT EXISTS receipt_meta JSONB NOT NULL DEFAULT '{}'::jsonb" in src
+
+
+def test_pool_verify_surfaces_verification_errors_before_payment_not_found(monkeypatch):
+    async def _run():
+        fake_repo = _FakeRepo()
+
+        monkeypatch.setattr(pools, "PoolsRepository", lambda _pool: fake_repo)
+        monkeypatch.setattr(pools, "get_pool", lambda: object())
+        monkeypatch.setattr(pools, "get_database", lambda: SimpleNamespace(pool=object()))
+        monkeypatch.setattr(pools, "UsersRepository", lambda _pool: _FakeUsersRepo())
+        monkeypatch.setattr(
+            pools,
+            "get_security_manager",
+            lambda: SimpleNamespace(decrypt_api_key=lambda encrypted: f"plain:{encrypted}"),
+        )
+
+        class _Torn:
+            async def get_item_send_receive_logs(self, *_args, audit_context=None, **_kwargs):
+                if audit_context == "pool_payment_verify_creator_logs":
+                    raise pools.TornAPIPermissionError("creator missing cat85")
+                raise pools.TornAPIError("buyer unavailable")
+
+        monkeypatch.setattr(pools, "get_torn_api", lambda: _Torn())
+        monkeypatch.setattr(
+            pools,
+            "RafflePaymentService",
+            lambda _db: SimpleNamespace(
+                _find_matching_payment=lambda **_kwargs: None,
+                _summarize_payment_match_stages=lambda **_kwargs: (0, 0, 0),
+            ),
+        )
+
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=42),
+            response=_FakeResponse(),
+            followup=_FakeFollowup(),
+        )
+        view = pools.PoolVerifyPaymentView(bot=SimpleNamespace(), pool_id=5, owner_discord_id=42)
+        await view.verify_payment.callback(interaction)
+
+        assert fake_repo.added == []
+        assert interaction.followup.messages
+        content = interaction.followup.messages[-1]["content"] or ""
+        assert "Payment not found" not in content
+        assert "Torn verification" in content or "missing item-log permissions" in content
+
+    asyncio.run(_run())
+
+
+def test_cached_readiness_upsert_failure_returns_none(monkeypatch):
+    async def _run():
+        class _UsersRepo:
+            async def get_user_api_key(self, _discord_id):
+                return {"encrypted_key": "enc"}
+
+        class _Repo:
+            async def upsert_readiness_snapshot(self, **_kwargs):
+                raise RuntimeError("db down")
+
+        cache_key = (77, 42)
+        original_cache = dict(events._READINESS_FETCH_CACHE)
+        events._READINESS_FETCH_CACHE.clear()
+        events._READINESS_FETCH_CACHE[cache_key] = (
+            datetime.now(timezone.utc),
+            {
+                "session_id": 77,
+                "guild_id": 1,
+                "discord_id": 42,
+                "energy": 1000,
+                "energy_max": 1000,
+                "drug_cooldown": 0,
+                "booster_cooldown": 0,
+                "status_text": "ready",
+            },
+        )
+        try:
+            payload = await events._fetch_and_upsert_user_readiness_snapshot(
+                repo=_Repo(),
+                users_repo=_UsersRepo(),
+                session_id=77,
+                guild_id=1,
+                discord_id=42,
+            )
+            assert payload is None
+        finally:
+            events._READINESS_FETCH_CACHE.clear()
+            events._READINESS_FETCH_CACHE.update(original_cache)
+
+    asyncio.run(_run())
