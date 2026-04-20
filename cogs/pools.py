@@ -575,12 +575,18 @@ class PoolVerifyPaymentView(discord.ui.View):
             await interaction.followup.send("❌ Pool creator Torn ID is not configured.", ephemeral=True)
             return
 
-        logs = []
-        creator_path_used = False
+        verifier = RafflePaymentService(db)
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        created_at = pending.get("created_at") or (datetime.now(timezone.utc) - timedelta(minutes=15))
+        since_ts = int(created_at.timestamp()) - 300
+        logs: list[dict] = []
+        log_source = "none"
         creator_path_error = None
+        buyer_path_error = None
+
         if creator_key and creator_key.get("encrypted_key"):
             try:
-                creator_api = get_security_manager().decrypt(creator_key["encrypted_key"])
+                creator_api = get_security_manager().decrypt_api_key(creator_key["encrypted_key"])
                 logs = await get_torn_api().get_item_send_receive_logs(
                     creator_api,
                     limit=config.PAYMENT_VERIFICATION_LOG_LIMIT,
@@ -589,7 +595,7 @@ class PoolVerifyPaymentView(discord.ui.View):
                     audit_context="pool_payment_verify_creator_logs",
                     audit_query_meta={"cat": 85, "limit": int(config.PAYMENT_VERIFICATION_LOG_LIMIT)},
                 )
-                creator_path_used = True
+                log_source = "creator"
             except TornAPIRateLimitError:
                 await interaction.followup.send("❌ Torn API is rate-limited. Try again in a moment.", ephemeral=True)
                 return
@@ -600,39 +606,6 @@ class PoolVerifyPaymentView(discord.ui.View):
             except Exception:
                 creator_path_error = "❌ Verification failed unexpectedly."
 
-        if not creator_path_used:
-            buyer_key = await users_repo.get_user_api_key(interaction.user.id)
-            linked_buyer_torn_id = int((buyer_key or {}).get("torn_user_id") or 0)
-            if buyer_key and buyer_key.get("encrypted_key") and linked_buyer_torn_id == buyer_torn_id:
-                try:
-                    buyer_api = get_security_manager().decrypt(buyer_key["encrypted_key"])
-                    logs = await get_torn_api().get_item_send_receive_logs(
-                        buyer_api,
-                        limit=config.PAYMENT_VERIFICATION_LOG_LIMIT,
-                        audit_discord_id=int(interaction.user.id),
-                        audit_torn_id=buyer_torn_id,
-                        audit_context="pool_payment_verify_legacy_buyer_logs",
-                        audit_query_meta={"cat": 85, "limit": int(config.PAYMENT_VERIFICATION_LOG_LIMIT)},
-                    )
-                except TornAPIRateLimitError:
-                    await interaction.followup.send("❌ Torn API is rate-limited. Try again in a moment.", ephemeral=True)
-                    return
-                except TornAPIPermissionError:
-                    await interaction.followup.send("❌ Your Torn key is missing item-log permissions (cat=85).", ephemeral=True)
-                    return
-                except TornAPIError:
-                    await interaction.followup.send("❌ Torn verification is unavailable right now.", ephemeral=True)
-                    return
-                except Exception:
-                    await interaction.followup.send("❌ Verification failed unexpectedly.", ephemeral=True)
-                    return
-            else:
-                await interaction.followup.send(creator_path_error or "❌ Torn verification is unavailable right now.", ephemeral=True)
-                return
-
-        verifier = RafflePaymentService(db)
-        now_ts = int(datetime.now(timezone.utc).timestamp())
-        since_ts = int((pending.get("created_at") or (datetime.now(timezone.utc) - timedelta(minutes=15))).timestamp()) - 180
         match = verifier._find_matching_payment(
             logs=logs,
             sender_torn_id=buyer_torn_id,
@@ -641,8 +614,54 @@ class PoolVerifyPaymentView(discord.ui.View):
             required_qty=total_cost,
             since_ts=since_ts,
             until_ts=now_ts,
-            allow_implicit_creator_receiver=creator_path_used,
+            allow_implicit_creator_receiver=(log_source == "creator"),
         )
+
+        if not match:
+            buyer_key = await users_repo.get_user_api_key(interaction.user.id)
+            linked_buyer_torn_id = int((buyer_key or {}).get("torn_user_id") or 0)
+            if buyer_key and buyer_key.get("encrypted_key") and linked_buyer_torn_id == buyer_torn_id:
+                try:
+                    buyer_api = get_security_manager().decrypt_api_key(buyer_key["encrypted_key"])
+                    buyer_logs = await get_torn_api().get_item_send_receive_logs(
+                        buyer_api,
+                        limit=config.PAYMENT_VERIFICATION_LOG_LIMIT,
+                        audit_discord_id=int(interaction.user.id),
+                        audit_torn_id=buyer_torn_id,
+                        audit_context="pool_payment_verify_legacy_buyer_logs",
+                        audit_query_meta={"cat": 85, "limit": int(config.PAYMENT_VERIFICATION_LOG_LIMIT)},
+                    )
+                    buyer_match = verifier._find_matching_payment(
+                        logs=buyer_logs,
+                        sender_torn_id=buyer_torn_id,
+                        creator_torn_id=creator_torn_id,
+                        required_item_id=206,
+                        required_qty=total_cost,
+                        since_ts=since_ts,
+                        until_ts=now_ts,
+                        allow_implicit_creator_receiver=False,
+                    )
+                    if buyer_match:
+                        match = buyer_match
+                        logs = buyer_logs
+                        log_source = "buyer"
+                    else:
+                        logs = buyer_logs if log_source == "none" else logs
+                        if log_source == "none":
+                            log_source = "buyer"
+                except TornAPIRateLimitError:
+                    await interaction.followup.send("❌ Torn API is rate-limited. Try again in a moment.", ephemeral=True)
+                    return
+                except TornAPIPermissionError:
+                    buyer_path_error = "❌ Your Torn key is missing item-log permissions (cat=85)."
+                except TornAPIError:
+                    buyer_path_error = "❌ Torn verification is unavailable right now."
+                except Exception:
+                    buyer_path_error = "❌ Verification failed unexpectedly."
+            elif log_source == "none":
+                await interaction.followup.send(creator_path_error or "❌ Torn verification is unavailable right now.", ephemeral=True)
+                return
+
         if not match:
             sender_match_count, sender_item_match_count, sender_item_time_match_count = verifier._summarize_payment_match_stages(
                 logs=logs,
@@ -652,17 +671,21 @@ class PoolVerifyPaymentView(discord.ui.View):
                 until_ts=now_ts,
             )
             log.info(
-                "Pool payment match miss pool_id=%s buyer_discord_id=%s buyer_torn_id=%s creator_torn_id=%s required_qty=%s log_source=%s logs_scanned=%s sender_matches=%s sender_item_matches=%s sender_item_time_matches=%s",
+                "Pool payment match miss pool_id=%s buyer_discord_id=%s buyer_torn_id=%s creator_torn_id=%s required_qty=%s log_source=%s logs_scanned=%s sender_matches=%s sender_item_matches=%s sender_item_time_matches=%s since_ts=%s until_ts=%s creator_path_error=%s buyer_path_error=%s",
                 self.pool_id,
                 interaction.user.id,
                 buyer_torn_id,
                 creator_torn_id,
                 total_cost,
-                "creator" if creator_path_used else "buyer",
+                log_source,
                 len(logs),
                 sender_match_count,
                 sender_item_match_count,
                 sender_item_time_match_count,
+                since_ts,
+                now_ts,
+                creator_path_error,
+                buyer_path_error,
             )
             await interaction.followup.send(
                 f"❌ Payment not found. Send **💊 {total_cost} Xanax** to {creator_name} [{creator_torn_id}] in Torn, then press Verify again.",
@@ -672,23 +695,37 @@ class PoolVerifyPaymentView(discord.ui.View):
 
         await repo.add_entry(self.pool_id, interaction.user.id, quantity)
         await repo.mark_pending_purchase_verified(int(pending["id"]))
+        receipt_warning = False
         receipts = PaymentReceiptService(db.pool)
-        await receipts.create_and_verify(
-            featureType="pool",
-            featureRefId=self.pool_id,
-            payer_discord_id=interaction.user.id,
-            payer_torn_id=buyer_torn_id,
-            payee_discord_id=int(pool.get("created_by_discord_id") or 0) or None,
-            payee_torn_id=creator_torn_id,
-            amount=total_cost,
-            currency_type="xanax",
-            metadata=match,
-            verifier_discord_id=interaction.user.id,
-            verifier_torn_id=creator_torn_id,
-        )
+        try:
+            await receipts.create_and_verify(
+                featureType="pool",
+                featureRefId=self.pool_id,
+                payer_discord_id=interaction.user.id,
+                payer_torn_id=buyer_torn_id,
+                payee_discord_id=int(pool.get("created_by_discord_id") or 0) or None,
+                payee_torn_id=creator_torn_id,
+                amount=total_cost,
+                currency_type="xanax",
+                metadata=match,
+                verifier_discord_id=interaction.user.id,
+                verifier_torn_id=buyer_torn_id,
+            )
+        except Exception:
+            receipt_warning = True
+            log.exception(
+                "Pool payment receipt write failed pool_id=%s pending_id=%s buyer_discord_id=%s buyer_torn_id=%s creator_discord_id=%s creator_torn_id=%s",
+                self.pool_id,
+                pending.get("id"),
+                interaction.user.id,
+                buyer_torn_id,
+                pool.get("created_by_discord_id"),
+                creator_torn_id,
+            )
         self.stop()
         await _refresh_pool_panel_message(self.bot, self.pool_id)
-        await interaction.followup.send(f"✅ Purchase verified. Added **{quantity}** ticket(s).", ephemeral=True)
+        suffix = " (payment saved with receipt warning)" if receipt_warning else ""
+        await interaction.followup.send(f"✅ Purchase verified. Added **{quantity}** ticket(s).{suffix}", ephemeral=True)
 
 
 async def _start_pool_purchase(

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 from typing import Any, Optional
 
 import config
 from utils.db_acquire import acquire_conn
+from utils.json_safe import json_dumps_safe
 
 
 class PaymentReceiptService:
@@ -13,7 +13,7 @@ class PaymentReceiptService:
 
     @staticmethod
     def _compact_json(payload: Optional[dict[str, Any]]) -> str:
-        return json.dumps(payload or {}, separators=(",", ":"), ensure_ascii=False)
+        return json_dumps_safe(payload or {}, sort_keys=True)
 
     @staticmethod
     def _default_hash(

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from .base import RepositoryBase
+from utils.json_safe import json_dumps_safe
 
 
 class EngagementRepository(RepositoryBase):
@@ -175,7 +175,7 @@ class EngagementRepository(RepositoryBase):
         xp_delta: int,
         payload: dict[str, Any] | None,
     ) -> bool:
-        payload_json = json.dumps(payload or {})
+        payload_json = json_dumps_safe(payload or {}, sort_keys=True)
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """

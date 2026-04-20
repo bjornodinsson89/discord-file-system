@@ -107,6 +107,10 @@ _WHO_CAN_JUMP_REFRESH_LOCKS: dict[int, asyncio.Lock] = {}
 _WHO_CAN_JUMP_LAST_RENDER: dict[int, dict[str, object]] = {}
 _WHO_CAN_JUMP_LAST_MANUAL_REFRESH: dict[int, datetime] = {}
 _WHO_CAN_JUMP_MANUAL_REFRESH_COOLDOWN_SECONDS = 60
+_READINESS_FETCH_CACHE_TTL_SECONDS = 5
+_READINESS_FETCH_CACHE: dict[tuple[int, int], tuple[datetime, dict]] = {}
+_WHO_CAN_JUMP_READINESS_CACHE_TTL_SECONDS = 5
+_WHO_CAN_JUMP_READINESS_CACHE: dict[tuple[int, int], tuple[datetime, dict]] = {}
 
 
 def _automation_state(session_id: int) -> dict[str, object]:
@@ -362,6 +366,23 @@ async def _fetch_and_upsert_user_readiness_snapshot(
     if not encrypted_key:
         return None
 
+    cache_key = (int(session_id), int(discord_id))
+    now = datetime.now(timezone.utc)
+    cached = _READINESS_FETCH_CACHE.get(cache_key)
+    if cached and (now - cached[0]).total_seconds() <= _READINESS_FETCH_CACHE_TTL_SECONDS:
+        cached_payload = dict(cached[1])
+        await repo.upsert_readiness_snapshot(
+            session_id=session_id,
+            guild_id=guild_id,
+            discord_id=discord_id,
+            energy=int(cached_payload.get("energy") or 0),
+            energy_max=int(cached_payload.get("energy_max") or 0),
+            drug_cooldown=int(cached_payload.get("drug_cooldown") or 0),
+            booster_cooldown=int(cached_payload.get("booster_cooldown") or 0),
+            status_text=str(cached_payload.get("status_text") or "not ready"),
+        )
+        return cached_payload
+
     try:
         api_key = get_security_manager().decrypt_api_key(encrypted_key)
         user_data = await get_torn_api().get_user_data(
@@ -470,7 +491,7 @@ async def _fetch_and_upsert_user_readiness_snapshot(
             discord_id,
         )
         return None
-    return {
+    payload = {
         "session_id": session_id,
         "guild_id": guild_id,
         "discord_id": discord_id,
@@ -480,6 +501,8 @@ async def _fetch_and_upsert_user_readiness_snapshot(
         "booster_cooldown": booster_cd,
         "status_text": status_text,
     }
+    _READINESS_FETCH_CACHE[cache_key] = (datetime.now(timezone.utc), payload)
+    return payload
 
 
 
@@ -2521,6 +2544,12 @@ async def _fetch_who_can_jump_readiness(
             "status_text": "API key missing",
         }
 
+    cache_key = (int(guild_id), int(discord_id))
+    now = datetime.now(timezone.utc)
+    cached = _WHO_CAN_JUMP_READINESS_CACHE.get(cache_key)
+    if cached and (now - cached[0]).total_seconds() <= _WHO_CAN_JUMP_READINESS_CACHE_TTL_SECONDS:
+        return dict(cached[1])
+
     try:
         api_key = get_security_manager().decrypt_api_key(encrypted_key)
         user_data = await get_torn_api().get_user_data(
@@ -2533,7 +2562,7 @@ async def _fetch_who_can_jump_readiness(
         profile = (user_data or {}).get("profile") or {}
         torn_name = str(profile.get("name") or torn_name or "").strip() or None
         torn_user_id = int(profile.get("id") or torn_user_id or 0) or None
-        return {
+        payload = {
             "has_api_key": True,
             "torn_name": torn_name,
             "torn_user_id": torn_user_id,
@@ -2543,6 +2572,8 @@ async def _fetch_who_can_jump_readiness(
             "booster_cooldown": int((user_data or {}).get("cooldowns", {}).get("booster", 0) or 0),
             "status_text": "ok",
         }
+        _WHO_CAN_JUMP_READINESS_CACHE[cache_key] = (datetime.now(timezone.utc), payload)
+        return payload
     except TornAPIPermissionError:
         return {
             "has_api_key": True,
