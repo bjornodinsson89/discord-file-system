@@ -10,13 +10,13 @@ from uuid import UUID
 
 
 def normalize_for_json(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, str | int | float | bool):
         return value
 
     if isinstance(value, Decimal):
         return format(value, "f")
 
-    if isinstance(value, (datetime, date, time)):
+    if isinstance(value, datetime | date | time):
         return value.isoformat()
 
     if isinstance(value, UUID):
@@ -24,7 +24,7 @@ def normalize_for_json(value: Any) -> Any:
 
     if isinstance(value, Enum):
         enum_value = value.value
-        if isinstance(enum_value, (str, int, float, bool)) or enum_value is None:
+        if isinstance(enum_value, str | int | float | bool) or enum_value is None:
             return enum_value
         return str(enum_value)
 
@@ -37,7 +37,7 @@ def normalize_for_json(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): normalize_for_json(v) for k, v in value.items()}
 
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return [normalize_for_json(v) for v in value]
 
     return str(value)
