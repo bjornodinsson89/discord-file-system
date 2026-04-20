@@ -109,7 +109,14 @@ class _FakeRepo:
         self.marked = []
 
     async def get_pool(self, _pool_id):
-        return {"status": "active", "created_by_discord_id": 999, "tickets_total": 100, "max_per_user": 0, "unlimited_tickets": False, "ticket_price_xanax": 5}
+        return {
+            "status": "active",
+            "created_by_discord_id": 999,
+            "tickets_total": 100,
+            "max_per_user": 0,
+            "unlimited_tickets": False,
+            "ticket_price_xanax": 5,
+        }
 
     async def get_pending_purchase(self, _pool_id, _discord_id):
         return dict(self.pending)
@@ -151,17 +158,25 @@ def test_pool_verify_succeeds_when_receipt_write_fails_and_sets_verifier_metadat
         monkeypatch.setattr(
             pools,
             "get_torn_api",
-            lambda: SimpleNamespace(get_item_send_receive_logs=lambda *_a, **_k: asyncio.sleep(0, result=[{"timestamp": int(datetime.now(timezone.utc).timestamp())}])),
+            lambda: SimpleNamespace(
+                get_item_send_receive_logs=lambda *_a, **_k: asyncio.sleep(
+                    0, result=[{"timestamp": int(datetime.now(timezone.utc).timestamp())}]
+                )
+            ),
         )
         monkeypatch.setattr(
             pools,
             "RafflePaymentService",
             lambda _db: SimpleNamespace(
-                _find_matching_payment=lambda **_kwargs: {"timestamp": int(datetime.now(timezone.utc).timestamp())},
+                _find_matching_payment=lambda **_kwargs: {
+                    "timestamp": int(datetime.now(timezone.utc).timestamp())
+                },
                 _summarize_payment_match_stages=lambda **_kwargs: (1, 1, 1),
             ),
         )
-        monkeypatch.setattr(pools, "_refresh_pool_panel_message", lambda *_a, **_k: asyncio.sleep(0))
+        monkeypatch.setattr(
+            pools, "_refresh_pool_panel_message", lambda *_a, **_k: asyncio.sleep(0)
+        )
 
         class _FailReceipts:
             def __init__(self, _pool):
@@ -192,7 +207,9 @@ def test_pool_verify_succeeds_when_receipt_write_fails_and_sets_verifier_metadat
 
 
 def test_payment_receipts_defensive_migration_is_idempotent_contract():
-    src = open("migrations/2026_04_19_backfill_payment_receipts_schema.sql", encoding="utf-8").read()
+    src = open(
+        "migrations/2026_04_19_backfill_payment_receipts_schema.sql", encoding="utf-8"
+    ).read()
     assert "ALTER TABLE IF EXISTS public.payment_receipts" in src
     assert "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()" in src
     assert "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()" in src
